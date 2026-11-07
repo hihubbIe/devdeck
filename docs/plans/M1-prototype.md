@@ -641,3 +641,35 @@ Found while checking:
 - The snapshot tool listed windows before a state's setup ran, so a window opened during setup leaked into the next state.
 
 Checks: 7 tests in `tests/actions.rs`, plus 5 core tests. Snapshots A0–A8 checked: cheat sheet, palette (empty, matches, drill-down, `@33`, 150 %), tab menu, Send to in the main window and a detached one. Hint bars checked in the panes, the palette and the app view.
+
+## Step 7 · Layouts per workspace, M1 measurements
+
+Covers R3.10 and R11.4 for M1.
+
+Scope:
+- **Core `LayoutBook`**: named layouts of one workspace (`current`, `layouts:
+  name → Layout`, `keep: set of ViewRef`). Saved in `workspaces/<id>/layouts.json`
+  (atomic, `.bad` fallback); the live layout stays in `layout.json`. Pure operations:
+  save as (copy of the live layout), switch (store the live layout under the current
+  name, take the target, add kept views missing from it to its focused main pane),
+  rename, delete (not the current one, not the last), toggle keep.
+- **Deck** owns its book; switching replaces the layout wholesale through `apply`, so
+  views of tabs that leave close (runs keep running in the runner), kept views keep
+  their instance, detached windows follow the new layout.
+- **UI**: title-bar `layout ▾` (menu: layouts alphabetical with the current checked,
+  "Save layout as…"), a Layouts activity (ctrl+4; Pinned/All rows, ⏎ switches, menu:
+  switch, rename…, delete), "Keep in every layout" (checkbox) in the tab menu, a
+  "Save layout as…" modal with a name input (empty or existing names refused with the
+  reason), palette entries for layouts and "save layout as…".
+
+States to snapshot: layout menu; Layouts activity; save-as modal with an error; a
+kept tab after a switch.
+
+Tests: book operations (pure, with keep merge and refusals); switch closes non-kept
+views, keeps kept instances, restores on switching back; detached windows follow;
+persistence round trip and broken file; palette and sidebar entries.
+
+M1 measurements (end of milestone, release build, `scripts/measure.py`): idle CPU and
+memory, streaming load, input latency (X11), leak run of 5 000 cycles including
+workspace switches and layout switches (views, windows and overlay layers must stay
+flat), binary size. Results in `docs/perf/M1.md`, compared with M0.
