@@ -6,7 +6,10 @@
 //! where `filter` is a comma-separated list of name fragments (`50-,51-`).
 
 use devdeck_app::shell::{Shell, WorkspaceSpec};
+use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
+use devdeck_app::views::app_view::AppView;
+use devdeck_core::view_addr::ViewAddr;
 use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
 use devdeck_ui::{ToastKind, logical, open_menu, toasts};
@@ -150,6 +153,65 @@ fn ports(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Ports, cx)));
 }
 
+fn open_view(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, addr: ViewAddr) {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let p = l.main().focused;
+                l.open(addr.to_ref(), p).map(|_| ())
+            });
+        })
+    });
+    cx.run_until_parked();
+}
+
+fn run_cmd(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, app: &str, cmd: &str, wait_ms: u64) {
+    let runner = cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).runner.clone());
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new(app, cmd), Some("dev35".into()), cx))).expect("starts");
+    cx.advance_clock(Duration::from_millis(wait_ms));
+    cx.run_until_parked();
+}
+
+fn app_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    run_cmd(cx, shell, "pagerendererservice", "test", 1200);
+    run_cmd(cx, shell, "pagerendererservice", "run", 1000);
+    open_view(cx, shell, ViewAddr::App { app: "pagerendererservice".into() });
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&ViewAddr::App { app: "pagerendererservice".into() }.to_ref()).unwrap().downcast::<AppView>().unwrap());
+    cx.update(|cx| {
+        v.update(cx, |v, cx| {
+            v.show_hidden = true;
+            v.selected = Some("build".into());
+            cx.notify();
+        })
+    });
+}
+
+fn app_missing_tool(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, ViewAddr::App { app: "remotedesktopapp".into() });
+}
+
+fn run_streaming(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() });
+    cx.advance_clock(Duration::from_secs(9));
+    cx.run_until_parked();
+}
+
+fn run_exited(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    run_cmd(cx, shell, "eventservice", "build", 1000);
+    open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "build".into() });
+}
+
+fn run_crashed(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    run_cmd(cx, shell, "boardservice", "run", 4200);
+    open_view(cx, shell, ViewAddr::Run { app: "boardservice".into(), cmd: "run".into() });
+}
+
+fn run_not_started(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "test".into() });
+}
+
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
     l.find_view(&ViewRef::new(v)).expect("view open").0
 }
@@ -256,6 +318,12 @@ fn states() -> Vec<State> {
         w("58-apps-150", "work", 1.5, Some(apps_pinned)),
         w("59-row-menu", "work", 1.0, Some(row_menu)),
         w("60-ports", "work", 1.0, Some(ports)),
+        w("70-app-view", "work", 1.0, Some(app_view)),
+        w("71-app-missing-tool", "work", 1.0, Some(app_missing_tool)),
+        w("72-run-streaming", "work", 1.0, Some(run_streaming)),
+        w("73-run-exited-0", "work", 1.0, Some(run_exited)),
+        w("74-run-crashed-toast", "work", 1.0, Some(run_crashed)),
+        w("75-run-not-started", "work", 1.0, Some(run_not_started)),
     ]
 }
 

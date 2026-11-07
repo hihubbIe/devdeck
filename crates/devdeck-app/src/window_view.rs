@@ -12,7 +12,7 @@ use crate::app_settings;
 use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
-use crate::views::{self, LogsView};
+use crate::views;
 use devdeck_ui::{DragGhost, Empty, MenuItem, Theme, apply_window_scale, button, icon_button, label, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, WindowId};
 use gpui::{
@@ -66,6 +66,8 @@ pub struct WindowView {
     deck_sub: Subscription,
     /// Main window: the active workspace's sidebar.
     sidebar: Option<(Entity<Sidebar>, Subscription)>,
+    /// Focused pane and its active view when keys last moved to a view.
+    view_target: Option<(PaneId, Option<devdeck_core::layout::ViewRef>)>,
     _observe: Vec<Subscription>,
 }
 
@@ -158,11 +160,11 @@ impl WindowView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let deck_sub = cx.observe(&deck, |_, _, cx| cx.notify());
+        let deck_sub = Self::observe_deck(&deck, window, cx);
         let focus = cx.focus_handle();
         let panes_focus = cx.focus_handle();
         panes_focus.focus(window, cx);
-        Self {
+        let mut this = Self {
             id,
             shell,
             deck,
@@ -173,7 +175,35 @@ impl WindowView {
             before_settings: None,
             deck_sub,
             sidebar: None,
+            view_target: None,
             _observe: observe,
+        };
+        this.sync_view_focus(window, cx);
+        this
+    }
+
+    fn observe_deck(deck: &Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Subscription {
+        cx.observe_in(deck, window, |this, _, window, cx| {
+            this.sync_view_focus(window, cx);
+            cx.notify();
+        })
+    }
+
+    /// When the focused pane or its active tab changed while focus is in the pane area,
+    /// gives focus to that view (if it takes keys) so its keys work without a click.
+    fn sync_view_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.focused_pane(cx).map(|p| (p, self.deck.read(cx).layout.pane(p).ok().and_then(|p| p.active_view().cloned())));
+        if target == self.view_target {
+            return;
+        }
+        self.view_target = target.clone();
+        let Some((pane, _)) = target else { return };
+        if !self.panes_focus.contains_focused(window, cx) {
+            return;
+        }
+        match self.deck.read(cx).view_focus(pane) {
+            Some(h) => h.focus(window, cx),
+            None => self.panes_focus.focus(window, cx),
         }
     }
 
@@ -191,8 +221,9 @@ impl WindowView {
             {
                 self.remembered.insert(self.deck.entity_id(), f.downgrade());
             }
-            self.deck_sub = cx.observe(&deck, |_, _, cx| cx.notify());
+            self.deck_sub = Self::observe_deck(&deck, window, cx);
             self.deck = deck;
+            self.view_target = None;
             let sidebar = shell.read(cx).active_sidebar();
             self.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
             window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
@@ -263,7 +294,7 @@ impl WindowView {
 
     fn open_env_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if sidebar.read(cx).envs().is_empty() || app_settings::is_open(cx) {
+        if sidebar.read(cx).envs(cx).is_empty() || app_settings::is_open(cx) {
             return;
         }
         let t = theme(cx);
@@ -395,7 +426,7 @@ impl Render for WindowView {
         let close_deck = self.deck.clone();
         let menu_shell = shell.clone();
         let sidebar = self.active_sidebar();
-        let env = sidebar.as_ref().and_then(|s| s.read(cx).env().cloned());
+        let env = sidebar.as_ref().and_then(|s| s.read(cx).env(cx));
 
         let title_bar = div()
             .id("titlebar")
@@ -526,8 +557,8 @@ impl Render for WindowView {
                 let Some(p) = this.focused_pane(cx) else { return };
                 let deck = this.deck.read(cx);
                 let view = deck.layout.pane(p).ok().and_then(|p| p.active_view().cloned()).and_then(|r| deck.view(&r));
-                if let Some(logs) = view.and_then(|v| v.downcast::<LogsView>().ok()) {
-                    logs.update(cx, |v, cx| v.toggle_follow(cx));
+                if let Some(v) = view {
+                    views::toggle_follow(&v, cx);
                 }
             }))
             // Per-workspace id, so element state never carries over between workspaces.
@@ -617,7 +648,7 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
     let s = sidebar.read(cx);
     let (current, visible) = (s.activity(), s.state.visible);
     let mut bar = div().flex_none().w(t.activity_w).h_full().flex().flex_col().items_center().pt_1().gap_1().bg(t.bar).border_r_1().border_color(t.line);
-    for a in s.activities() {
+    for a in s.activities(cx) {
         let on = visible && a == current;
         let hover = t.hover;
         bar = bar.child(

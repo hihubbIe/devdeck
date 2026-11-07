@@ -478,3 +478,44 @@ back to a "not available" view.
 
 Out of scope: real processes, PTY and terminal grid (M2), real cluster (M3), palette
 (step 6), shell/k9s actually opening (disabled with "comes in M3").
+
+### Step 5 review and assessment
+
+1. Crate cycle (views would depend on the app's fakes) and contradiction with the
+   Architecture section. **Accepted: views stay in `devdeck-app` (`views/` module, one
+   file per view, registry there) for M1**; the crate split comes with real services.
+2. Views hold one stable `Runner` / `Cluster` entity (state plus start/stop/set-image
+   methods) whose driver is the fake in M1 and real in M2/M3. **Accepted.**
+3. Builders get a `ViewCx`: workspace id, catalog, runner, cluster (optional), the
+   workspace's env (moved from the sidebar into a per-workspace `Services` entity the
+   sidebar also uses), and a weak deck handle to open other views. **Accepted.**
+4. View addresses parsed in core (`ViewAddr`) with escaping for `/` in ids and
+   round-trip tests. `deploy/` → `svc/` breaks only refs saved during development;
+   unknown refs show a "not available" view. **Accepted, no migration.**
+5. Restored refs: a `run/` with no run shows the idle view with Run; `svc/` without a
+   cluster, a service missing in that env, and a gone pod each get their own message.
+   **Accepted.**
+6. Metrics sampling: the Deck knows which views are visible (active tab, pane not
+   collapsed, workspace active); the service view holds a sampling handle only while
+   visible, the cluster ticks metrics only while handles exist. Rollouts tick on their
+   own timer while one is in progress, in any workspace. **Accepted.**
+7. Sidebar rows and the matrix read the runner and cluster (observed), not frozen
+   catalog flags. `Deck::running`/`stop_all` move to the runner; follow is handled by a
+   `views::toggle_follow` helper covering every following view. **Accepted.**
+8. View keys live in each view's own key context with `&& !TextInput`; views that take
+   keys are focusable, and the window focuses the active view of the focused pane
+   (pane keys still work: views sit inside `Panes`). Esc in the tag editor reverts the
+   unsaved tag. Keys are listed per view for the step 6 registry. **Accepted.**
+9. States added: run stopping (and restart while stopping waits for the stop); service
+   not deployed in this env and empty matrix cells; metrics forbidden (fake `lab`);
+   logs with no pods; Save disabled during a rollout with the reason; unlock lasts
+   until the view closes; closing a tab with an unsaved tag discards it (M1, noted).
+   **Accepted.**
+10. Crash toasts name the workspace; "View output" switches to it, then opens the run.
+    **Accepted.**
+11. Durations as constants, seeded metrics, output capped (5 000 lines), the server
+    writes a line every 2 s, tests advance short spans only. **Accepted.**
+12. Tests added: sampling stops when hidden/closed/switched away (counter), new views
+    in the leak check, `ViewAddr` round trip, sidebar and matrix follow runs and
+    rollouts, crash in an inactive workspace, `r`/`s` typed in the tag editor or find
+    input do nothing. **Accepted.**

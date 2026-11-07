@@ -6,7 +6,11 @@
 //! asks first when something is running (R8.1).
 
 use crate::deck::Deck;
+use crate::runner::RunnerEvent;
+use crate::services::Services;
 use crate::sidebar::Sidebar;
+use crate::views::ViewCx;
+use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::Layout;
 use devdeck_core::state::{AppState, Loaded, SidebarState, StateStore};
@@ -39,6 +43,7 @@ pub struct Workspace {
     pub name: String,
     pub deck: Entity<Deck>,
     pub sidebar: Entity<Sidebar>,
+    pub services: Entity<Services>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,15 +123,23 @@ impl Shell {
                     }
                     _ => SidebarState::default(),
                 };
+                let services = Services::demo(&spec.id, &spec.name, sidebar_state.env.clone(), cx);
                 let deck_store = store.clone();
-                let deck = cx.new(|_| Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active));
-                let catalog = devdeck_core::demo::catalog(&spec.id);
+                let deck_services = services.clone();
+                let deck = cx.new(|cx| {
+                    let ctx = ViewCx { services: deck_services, deck: cx.weak_entity() };
+                    Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_ctx(ctx)
+                });
                 let (ws, sidebar_deck, sidebar_store) = (spec.id.clone(), deck.clone(), store.clone());
-                let sidebar = cx.new(|cx| Sidebar::new(ws, catalog, sidebar_deck, sidebar_store, sidebar_state, cx));
-                Workspace { id: spec.id, name: spec.name, deck, sidebar }
+                let sidebar_services = services.clone();
+                let sidebar = cx.new(|cx| Sidebar::new(ws, sidebar_services, sidebar_deck, sidebar_store, sidebar_state, cx));
+                Workspace { id: spec.id, name: spec.name, deck, sidebar, services }
             })
             .collect();
         let decks: Vec<Entity<Deck>> = workspaces.iter().map(|w| w.deck.clone()).collect();
+        for (i, w) in workspaces.iter().enumerate() {
+            watch_failures(i, w, cx);
+        }
         let shell = cx.new(|_| Shell {
             workspaces,
             active,
@@ -205,7 +218,7 @@ impl Shell {
     pub fn running(&self, cx: &App) -> Vec<(String, Vec<String>)> {
         self.workspaces
             .iter()
-            .map(|w| (w.name.clone(), w.deck.read(cx).running(cx)))
+            .map(|w| (w.name.clone(), w.services.read(cx).runner.read(cx).running()))
             .filter(|(_, r)| !r.is_empty())
             .collect()
     }
@@ -247,7 +260,8 @@ impl Shell {
         }
         self.quit_state = QuitState::Stopping;
         for w in &self.workspaces {
-            w.deck.update(cx, |d, cx| d.stop_all(cx));
+            let runner = w.services.read(cx).runner.clone();
+            runner.update(cx, |r, cx| r.stop_all(cx));
         }
         cx.notify();
         self._stopping = Some(cx.spawn(async move |this, cx| {
@@ -303,6 +317,26 @@ impl Shell {
             Err(_) => {}
         }
     }
+}
+
+/// A run failing in any workspace becomes an error toast naming the workspace; "View
+/// output" shows that workspace and opens the run.
+fn watch_failures(index: usize, w: &Workspace, cx: &mut App) {
+    let runner = w.services.read(cx).runner.clone();
+    let (name, deck) = (w.name.clone(), w.deck.downgrade());
+    let services = w.services.clone();
+    cx.subscribe(&runner, move |_, event: &RunnerEvent, cx| {
+        let RunnerEvent::Failed { key, code } = event;
+        let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
+        let ctx = ViewCx { services: services.clone(), deck: deck.clone() };
+        let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(move |_, cx| {
+            switch(index, cx);
+            ctx.open(addr.clone(), cx);
+        });
+        let text = format!("{name} · {} exited {code}", key.title());
+        toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![("View output".into(), view)], cx));
+    })
+    .detach();
 }
 
 // ------------------------------------------------------------------ app-level entry points

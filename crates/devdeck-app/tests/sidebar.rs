@@ -1,6 +1,7 @@
 //! M1 step 4: activity bar and sidebar lists (R4.1–R4.3, R2.3, R5.1, R5.2), on GPUI's
 //! test platform with the demo workspaces (`work` has a cluster, `personal` doesn't).
 
+use devdeck_app::cluster::LOAD_DELAY;
 use devdeck_app::shell::Shell;
 use devdeck_app::sidebar::{Activity, Sidebar, open_at};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
@@ -66,11 +67,11 @@ fn list_focused(s: &Entity<Sidebar>, w: AnyWindowHandle, cx: &mut TestAppContext
 fn cluster_and_env_only_where_configured(cx: &mut TestAppContext) {
     let shell = start(cx, None, "r23");
     let work = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| work.read(cx).activities()), [Activity::Apps, Activity::Cluster, Activity::Ports]);
+    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Apps, Activity::Cluster, Activity::Ports]);
     switch_to(&shell, cx, "personal");
     let personal = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| personal.read(cx).activities()), [Activity::Apps, Activity::Ports]);
-    assert!(cx.read(|cx| personal.read(cx).env().is_none()), "no env button without envs");
+    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Apps, Activity::Ports]);
+    assert!(cx.read(|cx| personal.read(cx).env(cx).is_none()), "no env button without envs");
     let main = main_window(&shell, cx);
     cx.simulate_keystrokes(main, "ctrl-2");
     cx.run_until_parked();
@@ -198,12 +199,18 @@ fn env_menu_changes_the_cluster_list(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.update(|cx| layer_state(main, cx).0), "ctrl+e opens the env menu");
     cx.simulate_keystrokes(main, "escape");
-    let before = cx.read(|cx| s.read(cx).items());
+    assert_eq!(cx.read(|cx| s.read(cx).status(cx)).as_deref(), Some("loading…"));
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let before = cx.read(|cx| s.read(cx).items(cx));
+    assert!(!before.is_empty());
     cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev31", cx)));
-    let after = cx.read(|cx| s.read(cx).items());
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let after = cx.read(|cx| s.read(cx).items(cx));
     assert_eq!(cx.read(|cx| s.read(cx).state.env.clone()).as_deref(), Some("dev31"));
     assert_ne!(before, after, "another env, other tags");
-    assert_eq!(cx.read(|cx| s.read(cx).view_ref("tadawebapi")), ViewRef::new("deploy/dev31/tadawebapi"));
+    assert_eq!(cx.read(|cx| s.read(cx).view_ref("tadawebapi", cx)), ViewRef::new("svc/dev31/tadawebapi"));
 }
 
 #[gpui::test]
@@ -240,6 +247,8 @@ fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
     std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();
     std::fs::write(dir.join("workspaces/personal/sidebar.json"), "{").unwrap();
     let shell = start(cx, Some(store), "persist");
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
     let s = sidebar(&shell, cx);
     assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Cluster);
     assert_eq!(cx.read(|cx| s.read(cx).state.env.clone()).as_deref(), Some("dev33"));

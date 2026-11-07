@@ -11,11 +11,13 @@ pub struct ListItem {
     /// Dim text on the right (a port, a tag, a ready count).
     pub detail: String,
     pub running: bool,
+    /// Why it can't be used (a missing tool): drawn with ⚠ instead of the state glyph.
+    pub warning: Option<String>,
 }
 
 impl ListItem {
     pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into(), detail: String::new(), running: false }
+        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, warning: None }
     }
 
     pub fn detail(mut self, d: impl Into<String>) -> Self {
@@ -25,6 +27,11 @@ impl ListItem {
 
     pub fn running(mut self, on: bool) -> Self {
         self.running = on;
+        self
+    }
+
+    pub fn warning(mut self, w: Option<String>) -> Self {
+        self.warning = w;
         self
     }
 }

@@ -3,9 +3,12 @@
 
 pub mod actions;
 pub mod app_settings;
+pub mod cluster;
 pub mod deck;
 pub mod gallery;
 pub mod kube_feed;
+pub mod runner;
+pub mod services;
 pub mod settings_view;
 pub mod shell;
 pub mod sidebar;
@@ -71,5 +74,7 @@ pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     devdeck_ui::bind_keys(cx);
     actions::bind(cx);
     sidebar::bind_keys(cx);
+    views::app_view::bind_keys(cx);
+    views::run_view::bind_keys(cx);
     cx.on_window_closed(|cx, id| devdeck_ui::overlay::forget_layer(id, cx)).detach();
 }

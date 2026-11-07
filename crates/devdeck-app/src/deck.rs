@@ -9,12 +9,12 @@
 //! - schedules a save of the layout (one timer, about a second after the first change),
 //! - notifies observers so every window re-renders.
 
-use crate::views::{self, LogsView};
+use crate::views::{self, ViewCx};
 use crate::window_view::{WindowView, window_options};
-use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, ViewRef, WindowId};
+use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, PaneId, ViewRef, WindowId};
 use devdeck_core::state::StateStore;
 use devdeck_ui::{ToastKind, toasts};
-use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, Task, WindowHandle};
+use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, FocusHandle, Task, WindowHandle};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ pub struct Deck {
     pub workspace: String,
     active: bool,
     views: HashMap<ViewRef, AnyView>,
+    /// Focus handles of views that take keys.
+    focus: HashMap<ViewRef, FocusHandle>,
+    /// What views get to reach their workspace (`None` in bare decks: demo views only).
+    ctx: Option<ViewCx>,
     /// Detached windows only. `None` while the OS window is being opened (deferred).
     os_windows: HashMap<WindowId, Option<WindowHandle<WindowView>>>,
     /// Views closed recently, checked for release by the leak test.
@@ -48,6 +52,8 @@ impl Deck {
             workspace: "default".into(),
             active: true,
             views: HashMap::new(),
+            focus: HashMap::new(),
+            ctx: None,
             os_windows: HashMap::new(),
             released: Vec::new(),
             last_error: None,
@@ -66,6 +72,26 @@ impl Deck {
         self.store = store;
         self.active = active;
         self
+    }
+
+    pub fn with_ctx(mut self, ctx: ViewCx) -> Self {
+        self.ctx = Some(ctx);
+        self
+    }
+
+    /// Where keys go when the active view of `pane` should have them.
+    pub fn view_focus(&self, pane: PaneId) -> Option<FocusHandle> {
+        let r = self.layout.pane(pane).ok()?.active_view()?;
+        self.focus.get(r).cloned()
+    }
+
+    /// Whether a view is on screen: active tab of an expanded pane, workspace shown.
+    pub fn is_visible(&self, r: &ViewRef) -> bool {
+        self.active
+            && self.layout.find_view(r).is_some_and(|(p, i)| {
+                self.layout.pane(p).is_ok_and(|pane| pane.active == i && !pane.collapsed)
+                    && self.layout.window_of(p).ok().and_then(|w| self.layout.window(w).ok()).is_some_and(|w| w.maximized.is_none_or(|m| m == p))
+            })
     }
 
     pub fn view(&self, r: &ViewRef) -> Option<AnyView> {
@@ -138,42 +164,24 @@ impl Deck {
         }
     }
 
-    /// Titles of what runs in this workspace, alphabetical (the quit guard lists them).
-    /// In M1 the demo log stream stands in for processes.
-    pub fn running(&self, cx: &App) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .views
-            .iter()
-            .filter(|(_, v)| (*v).clone().downcast::<LogsView>().is_ok_and(|l| l.read(cx).is_streaming()))
-            .map(|(r, _)| views::title(r))
-            .collect();
-        out.sort_by_key(|s| s.to_lowercase());
-        out
-    }
-
-    /// Asks everything running to stop. Stopping may take time; poll [`Deck::running`].
-    pub fn stop_all(&mut self, cx: &mut Context<Self>) {
-        for v in self.views.values() {
-            if let Ok(logs) = v.clone().downcast::<LogsView>() {
-                logs.update(cx, |l, cx| l.stop(cx));
-            }
-        }
-    }
-
     pub fn sync(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         // Views: create missing, drop closed.
         let open = self.layout.views();
         let closed: Vec<ViewRef> = self.views.keys().filter(|r| !open.contains(*r)).cloned().collect();
         for r in closed {
+            self.focus.remove(&r);
             if let Some(v) = self.views.remove(&r) {
                 self.released.push((v.downgrade(), self.generation));
             }
         }
         for r in open {
-            if let std::collections::hash_map::Entry::Vacant(slot) = self.views.entry(r) {
-                let v = views::build(slot.key(), cx);
-                slot.insert(v);
+            if !self.views.contains_key(&r) {
+                let built = views::build(&r, self.ctx.as_ref(), cx);
+                if let Some(f) = built.focus {
+                    self.focus.insert(r.clone(), f);
+                }
+                self.views.insert(r, built.view);
             }
         }
         // Detached windows: open the missing ones, close the ones the model dropped (or

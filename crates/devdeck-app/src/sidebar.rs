@@ -8,7 +8,9 @@
 //! drop on the other section.
 
 use crate::deck::Deck;
-use devdeck_core::demo::{Catalog, Env};
+use crate::services::Services;
+use devdeck_core::cluster::{Env, Remote};
+use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Drop, Layout, Result as LayoutResult, ViewRef};
 use devdeck_core::list::{self, ListItem, Row, Section};
 use devdeck_core::state::{SidebarState, StateStore};
@@ -123,7 +125,7 @@ pub fn open_at(l: &mut Layout, view: ViewRef, drop: Drop) -> LayoutResult<()> {
 
 pub struct Sidebar {
     pub workspace: String,
-    catalog: Catalog,
+    pub services: Entity<Services>,
     deck: Entity<Deck>,
     store: Option<StateStore>,
     pub state: SidebarState,
@@ -139,32 +141,37 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(
         workspace: String,
-        catalog: Catalog,
+        services: Entity<Services>,
         deck: Entity<Deck>,
         store: Option<StateStore>,
         mut state: SidebarState,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Repair what the catalog can't honour (no cluster, unknown env or activity).
+        // Repair what the workspace can't honour (no cluster, unknown activity); the
+        // services already settled the env.
+        let has_cluster = services.read(cx).cluster.is_some();
         let activity = Activity::from_id(&state.activity).unwrap_or(Activity::Apps);
-        let activity = if activity == Activity::Cluster && catalog.cluster.is_none() { Activity::Apps } else { activity };
+        let activity = if activity == Activity::Cluster && !has_cluster { Activity::Apps } else { activity };
         state.activity = activity.id().into();
-        state.env = catalog.cluster.as_ref().map(|c| match &state.env {
-            Some(e) if c.envs.iter().any(|x| &x.name == e) => e.clone(),
-            _ => c.default_env.clone(),
-        });
+        state.env = services.read(cx).env.clone();
         let filter = cx.new(|cx| TextInput::new("filter", cx));
-        let subs = vec![cx.subscribe(&filter, |this, _, e: &InputEvent, cx| match e {
+        let subs = vec![
+            cx.observe(&services, |this, _, cx| {
+                this.drop_hidden_selection(cx);
+                cx.notify();
+            }),
+            cx.subscribe(&filter, |this, _, e: &InputEvent, cx| match e {
             InputEvent::Changed(_) => {
                 this.drop_hidden_selection(cx);
                 cx.notify();
             }
             InputEvent::Submit(_) => this.open_selected(cx),
             InputEvent::Cancel => {}
-        })];
-        Self {
+        }),
+        ];
+        let this = Self {
             workspace,
-            catalog,
+            services,
             deck,
             store,
             state,
@@ -175,6 +182,21 @@ impl Sidebar {
             scroll: UniformListScrollHandle::new(),
             save_failed: false,
             _subs: subs,
+        };
+        this.load_list(cx);
+        this
+    }
+
+    /// Starts loading what the shown list needs (the env's deployments).
+    fn load_list(&self, cx: &mut App) {
+        if self.activity() != Activity::Cluster {
+            return;
+        }
+        let s = self.services.read(cx);
+        if let (Some(cluster), Some(env)) = (s.cluster.clone(), s.env.clone()) {
+            cluster.update(cx, |c, cx| {
+                c.deployments(&env, cx);
+            });
         }
     }
 
@@ -183,27 +205,74 @@ impl Sidebar {
     }
 
     /// Activities this workspace offers (Cluster only with a cluster, R2.3).
-    pub fn activities(&self) -> Vec<Activity> {
-        Activity::ALL.into_iter().filter(|a| *a != Activity::Cluster || self.catalog.cluster.is_some()).collect()
+    pub fn activities(&self, cx: &App) -> Vec<Activity> {
+        let has_cluster = self.services.read(cx).cluster.is_some();
+        Activity::ALL.into_iter().filter(|a| *a != Activity::Cluster || has_cluster).collect()
     }
 
-    pub fn envs(&self) -> &[Env] {
-        self.catalog.cluster.as_ref().map_or(&[], |c| &c.envs)
+    pub fn envs(&self, cx: &App) -> Vec<Env> {
+        self.services.read(cx).catalog.cluster.as_ref().map_or(Vec::new(), |c| c.envs.clone())
     }
 
-    pub fn env(&self) -> Option<&Env> {
-        let name = self.state.env.as_deref()?;
-        self.envs().iter().find(|e| e.name == name)
+    pub fn env(&self, cx: &App) -> Option<Env> {
+        let name = self.services.read(cx).env.clone()?;
+        self.envs(cx).into_iter().find(|e| e.name == name)
     }
 
-    pub fn items(&self) -> Vec<ListItem> {
+    /// Why the list is empty when it is for a reason (loading, unreachable env).
+    pub fn status(&self, cx: &App) -> Option<String> {
+        if self.activity() != Activity::Cluster {
+            return None;
+        }
+        let s = self.services.read(cx);
+        match (s.cluster.as_ref(), s.env.as_deref()) {
+            (Some(c), Some(env)) => match c.read(cx).peek(env) {
+                Remote::Loading => Some("loading…".into()),
+                Remote::Error(e) => Some(e),
+                Remote::Ready(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn items(&self, cx: &App) -> Vec<ListItem> {
+        let s = self.services.read(cx);
         match self.activity() {
-            Activity::Apps => self.catalog.apps.clone(),
-            Activity::Cluster => match (&self.catalog.cluster, &self.state.env) {
-                (Some(c), Some(env)) => c.deployments(env),
+            Activity::Apps => {
+                let runner = s.runner.read(cx);
+                let tools = runner.tools();
+                s.catalog
+                    .apps
+                    .iter()
+                    .map(|a| {
+                        let warning = tools.unusable(a);
+                        ListItem::new(a.id.clone(), a.name.clone()).detail(a.kind.clone()).running(runner.app_running(&a.id)).warning(warning)
+                    })
+                    .collect()
+            }
+            Activity::Cluster => match (s.cluster.as_ref(), s.env.as_deref()) {
+                (Some(c), Some(env)) => {
+                    let c = c.read(cx);
+                    c.peek(env)
+                        .ready()
+                        .map(|deps| {
+                            deps.iter()
+                                .map(|d| {
+                                    let rolling = c.rollout(env, &d.name).is_some_and(|r| matches!(r, devdeck_core::cluster::Rollout::Progressing { .. }));
+                                    let detail = if rolling { format!("◐ {}", d.tag) } else { d.tag.clone() };
+                                    ListItem::new(d.name.clone(), d.name.clone()).detail(detail).running(d.ready == d.replicas)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }
                 _ => Vec::new(),
             },
-            Activity::Ports => self.catalog.ports.clone(),
+            Activity::Ports => s
+                .ports(cx)
+                .into_iter()
+                .map(|p| ListItem::new(p.port.to_string(), format!(":{}", p.port)).detail(p.holder).running(true))
+                .collect(),
         }
     }
 
@@ -212,7 +281,7 @@ impl Sidebar {
     }
 
     pub fn rows(&self, cx: &App) -> (Vec<ListItem>, Vec<Row>) {
-        let items = self.items();
+        let items = self.items(cx);
         let running_only = self.running_only && self.activity() == Activity::Apps;
         let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), running_only);
         (items, rows)
@@ -254,17 +323,18 @@ impl Sidebar {
     }
 
     /// The view address an item opens as.
-    pub fn view_ref(&self, key: &str) -> ViewRef {
+    pub fn view_ref(&self, key: &str, cx: &App) -> ViewRef {
         match self.activity() {
-            Activity::Apps => ViewRef::new(format!("app/{key}")),
-            Activity::Cluster => ViewRef::new(format!("deploy/{}/{key}", self.state.env.as_deref().unwrap_or("-"))),
-            Activity::Ports => ViewRef::new(format!("port/{key}")),
+            Activity::Apps => ViewAddr::App { app: key.into() },
+            Activity::Cluster => ViewAddr::Svc { env: self.services.read(cx).env.clone().unwrap_or_default(), name: key.into() },
+            Activity::Ports => ViewAddr::Port { port: key.into() },
         }
+        .to_ref()
     }
 
     /// Opens an item in the main window's focused pane; an open one is activated.
     pub fn open(&mut self, key: &str, cx: &mut Context<Self>) {
-        let view = self.view_ref(key);
+        let view = self.view_ref(key, cx);
         self.deck.update(cx, |d, cx| {
             d.apply(cx, |l| {
                 let p = l.main().focused;
@@ -304,7 +374,7 @@ impl Sidebar {
     /// Shows an activity (and the sidebar); unknown or unavailable ones are ignored.
     /// Returns whether it is now shown.
     pub fn show(&mut self, activity: Activity, cx: &mut Context<Self>) -> bool {
-        if !self.activities().contains(&activity) {
+        if !self.activities(cx).contains(&activity) {
             return false;
         }
         if self.activity() != activity {
@@ -313,6 +383,7 @@ impl Sidebar {
             self.filter.update(cx, |f, cx| f.set_text("", cx));
         }
         self.state.visible = true;
+        self.load_list(cx);
         self.save(cx);
         cx.notify();
         true
@@ -327,8 +398,10 @@ impl Sidebar {
     }
 
     pub fn set_env(&mut self, env: &str, cx: &mut Context<Self>) {
-        if self.envs().iter().any(|e| e.name == env) && self.state.env.as_deref() != Some(env) {
+        if self.envs(cx).iter().any(|e| e.name == env) && self.state.env.as_deref() != Some(env) {
             self.state.env = Some(env.into());
+            self.services.update(cx, |s, cx| s.set_env(env, cx));
+            self.load_list(cx);
             self.drop_hidden_selection(cx);
             self.save(cx);
             cx.notify();
@@ -385,7 +458,7 @@ impl Sidebar {
     pub fn env_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
         let s = this.read(cx);
         let current = s.state.env.clone();
-        s.envs()
+        s.envs(cx)
             .iter()
             .map(|e| {
                 let (sidebar, name) = (this.clone(), e.name.clone());
@@ -402,12 +475,13 @@ impl Focusable for Sidebar {
     }
 }
 
-fn empty_text(section: Section, filtered: bool, running_only: bool) -> &'static str {
-    match section {
-        Section::Pinned => "nothing pinned · p pins",
-        Section::All if filtered => "no match",
-        Section::All if running_only => "nothing running",
-        Section::All => "empty",
+fn empty_text(section: Section, filtered: bool, running_only: bool, status: Option<&str>) -> String {
+    match (section, status) {
+        (Section::All, Some(s)) => s.to_string(),
+        (Section::Pinned, _) => "nothing pinned · p pins".into(),
+        (Section::All, None) if filtered => "no match".into(),
+        (Section::All, None) if running_only => "nothing running".into(),
+        (Section::All, None) => "empty".into(),
     }
 }
 
@@ -430,7 +504,7 @@ impl Render for Sidebar {
             .gap_2()
             .child(div().flex_1().min_w_0().truncate().text_color(t.hi).child(activity.title()))
             .when(activity == Activity::Cluster, |d| {
-                let protected = self.env().is_some_and(|e| e.protected);
+                let protected = self.env(cx).is_some_and(|e| e.protected);
                 d.child(label(format!("@{}", self.state.env.as_deref().unwrap_or("-"))).text_color(if protected { t.err } else { t.env }))
             })
             .when(activity == Activity::Apps, |d| {
@@ -447,12 +521,19 @@ impl Render for Sidebar {
             cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                 let t = theme(cx).clone();
                 let (items, rows) = this.rows(cx);
+                let status = this.status(cx);
                 let selected = this.selected_row(&items, &rows);
                 let focused = this.list_focus.is_focused(window);
                 let me = cx.entity();
                 range
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
-                    .map(|(i, row)| render_row(&me, &this.deck, &items, &rows, i, row, selected == Some(i), focused, filtered, running_only, &t, this))
+                    .map(|(i, row)| {
+                        let view_ref = match &row {
+                            Row::Item { index, .. } => Some(this.view_ref(&items[*index].key, cx)),
+                            _ => None,
+                        };
+                        render_row(&me, &this.deck, &items, &rows, i, row, selected == Some(i), focused, filtered, running_only, &t, status.clone(), view_ref)
+                    })
                     .collect()
             }),
         )
@@ -525,7 +606,8 @@ fn render_row(
     filtered: bool,
     running_only: bool,
     t: &Theme,
-    sidebar: &Sidebar,
+    status: Option<String>,
+    view_ref: Option<ViewRef>,
 ) -> gpui::AnyElement {
     let sidebar_id = me.entity_id();
     let base = div().h(t.row_h).w_full().px_3().flex().items_center().gap_2().whitespace_nowrap();
@@ -554,7 +636,7 @@ fn render_row(
         }
         Row::Empty(section) => section_drop(
             section,
-            base.id(("empty", i)).pl_6().text_color(t.dim).child(label(empty_text(section, filtered, running_only))),
+            base.id(("empty", i)).pl_6().text_color(t.dim).child(label(empty_text(section, filtered, running_only, status.as_deref()))),
         )
         .into_any_element(),
         Row::Item { index, pinned } => {
@@ -570,7 +652,7 @@ fn render_row(
                 key: key.clone(),
                 label: label_text.clone(),
                 pinned,
-                view: sidebar.view_ref(&key),
+                view: view_ref.expect("item rows have a view"),
             };
             let hover = t.hover;
             let selector = format!("row-{key}");
@@ -601,15 +683,14 @@ fn render_row(
                     open_menu(e.position, items, window, cx);
                 })
                 .on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone())))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(if item.running { t.ok } else { t.dim })
-                        .child(if item.running { "●" } else { "○" }),
-                )
-                .child(div().flex_1().min_w_0().truncate().text_color(t.fg).child(label_text))
-                .when(!item.detail.is_empty(), |d| {
-                    d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(t.dim).child(item.detail.clone()))
+                .child(match &item.warning {
+                    Some(_) => div().flex_none().text_color(t.warn).child("⚠"),
+                    None => div().flex_none().text_color(if item.running { t.ok } else { t.dim }).child(if item.running { "●" } else { "○" }),
+                })
+                .child(div().flex_1().min_w_0().truncate().text_color(if item.warning.is_some() { t.mute } else { t.fg }).child(label_text))
+                .when_some(item.warning.clone().or((!item.detail.is_empty()).then(|| item.detail.clone())), |d, detail| {
+                    let color = if item.warning.is_some() { t.warn } else { t.dim };
+                    d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(color).child(detail))
                 });
             section_drop(section, el).into_any_element()
         }

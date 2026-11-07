@@ -3,6 +3,7 @@
 //! stream, which counts as running).
 
 use devdeck_app::deck::{Deck, SAVE_DELAY};
+use devdeck_app::runner::STOP_DELAY;
 use devdeck_app::shell::{QuitState, Shell, WorkspaceSpec};
 use devdeck_core::layout::{Layout, ViewRef, WindowId};
 use devdeck_core::state::{AppState, Loaded, StateStore};
@@ -89,7 +90,7 @@ fn switching_keeps_each_workspace_alive(cx: &mut TestAppContext) {
     switch(&shell, cx, "personal");
     assert!(cx.read(|cx| personal.read(cx).is_active() && !work.read(cx).is_active()));
     assert_eq!(cx.read(|cx| work.read(cx).live_views()), work_views, "hidden workspace keeps its views");
-    assert!(!cx.read(|cx| work.read(cx).running(cx)).is_empty(), "and keeps running");
+    assert!(cx.read(|cx| shell.read(cx).running(cx)).iter().any(|(ws, _)| ws == "work"), "and keeps running");
     switch(&shell, cx, "work");
     assert_eq!(cx.read(|cx| work.read(cx).layout.clone()), work_layout);
     assert_eq!(cx.windows().len(), 1);
@@ -135,7 +136,7 @@ fn ctrl_alt_n_switches_in_alphabetical_order(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn quit_with_nothing_running_quits_at_once(cx: &mut TestAppContext) {
-    let shell = start(cx, vec![WorkspaceSpec::new("work", "work", devdeck_app::personal_layout)], None, "idle");
+    let shell = start(cx, vec![WorkspaceSpec::new("empty", "empty", devdeck_app::personal_layout)], None, "idle");
     cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
     cx.run_until_parked();
     assert_eq!(quit_state(&shell, cx), (QuitState::Idle, 1));
@@ -167,7 +168,10 @@ fn stop_all_and_quit_stops_then_quits(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(quit_state(&shell, cx), (QuitState::Idle, 1), "enter on the default button stops and quits");
+    assert_eq!(quit_state(&shell, cx), (QuitState::Stopping, 0), "enter on the default button stops first");
+    cx.executor().advance_clock(STOP_DELAY + std::time::Duration::from_millis(100));
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Idle, 1), "then quits");
     assert!(cx.read(|cx| shell.read(cx).running(cx)).is_empty(), "everything stopped first");
 }
 

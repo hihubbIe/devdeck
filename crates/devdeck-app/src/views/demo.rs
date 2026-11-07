@@ -1,5 +1,5 @@
-//! Demo views for the M0 spike. Each [`ViewRef`] maps to one view type; a view is
-//! built once and lives as long as its tab (owned by `Deck`).
+//! Demo views from the M0 spike (logs stream, cluster feed, notes, gallery). Not part
+//! of the product; kept to exercise the pane engine and for the manual test.
 
 use crate::kube_feed::{self, KubeState};
 use devdeck_ui::{label, theme};
@@ -24,7 +24,7 @@ pub fn build(r: &ViewRef, cx: &mut App) -> AnyView {
     }
 }
 
-/// The tab label for a view address.
+/// Tab labels of the demo views.
 pub fn title(r: &ViewRef) -> String {
     match r.as_str() {
         "demo/logs" => "dev35 › entityservice · logs".into(),
@@ -32,17 +32,7 @@ pub fn title(r: &ViewRef) -> String {
         "demo/notes" => "notes".into(),
         "demo/gallery" => "components".into(),
         "demo/long" => "a tab whose title is far too long to ever fit in a tab strip".into(),
-        other => {
-            if let Some(app) = other.strip_prefix("app/") {
-                app.to_string()
-            } else if let Some(rest) = other.strip_prefix("deploy/") {
-                rest.replacen('/', " › ", 1)
-            } else if let Some(port) = other.strip_prefix("port/") {
-                format!(":{port}")
-            } else {
-                other.rsplit('/').next().unwrap_or(other).to_string()
-            }
-        }
+        other => other.rsplit('/').next().unwrap_or(other).to_string(),
     }
 }
 
