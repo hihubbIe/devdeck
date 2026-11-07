@@ -21,7 +21,13 @@ fn one_devdeck_per_state_folder(cx: &mut TestAppContext) {
     let second = claim(&dir).err().expect("held");
     assert_eq!(second, format!("devdeck is already running (pid {})", std::process::id()));
     drop(first);
-    assert!(claim(&dir).is_ok(), "free again");
+    // A process another test spawns meanwhile holds a copy of the lock's descriptor
+    // from its fork until its exec closes it (close-on-exec): free within moments.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while claim(&dir).is_err() {
+        assert!(Instant::now() < deadline, "free again");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// A `sleep` that isn't a child of this process (its shell exits), recorded in the log
