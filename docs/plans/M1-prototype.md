@@ -349,3 +349,46 @@ Cluster activity without a cluster, per-workspace sidebar state, keys (move, `p`
 pins saved and restored, broken pins file.
 
 Out of scope: real discovery and views (step 5, M2), palette (step 6), resizable sidebar.
+
+### Step 4 review and assessment
+
+1. Activity keys (ctrl+1/2/3, ctrl+b) live on the root `Deck` context, main window
+   only; ignored in detached windows and while Settings is open. **Accepted.**
+2. Pane neighbour geometry must use the pane area, not the viewport, once the activity
+   bar and sidebar take width; test alt+arrows with the sidebar shown and hidden.
+   **Accepted.**
+3. The filter's Enter/Esc arrive as `Submit`/`Cancel` events (they propagate): Enter
+   opens the selected row, Esc clears the filter, then a second Esc returns to the
+   panes. `p`, `/`, home/end use `Sidebar && !TextInput`; up/down move the selection
+   from the filter too. **Accepted.**
+4. Focus: remembered per workspace wherever it is (not only in the panes), unless
+   Settings is open; closing Settings returns to where focus was; hiding a focused
+   sidebar sends focus to the panes. **Accepted.**
+5. Env selector: DESIGN puts `env ▾` in the title bar; it is the workspace's env for
+   runs and for the Cluster list. **Accepted: title bar**, absent when the workspace has
+   no envs (R2.3).
+6. Deployment pins are keyed by service name, shared across envs. Pins of keys missing
+   from the catalog stay in the file and are not shown; unit test. **Accepted.**
+7. Persist the whole sidebar state per workspace (`sidebar.json`: activity, visible,
+   env, pins), written on the background executor, failure reported once; every
+   workspace's file loads at start. **Accepted.**
+8. Selection keyed by item, skipping headers and empty lines; an item hidden by the
+   filter, running-only or a pin move clears the selection (the next move picks the
+   first); the selected row scrolls into view. **Accepted.**
+9. Any drag shows the pane drop zones (GPUI doesn't expose the drag type). Instead of
+   hiding them, list rows dropped on a pane open the item there (into or at an edge),
+   which R3.2 wants anyway. Dropping on a row of the other section pins/unpins like
+   the header. **Accepted with that change.**
+10. States added: running-only with nothing running ("nothing running"), protected env
+    selected (⊘ in the env button), selected row focused and unfocused, filter with
+    matches, right-click menu. A cluster with no envs counts as no cluster (the catalog
+    guarantees envs). Drag-over highlight: covered by a test, not a snapshot (headless
+    snapshots can't hold a drag). **Partly accepted.**
+11. Keyboard paths: `r` toggles running only, ctrl+e opens the env menu. Context menus
+    on activity icons and section headers come with step 6 ("context menus
+    everywhere"); tooltip key texts are hand-written until the step 6 registry.
+    **Partly accepted.**
+12. Open: into the main window's focused pane; an open item is activated, not
+    duplicated; focus stays in the sidebar. Activity bar gets its own `activity_w`
+    token. 150 % snapshot added. Sidebars live as long as their workspace, so no churn
+    to leak-test. **Accepted.**

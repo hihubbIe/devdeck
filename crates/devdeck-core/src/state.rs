@@ -2,12 +2,14 @@
 //! configuration a user writes. Lives in `DEVDECK_STATE_DIR`, else
 //! `$XDG_STATE_HOME/devdeck`, else `~/.local/state/devdeck`.
 //!
-//! Layout: `app.json` (active workspace) and `workspaces/<id>/layout.json`. Every write
+//! Layout: `app.json` (active workspace), `workspaces/<id>/layout.json` and
+//! `workspaces/<id>/pins.json` (pinned keys per list). Every write
 //! is atomic (temporary file + rename). Reads never fail the app: a missing file means
 //! "nothing saved", a broken one is reported and ignored.
 
 use crate::layout::Layout;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub fn state_dir(env: impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -24,6 +26,9 @@ pub fn state_dir(env: impl Fn(&str) -> Option<String>) -> PathBuf {
 pub fn default_state_dir() -> PathBuf {
     state_dir(|k| std::env::var(k).ok())
 }
+
+/// Pinned keys per list id (`apps`, `deployments`, `ports`).
+pub type Pins = BTreeMap<String, BTreeSet<String>>;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -120,6 +125,29 @@ impl StateStore {
         write_atomic(&self.layout_path(workspace), &layout.to_json())
     }
 
+    fn pins_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join("workspaces").join(safe_id(workspace)).join("pins.json")
+    }
+
+    pub fn load_pins(&self, workspace: &str) -> Loaded<Pins> {
+        let path = self.pins_path(workspace);
+        match read(&path) {
+            Loaded::Ok(t) => match serde_json::from_str(&t) {
+                Ok(p) => Loaded::Ok(p),
+                Err(e) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: {e} (kept as pins.json.bad)", path.display()))
+                }
+            },
+            Loaded::Missing => Loaded::Missing,
+            Loaded::Broken(e) => Loaded::Broken(e),
+        }
+    }
+
+    pub fn save_pins(&self, workspace: &str, pins: &Pins) -> Result<(), String> {
+        write_atomic(&self.pins_path(workspace), &serde_json::to_string_pretty(pins).map_err(|e| e.to_string())?)
+    }
+
     pub fn load_app(&self) -> Loaded<AppState> {
         let path = self.dir.join("app.json");
         match read(&path) {
@@ -171,6 +199,18 @@ mod tests {
         assert_eq!(s.load_layout("work"), Loaded::Missing, "and no longer read");
         let leftovers = std::fs::read_dir(s.dir.join("workspaces/work")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(leftovers, 0, "no temp file left behind");
+    }
+
+    #[test]
+    fn pins_round_trip_and_broken() {
+        let s = store("pins");
+        assert_eq!(s.load_pins("work"), Loaded::Missing);
+        let pins: Pins = BTreeMap::from([("apps".to_string(), BTreeSet::from(["entityservice".to_string()]))]);
+        s.save_pins("work", &pins).unwrap();
+        assert_eq!(s.load_pins("work"), Loaded::Ok(pins));
+        std::fs::write(s.dir.join("workspaces/work/pins.json"), "[").unwrap();
+        assert!(matches!(s.load_pins("work"), Loaded::Broken(_)));
+        assert!(s.dir.join("workspaces/work/pins.json.bad").exists());
     }
 
     #[test]
