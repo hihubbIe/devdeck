@@ -4,14 +4,11 @@ use super::*;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 /// A folder tree in the temp folder, removed when dropped.
-struct Tree(PathBuf);
+struct Tree(crate::testing::TempDir);
 
 impl Tree {
     fn new(name: &str) -> Tree {
-        let root = std::env::temp_dir().join(format!("devdeck-discovery-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        Tree(root)
+        Tree(crate::testing::TempDir::new(name))
     }
 
     fn file(&self, rel: &str, text: &str) -> &Tree {
@@ -31,13 +28,7 @@ impl Tree {
     }
 
     fn scan(&self) -> Found {
-        scan(std::slice::from_ref(&self.0), None)
-    }
-}
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        scan(&[self.0.to_path_buf()], None)
     }
 }
 
@@ -335,7 +326,7 @@ fn the_same_id_in_two_workspace_folders_is_reported() {
     let (one, two) = (Tree::new("dup-one"), Tree::new("dup-two"));
     one.file("x/package.json", "{}");
     two.file("x/Makefile", "run:\n\ttrue\n").file("y/Makefile", "run:\n\ttrue\n");
-    let found = scan(&[one.0.clone(), two.0.clone()], None);
+    let found = scan(&[one.0.to_path_buf(), two.0.to_path_buf()], None);
     assert_eq!(ids(&found), ["x", "y"]);
     assert_eq!(app(&found, "x").dir, one.path("x"), "the first one is kept");
     assert_eq!(found.problems, [format!("{}: `x` is also in {}; skipped", two.path("x").display(), one.0.display())]);
@@ -365,7 +356,7 @@ fn unreadable_and_missing_folders_are_problems() {
     let locked = t.path("locked");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let readable = fs::read_dir(&locked).is_ok(); // root reads anything
-    let found = scan(&[t.0.clone(), t.path("missing")], None);
+    let found = scan(&[t.0.to_path_buf(), t.path("missing")], None);
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(ids(&found).last(), Some(&"open"));
     assert!(found.problems.iter().any(|p| p.starts_with(&format!("{}: ", t.path("missing").display()))), "{:?}", found.problems);
@@ -379,7 +370,7 @@ fn folders_show_the_home_folder_as_a_tilde() {
     let t = Tree::new("home");
     t.file("x/Makefile", "run:\n\ttrue\n").file("y/package.json", "{");
     let home = t.0.parent().unwrap();
-    let found = scan(std::slice::from_ref(&t.0), Some(home));
+    let found = scan(&[t.0.to_path_buf()], Some(home));
     let name = t.0.file_name().unwrap().to_str().unwrap();
     assert_eq!(app(&found, "x").folder, format!("~/{name}/x"));
     assert!(found.problems[0].starts_with(&format!("~/{name}/y/package.json: ")), "{:?}", found.problems);
@@ -414,5 +405,5 @@ fn empty_yaml_gives_defaults() {
 fn discover_reads_the_given_folders() {
     let t = Tree::new("discover");
     t.file("x/Makefile", "run:\n\ttrue\n");
-    assert_eq!(ids(&discover(std::slice::from_ref(&t.0))), ["x"]);
+    assert_eq!(ids(&discover(&[t.0.to_path_buf()])), ["x"]);
 }

@@ -9,14 +9,13 @@ use devdeck_ui::logical;
 use gpui::{Entity, Modifiers, TestAppContext, TestDispatcher, VisualTestContext, size};
 use std::path::PathBuf;
 
-fn config_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("devdeck-settingstest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// A config folder kept as long as the test's app.
+fn config_dir(cx: &mut TestAppContext, tag: &str) -> PathBuf {
+    cx.update(|cx| devdeck_app::test_dir(tag, cx))
 }
 
 fn setup(cx: &mut TestAppContext, tag: &str) -> (Entity<Deck>, PathBuf) {
-    let dir = config_dir(tag);
+    let dir = config_dir(cx, tag);
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
     let shell = cx.update(|cx| Shell::start_single(devdeck_app::initial_layout, cx));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
@@ -104,7 +103,7 @@ fn text_never_wraps_at_large_scale() {
 
 #[gpui::test]
 fn theme_picker_switches_globally_and_saves(cx: &mut TestAppContext) {
-    let dir = config_dir("theme");
+    let dir = config_dir(cx, "theme");
     std::fs::create_dir_all(dir.join("themes")).unwrap();
     std::fs::write(dir.join("themes/paper.toml"), "name = \"paper\"\n[colors]\nbg = \"#fafafa\"\nfg = \"#111111\"\n").unwrap();
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
@@ -119,7 +118,7 @@ fn theme_picker_switches_globally_and_saves(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn unknown_saved_theme_falls_back_with_a_message(cx: &mut TestAppContext) {
-    let dir = config_dir("theme-missing");
+    let dir = config_dir(cx, "theme-missing");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(SETTINGS_FILE), "theme = \"gone\"\n").unwrap();
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));

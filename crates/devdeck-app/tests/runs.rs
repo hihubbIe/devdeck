@@ -14,8 +14,7 @@ use gpui::{AnyWindowHandle, AppContext, Entity, TestAppContext};
 use std::time::Duration;
 
 fn start_with(cx: &mut TestAppContext, tag: &str, layout: fn() -> Layout) -> Entity<Shell> {
-    let config = std::env::temp_dir().join(format!("devdeck-runtest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&config);
+    let config = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     let mut specs = devdeck_app::demo_workspaces();
     specs.iter_mut().filter(|s| s.id == "work").for_each(|s| s.layout = layout);

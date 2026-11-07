@@ -120,10 +120,8 @@ fn first_line(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn tmp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("devdeck-test-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn tmp_dir(name: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(name)
     }
 
     #[test]

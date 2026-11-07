@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn the_group_log_keeps_runs_until_they_exit_and_finds_leftovers() {
-        let dir = std::env::temp_dir().join(format!("devdeck-process-test-{}", std::process::id()));
+        let dir = crate::testing::TempDir::new("group-log");
         let log = GroupLog::new(&dir);
 
         // A run is recorded while it runs, isn't a leftover of ours, and is removed at exit.

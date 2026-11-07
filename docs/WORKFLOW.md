@@ -54,6 +54,13 @@ snapshots take about 3 s.
   Builders run `cargo check` and their own tests; the lead runs the combined build, the
   review and the commit.
 
+## Tests leave nothing behind
+
+A test that needs a folder takes it from `devdeck_core::testing::TempDir` (core tests) or
+`devdeck_app::test_dir` (app tests: the folder lives as long as the test's app). Folders
+sit under `/tmp/devdeck-tests/<pid>/`, are removed when dropped, and a later test run
+removes those of runs that crashed. Tests never touch real folders.
+
 ## A milestone, start to finish
 
 - A milestone is a series of steps (see `ROADMAP.md`).

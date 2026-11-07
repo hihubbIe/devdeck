@@ -169,9 +169,7 @@ mod tests {
 
     #[test]
     fn load_all_from_a_folder() {
-        let d = std::env::temp_dir().join(format!("devdeck-themes-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::testing::TempDir::new("themes");
         std::fs::write(d.join("zeta.toml"), "[colors]\nbg = \"#111111\"\n").unwrap();
         std::fs::write(d.join("alpha.toml"), "[colors]\nbg = \"#222222\"\n").unwrap();
         std::fs::write(d.join("broken.toml"), "[colors\n").unwrap();

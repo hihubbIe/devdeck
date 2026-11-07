@@ -214,10 +214,22 @@ mod tests {
     use super::*;
     use crate::layout::ViewRef;
 
-    fn store(tag: &str) -> StateStore {
-        let d = std::env::temp_dir().join(format!("devdeck-state-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        StateStore::new(d)
+    /// A store in a folder removed with it.
+    struct Store {
+        store: StateStore,
+        _dir: crate::testing::TempDir,
+    }
+
+    impl std::ops::Deref for Store {
+        type Target = StateStore;
+        fn deref(&self) -> &StateStore {
+            &self.store
+        }
+    }
+
+    fn store(tag: &str) -> Store {
+        let d = crate::testing::TempDir::new(tag);
+        Store { store: StateStore::new(d.to_path_buf()), _dir: d }
     }
 
     #[test]

@@ -404,14 +404,13 @@ mod tests {
 
     const HOME: &str = "/home/test";
 
-    fn tmp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("devdeck-test-config-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+    fn tmp_dir(name: &str) -> crate::testing::TempDir {
+        let d = crate::testing::TempDir::new(name);
         std::fs::create_dir_all(d.join(WORKSPACES_DIR)).unwrap();
         d
     }
 
-    fn workspaces(name: &str, files: &[(&str, &str)]) -> (PathBuf, Vec<WorkspaceConfig>, Vec<ConfigError>) {
+    fn workspaces(name: &str, files: &[(&str, &str)]) -> (crate::testing::TempDir, Vec<WorkspaceConfig>, Vec<ConfigError>) {
         let d = tmp_dir(name);
         for (file, text) in files {
             std::fs::write(d.join(WORKSPACES_DIR).join(file), text).unwrap();
@@ -502,8 +501,7 @@ env = { file = "config/local.yml" }
 
     #[test]
     fn no_workspaces_folder_is_no_workspace_and_no_error() {
-        let d = std::env::temp_dir().join(format!("devdeck-test-config-none-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::testing::TempDir::new("config-none");
         assert_eq!(load_workspaces_with(&d, Some(Path::new(HOME))), (vec![], vec![]));
     }
 

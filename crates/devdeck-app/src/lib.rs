@@ -75,6 +75,18 @@ pub fn init(cx: &mut App) {
 }
 
 /// Same as [`init`] with an explicit config folder (tests, snapshots).
+/// Tests: an empty folder that lives as long as the test's app (removed when the app is
+/// dropped), so tests never touch real folders nor leave any behind.
+pub fn test_dir(tag: &str, cx: &mut App) -> std::path::PathBuf {
+    #[derive(Default)]
+    struct Kept(Vec<devdeck_core::testing::TempDir>);
+    impl gpui::Global for Kept {}
+    let dir = devdeck_core::testing::TempDir::new(tag);
+    let path = dir.to_path_buf();
+    cx.default_global::<Kept>().0.push(dir);
+    path
+}
+
 pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     load_fonts(cx);
     app_settings::init(dir, cx);

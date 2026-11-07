@@ -65,8 +65,7 @@ impl Setup {
 /// The work workspace with a recording runner, eventservice's server running and its
 /// output open in the focused pane (the run view has the keys).
 fn setup(cx: &mut TestAppContext, tag: &str) -> Setup {
-    let config = std::env::temp_dir().join(format!("devdeck-termtest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&config);
+    let config = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));

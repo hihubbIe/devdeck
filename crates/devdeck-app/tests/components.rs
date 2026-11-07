@@ -9,8 +9,7 @@ use gpui::{AppContext, Entity, Focusable, Modifiers, TestAppContext, VisualTestC
 use std::time::Duration;
 
 fn setup(cx: &mut TestAppContext) -> Entity<Deck> {
-    let dir = std::env::temp_dir().join(format!("devdeck-comptest-{}-{:?}", std::process::id(), std::thread::current().id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = cx.update(|cx| devdeck_app::test_dir("components", cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
     let shell = cx.update(|cx| Shell::start_single(devdeck_app::initial_layout, cx));
     let deck = cx.read(|cx| shell.read(cx).active_deck());

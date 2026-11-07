@@ -13,8 +13,7 @@ use gpui::{AnyWindowHandle, AppContext, Entity, Focusable, TestAppContext};
 use std::time::Duration;
 
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
-    let config = std::env::temp_dir().join(format!("devdeck-svctest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&config);
+    let config = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));

@@ -638,7 +638,8 @@ fn main() -> Result<(), String> {
     let out = PathBuf::from(args.next().unwrap_or_else(|| "target/snapshots".into()));
     let filter = args.next();
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let config = std::env::temp_dir().join(format!("devdeck-snapshot-{}", std::process::id()));
+    // Removed when dropped, on every way out (`?` included).
+    let config = devdeck_core::testing::TempDir::new("snapshot");
     let text = gpui_platform::current_platform(true).text_system();
     let mut cx = HeadlessAppContext::with_platform(text, Arc::new(()), gpui_platform::current_headless_renderer);
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
@@ -686,6 +687,5 @@ fn main() -> Result<(), String> {
         cx.run_until_parked();
         drop(shell);
     }
-    let _ = std::fs::remove_dir_all(&config);
     Ok(())
 }

@@ -270,10 +270,8 @@ mod tests {
         assert_eq!(listening(&[]), []);
     }
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("devdeck-ports-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn temp_dir(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(tag)
     }
 
     #[test]

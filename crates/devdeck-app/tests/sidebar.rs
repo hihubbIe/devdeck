@@ -13,14 +13,13 @@ use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, TestAppC
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-fn temp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("devdeck-sbtest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// A folder kept as long as the test's app.
+fn temp(cx: &mut TestAppContext, tag: &str) -> PathBuf {
+    cx.update(|cx| devdeck_app::test_dir(tag, cx))
 }
 
 fn start(cx: &mut TestAppContext, store: Option<StateStore>, tag: &str) -> Entity<Shell> {
-    let config = temp(&format!("{tag}-config"));
+    let config = temp(cx, &format!("{tag}-config"));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", store, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
@@ -235,7 +234,7 @@ fn pane_neighbours_ignore_the_sidebar_width(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
-    let dir = temp("persist");
+    let dir = temp(cx, "persist");
     let store = StateStore::new(dir.clone());
     let saved = SidebarState {
         activity: "cluster".into(),

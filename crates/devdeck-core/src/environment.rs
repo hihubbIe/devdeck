@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn nvmrc_is_found_upward_until_the_workspace_folder() {
-        let root = std::env::temp_dir().join(format!("devdeck-nvmrc-{}", std::process::id()));
+        let root = crate::testing::TempDir::new("nvmrc");
         let app = root.join("front-end/apps/x");
         std::fs::create_dir_all(&app).unwrap();
         assert_eq!(nvmrc(&app, &root), None);
@@ -310,11 +310,8 @@ mod tests {
     }
 
     /// An empty folder of its own for one test.
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("devdeck-env-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(tag: &str) -> crate::testing::TempDir {
+        crate::testing::TempDir::new(tag)
     }
 
     /// An executable file at `path` (folders created).
@@ -485,7 +482,7 @@ mod tests {
         assert_eq!(which("go", &path), Some(a.join("go")), "the first folder wins");
         assert_eq!(which("docker", &path), None);
         assert_eq!(which("", &path), None);
-        assert_eq!(which("b/go", std::slice::from_ref(&d)), None, "a name, not a path");
+        assert_eq!(which("b/go", &[d.to_path_buf()]), None, "a name, not a path");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -504,7 +501,7 @@ mod tests {
         let home = tmp("shell");
         std::fs::write(home.join(".profile"), "echo 'hello from .profile'\nexport DEVDECK_PROFILE=read\n").unwrap();
         let mut sh = shell_command("/bin/sh");
-        sh.env("HOME", &home).env_remove("ENV").env_remove("BASH_ENV");
+        sh.env("HOME", home.path()).env_remove("ENV").env_remove("BASH_ENV");
         let vars = parse_env(&capture(sh, Duration::from_secs(5)).unwrap()).unwrap();
         assert_eq!(var(&vars, "DEVDECK_PROFILE"), Some("read"), "the login profile ran");
         assert!(var(&vars, "PATH").is_some());

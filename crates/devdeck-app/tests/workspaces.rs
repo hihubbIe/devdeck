@@ -12,14 +12,13 @@ use devdeck_ui::{logical, open_menu, toasts};
 use gpui::{AnyWindowHandle, AppContext, Entity, TestAppContext, VisualTestContext, point};
 use std::path::PathBuf;
 
-fn temp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("devdeck-wstest-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// A folder kept as long as the test's app.
+fn temp(cx: &mut TestAppContext, tag: &str) -> PathBuf {
+    cx.update(|cx| devdeck_app::test_dir(tag, cx))
 }
 
 fn start(cx: &mut TestAppContext, specs: Vec<WorkspaceSpec>, store: Option<StateStore>, tag: &str) -> Entity<Shell> {
-    let config = temp(&format!("{tag}-config"));
+    let config = temp(cx, &format!("{tag}-config"));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     let shell = cx.update(|cx| Shell::start(specs, "work", store, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
@@ -198,7 +197,7 @@ fn every_quit_path_reaches_the_guard(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn layout_is_saved_once_after_a_burst(cx: &mut TestAppContext) {
-    let dir = temp("save");
+    let dir = temp(cx, "save");
     let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "save");
     let work = deck(&shell, cx, "work");
     for v in ["demo/a", "demo/b", "demo/c"] {
@@ -227,7 +226,7 @@ fn custom_work() -> Layout {
 
 #[gpui::test]
 fn saved_state_is_restored_and_broken_files_fall_back(cx: &mut TestAppContext) {
-    let dir = temp("restore");
+    let dir = temp(cx, "restore");
     let store = StateStore::new(dir.clone());
     store.save_layout("work", &custom_work()).unwrap();
     store.save_app(&AppState { active_workspace: Some("personal".into()), main_size: None }).unwrap();
@@ -272,7 +271,7 @@ fn notes_only() -> Layout {
 
 #[gpui::test]
 fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
-    let dir = temp("layouts");
+    let dir = temp(cx, "layouts");
     let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "layouts");
     let work = deck(&shell, cx, "work");
     let main = main_window(&shell, cx);
