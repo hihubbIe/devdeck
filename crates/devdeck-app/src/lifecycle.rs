@@ -3,18 +3,20 @@
 //! - One devdeck at a time: a lock in the state folder; a second devdeck says one is
 //!   already running and exits (and so never mistakes the first one's runs for
 //!   leftovers). The demo has its own state folder, so its own lock.
-//! - At start, groups a previous devdeck left running (`GroupLog::leftovers`) are offered
-//!   in a dialog: "N processes left by a previous devdeck: Kill / Leave".
-//!   Leave forgets them, so this devdeck doesn't kill them when it quits.
+//! - At start, what a previous devdeck left running (`GroupLog::leftovers`: its runs'
+//!   scopes still holding processes, or groups) is offered in a dialog, one row per run:
+//!   "N processes left by a previous devdeck: Kill / Leave". Leave forgets them, so this
+//!   devdeck doesn't kill them when it quits.
 //! - SIGTERM, SIGHUP and SIGINT to devdeck: the app marks what runs as stopped to quit,
 //!   kills everything, saves and quits; so the runs start again when devdeck reopens. If
 //!   the app doesn't answer within [`SIGNAL_WAIT`], the signal thread kills every
-//!   recorded live group (`process::kill_all(GroupLog::live())`) itself.
-//! - Quitting with runs waits for their stop sequence, then kills what's left
-//!   (`Shell::stop_all_and_quit`, `Shell::kill_everything`).
+//!   recorded live group (`process::kill_all(GroupLog::live())`) and what this devdeck's
+//!   runs left in their scopes (`GroupLog::end_ours`) itself.
+//! - Quitting with runs waits for their stop sequence, then kills what's left, the
+//!   runs' scopes included (`Shell::stop_all_and_quit`, `Shell::kill_everything`).
 
 use crate::shell::{Shell, focus_button};
-use devdeck_core::process::{GroupLog, kill_all};
+use devdeck_core::process::{GroupLog, Leftover, kill_all};
 use std::time::Duration;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{ModalFocus, dot, label, modal_frame, pop_modal, push_modal, theme};
@@ -58,15 +60,17 @@ pub fn install(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
 
 /// The leftovers dialog in the main window, when a previous devdeck left processes.
 pub fn offer_leftovers(shell: &Entity<Shell>, log: &GroupLog, cx: &mut App) {
-    let leftovers = log.leftovers();
-    if !leftovers.is_empty()
-        && let Some(main) = shell.read(cx).main_window()
-    {
-        let log = log.clone();
-        cx.defer(move |cx| {
+    let Some(main) = shell.read(cx).main_window() else { return };
+    let log = log.clone();
+    // Reads `/proc` and the cgroup tree: not on the UI thread.
+    cx.spawn(async move |cx| {
+        let found = log.clone();
+        let leftovers = cx.background_spawn(async move { found.leftovers() }).await;
+        if !leftovers.is_empty() {
             let _ = main.update(cx, |_, window, cx| open_leftovers(leftovers, log, window, cx));
-        });
-    }
+        }
+    })
+    .detach();
 }
 
 /// SIGTERM, SIGHUP or SIGINT: the app marks what runs as stopped to quit (before any
@@ -83,6 +87,7 @@ fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
             let _ = tx.send_blocking(());
             let _ = done_rx.recv_timeout(SIGNAL_WAIT);
             kill_all(&log.live());
+            log.end_ours();
         }
     });
     if spawned.is_err() {
@@ -103,41 +108,38 @@ fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
     .detach();
 }
 
-fn open_leftovers(pids: Vec<u32>, log: GroupLog, window: &mut Window, cx: &mut App) {
-    let dialog = cx.new(|cx| Leftovers::new(pids, log, cx));
+fn open_leftovers(leftovers: Vec<Leftover>, log: GroupLog, window: &mut Window, cx: &mut App) {
+    let dialog = cx.new(|cx| Leftovers::new(leftovers, log, cx));
     push_modal(dialog.clone().into(), window, cx);
     let first = dialog.read(cx).focus.0[0].clone();
     first.focus(window, cx);
 }
 
-/// "N processes left by a previous devdeck" with their commands: Kill (Enter) or Leave
-/// (Esc).
+/// "N processes left by a previous devdeck", one row per run (its name and what runs
+/// in it, or a group's command): Kill (Enter) or Leave (Esc).
 pub struct Leftovers {
-    /// Process id and command line.
-    pub processes: Vec<(u32, String)>,
+    pub leftovers: Vec<Leftover>,
+    /// Each one's row.
+    pub rows: Vec<String>,
     pub focus: ModalFocus,
     log: GroupLog,
 }
 
 impl Leftovers {
-    fn new(pids: Vec<u32>, log: GroupLog, cx: &mut Context<Self>) -> Self {
-        let processes = pids.into_iter().map(|p| (p, command_of(p))).collect();
-        Self { processes, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), log }
-    }
-
-    fn pids(&self) -> Vec<u32> {
-        self.processes.iter().map(|(p, _)| *p).collect()
+    fn new(leftovers: Vec<Leftover>, log: GroupLog, cx: &mut Context<Self>) -> Self {
+        let rows = leftovers.iter().map(row).collect();
+        Self { leftovers, rows, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), log }
     }
 
     /// Kills the ones still the processes offered (the dialog may have stayed open).
     fn kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.log.kill(&self.pids());
+        self.log.kill(&self.leftovers);
         pop_modal(window, cx);
     }
 
     /// Leaves them running, for good: quitting this devdeck won't kill them.
     fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.log.forget(&self.pids());
+        self.log.forget(&self.leftovers);
         pop_modal(window, cx);
     }
 
@@ -149,10 +151,10 @@ impl Leftovers {
 impl Render for Leftovers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
-        let n = self.processes.len();
+        let n: usize = self.leftovers.iter().map(|l| l.pids.len()).sum();
         let title = if n == 1 { "1 process left by a previous devdeck".to_string() } else { format!("{n} processes left by a previous devdeck") };
         let list = div().flex().flex_col().gap_1().children(
-            self.processes.iter().map(|(pid, cmd)| div().flex().items_center().gap_1().child(dot(t.warn, true, &t)).child(label(format!("{cmd} (pid {pid})")).text_color(t.warn))),
+            self.rows.iter().map(|r| div().flex().items_center().gap_1().child(dot(t.warn, true, &t)).child(label(r.clone()).text_color(t.warn))),
         );
         let buttons = div()
             .flex()
@@ -178,6 +180,19 @@ impl Render for Leftovers {
             .child(list)
             .child(buttons);
         modal_frame(content.into_any_element(), window, &t)
+    }
+}
+
+/// A leftover's row: a run's name and the commands in its scope (`web · dev: vite,
+/// esbuild`), or a group's command and pid.
+fn row(l: &Leftover) -> String {
+    match &l.label {
+        Some(name) => {
+            let mut commands: Vec<String> = l.pids.iter().map(|p| command_of(*p)).filter(|c| !c.is_empty()).collect();
+            commands.dedup();
+            format!("{name}: {}", commands.join(", "))
+        }
+        None => l.pids.iter().map(|p| format!("{} (pid {p})", command_of(*p))).collect::<Vec<_>>().join(", "),
     }
 }
 

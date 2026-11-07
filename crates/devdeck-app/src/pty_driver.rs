@@ -4,12 +4,14 @@
 //!   `Toolbox::path_for(app)` (the app's Node first), then the launch's own variables
 //!   (the env binding), then `TERM=xterm-256color` and `COLORTERM=truecolor`.
 //! - It runs `launch.line` in `launch.app.dir` at `launch.size`, with
-//!   `StopKind::of(&launch.cmd)`, recorded in the [`GroupLog`] when there is one.
+//!   `StopKind::of(&launch.cmd)`, in a scope of its own (a terminal's shell: none),
+//!   recorded in the [`GroupLog`] when there is one.
 //! - Output and the exit reach the runner as `Runner::output` / `Runner::exited`, tagged
 //!   with the launch's `RunId`; reading the process's channel happens on a task, and
 //!   output is coalesced so a fast process costs one runner update per frame or so.
 //! - The returned control writes input, resizes and starts the stop sequence; dropping
-//!   it (the run ended or was replaced) drops the `Process`, which kills what's left.
+//!   it (the run ended or was replaced) drops the `Process`, which kills what's left of
+//!   its group (and its scope, unless it ended on its own).
 //! - Without a toolbox yet (still loading), a start is refused by the runner before it
 //!   reaches the driver; the driver can assume one.
 
@@ -67,6 +69,9 @@ impl RunDriver for PtyDriver {
             dir: launch.app.dir,
             size: launch.size,
             stop: StopKind::of(&launch.cmd),
+            // A terminal's shell: what's detached from it on purpose stays (R6.12).
+            scope: launch.cmd.source() != "shell",
+            label: format!("{} · {}", launch.app.name, launch.cmd.name()),
         };
         let (process, rx) = Process::spawn(spawn, self.log.clone())?;
         let id = launch.id;

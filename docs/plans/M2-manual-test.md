@@ -60,7 +60,11 @@ view.
 
 **Quit** — ctrl+q or the close icon. With something running (a run, or a shell running
 a program) it asks "Stop all and quit" or "Cancel"; idle shells just end.
-- After a crash or `kill -9` of devdeck, the next start offers to kill what it left.
+- After a crash or `kill -9` of devdeck, the next start offers to kill what it left,
+  one row per run, daemons included.
+- A run that ends on its own (a build) keeps the daemon it started (sccache, Gradle,
+  Nx) until devdeck quits; stopping a run ends everything it started. What you detach
+  on purpose from a terminal tab (tmux, `setsid`) is left alone.
 
 ## Known limits of M2
 

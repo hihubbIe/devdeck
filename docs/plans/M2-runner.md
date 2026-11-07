@@ -440,13 +440,53 @@ keys' target disagreed. Each has a test that fails without its fix.
   (snapshot `09-no-config-welcome`).
 - **Measurements:** [perf/M2.md](../perf/M2.md), "Close". Every threshold passes but
   two: private memory per leak cycle (336 B, falling; GPUI and Wayland, as in M1) and
-  R8.2 after `kill -9`: a child that left the run's session survives and is never
-  offered at the next start, since only the group leader is recorded
-  (`process.rs:281`, `GroupLog::leftovers`). SIGTERM leaves nothing. Open, waiting for
-  a decision.
+  R8.2 after `kill -9`: a child that left the run's session survived and was never
+  offered at the next start, since only the group leader was recorded. Fixed with a
+  scope per run (next section).
 - **Requirements:** R6.1, R6.2, R6.4 and R6.8 done; R1.4 and R1.5 partly (the cluster
-  isn't configured yet); R8.2 partly (above).
+  isn't configured yet); R8.2 done with the scopes (next section).
 - **Manual test:** [M2-manual-test.md](M2-manual-test.md).
+
+## Leftover processes: a scope per run (plan, 2026-11-07)
+
+Found at the close: a process that leaves its run's session (`setsid`, a daemon's double
+fork) is out of reach: the tree walk from the run's leader can't see it once its parent
+ended (at once for a double fork), so stop, quit and SIGTERM miss it, and after
+`kill -9` of devdeck only the dead leader was recorded. An environment tag was reviewed
+(subagent) and dropped: programs can overwrite or hide it, and it spreads (a tmux
+server, `dbus-update-activation-environment`).
+
+- **A systemd scope per run** where a systemd user manager and cgroup v2 are there
+  (checked once): the run starts as `systemd-run --user --scope --collect
+  --unit=devdeck-<instance>-<n> -- /bin/sh -c …`, which keeps its pid, session and
+  terminal. The kernel keeps every descendant in the scope, whatever it does.
+- **Stop:** ^C to the group as today, then SIGTERM to every process of the scope
+  (through pidfds), then the scope's `cgroup.kill`. It's over when the scope is empty.
+- **A run ending on its own** ends its group as today; what it left in the scope (a
+  build's daemon: sccache, Gradle, Nx) keeps running for the session and is killed at
+  quit (decided with the user).
+- **The group log** records each scope with the devdeck instance (pid and start time)
+  and the run's name. At start, the scopes of a devdeck that's gone and still holding
+  processes are offered, one row per run; Kill empties them, Leave forgets them.
+- **Terminal tabs** get no scope, and their end reaches only their session: what was
+  detached on purpose (tmux, `setsid`) is left alone, as any terminal does (decided with
+  the user).
+- **Elsewhere** (no systemd user manager): today's tree walk, a documented limit.
+- **Tests** (real processes): a stop ends a double-forked daemon and an `env -i` child;
+  a run ending on its own leaves its daemon until quit; after a crash the scope is
+  offered and killed; a terminal's end leaves a process that left its session.
+  Then `scripts/measure.py leftovers` again.
+
+Outcome: built as planned. Building it found that a scope added `INVOCATION_ID` (and
+the variables `systemd-run` needs) to the run's environment: the command now goes
+through `env -u`. Review of the diff (subagent), **fixed**: a leader that survived a
+crash showed as a second row next to its scope's; the terminal test raced `setsid`; the
+check that scopes work now also checks they land where devdeck looks for them. Not
+changed: without a group log (tests only) quitting doesn't end the scopes; the scope
+tests are skipped (with a message) where there's no systemd user manager. Every new
+test fails when its part of the fix is undone. Re-measured (`perf/M2.md`): SIGTERM
+leaves nothing, a double-forked daemon included; after `kill -9` only that daemon
+survives, and the next start offers it.
 
 ## States to check
 

@@ -272,33 +272,72 @@ def session_of(pid):
         return int(f.read().rsplit(")", 1)[1].split()[3])
 
 
-def group_log(state):
-    """The state folder's group log: `pid start` lines, each with whether that process
-    still runs (same start time), as `GroupLog::leftovers` decides."""
+def alive_since(pid, start_):
+    """`pid` runs and started at `start_` (clock ticks), as `GroupLog` checks."""
     try:
-        text = open(os.path.join(state, "processes")).read()
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return fields[19] == str(start_) and fields[0] not in "ZX"
     except OSError:
+        return False
+
+
+def scope_pids(unit):
+    """The processes in a run's scope (devdeck-<instance>-<n>), none once it's gone."""
+    uid = os.getuid()
+    root = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
+    for dirpath, dirnames, _ in os.walk(root):
+        if f"{unit}.scope" in dirnames:
+            with open(os.path.join(dirpath, f"{unit}.scope", "cgroup.procs")) as f:
+                return [int(l) for l in f.read().split()]
+    return []
+
+
+def log_lines(state):
+    try:
+        return open(os.path.join(state, "processes")).read().split("\n")
+    except OSError:
+        return None
+
+
+def group_log(state):
+    """The state folder's group log, as `GroupLog::leftovers` reads it: `pid start` lines
+    (a run's group, running or ended) and `scope <unit> <instance> <label>` lines (whether
+    that devdeck still runs, and how many processes the scope holds)."""
+    lines = log_lines(state)
+    if lines is None:
         return "no file"
     rows = []
-    for line in text.split("\n"):
-        if line.strip():
+    for line in lines:
+        if line.startswith("scope "):
+            unit, instance = line.split(" ", 3)[1:3]
+            devdeck = "devdeck running" if alive_since(*instance.split("-")) else "devdeck gone"
+            rows.append(f"{unit}({devdeck}, {len(scope_pids(unit))} processes)")
+        elif line.strip():
             pid, start_ = line.split()
-            try:
-                with open(f"/proc/{pid}/stat") as f:
-                    fields = f.read().rsplit(")", 1)[1].split()
-                alive = fields[19] == start_ and fields[0] not in "ZX"
-            except OSError:
-                alive = False
-            rows.append(f"{pid}({'running' if alive else 'ended'})")
+            rows.append(f"{pid}({'running' if alive_since(pid, start_) else 'ended'})")
     return " ".join(rows) or "empty"
 
 
+def offered(state):
+    """How many scopes the next devdeck offers: of a devdeck that's gone, not empty."""
+    n = 0
+    for line in log_lines(state) or []:
+        if line.startswith("scope "):
+            unit, instance = line.split(" ", 3)[1:3]
+            if not alive_since(*instance.split("-")) and scope_pids(unit):
+                n += 1
+    return n
+
+
 def scenario_leftovers(args):
-    """R8.2. The run's recipe starts `sleep 30101` in its own session (it leaves the
-    process group) and `sleep 30102` in the group, then streams. Three devdecks on the
-    same folders: one gets SIGTERM, one kill -9, and the next one starts (the run was
-    running, so it starts again) and gets SIGTERM. Kills whatever is left at the end."""
-    fill, out = real_workspace(20, "setsid sleep 30101 & sleep 30102 & python3 stream.py {rate} {out}")
+    """R8.2. The run's recipe starts `sleep 30101` as a daemon does (a double fork: out
+    of the run's tree at once, in its own session) and `sleep 30102` in the group, then
+    streams. Three devdecks on the same folders: one gets SIGTERM, one kill -9, and the
+    next one starts (the run was running, so it starts again), offers what the killed one
+    left (counted from the log: the dialog isn't clicked here) and gets SIGTERM, which
+    leaves the offered ones alone (only the user decides). Kills whatever is left."""
+    fill, out = real_workspace(20, "( setsid sleep 30101 & ) ; sleep 30102 & python3 stream.py {rate} {out}")
     marks = ["sleep 30101", "sleep 30102", out]
     view = {"DEVDECK_OPEN": REAL_RUN}
 
@@ -328,6 +367,7 @@ def scenario_leftovers(args):
         time.sleep(2)
         left = show("kill9.after")
 
+        report("kill9.offered_at_next_start", offered(state))
         p = start(args, view, env=env)
         time.sleep(6)
         report("next_start.kill9_survivors_alive", sum(1 for pid in left if pid in marked(marks)))

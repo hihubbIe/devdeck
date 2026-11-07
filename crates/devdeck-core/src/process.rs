@@ -8,8 +8,14 @@
 //!   [`StopKind`]'s wait; descendants that left the group (found through `procfs`) get
 //!   SIGTERM and SIGKILL too (a terminal's ^C never reaches them either). It ends once
 //!   nothing is left. Dropping a [`Process`] kills it at once.
-//! - Every started group is recorded in the state folder ([`GroupLog`]) until it exits,
-//!   so a devdeck that was killed can offer to kill what it left behind at next start.
+//! - Where it can ([`scope`](crate::scope)), a run starts in a systemd scope of its own,
+//!   which keeps every descendant whatever it does: a stop empties it. A run that ends on
+//!   its own ends its group; what it left in the scope (a build's daemon) runs on until
+//!   devdeck quits ([`GroupLog::end_ours`]).
+//! - A terminal's shell gets no scope, and its end reaches only its session: what was
+//!   detached on purpose (`setsid`, tmux) stays, as with any terminal.
+//! - Every started group and scope is recorded in the state folder ([`GroupLog`]), so a
+//!   devdeck that was killed can offer to kill what it left behind at next start.
 //! - [`kill_all`] is safe to call from a signal-handling thread (devdeck receiving
 //!   SIGTERM, SIGHUP or SIGINT).
 //!
@@ -21,6 +27,7 @@
 use crate::apps::Command;
 use crate::procfs;
 use crate::runs::Exit;
+use crate::scope::Scope;
 use crate::terminal::TermSize;
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec};
 use rustix::fd::{AsFd, OwnedFd};
@@ -97,6 +104,10 @@ pub struct Spawn {
     pub vars: Vec<(String, String)>,
     pub size: TermSize,
     pub stop: StopKind,
+    /// In a scope of its own, where scopes work here (a terminal's shell: no).
+    pub scope: bool,
+    /// What it is, for the leftovers a killed devdeck offers (`web · dev`).
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,8 +143,23 @@ impl Process {
         let wake = rustix::event::eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)
             .map_err(|e| format!("no eventfd: {e}"))?;
         let stdio = || slave.try_clone().map(std::process::Stdio::from).map_err(|e| e.to_string());
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.arg("-c").arg(&spawn.line).current_dir(&spawn.dir).env_clear().envs(spawn.vars.iter().map(|(k, v)| (k, v)));
+        let scope = spawn.scope.then(crate::scope::systemd_run).flatten().map(|run| (Scope::next(&instance()), run));
+        // `systemd-run` reaches the user manager through these; taken from devdeck when the
+        // run's environment lacks them, and kept from the run itself.
+        let lent: Vec<(&str, std::ffi::OsString)> = match scope {
+            Some(_) => ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
+                .into_iter()
+                .filter(|name| !spawn.vars.iter().any(|(k, _)| k == name))
+                .filter_map(|name| Some((name, std::env::var_os(name)?)))
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut cmd = match &scope {
+            Some((s, run)) => s.command(run, &lent.iter().map(|(n, _)| *n).collect::<Vec<_>>()),
+            None => std::process::Command::new("/bin/sh"),
+        };
+        cmd.arg("-c").arg(&spawn.line).current_dir(&spawn.dir).env_clear().envs(spawn.vars.iter().map(|(k, v)| (k, v))).envs(lent);
+        let scope = scope.map(|(s, _)| s);
         cmd.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
         // SAFETY: between fork and exec, only system calls (no allocation, no locks). The
         // terminal is already on 0, 1 and 2: the new session takes it as its own.
@@ -151,7 +177,15 @@ impl Process {
         drop(slave);
         let pid = child.id();
         let start = stat(pid).map_or(0, |s| s.start);
-        let tree = Arc::new(Tree { pid, start, stopping: AtomicBool::new(false), seen: Mutex::new(BTreeMap::new()) });
+        let tree = Arc::new(Tree {
+            pid,
+            start,
+            scope,
+            session_only: spawn.stop == StopKind::HangUp,
+            stopping: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
+            seen: Mutex::new(BTreeMap::new()),
+        });
         // std's `Child` neither waits nor kills when dropped: the thread reaps it.
         let pidfd = match rustix::process::pidfd_open(Pid::from_child(&child), rustix::process::PidfdFlags::empty()) {
             Ok(fd) => fd,
@@ -165,7 +199,7 @@ impl Process {
         let master = Arc::new(master);
         let input = Arc::new(Input { bytes: Mutex::new(Vec::new()), wake });
         let (tx, rx) = async_channel::bounded(QUEUE);
-        let pump = Pump { pid, start, master: master.clone(), pidfd, input: input.clone(), tx, log };
+        let pump = Pump { tree: tree.clone(), label: spawn.label, master: master.clone(), pidfd, input: input.clone(), tx, log };
         let thread = std::thread::Builder::new().name(format!("run {pid}")).spawn(move || pump.run());
         let process = Process { tree, stop: spawn.stop, master, input };
         if let Err(e) = thread {
@@ -228,13 +262,15 @@ impl Process {
 impl Drop for Process {
     /// Kills everything on a thread: finding the processes that left the group reads all
     /// of `/proc` (not for the caller, the UI), and must come before the kill, which
-    /// would orphan them out of reach.
+    /// would orphan them out of reach. After the process ended on its own, what it left
+    /// in its scope runs on (until devdeck quits).
     fn drop(&mut self) {
         let tree = self.tree.clone();
         let name = format!("drop {}", tree.pid);
         let finish = move || {
             tree.collect();
-            tree.signal_all(Signal::KILL);
+            let ended = tree.ended.load(Ordering::SeqCst);
+            tree.signal(Signal::KILL, !ended);
         };
         if std::thread::Builder::new().name(name).spawn(finish.clone()).is_err() {
             finish();
@@ -265,8 +301,8 @@ fn winsize(size: TermSize) -> rustix::termios::Winsize {
 
 /// A run's thread: output out, input in, the exit once the output is drained.
 struct Pump {
-    pid: u32,
-    start: u64,
+    tree: Arc<Tree>,
+    label: String,
     master: Arc<OwnedFd>,
     pidfd: OwnedFd,
     input: Arc<Input>,
@@ -278,7 +314,10 @@ impl Pump {
     fn run(self) {
         // Here rather than in `spawn`: the file is synced to disk, which can take a while.
         if let Some(log) = &self.log {
-            log.add(self.pid, self.start);
+            log.add(Entry::Group { pid: self.tree.pid, start: self.tree.start });
+            if let Some(scope) = &self.tree.scope {
+                log.add(Entry::Scope { unit: scope.unit.clone(), instance: instance(), label: self.label.clone() });
+            }
         }
         let _ = rustix::io::ioctl_fionbio(&*self.master, true);
         let mut buf = vec![0u8; 64 * 1024];
@@ -346,8 +385,9 @@ impl Pump {
             if !child.is_empty() {
                 let code = self.reap(WaitIdOptions::EXITED | WaitIdOptions::NOHANG);
                 exit = Some((code, Instant::now()));
+                self.tree.ended.store(true, Ordering::SeqCst);
                 if let Some(log) = &self.log {
-                    log.remove(self.pid);
+                    log.remove(self.tree.pid);
                 }
             }
         }
@@ -373,13 +413,18 @@ fn timespec(d: Duration) -> Timespec {
     Timespec { tv_sec: d.as_secs() as _, tv_nsec: d.subsec_nanos() as _ }
 }
 
-/// A run's processes: its group, and every descendant seen so far, which may have left
-/// the group or lost their parent since.
+/// A run's processes: its group, its scope when it has one, and every descendant seen
+/// so far, which may have left the group or lost their parent since.
 struct Tree {
     pid: u32,
     /// The leader's start time: a pid reused after it ended isn't ours.
     start: u64,
+    scope: Option<Scope>,
+    /// A terminal's shell: only what stayed in its session is its own.
+    session_only: bool,
     stopping: AtomicBool,
+    /// The leader ended on its own (or was stopped) and was reaped.
+    ended: AtomicBool,
     /// pid → start time.
     seen: Mutex<BTreeMap<u32, u64>>,
 }
@@ -406,6 +451,22 @@ impl Tree {
         self.signal_all(Signal::KILL);
     }
 
+    /// `signal` to the group and the descendants seen, and to the scope when `scope`.
+    fn signal(&self, signal: Signal, scope: bool) {
+        self.signal_group(signal);
+        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        for (pid, start) in seen.iter() {
+            if alive(*pid, *start) {
+                signal_one(*pid, signal);
+            }
+        }
+        match &self.scope {
+            Some(s) if scope && signal == Signal::KILL => s.kill(),
+            Some(s) if scope => s.signal(signal),
+            _ => {}
+        }
+    }
+
     /// Adds the live processes below the leader and below those seen before (an orphan's
     /// children are still below it), and forgets those that ended.
     fn collect(&self) {
@@ -420,6 +481,7 @@ impl Tree {
             for pid in procfs::tree(root, &pairs) {
                 if pid != self.pid && !seen.contains_key(&pid)
                     && let Some(s) = stat(pid)
+                    && (!self.session_only || s.session == self.pid)
                 {
                     seen.insert(pid, s.start);
                 }
@@ -440,19 +502,14 @@ impl Tree {
         }
     }
 
+    /// The group, the descendants seen and the scope.
     fn signal_all(&self, signal: Signal) {
-        self.signal_group(signal);
-        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-        for (pid, start) in seen.iter() {
-            if alive(*pid, *start) {
-                signal_one(*pid, signal);
-            }
-        }
+        self.signal(signal, true);
     }
 
     fn gone(&self) -> bool {
         let group = self.group_is_ours() && Pid::from_raw(self.pid as i32).is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok());
-        !group && self.seen.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|(pid, start)| !alive(*pid, *start))
+        !group && self.seen.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|(pid, start)| !alive(*pid, *start)) && self.scope.as_ref().is_none_or(Scope::is_empty)
     }
 
     fn gone_within(&self, wait: Duration) -> bool {
@@ -490,6 +547,8 @@ fn signal_one(pid: u32, signal: Signal) {
 
 struct Stat {
     state: char,
+    /// The session id.
+    session: u32,
     start: u64,
 }
 
@@ -499,12 +558,25 @@ fn stat(pid: u32) -> Option<Stat> {
 }
 
 /// Fields are counted after the command name's last `)` (see `procfs::parse_ppid`):
-/// state is field 3, start time field 22.
+/// state is field 3, session field 6, start time field 22.
 fn parse_stat(text: &str) -> Option<Stat> {
     let mut fields = text.rsplit_once(')')?.1.split_whitespace();
     let state = fields.next()?.chars().next()?;
-    let start = fields.nth(18)?.parse().ok()?;
-    Some(Stat { state, start })
+    let session = fields.nth(2)?.parse().ok()?;
+    let start = fields.nth(15)?.parse().ok()?;
+    Some(Stat { state, session, start })
+}
+
+/// This devdeck: its pid and start time (`1234-5678`), so the scopes of a devdeck that's
+/// gone are told from those of one that runs.
+fn instance() -> String {
+    let pid = std::process::id();
+    format!("{pid}-{}", stat(pid).map_or(0, |s| s.start))
+}
+
+/// `instance` (as [`instance`] writes it) still runs.
+fn instance_alive(instance: &str) -> bool {
+    instance.split_once('-').and_then(|(p, s)| Some((p.parse().ok()?, s.parse().ok()?))).is_some_and(|(pid, start)| alive(pid, start))
 }
 
 /// `pid` runs and is the process that started at `start` (zombies have ended).
@@ -512,10 +584,57 @@ fn alive(pid: u32, start: u64) -> bool {
     stat(pid).is_some_and(|s| s.start == start && !matches!(s.state, 'Z' | 'X'))
 }
 
-/// Process groups devdeck started and that may still run, in a file of the state folder.
+/// What devdeck started and may still run, in a file of the state folder: each run's
+/// group (`pid start` lines, while its leader runs) and each run's scope (`scope <unit>
+/// <instance> <label>` lines, while its devdeck runs or it holds processes).
 #[derive(Clone, Debug)]
 pub struct GroupLog {
     pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Entry {
+    Group { pid: u32, start: u64 },
+    Scope { unit: String, instance: String, label: String },
+}
+
+impl Entry {
+    fn parse(line: &str) -> Option<Entry> {
+        if let Some(rest) = line.strip_prefix("scope ") {
+            let mut parts = rest.splitn(3, ' ');
+            let (unit, instance) = (parts.next()?.to_string(), parts.next()?.to_string());
+            return Some(Entry::Scope { unit, instance, label: parts.next().unwrap_or_default().to_string() });
+        }
+        let (pid, start) = line.split_once(' ')?;
+        Some(Entry::Group { pid: pid.parse().ok()?, start: start.parse().ok()? })
+    }
+
+    fn line(&self) -> String {
+        match self {
+            Entry::Group { pid, start } => format!("{pid} {start}\n"),
+            Entry::Scope { unit, instance, label } => format!("scope {unit} {instance} {label}\n"),
+        }
+    }
+
+    /// Still worth keeping: a group whose leader runs; a scope whose devdeck runs (it may
+    /// not hold anything yet) or that holds processes.
+    fn live(&self) -> bool {
+        match self {
+            Entry::Group { pid, start } => alive(*pid, *start),
+            Entry::Scope { unit, instance, .. } => instance_alive(instance) || !Scope::named(unit.clone()).is_empty(),
+        }
+    }
+}
+
+/// What a devdeck that's gone left running: a run's group whose leader still runs, or a
+/// run's scope that still holds processes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leftover {
+    /// The run's name for a scope (`web · dev`); none for a group (its command says).
+    pub label: Option<String>,
+    /// What runs in it now; a group's leader alone.
+    pub pids: Vec<u32>,
+    entry: Entry,
 }
 
 /// Several runs start and end at once: the file is read and rewritten under this lock.
@@ -526,61 +645,97 @@ impl GroupLog {
         GroupLog { path: state_dir.join("processes") }
     }
 
-    /// Groups recorded by an earlier devdeck that still run (same pid and start time).
-    /// Our own children aren't leftovers.
-    pub fn leftovers(&self) -> Vec<u32> {
+    /// What an earlier devdeck left running: groups (same pid and start time, not our
+    /// children) and scopes of a devdeck that's gone, still holding processes. Reads
+    /// `/proc` and the cgroup tree: not on the UI thread.
+    pub fn leftovers(&self) -> Vec<Leftover> {
         let me = std::process::id();
-        self.read().into_iter().filter(|(pid, start)| alive(*pid, *start) && procfs::parent_of(*pid) != Some(me)).map(|(pid, _)| pid).collect()
+        let entries = self.read();
+        let scopes: Vec<Leftover> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Scope { unit, instance, label } if !instance_alive(instance) => {
+                    let pids = Scope::named(unit.clone()).pids();
+                    (!pids.is_empty()).then(|| Leftover { label: Some(label.clone()), pids, entry: entry.clone() })
+                }
+                _ => None,
+            })
+            .collect();
+        // A run's leader still running is in its scope's row already.
+        let groups = entries.iter().filter_map(|entry| match entry {
+            Entry::Group { pid, start } if alive(*pid, *start) && procfs::parent_of(*pid) != Some(me) && !scopes.iter().any(|s| s.pids.contains(pid)) => {
+                Some(Leftover { label: None, pids: vec![*pid], entry: entry.clone() })
+            }
+            _ => None,
+        });
+        groups.chain(scopes.iter().cloned()).collect()
     }
 
     /// Every recorded group still running, ours included: what to kill when devdeck
     /// itself is told to quit (a signal-handling thread can't reach the runner).
     pub fn live(&self) -> Vec<u32> {
-        self.read().into_iter().filter(|(pid, start)| alive(*pid, *start)).map(|(pid, _)| pid).collect()
-    }
-
-    /// `pid start` lines; anything else is skipped.
-    fn read(&self) -> Vec<(u32, u64)> {
-        let text = std::fs::read_to_string(&self.path).unwrap_or_default();
-        text.lines()
-            .filter_map(|l| {
-                let (pid, start) = l.split_once(' ')?;
-                Some((pid.parse().ok()?, start.parse().ok()?))
+        self.read()
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Group { pid, start } if alive(pid, start) => Some(pid),
+                _ => None,
             })
             .collect()
     }
 
+    /// Quitting: kills what this devdeck's runs left in their scopes (a build's daemon
+    /// runs on after its run, until devdeck quits) and forgets them.
+    pub fn end_ours(&self) {
+        let me = instance();
+        let ours: Vec<Entry> = self.read().into_iter().filter(|e| matches!(e, Entry::Scope { instance, .. } if *instance == me)).collect();
+        for e in &ours {
+            if let Entry::Scope { unit, .. } = e {
+                Scope::named(unit.clone()).kill();
+            }
+        }
+        self.update(|entries| entries.retain(|e| !ours.contains(e)));
+    }
+
+    fn read(&self) -> Vec<Entry> {
+        std::fs::read_to_string(&self.path).unwrap_or_default().lines().filter_map(Entry::parse).collect()
+    }
+
     /// Rewrites the file with `change` applied, dropping entries that ended. Best effort:
-    /// a run starts even when its group can't be recorded.
-    fn update(&self, change: impl FnOnce(&mut Vec<(u32, u64)>)) {
+    /// a run starts even when it can't be recorded.
+    fn update(&self, change: impl FnOnce(&mut Vec<Entry>)) {
         let _lock = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut entries = self.read();
-        entries.retain(|(pid, start)| alive(*pid, *start));
+        entries.retain(Entry::live);
         change(&mut entries);
-        let text: String = entries.iter().map(|(pid, start)| format!("{pid} {start}\n")).collect();
+        let text: String = entries.iter().map(Entry::line).collect();
         let _ = crate::state::write_atomic(&self.path, &text);
     }
 
-    /// Kills leftovers the user chose to kill, the ones still the processes that were
-    /// offered (same start time), and forgets them.
-    pub fn kill(&self, pids: &[u32]) {
-        let alive: Vec<u32> = self.read().into_iter().filter(|(pid, start)| pids.contains(pid) && alive(*pid, *start)).map(|(pid, _)| pid).collect();
-        kill_all(&alive);
-        self.forget(pids);
+    /// Kills leftovers the user chose to kill (a group only while it's still the process
+    /// offered, same start time; a scope whole), and forgets them.
+    pub fn kill(&self, leftovers: &[Leftover]) {
+        for l in leftovers {
+            match &l.entry {
+                Entry::Group { pid, start } if alive(*pid, *start) => kill_all(&[*pid]),
+                Entry::Scope { unit, .. } => Scope::named(unit.clone()).kill(),
+                Entry::Group { .. } => {}
+            }
+        }
+        self.forget(leftovers);
     }
 
-    /// Stops tracking these groups: leftovers the user chose to leave aren't killed when
-    /// this devdeck quits.
-    pub fn forget(&self, pids: &[u32]) {
-        self.update(|e| e.retain(|(p, _)| !pids.contains(p)));
+    /// Stops tracking these: leftovers the user chose to leave aren't killed when this
+    /// devdeck quits, nor offered again.
+    pub fn forget(&self, leftovers: &[Leftover]) {
+        self.update(|entries| entries.retain(|e| !leftovers.iter().any(|l| l.entry == *e)));
     }
 
-    fn add(&self, pid: u32, start: u64) {
-        self.update(|e| e.push((pid, start)));
+    fn add(&self, entry: Entry) {
+        self.update(|entries| entries.push(entry));
     }
 
     fn remove(&self, pid: u32) {
-        self.update(|e| e.retain(|(p, _)| *p != pid));
+        self.update(|entries| entries.retain(|e| !matches!(e, Entry::Group { pid: p, .. } if *p == pid)));
     }
 }
 
@@ -613,7 +768,7 @@ mod tests {
     const SIZE: TermSize = TermSize { cols: 80, rows: 24 };
 
     fn spawn_with(line: &str, vars: Vec<(String, String)>) -> (Process, Receiver<ProcessEvent>) {
-        let spawn = Spawn { line: line.into(), dir: std::env::temp_dir(), vars, size: SIZE, stop: StopKind::Quick };
+        let spawn = Spawn { line: line.into(), dir: std::env::temp_dir(), vars, size: SIZE, stop: StopKind::Quick, scope: false, label: String::new() };
         Process::spawn(spawn, None).expect("spawns")
     }
 
@@ -680,6 +835,133 @@ mod tests {
         }
     }
 
+    /// Spawns in a scope; `None` (the test is skipped) where scopes don't work.
+    fn spawn_scoped(line: &str, log: Option<GroupLog>) -> Option<(Process, Receiver<ProcessEvent>)> {
+        if crate::scope::systemd_run().is_none() {
+            eprintln!("no systemd user manager here: scope test skipped");
+            return None;
+        }
+        let vars = vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())];
+        let spawn = Spawn { line: line.into(), dir: std::env::temp_dir(), vars, size: SIZE, stop: StopKind::Quick, scope: true, label: "web · dev".into() };
+        Some(Process::spawn(spawn, log).expect("spawns"))
+    }
+
+    /// A running process: its pid and start time.
+    fn running(pid: u32) -> (u32, u64) {
+        (pid, stat(pid).expect("runs").start)
+    }
+
+    #[test]
+    fn a_stop_empties_the_scope_daemons_and_cleared_environments_included() {
+        // The subshell's exit orphans the daemon at once: it's out of the run's tree.
+        let line = "( setsid sleep 300 & echo daemon $! ); env -i /bin/sleep 300 & echo bare $!; echo ready; sleep 300";
+        let Some((p, rx)) = spawn_scoped(line, None) else { return };
+        let mut out = String::new();
+        read(&rx, &mut out, Some("ready"));
+        let (daemon, bare) = (running(pid_after(&out, "daemon ")), running(pid_after(&out, "bare ")));
+        let _reap = Reap(vec![daemon, bare]);
+        wait_until("the daemon to leave the tree", || !procfs::descendants(p.pid()).contains(&daemon.0));
+        p.stop();
+        assert!(read(&rx, &mut out, None).is_some(), "ends");
+        wait_until("the daemon and the bare one to end", || !alive(daemon.0, daemon.1) && !alive(bare.0, bare.1));
+    }
+
+    #[test]
+    fn a_run_that_ends_on_its_own_leaves_its_daemon_until_devdeck_quits() {
+        let dir = crate::testing::TempDir::new("scope-quit");
+        let log = GroupLog::new(&dir);
+        // The pause lets `setsid` detach before the run's end hangs its terminal up.
+        let Some((p, rx)) = spawn_scoped("( setsid sleep 300 & echo daemon $!; sleep 0.3 ); echo done", Some(log.clone())) else { return };
+        let mut out = String::new();
+        assert_eq!(read(&rx, &mut out, None), Some(Exit::Code(0)));
+        let daemon = running(pid_after(&out, "daemon "));
+        let _reap = Reap(vec![daemon]);
+        drop(p);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(alive(daemon.0, daemon.1), "a build's daemon runs on after its run");
+        log.end_ours();
+        wait_until("the daemon to end as devdeck quits", || !alive(daemon.0, daemon.1));
+        assert!(log.read().is_empty(), "forgotten");
+    }
+
+    #[test]
+    fn a_scope_a_killed_devdeck_left_is_offered_and_killed() {
+        let dir = crate::testing::TempDir::new("scope-leftover");
+        let log = GroupLog::new(&dir);
+        let Some((p, rx)) = spawn_scoped("( setsid sleep 300 & echo daemon $! ); echo ready; sleep 300", Some(log.clone())) else { return };
+        let mut out = String::new();
+        read(&rx, &mut out, Some("ready"));
+        let daemon = running(pid_after(&out, "daemon "));
+        let _reap = Reap(vec![daemon]);
+        wait_until("the scope to be recorded", || log.read().iter().any(|e| matches!(e, Entry::Scope { .. })));
+        // As if the devdeck that started it were gone.
+        let gone: String = log
+            .read()
+            .into_iter()
+            .map(|e| match e {
+                Entry::Scope { unit, label, .. } => Entry::Scope { unit, instance: "999999999-1".into(), label },
+                group => group,
+            })
+            .map(|e| e.line())
+            .collect();
+        crate::state::write_atomic(&log.path, &gone).unwrap();
+        let left = log.leftovers();
+        assert_eq!(left.len(), 1, "the scope, not the group (our own child): {left:?}");
+        assert_eq!(left[0].label.as_deref(), Some("web · dev"));
+        assert!(left[0].pids.contains(&daemon.0) && left[0].pids.contains(&p.pid()), "{left:?}");
+        log.kill(&left);
+        wait_until("the scope to be emptied", || !alive(daemon.0, daemon.1));
+        assert!(read(&rx, &mut out, None).is_some(), "the run ended with it");
+        assert!(log.leftovers().is_empty());
+    }
+
+    #[test]
+    fn a_leader_that_outlived_a_killed_devdeck_is_in_its_scopes_row_only() {
+        if crate::scope::systemd_run().is_none() {
+            eprintln!("no systemd user manager here: scope test skipped");
+            return;
+        }
+        let dir = crate::testing::TempDir::new("scope-one-row");
+        let log = GroupLog::new(&dir);
+        // A run's leader that survived the hang-up, in its scope, not our child.
+        let unit = format!("devdeck-test-{}-one-row", std::process::id());
+        let line = format!("systemd-run --user --scope --quiet --collect --unit={unit} sleep 300 >/dev/null 2>&1 & echo $!");
+        let out = std::process::Command::new("sh").args(["-c", &line]).output().expect("sh runs");
+        let leader = running(String::from_utf8_lossy(&out.stdout).trim().parse().expect("pid"));
+        let _reap = Reap(vec![leader]);
+        wait_until("the scope", || !Scope::named(unit.clone()).is_empty());
+        let text = format!("{} {}\nscope {unit} 999999999-1 web · dev\n", leader.0, leader.1);
+        crate::state::write_atomic(&log.path, &text).unwrap();
+        let left = log.leftovers();
+        assert_eq!(left.len(), 1, "one row for the run: {left:?}");
+        assert_eq!((left[0].label.as_deref(), left[0].pids.clone()), (Some("web · dev"), vec![leader.0]));
+        log.kill(&left);
+        wait_until("the leader to end", || !alive(leader.0, leader.1));
+    }
+
+    #[test]
+    fn a_terminals_end_leaves_what_left_its_session() {
+        let spawn = Spawn {
+            line: "setsid sleep 300 & echo left $!; sleep 300 & echo job $!; echo ready; wait".into(),
+            dir: std::env::temp_dir(),
+            vars: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+            size: SIZE,
+            stop: StopKind::HangUp,
+            scope: false,
+            label: String::new(),
+        };
+        let (p, rx) = Process::spawn(spawn, None).expect("spawns");
+        let mut out = String::new();
+        read(&rx, &mut out, Some("ready"));
+        let (left, job) = (running(pid_after(&out, "left ")), running(pid_after(&out, "job ")));
+        let _reap = Reap(vec![left, job]);
+        wait_until("`setsid` to take its own session", || session_of(left.0) == Some(left.0));
+        p.stop();
+        assert!(read(&rx, &mut out, None).is_some(), "ends");
+        wait_until("the job to end", || !alive(job.0, job.1));
+        assert!(alive(left.0, left.1), "what left the session stays, as with any terminal");
+    }
+
     #[test]
     fn output_arrives_then_the_exit_code() {
         let (out, exit) = run_to_end("printf 'hello\\n'; exit 3");
@@ -695,7 +977,7 @@ mod tests {
     #[test]
     fn a_missing_folder_is_a_spawn_failure() {
         let dir = std::env::temp_dir().join("devdeck-no-such-folder");
-        let spawn = Spawn { line: "true".into(), dir: dir.clone(), vars: vec![], size: SIZE, stop: StopKind::Quick };
+        let spawn = Spawn { line: "true".into(), dir: dir.clone(), vars: vec![], size: SIZE, stop: StopKind::Quick, scope: false, label: String::new() };
         let err = Process::spawn(spawn, None).err().expect("fails");
         assert!(err.contains(&dir.display().to_string()), "{err}");
     }
@@ -772,6 +1054,8 @@ mod tests {
             vars: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
             size: SIZE,
             stop: StopKind::HangUp,
+            scope: false,
+            label: String::new(),
         };
         let (p, rx) = Process::spawn(spawn, None).expect("spawns");
         let mut out = String::new();
@@ -843,10 +1127,10 @@ mod tests {
         let log = GroupLog::new(&dir);
 
         // A run is recorded while it runs, isn't a leftover of ours, and is removed at exit.
-        let spawn = Spawn { line: "echo ready; read x".into(), dir: dir.parent().unwrap().into(), vars: vec![], size: SIZE, stop: StopKind::Quick };
+        let spawn = Spawn { line: "echo ready; read x".into(), dir: dir.parent().unwrap().into(), vars: vec![], size: SIZE, stop: StopKind::Quick, scope: false, label: String::new() };
         let (p, rx) = Process::spawn(spawn, Some(log.clone())).expect("spawns");
         read(&rx, &mut String::new(), Some("ready"));
-        assert!(log.read().iter().any(|(pid, _)| *pid == p.pid()));
+        assert!(log.read().contains(&Entry::Group { pid: p.pid(), start: stat(p.pid()).unwrap().start }));
         assert!(log.leftovers().is_empty());
         p.write(b"\n");
         read(&rx, &mut String::new(), None).expect("exits");
@@ -864,8 +1148,9 @@ mod tests {
         // Next to it: a pid that runs with another start time, and one that doesn't run.
         let text = format!("{orphan} {start}\n{} 1\n999999999 5\ngarbage\n", std::process::id());
         crate::state::write_atomic(&log.path, &text).unwrap();
-        assert_eq!(log.leftovers(), vec![orphan]);
-        kill_all(&log.leftovers());
+        let left = log.leftovers();
+        assert_eq!(left.iter().map(|l| (l.label.clone(), l.pids.clone())).collect::<Vec<_>>(), [(None, vec![orphan])]);
+        log.kill(&left);
         wait_until("the leftover to end", || !alive(orphan, start));
         assert!(log.leftovers().is_empty());
         let _ = std::fs::remove_dir_all(&dir);

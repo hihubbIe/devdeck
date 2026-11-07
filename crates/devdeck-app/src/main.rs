@@ -32,6 +32,8 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Whether runs can get scopes (R8.2): checked now, so the first run doesn't wait.
+    std::thread::spawn(|| devdeck_core::scope::systemd_run().is_some());
     gpui_platform::application().with_assets(devdeck_ui::Assets).run(move |cx: &mut App| {
         devdeck_app::init(cx);
         // Fallback only (windows closed from outside): every normal quit goes through the

@@ -150,7 +150,19 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   (`core::terminal` over alacritty_terminal, 2 000 lines of history), so output is kept
   while no view shows it. The run view draws only visible rows, wrapping at the pane
   width; the terminal is resized to the pane.
-- Quit asks when anything runs (R8.1) and kills the groups.
+- Each run (not a terminal's shell) starts in a systemd user scope of its own
+  (`core::scope`: `systemd-run --user --scope`, keeping its pid, session, terminal and
+  exact environment), so the kernel keeps every descendant whatever it does (`setsid`,
+  a daemon's double fork, `env -i`). A stop empties the scope (^C to the group, SIGTERM
+  to the scope through pidfds, then `cgroup.kill`). A run that ends on its own ends its
+  group; what it left in its scope (a build's daemon) runs until devdeck quits.
+  Without a systemd user manager and cgroup v2, a run follows its process tree instead
+  (what leaves it with a double fork is then out of reach).
+- A terminal's shell ends with its session only: what was detached from it on purpose
+  (tmux, `setsid`) stays, as with any terminal.
+- Quit asks when anything runs (R8.1) and kills the groups and this devdeck's scopes.
+  The state folder's group log records groups and scopes, so after a crash or `kill -9`
+  the next start offers what is left, one row per run (R8.2).
 - Env applied through the app's declared binding (variable, argument, file rewrite).
 
 ### Cluster
@@ -248,6 +260,13 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   look for every terminal (`core::terminal::set_look`, set by the view): the theme and
   the UI scale are global, and a restarted run's fresh terminal answers right away.
 - 2026-11-07 When several views show one run, the one focused last sizes its terminal.
+- 2026-11-07 Leftover processes (R8.2): a systemd scope per run, chosen over an
+  environment tag (programs overwrite or hide it, and it spreads: a tmux server,
+  `dbus-update-activation-environment`), a timer scan (misses a fast double fork, costs
+  CPU) and devdeck as a subreaper (it would collect unrelated orphans and still lose
+  everything on `kill -9`); reviewed by a subagent with experiments on this machine.
+  A build's daemon outlives its run until quit, and a terminal's detached processes
+  stay (decided with the user).
 - 2026-11-07 Icons replace font glyphs (R9.5): Lucide over Tabler (same style, far more
   than needed), Phosphor (rounder) and Codicons (CC BY, few icons); vendored rather
   than `gpui-component-assets` (tied to another GPUI and component library). Lucide's

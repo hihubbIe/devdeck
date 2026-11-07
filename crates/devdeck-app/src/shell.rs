@@ -345,6 +345,10 @@ impl Shell {
         if !pids.is_empty() {
             devdeck_core::process::kill_all(&pids);
         }
+        // What the runs left in their scopes (a build's daemon) goes with devdeck.
+        if let Some(log) = &self.log {
+            log.end_ours();
+        }
     }
 
     /// Saves everything pending and quits.

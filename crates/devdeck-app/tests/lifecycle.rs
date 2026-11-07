@@ -2,12 +2,13 @@
 //! processes a previous devdeck left offered for killing, the quit wait following the
 //! slowest stop sequence. Tests only signal processes they start.
 
-use devdeck_app::lifecycle::{KillLeftovers, claim, offer_leftovers};
+use devdeck_app::lifecycle::{KillLeftovers, Leftovers, claim, offer_leftovers};
 use devdeck_app::runner::{Launch, RunControl, RunDriver, RunKey, Runner, Started};
 use devdeck_app::shell::Shell;
 use devdeck_core::apps::{App as AppDef, Command, EnvApply, Tier, Tools};
 use devdeck_core::catalog::Catalog;
-use devdeck_core::process::GroupLog;
+use devdeck_core::process::{GroupLog, Process, Spawn, StopKind};
+use devdeck_core::scope::Scope;
 use devdeck_core::terminal::TermSize;
 use gpui::{AppContext, TestAppContext};
 use std::rc::Rc;
@@ -89,6 +90,71 @@ fn leftovers_left_alone_stay_alone(cx: &mut TestAppContext) {
     assert_eq!(cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx)), (false, 0), "closed");
     assert!(orphan.alive());
     assert_eq!(log.live(), [] as [u32; 0], "forgotten: quitting this devdeck won't kill it");
+}
+
+#[gpui::test]
+fn a_scope_a_killed_devdeck_left_is_one_row_named_after_its_run(cx: &mut TestAppContext) {
+    if devdeck_core::scope::systemd_run().is_none() {
+        eprintln!("no systemd user manager here: scope test skipped");
+        return;
+    }
+    let config = cx.update(|cx| devdeck_app::test_dir("config", cx));
+    cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
+    let state = cx.update(|cx| devdeck_app::test_dir("state", cx));
+    let log = GroupLog::new(&state);
+    // A run in a scope, with a daemon out of its tree, recorded as by a devdeck that's gone.
+    let spawn = Spawn {
+        line: "( setsid sleep 300 & ); echo ready; sleep 300".into(),
+        dir: std::env::temp_dir(),
+        vars: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+        size: TermSize { cols: 80, rows: 24 },
+        stop: StopKind::Default,
+        scope: true,
+        label: "web · dev".into(),
+    };
+    let (process, _rx) = Process::spawn(spawn, Some(log.clone())).expect("spawns");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let recorded = || std::fs::read_to_string(&log.path).unwrap_or_default();
+    while !recorded().lines().any(|l| l.starts_with("scope ")) || Scope::named(scope_unit(&recorded())).pids().len() < 3 {
+        assert!(Instant::now() < deadline, "the run's scope: {}", recorded());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let gone: String = recorded()
+        .lines()
+        .map(|l| match l.strip_prefix("scope ") {
+            Some(rest) => {
+                let mut parts = rest.splitn(3, ' ');
+                let (unit, _, label) = (parts.next().unwrap(), parts.next(), parts.next().unwrap_or_default());
+                format!("scope {unit} 999999999-1 {label}\n")
+            }
+            None => format!("{l}\n"),
+        })
+        .collect();
+    std::fs::write(&log.path, gone).unwrap();
+    let scope = Scope::named(scope_unit(&recorded()));
+
+    let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
+    cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+    cx.update(|cx| offer_leftovers(&shell, &log, cx));
+    cx.run_until_parked();
+    let main = cx.read(|cx| shell.read(cx).main_window().unwrap());
+    let dialog = cx.update(|cx| devdeck_ui::overlay::layer(main.into(), cx).read(cx).modals.last().cloned()).expect("the dialog");
+    let rows = cx.update(|cx| dialog.downcast::<Leftovers>().unwrap().read(cx).rows.clone());
+    assert_eq!(rows.len(), 1, "one row for the run: {rows:?}");
+    assert!(rows[0].starts_with("web · dev: ") && rows[0].contains("sleep 300"), "{rows:?}");
+    cx.update_window(main.into(), |_, window, cx| window.dispatch_action(Box::new(KillLeftovers), cx)).unwrap();
+    cx.run_until_parked();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !scope.is_empty() {
+        assert!(Instant::now() < deadline, "the scope emptied");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(process);
+}
+
+/// The unit of the (only) scope line of a group log.
+fn scope_unit(log: &str) -> String {
+    log.lines().find_map(|l| l.strip_prefix("scope ")).and_then(|r| r.split(' ').next()).unwrap_or_default().to_string()
 }
 
 /// Runs that claim a process id (never signaled: these tests don't quit).

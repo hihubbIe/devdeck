@@ -81,7 +81,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 ## 8. Lifecycle
 
 - [~] **R8.1** Quitting with running processes (in any workspace) asks: "Stop all and quit" or "Cancel". Cancel keeps the app open.
-- [~] **R8.2** Child processes never outlive the app unless the user chooses so (process groups are killed on quit).
+- [x] **R8.2** Child processes never outlive the app unless the user chooses so (process groups are killed on quit).
 
 ## 9. Look and themes
 
