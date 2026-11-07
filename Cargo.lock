@@ -1376,6 +1376,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "devdeck-core",
+ "devdeck-ui",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
@@ -1391,6 +1392,14 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "devdeck-ui"
+version = "0.1.0"
+dependencies = [
+ "gpui-pre",
 ]
 
 [[package]]

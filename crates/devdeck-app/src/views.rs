@@ -2,11 +2,11 @@
 //! built once and lives as long as its tab (owned by `Deck`).
 
 use crate::kube_feed::{self, KubeState};
-use crate::theme::theme;
+use devdeck_ui::{label, theme};
 use devdeck_core::layout::ViewRef;
 use gpui::{
     AnyView, App, AppContext, Context, IntoElement, ListHorizontalSizingBehavior, ParentElement, Render, SharedString,
-    Styled, Task, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    Styled, Task, UniformListScrollHandle, Window, div, prelude::*, uniform_list,
 };
 use std::time::Duration;
 
@@ -105,6 +105,7 @@ impl Render for LogsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         let (mute, ok, warn, err, accent, line_soft) = (t.mute, t.ok, t.warn, t.err, t.accent, t.line_soft);
+        let (row_h, toolbar_h) = (t.line_height, t.toolbar_h);
         let count = self.lines.len();
         let follow = self.follow;
         div()
@@ -116,7 +117,7 @@ impl Render for LogsView {
             .child(
                 div()
                     .flex_none()
-                    .h(px(28.))
+                    .h(toolbar_h)
                     .px_3()
                     .flex()
                     .items_center()
@@ -148,7 +149,7 @@ impl Render for LogsView {
                                     Some("DBG") => mute,
                                     _ => ok,
                                 };
-                                div().h(px(20.)).px_3().whitespace_nowrap().text_color(color).child(line)
+                                div().h(row_h).px_3().whitespace_nowrap().text_color(color).child(line)
                             })
                             .collect()
                     }),
@@ -235,84 +236,38 @@ impl Render for DeploymentsView {
         let body = div().size_full().p_3().flex().flex_col().text_color(t.fg);
         match &self.state {
             KubeState::NotConfigured => body.text_color(t.mute).child(
-                "Cluster not configured. Set DEVDECK_KUBECONFIG, DEVDECK_KUBE_CONTEXT and DEVDECK_KUBE_NAMESPACE.",
+                label("Cluster not configured. Set DEVDECK_KUBECONFIG, DEVDECK_KUBE_CONTEXT and DEVDECK_KUBE_NAMESPACE.")
+                    .debug_selector(|| "kube-message".into()),
             ),
-            KubeState::Loading => body.text_color(t.mute).child("◐ loading deployments…"),
-            KubeState::Error(e) => body.text_color(t.err).child(format!("✖ {e}")),
-            KubeState::Ready(rows) => body
+            KubeState::Loading => body.text_color(t.mute).child(label("◐ loading deployments…")),
+            KubeState::Error(e) => body.text_color(t.err).child(label(format!("✖ {e}"))),
+            KubeState::Ready(rows) => {
+                let (name_w, ready_w, row_h) = (t.size(300.), t.size(80.), t.row_h);
+                body
                 .child(
                     div()
                         .flex()
                         .text_color(t.mute)
-                        .child(div().w(px(300.)).flex_none().child("deployment"))
-                        .child(div().w(px(80.)).flex_none().child("ready"))
+                        .child(div().w(name_w).flex_none().child("deployment"))
+                        .child(div().w(ready_w).flex_none().child("ready"))
                         .child(div().child("image tag")),
                 )
                 .children(rows.iter().map(|r| {
                     div()
                         .flex()
-                        .h(px(22.))
-                        .child(div().w(px(300.)).flex_none().truncate().child(r.name.clone()))
+                        .h(row_h)
+                        .child(div().w(name_w).flex_none().truncate().child(r.name.clone()))
                         .child(
                             div()
-                                .w(px(80.))
+                                .w(ready_w)
                                 .flex_none()
                                 .text_color(if r.ready == r.desired { t.ok } else { t.err })
                                 .child(format!("{}/{}", r.ready, r.desired)),
                         )
                         .child(div().truncate().text_color(t.mute).child(r.tag.clone()))
-                })),
+                }))
+            }
         }
     }
 }
 
-// ------------------------------------------------------------------ small helpers
-
-/// Floating label shown while dragging a tab or a pane.
-pub struct DragGhost(pub SharedString);
-
-impl Render for DragGhost {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme(cx);
-        div()
-            .px_3()
-            .h(px(28.))
-            .flex()
-            .items_center()
-            .bg(t.accent_bg)
-            .border_1()
-            .border_color(t.accent)
-            .rounded(px(4.))
-            .text_color(t.hi)
-            .whitespace_nowrap()
-            .child(self.0.clone())
-    }
-}
-
-/// Nothing to show (divider drags).
-pub struct Empty;
-
-impl Render for Empty {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
-/// Tooltip with the full text of a truncated label (R4.4).
-pub struct Tip(pub SharedString);
-
-impl Render for Tip {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme(cx);
-        div()
-            .px_2()
-            .py_1()
-            .bg(t.raised)
-            .border_1()
-            .border_color(t.line)
-            .rounded(px(4.))
-            .text_color(t.fg)
-            .whitespace_nowrap()
-            .child(self.0.clone())
-    }
-}

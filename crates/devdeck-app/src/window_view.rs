@@ -7,19 +7,18 @@
 use crate::actions::*;
 use crate::deck::Deck;
 use crate::stats;
-use crate::theme::{Theme, theme};
-use crate::views::{self, DragGhost, Empty, LogsView, Tip};
+use crate::app_settings;
+use crate::settings_view::SettingsView;
+use crate::views::{self, LogsView};
+use devdeck_ui::{DragGhost, Empty, Theme, apply_window_scale, button, icon_button, label, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, WindowId};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Context, CursorStyle, Decorations, DragMoveEvent, Entity, FocusHandle,
-    Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
+    Focusable, AnyElement, AnyView, App, AppContext, Context, CursorStyle, Decorations, DragMoveEvent, Entity, FocusHandle,
+    Hitbox, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
     ResizeEdge, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, point,
-    prelude::*, px, relative,
+    prelude::*, relative,
 };
 use std::collections::HashMap;
-
-/// Width of the strip along window edges that resizes the window.
-const EDGE: Pixels = px(6.);
 
 #[derive(Clone)]
 pub struct DraggedTab {
@@ -44,8 +43,12 @@ pub struct DraggedDivider {
 pub struct WindowView {
     id: WindowId,
     deck: Entity<Deck>,
+    /// Root focus: global keys (scale, settings, quit).
     focus: FocusHandle,
-    _observe: Subscription,
+    /// Pane area focus: pane keys only work while it (or something in it) has focus.
+    panes_focus: FocusHandle,
+    settings: Option<Entity<SettingsView>>,
+    _observe: Vec<Subscription>,
 }
 
 /// Everything a render pass needs, copied out of the deck.
@@ -60,15 +63,35 @@ struct Frame<'a> {
 
 impl WindowView {
     pub fn new(id: WindowId, deck: Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&deck, |_, _, cx| cx.notify());
+        let observe = vec![
+            cx.observe(&deck, |_, _, cx| cx.notify()),
+            cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify()),
+        ];
         let focus = cx.focus_handle();
-        focus.focus(window, cx);
+        let panes_focus = cx.focus_handle();
+        panes_focus.focus(window, cx);
         let close_deck = deck.clone();
         window.on_window_should_close(cx, move |_, cx| {
             close_deck.update(cx, |d, cx| d.os_window_closed(id, cx));
             true
         });
-        Self { id, deck, focus, _observe: observe }
+        Self { id, deck, focus, panes_focus, settings: None, _observe: observe }
+    }
+
+    /// Opens or closes the full-window Settings view (main window only), moving focus
+    /// into it, and back to the panes when it closes.
+    fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.id != MAIN_WINDOW {
+            return;
+        }
+        app_settings::set_open(open, cx);
+        if open {
+            let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
+            view.read(cx).focus_handle(cx).focus(window, cx);
+        } else {
+            self.panes_focus.focus(window, cx);
+        }
+        cx.notify();
     }
 
     fn apply(&self, cx: &mut App, op: impl FnOnce(&mut Layout) -> devdeck_core::layout::Result<()>) {
@@ -147,6 +170,11 @@ impl Render for WindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         stats::count_render();
         let t = theme(cx).clone();
+        apply_window_scale(window, &t);
+        let settings_open = self.id == MAIN_WINDOW && app_settings::is_open(cx);
+        if settings_open && self.settings.is_none() {
+            self.settings = Some(cx.new(SettingsView::new));
+        }
         let (layout, views, live, last_error) = {
             let d = self.deck.read(cx);
             let views: HashMap<PaneId, AnyView> = d
@@ -161,7 +189,7 @@ impl Render for WindowView {
             return div().size_full().bg(t.bg).into_any_element();
         };
         let frame = Frame { layout: &layout, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
-        let body = match w.maximized {
+        let tree = match w.maximized {
             Some(p) => render_pane(&frame, p, None),
             None => render_node(&frame, &w.root, None),
         };
@@ -196,12 +224,19 @@ impl Render for WindowView {
                 }
             })
             .child(div().text_color(t.hi).child("devdeck"))
-            .child(div().text_color(t.mute).child(if is_main { "M0 spike" } else { "detached window" }))
+            .child(div().text_color(t.mute).child(if is_main { "M1 prototype" } else { "detached window" }))
             .child(div().flex_1())
+            .when(is_main, |d| {
+                d.child(
+                    button("settings", if settings_open { "⚙ settings ✓" } else { "⚙ settings" }, &t)
+                        .tooltip(tip("settings (ctrl ,)"))
+                        .on_click(cx.listener(move |this, _, window, cx| this.set_settings_open(!settings_open, window, cx))),
+                )
+            })
             .when(!is_main, |d| {
                 d.child(
                     button("reattach", "⇲", &t)
-                        .tooltip(|_, cx| cx.new(|_| Tip("send back to the main window (ctrl shift a)".into())).into())
+                        .tooltip(tip("send back to the main window (ctrl shift a)"))
                         .on_click(cx.listener(|this, _, _, cx| this.reattach(cx))),
                 )
             })
@@ -223,18 +258,14 @@ impl Render for WindowView {
             .text_color(t.mute)
             .child(div().flex_1().min_w_0().truncate().child(status));
 
-        let root = div()
-            .id("window-root")
-            .track_focus(&self.focus)
-            .key_context("Deck")
-            .size_full()
+        let panes = div()
+            .id("panes")
+            .key_context("Panes")
+            .track_focus(&self.panes_focus)
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
             .flex()
-            .flex_col()
-            .bg(t.bg)
-            .text_color(t.fg)
-            .font_family(t.font.clone())
-            .text_size(t.text_size)
-            .line_height(t.line_height)
             .on_action(cx.listener(|this, _: &FocusLeft, w, cx| this.focus_dir(Direction::Left, w, cx)))
             .on_action(cx.listener(|this, _: &FocusRight, w, cx| this.focus_dir(Direction::Right, w, cx)))
             .on_action(cx.listener(|this, _: &FocusUp, w, cx| this.focus_dir(Direction::Up, w, cx)))
@@ -267,7 +298,6 @@ impl Render for WindowView {
                     l.detach(p, i).map(|_| ())
                 })
             }))
-            .on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx)))
             .on_action(cx.listener(|this, _: &GrowPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, 0.05))))
             .on_action(cx.listener(|this, _: &ShrinkPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, -0.05))))
             .on_action(cx.listener(|this, _: &ToggleFollow, _, cx| {
@@ -278,42 +308,76 @@ impl Render for WindowView {
                     logs.update(cx, |v, cx| v.toggle_follow(cx));
                 }
             }))
+            .child(tree);
+        let body = if settings_open {
+            match &self.settings {
+                Some(view) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
+                None => panes.into_any_element(),
+            }
+        } else {
+            panes.into_any_element()
+        };
+
+        let root = div()
+            .id("window-root")
+            .track_focus(&self.focus)
+            .key_context("Deck")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(t.bg)
+            .text_color(t.fg)
+            .font_family(t.font.clone())
+            .text_size(t.text)
+            .line_height(t.line_height)
+            .on_action(cx.listener(|this, _: &ToggleSettings, w, cx| {
+                let open = app_settings::is_open(cx);
+                this.set_settings_open(!open, w, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseSettings, w, cx| this.set_settings_open(false, w, cx)))
+            .on_action(|_: &IncreaseScale, _, cx| app_settings::increase(cx))
+            .on_action(|_: &DecreaseScale, _, cx| app_settings::decrease(cx))
+            .on_action(|_: &ResetScale, _, cx| app_settings::reset(cx))
+            .on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx)))
             .on_action(|_: &Quit, _, cx| cx.quit())
             .child(title_bar)
-            .child(div().flex_1().min_h_0().flex().child(body))
+            .child(body)
             .child(status_bar);
 
         match window.window_decorations() {
             Decorations::Server => root.into_any_element(),
-            Decorations::Client { .. } => div()
+            Decorations::Client { .. } => {
+                let edge = t.window_edge;
+                div()
                 .id("csd")
                 .size_full()
                 .relative()
-                .capture_any_mouse_down(|e, window, cx| {
+                .capture_any_mouse_down(move |e, window, cx| {
                     let size = window.window_bounds().get_bounds().size;
-                    if let Some(edge) = resize_edge(e.position, size) {
+                    if let Some(edge) = resize_edge(e.position, size, edge) {
                         window.start_window_resize(edge);
                         cx.stop_propagation();
                     }
                 })
                 .child(root)
-                .child(window_edge_cursors())
-                .into_any_element(),
+                .child(window_edge_cursors(edge))
+                .into_any_element()
+            }
         }
     }
 }
 
 /// Sets resize cursors along the window border (client-side decorations; GNOME on
 /// Wayland draws none). The resize itself starts in `capture_any_mouse_down`.
-fn window_edge_cursors() -> impl IntoElement {
+fn window_edge_cursors(edge_width: Pixels) -> impl IntoElement {
     canvas(
         |_bounds, window, _cx| {
             let size = window.window_bounds().get_bounds().size;
-            window.insert_hitbox(gpui::Bounds::new(point(px(0.), px(0.)), size), HitboxBehavior::Normal)
+            window.insert_hitbox(gpui::Bounds::new(point(Pixels::ZERO, Pixels::ZERO), size), HitboxBehavior::Normal)
         },
-        |_bounds, hitbox: Hitbox, window, _cx| {
+        move |_bounds, hitbox: Hitbox, window, _cx| {
             let size = window.window_bounds().get_bounds().size;
-            if let Some(edge) = resize_edge(window.mouse_position(), size) {
+            if let Some(edge) = resize_edge(window.mouse_position(), size, edge_width) {
                 let style = match edge {
                     ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
                     ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
@@ -328,8 +392,8 @@ fn window_edge_cursors() -> impl IntoElement {
     .size_full()
 }
 
-fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
-    let (l, r, t, b) = (pos.x < EDGE, pos.x > size.width - EDGE, pos.y < EDGE, pos.y > size.height - EDGE);
+fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>, edge: Pixels) -> Option<ResizeEdge> {
+    let (l, r, t, b) = (pos.x < edge, pos.x > size.width - edge, pos.y < edge, pos.y > size.height - edge);
     Some(match (t, b, l, r) {
         (true, _, true, _) => ResizeEdge::TopLeft,
         (true, _, _, true) => ResizeEdge::TopRight,
@@ -343,21 +407,6 @@ fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>) -> Option<ResizeEdge> {
     })
 }
 
-fn button(id: &'static str, label: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    let (hover, fg) = (t.hover, t.fg);
-    div()
-        .id(id)
-        .px_2()
-        .h(px(24.))
-        .flex()
-        .items_center()
-        .rounded(px(4.))
-        .text_color(t.mute)
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover).text_color(fg))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(label)
-}
 
 fn eid(name: &'static str, a: u64, b: usize) -> (&'static str, u64) {
     (name, a * 10_000 + b as u64)
@@ -388,7 +437,7 @@ fn render_node(f: &Frame, node: &Node, parent: Option<Axis>) -> AnyElement {
                 Axis::Row => (e.event.position.x, e.bounds.origin.x, e.bounds.size.width),
                 Axis::Column => (e.event.position.y, e.bounds.origin.y, e.bounds.size.height),
             };
-            if len <= px(0.) {
+            if len <= Pixels::ZERO {
                 return;
             }
             let fraction = f32::from(pos - origin) / f32::from(len);
@@ -409,18 +458,19 @@ fn render_node(f: &Frame, node: &Node, parent: Option<Axis>) -> AnyElement {
                 Axis::Column => slot.flex_none().h(f.t.tab_h),
             }
         } else {
-            slot.flex_basis(px(0.)).flex_grow(c.weight / expanded.max(f32::EPSILON))
+            slot.flex_basis(Pixels::ZERO).flex_grow(c.weight / expanded.max(f32::EPSILON))
         };
         container = container.child(slot.child(render_node(f, &c.node, Some(axis))));
         if i + 1 < n {
-            container = container.child(divider(split_id, i, axis, f.t.line));
+            container = container.child(divider(split_id, i, axis, f.t));
         }
     }
     container.into_any_element()
 }
 
 /// 5 px grab area with a 1 px line in the middle.
-fn divider(split: SplitId, index: usize, axis: Axis, line: Hsla) -> impl IntoElement {
+fn divider(split: SplitId, index: usize, axis: Axis, t: &Theme) -> impl IntoElement {
+    let (line, grab, hair) = (t.line, t.divider_grab, t.hairline);
     let base = div()
         .id(eid("divider", split.0, index))
         .flex_none()
@@ -429,8 +479,8 @@ fn divider(split: SplitId, index: usize, axis: Axis, line: Hsla) -> impl IntoEle
         .items_center()
         .on_drag(DraggedDivider { split, index, axis }, |_, _, _, cx| cx.new(|_| Empty));
     match axis {
-        Axis::Row => base.w(px(5.)).h_full().cursor_col_resize().child(div().w(px(1.)).h_full().bg(line)),
-        Axis::Column => base.h(px(5.)).w_full().cursor_row_resize().child(div().h(px(1.)).w_full().bg(line)),
+        Axis::Row => base.w(grab).h_full().cursor_col_resize().child(div().w(hair).h_full().bg(line)),
+        Axis::Column => base.h(grab).w_full().cursor_row_resize().child(div().h(hair).w_full().bg(line)),
     }
 }
 
@@ -453,22 +503,22 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
         let mut rail = div().id(("rail", pane.0)).size_full().flex().flex_col().items_center().gap_1().pt_1().bg(t.bar);
         for (i, title) in titles.iter().enumerate() {
             let deck = f.deck.clone();
-            let tip = title.clone();
+            let full = title.clone();
             let mono: String = title.chars().filter(|c| c.is_alphanumeric()).take(2).collect();
             let hover = t.hover;
             rail = rail.child(
                 div()
                     .id(eid("rail-tab", pane.0, i))
-                    .w(px(22.))
-                    .h(px(22.))
+                    .w(t.icon_button)
+                    .h(t.icon_button)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(3.))
+                    .rounded(t.radius_s)
                     .text_color(if i == p.active { t.fg } else { t.mute })
                     .hover(move |s| s.bg(hover))
                     .cursor_pointer()
-                    .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                    .tooltip(tip(full))
                     .on_click(move |_, _, cx| apply_on(&deck, cx, |l| l.activate(pane, i)))
                     .child(mono),
             );
@@ -501,14 +551,14 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
         div()
             .id(("grip", pane.0))
             .flex_none()
-            .w(px(18.))
+            .w(t.grip_w)
             .h_full()
             .flex()
             .items_center()
             .justify_center()
             .text_color(t.dim)
             .cursor_grab()
-            .tooltip(|_, cx| cx.new(|_| Tip("drag to move this pane".into())).into())
+            .tooltip(tip("drag to move this pane"))
             .on_drag(DraggedPane { pane, title: pane_title }, |d, _, _, cx| {
                 let label: SharedString = format!("pane: {}", d.title).into();
                 cx.new(|_| DragGhost(label))
@@ -517,19 +567,19 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
     );
 
     // Tabs keep priority over the pane buttons when the pane is narrow.
-    let mut tabs = div().flex().flex_1().min_w(px(72.)).overflow_hidden();
+    let mut tabs = div().flex().flex_1().min_w(t.tabs_min_w).overflow_hidden();
     for (i, title) in titles.iter().enumerate() {
         let active = i == p.active;
         let (d_click, d_mid, d_close) = (f.deck.clone(), f.deck.clone(), f.deck.clone());
-        let tip = title.clone();
+        let full = title.clone();
         let (hover, line, fg) = (t.hover, t.line, t.fg);
         tabs = tabs.child(
             div()
                 .id(eid("tab", pane.0, i))
                 .flex()
                 .flex_shrink(1.)
-                .min_w(px(60.))
-                .max_w(px(280.))
+                .min_w(t.tab_min_w)
+                .max_w(t.tab_max_w)
                 .h_full()
                 .px_3()
                 .gap_2()
@@ -541,7 +591,7 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
                 .when(active && focused, |d| d.border_t_2().border_color(t.accent))
                 .hover(move |s| s.bg(hover))
                 .cursor_pointer()
-                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                .tooltip(tip(full))
                 .on_click(move |e, _, cx| {
                     let double = e.click_count() == 2;
                     apply_on(&d_click, cx, |l| {
@@ -551,13 +601,13 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
                 })
                 .on_mouse_down(MouseButton::Middle, move |_, _, cx| apply_on(&d_mid, cx, |l| l.close_tab(pane, i).map(|_| ())))
                 .on_drag(DraggedTab { pane, index: i, title: title.clone() }, |d, _, _, cx| cx.new(|_| DragGhost(d.title.clone())))
-                .child(div().flex_1().min_w_0().truncate().child(title.clone()))
+                .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
                 .child(
                     div()
                         .id(eid("tab-x", pane.0, i))
                         .flex_none()
                         .px_1()
-                        .rounded(px(3.))
+                        .rounded(t.radius_s)
                         .text_color(t.dim)
                         .hover(move |s| s.bg(line).text_color(fg))
                         .on_click(move |_, _, cx| {
@@ -586,17 +636,17 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
             .px_1()
             .when(!is_detached, |d| {
                 d.child(
-                    pane_button(("collapse", pane.0), if p.collapsed { "▾" } else { "▴" }, "collapse or expand (ctrl shift c)", t)
+                    icon_button(("collapse", pane.0), if p.collapsed { "▾" } else { "▴" }, "collapse or expand (ctrl shift c)", t)
                         .on_click(move |_, _, cx| apply_on(&d_col, cx, |l| l.toggle_collapse(pane))),
                 )
                 .child(
-                    pane_button(("maximize", pane.0), if maximized { "◱" } else { "□" }, "maximize or restore (ctrl shift m)", t)
+                    icon_button(("maximize", pane.0), if maximized { "◱" } else { "□" }, "maximize or restore (ctrl shift m)", t)
                         .on_click(move |_, _, cx| apply_on(&d_max, cx, |l| l.toggle_maximize(pane))),
                 )
             })
             .when(can_detach, |d| {
                 d.child(
-                    pane_button(("detach", pane.0), "⇱", "detach tab to its own window (ctrl shift d)", t)
+                    icon_button(("detach", pane.0), "⇱", "detach tab to its own window (ctrl shift d)", t)
                         .on_click(move |_, _, cx| apply_on(&d_det, cx, |l| l.detach(pane, active).map(|_| ()))),
                 )
             }),
@@ -630,7 +680,7 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
                 .items_center()
                 .justify_center()
                 .text_color(t.mute)
-                .child("Empty pane. Drop a tab here.")
+                .child(label("Empty pane. Drop a tab here.").debug_selector(|| "empty-message".into()))
                 .into_any_element(),
         });
     if f.dragging {
@@ -648,22 +698,6 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
     div().size_full().flex().flex_col().min_w_0().min_h_0().child(strip).child(body).into_any_element()
 }
 
-fn pane_button(id: (&'static str, u64), label: &'static str, tip: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    let (hover, fg) = (t.hover, t.fg);
-    div()
-        .id(id)
-        .w(px(22.))
-        .h(px(22.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(3.))
-        .text_color(t.mute)
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover).text_color(fg))
-        .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
-        .child(label)
-}
 
 fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity<Deck>, t: &Theme) -> impl IntoElement {
     let zone = div().id((name, pane.0)).absolute();

@@ -83,13 +83,13 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R9.1** Dark, dense, flat look of the approved prototype: 24 px rows, hairline dividers, color only for state and always paired with a glyph.
 - [ ] **R9.2** Themes are data files of color tokens. One theme ships for now: the prototype's dark theme with slightly more contrast.
-- [ ] **R9.3** A shared component library (rows, tabs, buttons, inputs, menus, badges, key hints, text view, terminal view…) is the only way views draw UI, for visual parity.
+- [~] **R9.3** A shared component library (rows, tabs, buttons, inputs, menus, badges, key hints, text view, terminal view…) is the only way views draw UI, for visual parity.
 
-- [ ] **R9.4** A Settings button in the title bar opens settings as a full-window view (not a tab). It holds global, per-machine choices: UI scale (for example 90–150 %, on top of the desktop's own scaling) and theme, and later more. Every size in the UI derives from the UI scale. Settings are saved to the config folder and apply immediately.
+- [~] **R9.4** A Settings button in the title bar opens settings as a full-window view (not a tab). It holds global, per-machine choices: UI scale (for example 90–150 %, on top of the desktop's own scaling) and theme, and later more. Every size in the UI derives from the UI scale. Settings are saved to the config folder and apply immediately.
 
 ## 10. Configuration and setup
 
-- [ ] **R10.1** All configuration in `~/.config/devdeck/` (TOML): workspaces, folders, envs, clusters, tools, overrides, themes. State (pins, layouts, history) in `~/.local/state/devdeck/`.
+- [~] **R10.1** All configuration in `~/.config/devdeck/` (TOML): workspaces, folders, envs, clusters, tools, overrides, themes. State (pins, layouts, history) in `~/.local/state/devdeck/`.
 - [ ] **R10.2** `SETUP.md` written for Claude: it walks a new user through an interactive setup on their machine (find project folders, detect tools and kubeconfigs, propose and write the config).
 - [ ] **R10.3** Documentation where it is needed: architecture, adding a view, adding an action, components, config reference, themes.
 

@@ -2,10 +2,11 @@
 //! snapshot tool used for visual checks).
 
 pub mod actions;
+pub mod app_settings;
 pub mod deck;
 pub mod kube_feed;
+pub mod settings_view;
 pub mod stats;
-pub mod theme;
 pub mod views;
 pub mod window_view;
 
@@ -38,9 +39,15 @@ pub fn load_fonts(cx: &mut App) {
     }
 }
 
-/// Fonts, theme and key bindings.
+/// Fonts, settings (with the theme they select) and key bindings, using the config
+/// folder from the environment (`DEVDECK_CONFIG_DIR`, XDG, or `~/.config/devdeck`).
 pub fn init(cx: &mut App) {
+    init_with_config_dir(&devdeck_core::settings::default_config_dir(), cx);
+}
+
+/// Same as [`init`] with an explicit config folder (tests, snapshots).
+pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     load_fonts(cx);
-    cx.set_global(theme::Theme::devdeck_dark());
+    app_settings::init(dir, cx);
     actions::bind(cx);
 }

@@ -8,9 +8,10 @@
 use crate::views;
 use crate::window_view::WindowView;
 use devdeck_core::layout::{CloseOutcome, Layout, LayoutError, MAIN_WINDOW, ViewRef, WindowId};
+use devdeck_ui::logical;
 use gpui::{
     AnyView, AnyWeakView, App, AppContext, Bounds, Context, Entity, WindowBounds, WindowDecorations,
-    WindowHandle, WindowOptions, px, size,
+    WindowHandle, WindowOptions, size,
 };
 use std::collections::HashMap;
 
@@ -144,12 +145,13 @@ fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
         return;
     }
     let is_main = id == MAIN_WINDOW;
-    let bounds = Bounds::centered(None, if is_main { size(px(1600.), px(1000.)) } else { size(px(900.), px(600.)) }, cx);
+    let (w, h) = if is_main { (1600., 1000.) } else { (900., 600.) };
+    let bounds = Bounds::centered(None, size(logical(w), logical(h)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_decorations: Some(WindowDecorations::Client),
         app_id: Some("devdeck".into()),
-        window_min_size: Some(size(px(480.), px(320.))),
+        window_min_size: Some(size(logical(480.), logical(320.))),
         ..Default::default()
     };
     let view_deck = deck.clone();

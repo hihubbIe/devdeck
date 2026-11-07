@@ -2,3 +2,4 @@
 //! can be unit tested without a GPU.
 
 pub mod layout;
+pub mod settings;

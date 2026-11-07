@@ -5,8 +5,16 @@ use devdeck_app::deck::Deck;
 use devdeck_core::layout::{Drop, MAIN_WINDOW, ViewRef};
 use gpui::{AppContext, Entity, TestAppContext};
 
+/// A fresh config folder per test, so tests never touch the real one.
+fn config_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("devdeck-apptest-{tag}-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
 fn setup(cx: &mut TestAppContext) -> Entity<Deck> {
-    cx.update(devdeck_app::init);
+    let dir = config_dir("deck");
+    cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
     let deck = cx.update(|cx| cx.new(|_| Deck::new(devdeck_app::initial_layout())));
     cx.update(|cx| deck.update(cx, |d, cx| d.sync(cx)));
     cx.run_until_parked();

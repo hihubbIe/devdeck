@@ -1,0 +1,5 @@
+# Sizes come from devdeck-ui's Theme so they follow the UI scale (R9.4).
+disallowed-methods = [
+    { path = "gpui::px", reason = "use a size from devdeck_ui::Theme (or Theme::size) so it follows the UI scale" },
+    { path = "gpui::rems", reason = "use a size from devdeck_ui::Theme so it follows the UI scale" },
+]
