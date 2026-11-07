@@ -106,6 +106,16 @@ fn key(cmd: &str) -> RunKey {
     RunKey::new("web", cmd)
 }
 
+/// A process a test started, killed however the test ends.
+struct Reap(std::process::Child);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn bind() -> (TcpListener, u16) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
@@ -235,15 +245,36 @@ fn an_empty_scan_does_not_erase_remembered_ports(cx: &mut TestAppContext) {
     assert!(found(cx).contains(&port), "scanned at once: {:?}", found(cx));
     assert!(PortMemory::load(&s.state).get(WS, "web", "a:serve").contains(&port), "remembered");
 
-    // The run now is a process listening on nothing.
-    let mut sleep = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-    s.next.pid.set(Some(sleep.id()));
+    // The run now is a process listening on nothing (killed however the test ends).
+    let sleep = Reap(std::process::Command::new("sleep").arg("30").spawn().unwrap());
+    s.next.pid.set(Some(sleep.0.id()));
     advance(cx, SCAN_EVERY);
     let scanned = found(cx);
-    let _ = sleep.kill();
-    let _ = sleep.wait();
+    drop(sleep);
     assert_eq!(scanned, [] as [u16; 0], "the scan found nothing");
     assert!(PortMemory::load(&s.state).get(WS, "web", "a:serve").contains(&port), "still remembered");
+}
+
+#[gpui::test]
+fn every_port_a_run_listened_on_is_remembered(cx: &mut TestAppContext) {
+    use std::io::BufRead;
+    let (l, port) = bind();
+    let s = setup(cx, "union", vec![command("a:serve", &[])]);
+    s.next.pid.set(Some(std::process::id()));
+    *s.next.listener.borrow_mut() = Some(l);
+    assert_eq!(try_start(&s, cx, "a:serve"), Ok(()));
+    // The run now is another process, listening on another port only: a scan sees a part.
+    let script = "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen()\nprint(s.getsockname()[1],flush=True)\ntime.sleep(30)";
+    let mut server = Reap(std::process::Command::new("python3").args(["-c", script]).stdout(std::process::Stdio::piped()).spawn().unwrap());
+    let mut line = String::new();
+    std::io::BufReader::new(server.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let other: u16 = line.trim().parse().unwrap();
+    s.next.pid.set(Some(server.0.id()));
+    advance(cx, SCAN_EVERY);
+    let found = cx.read(|cx| s.ports.read(cx).scan.listening.get(&key("a:serve")).cloned().unwrap_or_default());
+    assert_eq!(found, [other], "this scan sees the other port only");
+    let remembered = PortMemory::load(&s.state).get(WS, "web", "a:serve").to_vec();
+    assert!(remembered.contains(&port) && remembered.contains(&other), "both kept: {remembered:?}");
 }
 
 #[gpui::test]

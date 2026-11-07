@@ -5,14 +5,17 @@
 //!   leftovers). The demo has its own state folder, so its own lock.
 //! - At start, groups a previous devdeck left running (`GroupLog::leftovers`) are offered
 //!   in a dialog: "N processes left by a previous devdeck: Kill / Leave".
-//! - SIGTERM, SIGHUP and SIGINT to devdeck: a thread kills every recorded live group
-//!   (`process::kill_all(GroupLog::live())`), then the app saves and quits. The runs
-//!   still count as running, so they start again when devdeck reopens.
+//!   Leave forgets them, so this devdeck doesn't kill them when it quits.
+//! - SIGTERM, SIGHUP and SIGINT to devdeck: the app marks what runs as stopped to quit,
+//!   kills everything, saves and quits; so the runs start again when devdeck reopens. If
+//!   the app doesn't answer within [`SIGNAL_WAIT`], the signal thread kills every
+//!   recorded live group (`process::kill_all(GroupLog::live())`) itself.
 //! - Quitting with runs waits for their stop sequence, then kills what's left
 //!   (`Shell::stop_all_and_quit`, `Shell::kill_everything`).
 
 use crate::shell::{Shell, focus_button};
 use devdeck_core::process::{GroupLog, kill_all};
+use std::time::Duration;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{ModalFocus, label, modal_frame, pop_modal, push_modal, theme};
 use gpui::{App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, actions, div, prelude::*};
@@ -20,6 +23,9 @@ use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 actions!(lifecycle, [KillLeftovers]);
+
+/// How long the signal thread waits for the app to kill and save before killing itself.
+pub const SIGNAL_WAIT: Duration = Duration::from_secs(1);
 
 /// Held while this devdeck runs; the lock goes with the process.
 pub struct InstanceLock {
@@ -56,22 +62,27 @@ pub fn offer_leftovers(shell: &Entity<Shell>, log: &GroupLog, cx: &mut App) {
     if !leftovers.is_empty()
         && let Some(main) = shell.read(cx).main_window()
     {
+        let log = log.clone();
         cx.defer(move |cx| {
-            let _ = main.update(cx, |_, window, cx| open_leftovers(leftovers, window, cx));
+            let _ = main.update(cx, |_, window, cx| open_leftovers(leftovers, log, window, cx));
         });
     }
 }
 
-/// SIGTERM, SIGHUP or SIGINT: every recorded group is killed on the signal thread at
-/// once (it reads `/proc`, so not in a signal handler), then the app saves and quits.
+/// SIGTERM, SIGHUP or SIGINT: the app marks what runs as stopped to quit (before any
+/// exit of a killed run reaches it), kills everything, saves and quits. The signal thread
+/// then kills every recorded group anyway (it reads `/proc`, so not in a signal handler):
+/// once the app answered, or after [`SIGNAL_WAIT`] if it's stuck.
 fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else { return };
     let (tx, rx) = async_channel::bounded::<()>(1);
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let spawned = std::thread::Builder::new().name("devdeck signals".into()).spawn(move || {
         if signals.forever().next().is_some() {
-            kill_all(&log.live());
             let _ = tx.send_blocking(());
+            let _ = done_rx.recv_timeout(SIGNAL_WAIT);
+            kill_all(&log.live());
         }
     });
     if spawned.is_err() {
@@ -82,11 +93,9 @@ fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
         if rx.recv().await.is_ok() {
             cx.update(|cx| {
                 if let Some(s) = shell.upgrade() {
-                    s.update(cx, |s, cx| {
-                        s.kill_everything(cx);
-                        s.flush(cx);
-                    });
+                    s.update(cx, |s, cx| s.kill_to_quit(cx));
                 }
+                let _ = done_tx.try_send(());
                 cx.quit();
             });
         }
@@ -94,8 +103,8 @@ fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
     .detach();
 }
 
-fn open_leftovers(pids: Vec<u32>, window: &mut Window, cx: &mut App) {
-    let dialog = cx.new(|cx| Leftovers::new(pids, cx));
+fn open_leftovers(pids: Vec<u32>, log: GroupLog, window: &mut Window, cx: &mut App) {
+    let dialog = cx.new(|cx| Leftovers::new(pids, log, cx));
     push_modal(dialog.clone().into(), window, cx);
     let first = dialog.read(cx).focus.0[0].clone();
     first.focus(window, cx);
@@ -107,21 +116,28 @@ pub struct Leftovers {
     /// Process id and command line.
     pub processes: Vec<(u32, String)>,
     pub focus: ModalFocus,
+    log: GroupLog,
 }
 
 impl Leftovers {
-    fn new(pids: Vec<u32>, cx: &mut Context<Self>) -> Self {
+    fn new(pids: Vec<u32>, log: GroupLog, cx: &mut Context<Self>) -> Self {
         let processes = pids.into_iter().map(|p| (p, command_of(p))).collect();
-        Self { processes, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]) }
+        Self { processes, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), log }
     }
 
+    fn pids(&self) -> Vec<u32> {
+        self.processes.iter().map(|(p, _)| *p).collect()
+    }
+
+    /// Kills the ones still the processes offered (the dialog may have stayed open).
     fn kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let pids: Vec<u32> = self.processes.iter().map(|(p, _)| *p).collect();
-        kill_all(&pids);
+        self.log.kill(&self.pids());
         pop_modal(window, cx);
     }
 
+    /// Leaves them running, for good: quitting this devdeck won't kill them.
     fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.log.forget(&self.pids());
         pop_modal(window, cx);
     }
 

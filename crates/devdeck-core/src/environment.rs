@@ -1,6 +1,5 @@
 //! The environment runs get (R6.5, R6.8, R1.4): the login shell's variables, the
-//! programs on its PATH, and the Node version each app asks for. Builder C of M2 step 2
-//! implements this file; the interface is fixed here.
+//! programs on its PATH, and the Node version each app asks for.
 //!
 //! An app started from the desktop doesn't see what `~/.bashrc` sets (nvm, pnpm,
 //! `~/go/bin`), so the user's login shell is asked once (`$SHELL -lic env`, with a

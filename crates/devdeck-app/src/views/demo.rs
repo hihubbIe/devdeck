@@ -12,7 +12,7 @@ use std::time::Duration;
 
 pub fn build(r: &ViewRef, ctx: Option<&super::ViewCx>, cx: &mut App) -> super::Built {
     let s = r.as_str();
-    let plain = |view: AnyView| super::Built { view, focus: None, save: None };
+    let plain = |view: AnyView| super::Built { view, focus: None, save: None, missing: false };
     if s == "demo/logs" {
         let v = cx.new(|cx| LogsView::new(ctx, cx));
         super::focusable(v, cx)

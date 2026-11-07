@@ -1,6 +1,5 @@
 //! Listening ports (R6.9): which ports a run's processes listen on, who holds a port
-//! before a start, and the ports each command used last time. Builder E of M2 step 2
-//! implements this file; the interface is fixed here.
+//! before a start, and the ports each command used last time.
 //!
 //! Sockets come from `/proc/net/tcp` and `tcp6` (state LISTEN; IPv4-mapped IPv6
 //! included; `0.0.0.0` and `127.0.0.1` on the same port conflict). They are matched to

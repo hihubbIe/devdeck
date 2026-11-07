@@ -145,6 +145,46 @@ Review of the combined step (subagent) and assessment:
 Decisions: a second devdeck says one is running and exits; leftovers after a crash are
 offered in a dialog at start; problems are one toast with a count.
 
+## Step 3 outcome (2026-11-07)
+
+R1 and R4 by builders, R2 and R3 by the lead (the builders were refused). Discovery on
+the real folders: `tadaweb` 172 apps in 88 ms, `personal` 19 apps in 13 ms. Review of
+the step (subagent) and assessment:
+- **Fixed**:
+  - A rescan read every folder on the UI thread for any file event, logs and build
+    files included. Now only a file discovery reads (`discovery::reads`), a new or
+    renamed folder, or a removed watched folder rescans; the rescan runs in the
+    background, swaps the catalog only when it changed, and the watcher follows its new
+    folders afterwards.
+  - A signal could let a killed run's exit reach the app first, which then saved it as
+    not running. Now the app marks the runs stopped to quit, kills and saves; the signal
+    thread kills only afterwards (or after 1 s if the app is stuck).
+  - Leftovers the user left were killed at the next quit; Kill now re-checks each
+    process's start time.
+  - Config errors stayed in the problems view after a fix, and a broken `machine.toml`
+    silently fell back to defaults. Now the config files' problems are read again on
+    each change; a broken `machine.toml` keeps the current settings, with a toast; the
+    last environment load asked wins.
+  - View states (a run running) were saved only with a layout change or at quit; now
+    soon after they change.
+  - The quit wait used the current catalog's command, so a run whose command changed or
+    disappeared got the default wait; each run now keeps its stop length.
+  - A scan that saw only some of a run's ports replaced the remembered ones; a run's
+    ports seen since it started are all kept.
+  - A tab built while its app or command was missing stayed a message; it's built again
+    when the apps change, its saved state kept.
+  - The restart toast came back on every edit while a workspace file was broken; it now
+    shows once per change of the set of files.
+  - A folder that can't be watched (inotify limit) is reported once.
+  - Smaller: a test's `sleep` always reaped; builder scaffolding removed from module
+    docs; a typed check for tools still loading; the welcome text says a first workspace
+    file needs a restart.
+- **Assessed, not changed**: the conflict check before a start reads `/proc/net/tcp*`
+  only (cheap); it scans every process's sockets only when a port is held, once per
+  start, to name the holder. The first discovery stays on the UI thread (88 ms): the
+  views restored with the window need their apps.
+- **Added (user)**: the Apps list is a tree that keeps the folders.
+
 ## States to check
 
 No config; config error; app vs library; missing tool; `.nvmrc` wants a missing Node;

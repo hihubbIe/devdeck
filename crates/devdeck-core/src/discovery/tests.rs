@@ -407,3 +407,13 @@ fn discover_reads_the_given_folders() {
     t.file("x/Makefile", "run:\n\ttrue\n");
     assert_eq!(ids(&discover(&[t.0.to_path_buf()])), ["x"]);
 }
+
+#[test]
+fn reads_names_the_files_discovery_reads() {
+    for name in ["package.json", "pnpm-workspace.yaml", "Taskfile.yml", "GNUmakefile", "compose.yaml", "docker-compose.dev.yml", "launch.json", "main.go", ".nvmrc"] {
+        assert!(reads(name), "{name}");
+    }
+    for name in ["tsconfig.tsbuildinfo", "debug.log", ".env", "main_test.go", "docker-compose.override.yml", "README.md"] {
+        assert!(!reads(name), "{name}");
+    }
+}

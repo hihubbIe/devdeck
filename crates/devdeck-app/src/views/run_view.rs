@@ -148,9 +148,11 @@ impl RunView {
         if !self.restoring {
             return;
         }
-        let refusal = self.ctx.services.read(cx).runner.read(cx).refusal(&self.key);
-        match refusal.as_deref() {
-            Some("checking tools…") => {}
+        let runner = self.ctx.services.read(cx).runner.read(cx);
+        if runner.tools().pending {
+            return;
+        }
+        match runner.refusal(&self.key) {
             Some(_) => self.restoring = false,
             None => {
                 self.restoring = false;

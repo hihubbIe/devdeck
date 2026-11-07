@@ -3,7 +3,10 @@
 
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::watcher::{self, PAUSE};
-use devdeck_core::config::{WORKSPACES_DIR, load_workspaces};
+use devdeck_app::services::Rescanned;
+use devdeck_core::config::{MACHINE_FILE, WORKSPACES_DIR, load_workspaces};
+use std::cell::Cell;
+use std::rc::Rc;
 use gpui::{Entity, TestAppContext};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -76,4 +79,66 @@ fn a_config_edit_applies(cx: &mut TestAppContext) {
     let text = std::fs::read_to_string(&file).unwrap();
     std::fs::write(&file, format!("{text}\n[apps.web]\nname = \"website\"\n")).unwrap();
     until(cx, "the new name", |cx| apps(&s, cx) == ["website 1"]);
+}
+
+fn rescans(s: &Setup, cx: &mut TestAppContext) -> (Rc<Cell<usize>>, gpui::Subscription) {
+    let n = Rc::new(Cell::new(0));
+    let services = cx.read(|cx| s.shell.read(cx).workspaces[0].services.clone());
+    let count = n.clone();
+    let sub = cx.update(|cx| cx.subscribe(&services, move |_, _: &Rescanned, _| count.set(count.get() + 1)));
+    (n, sub)
+}
+
+/// Lets real time and the test clock pass, for events that should change nothing.
+fn settle(cx: &mut TestAppContext) {
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(20));
+        cx.executor().advance_clock(PAUSE);
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn files_written_next_to_manifests_dont_rescan(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let (n, _sub) = rescans(&s, cx);
+    for name in ["debug.log", "tsconfig.tsbuildinfo", ".env"] {
+        write(&s.projects.join("web").join(name), "x");
+    }
+    settle(cx);
+    assert_eq!(n.get(), 0, "nothing discovery reads changed");
+    write(&s.projects.join("web/Makefile"), "dev:\n\techo dev\nlint:\n\techo lint\n");
+    until(cx, "a rescan", |_| n.get() > 0);
+    assert_eq!(apps(&s, cx), ["web 2"]);
+}
+
+fn config_problems(cx: &TestAppContext) -> Vec<String> {
+    cx.update(|cx| devdeck_app::environment::environment(cx).read(cx).config_problems.clone())
+}
+
+fn toast_texts(cx: &TestAppContext) -> Vec<String> {
+    cx.update(|cx| devdeck_ui::toasts(cx).read(cx).queue.items.iter().map(|t| t.text.to_string()).collect())
+}
+
+#[gpui::test]
+fn config_problems_follow_the_files(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let file = s.config.join(WORKSPACES_DIR).join("work.toml");
+    let good = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, "folders = [").unwrap();
+    until(cx, "the problem", |cx| !config_problems(cx).is_empty());
+    assert!(config_problems(cx)[0].contains("work.toml"), "{:?}", config_problems(cx));
+    assert!(!toast_texts(cx).iter().any(|t| t.starts_with("Restart devdeck")), "the same files: no restart needed");
+    std::fs::write(&file, good).unwrap();
+    until(cx, "cleared", |cx| config_problems(cx).is_empty());
+}
+
+#[gpui::test]
+fn a_broken_machine_file_keeps_the_settings(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    std::fs::write(s.config.join(MACHINE_FILE), "node_dirs = 3").unwrap();
+    until(cx, "the toast", |cx| toast_texts(cx).iter().any(|t| t.ends_with("keeping the previous machine settings")));
+    assert!(config_problems(cx).iter().any(|p| p.contains(MACHINE_FILE)), "listed too");
+    let loading = cx.update(|cx| matches!(devdeck_app::environment::environment(cx).read(cx).state, devdeck_app::environment::EnvState::Loading));
+    assert!(loading, "no load with a broken file");
 }

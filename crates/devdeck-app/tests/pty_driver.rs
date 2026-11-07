@@ -52,7 +52,7 @@ fn setup(cx: &mut TestAppContext, dir: Option<PathBuf>, commands: &[(&str, &str)
     };
     let catalog = Catalog { apps: vec![app], tools: Tools { toolbox: Some(toolbox.clone()), ..Tools::default() }, ..Catalog::default() };
     let runner = cx.update(|cx| {
-        let env = cx.new(|_| Environment { state: EnvState::Ready(toolbox), problems: Vec::new() });
+        let env = cx.new(|_| Environment::new(EnvState::Ready(toolbox)));
         cx.new(|_| Runner::new("test".into(), Rc::new(catalog), Rc::new(PtyDriver { env, log: None })))
     });
     Setup { runner, path }

@@ -1,5 +1,4 @@
-//! Workspace configuration (R10.1, R1.5, R6.4, R6.6). Builder A of M2 step 2 implements
-//! this file; the interface is fixed here.
+//! Workspace configuration (R10.1, R1.5, R6.4, R6.6).
 //!
 //! Files, all TOML, in the config folder (`~/.config/devdeck`):
 //! - `workspaces/<id>.toml`, one per workspace, shareable (no machine paths):
@@ -95,6 +94,15 @@ pub struct ConfigError {
     pub file: PathBuf,
     pub line: Option<usize>,
     pub message: String,
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "{}:{line}: {}", self.file.display(), self.message),
+            None => write!(f, "{}: {}", self.file.display(), self.message),
+        }
+    }
 }
 
 /// Every `workspaces/*.toml` in `config_dir`, alphabetical by id, with the problems of

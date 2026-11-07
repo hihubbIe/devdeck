@@ -4,7 +4,9 @@
 //! A workspace comes from the demo or from its config file. A config workspace's catalog
 //! is discovery plus the config's overrides, with the machine's tools; it's rebuilt and
 //! swapped in when the tools are found, when folders change and when the config changes
-//! (the runner swaps too; runs of an app that disappeared keep running).
+//! (the runner swaps too; runs of an app that disappeared keep running). A rescan reads
+//! the folders off the UI thread, and swaps only what changed. The first scan, at start,
+//! is on the UI thread: the views restored with the window need their apps.
 
 use crate::cluster::{Cluster, new_cluster};
 use crate::environment::Environment;
@@ -12,15 +14,13 @@ use crate::port_scan::{PortHolder, Ports};
 use crate::runner::{RunKey, Runner, fake_runner};
 use devdeck_core::catalog::Catalog;
 use devdeck_core::config::{WorkspaceConfig, apply_overrides};
-use gpui::{App, AppContext, Context, Entity};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 pub struct Services {
     pub workspace: String,
-    /// The workspace's display name (toasts).
-    pub name: String,
     pub catalog: Rc<Catalog>,
     /// The workspace env (title bar `env ▾`), `None` without envs.
     pub env: Option<String>,
@@ -34,7 +34,14 @@ pub struct Services {
     pub watch: Vec<PathBuf>,
     /// The ports runs listen on, scanned in the background, and the ports they used.
     pub ports: Entity<Ports>,
+    /// The rescan under way; a new one replaces it.
+    scan: Option<Task<()>>,
 }
+
+/// A rescan finished (the folders to watch may have changed).
+pub struct Rescanned;
+
+impl EventEmitter<Rescanned> for Services {}
 
 /// A port someone listens on: a run, a process a port view shows, or a demo holder.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,7 +58,7 @@ pub struct PortInfo {
 impl Services {
     /// The demo services of a workspace: fake runner (with its autostart runs) and,
     /// when the catalog has one, the fake cluster.
-    pub fn demo(workspace: &str, name: &str, env: Option<String>, cx: &mut App) -> Entity<Services> {
+    pub fn demo(workspace: &str, env: Option<String>, cx: &mut App) -> Entity<Services> {
         let catalog = Rc::new(devdeck_core::demo::catalog(workspace));
         let env = catalog.pick_env(env);
         let runner = fake_runner(workspace, catalog.clone(), env.clone(), cx);
@@ -63,7 +70,7 @@ impl Services {
             if let Some(c) = &cluster {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
-            Services { workspace: workspace.into(), name: name.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new(), ports }
+            Services { workspace: workspace.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None }
         })
     }
 
@@ -88,24 +95,42 @@ impl Services {
                 this.set_catalog(Catalog { tools, ..(*this.catalog).clone() }, cx);
             })
             .detach();
-            Services { workspace: config.id.clone(), name: config.name.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch, ports }
+            Services { workspace: config.id.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch, ports, scan: None }
         })
     }
 
-    /// Finds the apps again, with `config` when it changed (a config workspace only).
+    /// Finds the apps again, with `config` when it changed (a config workspace only), in
+    /// the background. Emits [`Rescanned`] once done.
     pub fn rescan(&mut self, config: Option<WorkspaceConfig>, cx: &mut Context<Self>) {
         if let Some(c) = config {
             self.config = Some(c);
         }
-        let Some(config) = &self.config else { return };
-        let (catalog, problems, watch) = discover(config, self.catalog.tools.clone());
-        self.problems = problems;
-        self.watch = watch;
-        self.set_catalog(catalog, cx);
+        let Some(config) = self.config.clone() else { return };
+        let tools = self.catalog.tools.clone();
+        self.scan = Some(cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { discover(&config, tools) }).await;
+            let _ = this.update(cx, |s, cx| s.found(found, cx));
+        }));
     }
 
-    /// Swaps the catalog in, for the views and the runner.
+    fn found(&mut self, (mut catalog, problems, watch): (Catalog, Vec<String>, Vec<PathBuf>), cx: &mut Context<Self>) {
+        self.scan = None;
+        // The tools may have been found meanwhile.
+        catalog.tools = self.catalog.tools.clone();
+        if self.problems != problems || self.watch != watch {
+            self.problems = problems;
+            self.watch = watch;
+            cx.notify();
+        }
+        self.set_catalog(catalog, cx);
+        cx.emit(Rescanned);
+    }
+
+    /// Swaps the catalog in, for the views and the runner, when it changed.
     pub fn set_catalog(&mut self, catalog: Catalog, cx: &mut Context<Self>) {
+        if *self.catalog == catalog {
+            return;
+        }
         let catalog = Rc::new(catalog);
         self.env = catalog.pick_env(self.env.clone());
         self.catalog = catalog.clone();

@@ -140,7 +140,7 @@ impl Shell {
                         let env = crate::environment::environment(cx);
                         Services::from_config(c, sidebar_state.env.clone(), env, store.as_ref().map(|s| s.dir.clone()), cx)
                     }
-                    None => Services::demo(&spec.id, &spec.name, sidebar_state.env.clone(), cx),
+                    None => Services::demo(&spec.id, sidebar_state.env.clone(), cx),
                 };
                 let deck_store = store.clone();
                 let deck_services = services.clone();
@@ -160,8 +160,11 @@ impl Shell {
                     }
                     _ => Default::default(),
                 };
-                let deck = cx.new(|_| {
-                    Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_services(deck_services).with_book(book).with_view_states(views)
+                let deck = cx.new(|cx| {
+                    let mut deck =
+                        Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_services(deck_services).with_book(book).with_view_states(views);
+                    deck.follow_services(cx);
+                    deck
                 });
                 let (ws, sidebar_deck, sidebar_store) = (spec.id.clone(), deck.clone(), store.clone());
                 let sidebar_services = services.clone();
@@ -318,6 +321,17 @@ impl Shell {
         }));
     }
 
+    /// Quitting at once (a signal): what runs counts as stopped to quit, so it starts
+    /// again on reopen; everything is killed, and saved.
+    pub fn kill_to_quit(&mut self, cx: &mut Context<Self>) {
+        for w in &self.workspaces {
+            let runner = w.services.read(cx).runner.clone();
+            runner.update(cx, |r, _| r.quitting());
+        }
+        self.kill_everything(cx);
+        self.flush(cx);
+    }
+
     /// Kills, now, every process this devdeck started that may still run: the runs' and
     /// what the group log recorded (R8.2).
     pub fn kill_everything(&self, cx: &App) {
@@ -374,7 +388,7 @@ impl Shell {
 /// What config files, discovery and overrides reported, as one toast with a count; View
 /// opens the active workspace's problems view (the list stays there, live).
 pub fn report_problems(shell: &Entity<Shell>, cx: &mut App) {
-    let machine = crate::environment::environment(cx).read(cx).problems.len();
+    let machine = crate::environment::environment(cx).read(cx).problems().len();
     let s = shell.read(cx);
     let count = machine + s.workspaces.iter().map(|w| w.services.read(cx).problems.len()).sum::<usize>();
     if count == 0 {

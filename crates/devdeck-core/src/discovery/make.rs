@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The names `make` looks for, in its order.
-const NAMES: [&str; 3] = ["GNUmakefile", "makefile", "Makefile"];
+pub(super) const NAMES: [&str; 3] = ["GNUmakefile", "makefile", "Makefile"];
 
 /// Lines that start with these are directives, not rules.
 const DIRECTIVES: [&str; 9] = ["include", "-include", "sinclude", "export", "unexport", "override", "vpath", "undefine", "private"];

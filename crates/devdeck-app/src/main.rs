@@ -8,7 +8,7 @@
 use devdeck_app::shell::{Shell, try_shell};
 use devdeck_app::stats;
 use devdeck_app::shell::WorkspaceSpec;
-use devdeck_core::config::{ConfigError, load_machine, load_workspaces};
+use devdeck_core::config::{load_machine, load_workspaces};
 use devdeck_core::layout::{Layout, ViewRef};
 use devdeck_core::settings::default_config_dir;
 use devdeck_core::state::{StateStore, default_state_dir};
@@ -57,7 +57,7 @@ fn main() {
             let (machine, machine_errors) = load_machine(&dir);
             errors.extend(machine_errors);
             let env = devdeck_app::environment::load(machine, cx);
-            env.update(cx, |e, _| e.problems.extend(errors.iter().map(describe)));
+            env.update(cx, |e, _| e.config_problems = errors.iter().map(ToString::to_string).collect());
             let mut specs: Vec<WorkspaceSpec> = configs.into_iter().map(WorkspaceSpec::from_config).collect();
             if specs.is_empty() {
                 specs.push(WorkspaceSpec::new("welcome", "welcome", welcome_layout));
@@ -129,13 +129,6 @@ fn welcome_layout() -> Layout {
     let p = l.main().focused;
     l.open(ViewRef::new("welcome"), p).expect("open the welcome view");
     l
-}
-
-fn describe(e: &ConfigError) -> String {
-    match e.line {
-        Some(line) => format!("{}:{line}: {}", e.file.display(), e.message),
-        None => format!("{}: {}", e.file.display(), e.message),
-    }
 }
 
 fn spawn_stats_printer(shell: Entity<Shell>, every: Duration, cx: &mut App) {

@@ -6,16 +6,19 @@ use devdeck_core::config::{MACHINE_FILE, WORKSPACES_DIR};
 use devdeck_ui::{label, section, theme};
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, prelude::*};
 
-/// The workspace's problems, live: fixing a manifest or the config clears them.
+/// The workspace's problems and the machine's, live: fixing a manifest or a config file
+/// clears them.
 pub struct ProblemsView {
     ctx: ViewCx,
-    _observe: Subscription,
+    _observe: [Subscription; 2],
 }
 
 impl ProblemsView {
     pub fn new(ctx: ViewCx, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&ctx.services, |_, _, cx| cx.notify());
-        Self { ctx, _observe: observe }
+        let services = cx.observe(&ctx.services, |_, _, cx| cx.notify());
+        let env = crate::environment::environment(cx);
+        let machine = cx.observe(&env, |_, _, cx| cx.notify());
+        Self { ctx, _observe: [services, machine] }
     }
 }
 
@@ -23,7 +26,7 @@ impl Render for ProblemsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let mut problems = self.ctx.services.read(cx).problems.clone();
-        problems.extend(crate::environment::environment(cx).read(cx).problems.iter().cloned());
+        problems.extend(crate::environment::environment(cx).read(cx).problems());
         let body = if problems.is_empty() {
             div().text_color(t.mute).child(label("No problems."))
         } else {
@@ -63,6 +66,6 @@ impl Render for WelcomeView {
             .child(label(format!("Add one file per workspace in {}/{WORKSPACES_DIR}/, for example work.toml:", dir.display())).text_color(t.mute))
             .child(div().p_2().bg(t.raised).rounded(t.radius_m).flex().flex_col().children(example.map(|l| div().whitespace_nowrap().child(l))))
             .child(label(format!("Machine paths (Node folders, PATH additions) go in {}/{MACHINE_FILE}.", dir.display())).text_color(t.mute))
-            .child(label("devdeck finds the apps in the folders when it starts. `devdeck --demo` shows the demo.").text_color(t.mute))
+            .child(label("Restart devdeck once the first workspace file is there; after that, devdeck follows changes to the files and the folders. `devdeck --demo` shows the demo.").text_color(t.mute))
     }
 }

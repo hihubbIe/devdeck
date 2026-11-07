@@ -7,7 +7,7 @@ use serde::de::IgnoredAny;
 use std::path::Path;
 
 /// The names `docker compose` looks for, in its order.
-const DEFAULTS: [&str; 4] = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+pub(super) const DEFAULTS: [&str; 4] = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 
 pub(super) fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
     // (suffix, file, -f needed)
@@ -44,7 +44,7 @@ pub(super) fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
 }
 
 /// `dev` for `docker-compose.dev.yml` or `compose.dev.yaml`; not for the override file.
-fn variant(name: &str) -> Option<&str> {
+pub(super) fn variant(name: &str) -> Option<&str> {
     let stem = name.strip_suffix(".yml").or_else(|| name.strip_suffix(".yaml"))?;
     let x = stem.strip_prefix("docker-compose.").or_else(|| stem.strip_prefix("compose."))?;
     (!x.is_empty() && x != "override").then_some(x)

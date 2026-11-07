@@ -81,6 +81,9 @@ pub struct Built {
     pub focus: Option<FocusHandle>,
     /// What the view keeps of itself across a restart.
     pub save: Option<Saver>,
+    /// A message standing in for a view whose app, command or env isn't there (yet): the
+    /// deck builds it again when the workspace's apps change.
+    pub missing: bool,
 }
 
 /// Reads a view's state to save (`None` once the view is gone).
@@ -95,15 +98,22 @@ pub trait KeepsState: Render + Sized {
 
 fn focusable<V: Render + Focusable>(view: Entity<V>, cx: &App) -> Built {
     let focus = Some(view.read(cx).focus_handle(cx));
-    Built { view: view.into(), focus, save: None }
+    Built { view: view.into(), focus, save: None, missing: false }
 }
 
 /// A focusable view that keeps its state: restored from `saved`, saved through a weak
-/// handle (saving never keeps a closed view alive).
-fn keeping<V: KeepsState + Focusable>(view: Entity<V>, saved: Option<&serde_json::Value>, cx: &mut App) -> Built {
+/// handle (saving never keeps a closed view alive). Whenever it changes, its deck checks
+/// whether its state did (a run started or stopped), to save it soon, not only with the
+/// next layout change or at quit.
+fn keeping<V: KeepsState + Focusable>(view: Entity<V>, saved: Option<&serde_json::Value>, ctx: &ViewCx, cx: &mut App) -> Built {
     if let Some(state) = saved {
         view.update(cx, |v, cx| v.restore(state, cx));
     }
+    let (deck, r) = (ctx.deck.clone(), ctx.view.clone());
+    cx.observe(&view, move |_, cx| {
+        let _ = deck.update(cx, |d, cx| d.view_changed(&r, cx));
+    })
+    .detach();
     let weak = view.downgrade();
     let save: Saver = std::rc::Rc::new(move |cx| weak.upgrade().map(|v| v.read(cx).save(cx)));
     Built { save: Some(save), ..focusable(view, cx) }
@@ -111,16 +121,16 @@ fn keeping<V: KeepsState + Focusable>(view: Entity<V>, saved: Option<&serde_json
 
 pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value>, cx: &mut App) -> Built {
     let addr = ViewAddr::parse(r);
-    let message = |text: String, cx: &mut App| Built { view: cx.new(|_| Message(text.into())).into(), focus: None, save: None };
+    let message = |text: String, cx: &mut App| Built { view: cx.new(|_| Message(text.into())).into(), focus: None, save: None, missing: true };
     match (addr, ctx) {
         (ViewAddr::Other(_), ctx) => demo::build(r, ctx, cx),
-        (_, None) => message("This view needs a workspace.".into(), cx),
+        (_, None) => Built { missing: false, ..message("This view needs a workspace.".into(), cx) },
         (ViewAddr::App { app }, Some(ctx)) => {
             if ctx.services.read(cx).catalog.app(&app).is_none() {
                 return message(format!("{app} isn't an app of this workspace."), cx);
             }
             let v = cx.new(|cx| app_view::AppView::new(app, ctx.clone(), cx));
-            keeping(v, saved, cx)
+            keeping(v, saved, ctx, cx)
         }
         (ViewAddr::Run { app, cmd }, Some(ctx)) => {
             let known = ctx.services.read(cx).catalog.app(&app).is_some_and(|a| a.command(&cmd).is_some());
@@ -128,7 +138,7 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 return message(format!("{app} has no command {cmd}."), cx);
             }
             let v = cx.new(|cx| run_view::RunView::new(app, cmd, ctx.clone(), cx));
-            keeping(v, saved, cx)
+            keeping(v, saved, ctx, cx)
         }
         (ViewAddr::Svc { env, name }, Some(ctx)) => {
             let Some(cluster) = ctx.services.read(cx).cluster.clone() else {
@@ -144,12 +154,12 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             Err(text) => message(text, cx),
             Ok(cluster) => {
                 let v = cx.new(|cx| logs_view::ServiceLogsView::new(env, name, ctx.clone(), cluster, cx));
-                keeping(v, saved, cx)
+                keeping(v, saved, ctx, cx)
             }
         },
         (ViewAddr::Pod { env, pod }, Some(ctx)) => match cluster_env(ctx, &env, cx) {
             Err(text) => message(text, cx),
-            Ok(cluster) => Built { view: cx.new(|cx| pod_view::PodView::new(env, pod, ctx.clone(), cluster, cx)).into(), focus: None, save: None },
+            Ok(cluster) => Built { view: cx.new(|cx| pod_view::PodView::new(env, pod, ctx.clone(), cluster, cx)).into(), focus: None, save: None, missing: false },
         },
         (ViewAddr::Matrix, Some(ctx)) => match ctx.services.read(cx).cluster.clone() {
             None => message("This workspace has no cluster.".into(), cx),
@@ -158,9 +168,9 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 focusable(v, cx)
             }
         },
-        (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None, save: None },
-        (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None, save: None },
-        (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None, save: None },
+        (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None, save: None, missing: false },
+        (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None, save: None, missing: false },
+        (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None, save: None, missing: false },
     }
 }
 

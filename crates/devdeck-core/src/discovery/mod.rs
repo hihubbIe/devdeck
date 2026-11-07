@@ -1,6 +1,5 @@
-//! Finding apps in a workspace's folders (R6.1, R6.2, R6.3). Builder B of M2 step 2
-//! implements this folder (one file per source next to this one); the interface is
-//! fixed here.
+//! Finding apps in a workspace's folders (R6.1, R6.2, R6.3), one file per source next
+//! to this one.
 //!
 //! Each child folder of a workspace folder is a project. Sources, each giving commands
 //! with ids `source:name`:
@@ -20,7 +19,7 @@
 //! with `library: true`. Tools: each command names the programs it needs (`pnpm`,
 //! `node`, `task`, `go`…).
 //!
-//! `App::node` comes from [`nvmrc`](crate::environment::nvmrc) (already implemented).
+//! `App::node` comes from [`nvmrc`](crate::environment::nvmrc).
 //!
 //! App ids are the folder relative to the workspace folder (`front-end/mastertadaapp`);
 //! the same id found under two workspace folders is reported and the second skipped.
@@ -75,6 +74,18 @@ pub struct Found {
 pub fn discover(folders: &[PathBuf]) -> Found {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     scan(folders, home.as_deref())
+}
+
+/// Whether discovery reads files of this name, so a change to one can change what's
+/// found (a log or a build file written next to them can't).
+pub fn reads(name: &str) -> bool {
+    const NAMES: [&str; 8] = ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "go.mod", "Cargo.toml", "launch.json", ".nvmrc"];
+    NAMES.contains(&name)
+        || taskfile::NAMES.contains(&name)
+        || make::NAMES.contains(&name)
+        || compose::DEFAULTS.contains(&name)
+        || compose::variant(name).is_some()
+        || name.strip_suffix(".go").is_some_and(|stem| !stem.ends_with("_test"))
 }
 
 /// [`discover`] with the home folder given (`~` in `App::folder` and problems).

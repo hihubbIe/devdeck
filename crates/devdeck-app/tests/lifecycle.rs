@@ -72,6 +72,25 @@ fn processes_a_previous_devdeck_left_are_offered_and_killed(cx: &mut TestAppCont
     assert_eq!(cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx)), (false, 0), "closed");
 }
 
+#[gpui::test]
+fn leftovers_left_alone_stay_alone(cx: &mut TestAppContext) {
+    let config = cx.update(|cx| devdeck_app::test_dir("config", cx));
+    cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
+    let state = cx.update(|cx| devdeck_app::test_dir("state", cx));
+    let log = GroupLog::new(&state);
+    let orphan = Orphan::start(&log);
+    let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
+    cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+    cx.update(|cx| offer_leftovers(&shell, &log, cx));
+    cx.run_until_parked();
+    let main = cx.read(|cx| shell.read(cx).main_window().unwrap());
+    cx.update_window(main.into(), |_, window, cx| window.dispatch_action(Box::new(devdeck_ui::overlay::ModalClose), cx)).unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx)), (false, 0), "closed");
+    assert!(orphan.alive());
+    assert_eq!(log.live(), [] as [u32; 0], "forgotten: quitting this devdeck won't kill it");
+}
+
 /// Runs that claim a process id (never signaled: these tests don't quit).
 struct Claims;
 

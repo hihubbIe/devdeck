@@ -92,6 +92,9 @@ pub struct Run {
     control: Option<Box<dyn RunControl>>,
     _task: Option<Task<()>>,
     restart_after_stop: bool,
+    /// How long its stop sequence takes, from its command when it started (the command
+    /// may change or disappear while it runs).
+    stop: std::time::Duration,
 }
 
 /// Why a start was refused, so the UI can act on it.
@@ -261,6 +264,7 @@ impl Runner {
                 control: None,
                 _task: None,
                 restart_after_stop: false,
+                stop: Default::default(),
             }),
         };
         run.runs += 1;
@@ -268,6 +272,7 @@ impl Runner {
         run.env = env.clone();
         run.error = None;
         run.restart_after_stop = false;
+        run.stop = devdeck_core::process::StopKind::of(&cmd).total();
         let applied = app.env.apply(&cmd.line, env.as_deref());
         let header = format!("── run {} · {}{} ──", run.runs, applied.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
         note(&mut run.terminal, &header);
@@ -323,10 +328,17 @@ impl Runner {
         }
     }
 
+    /// Remembers what runs as stopped only because devdeck quits, whatever ends it next
+    /// (its stop sequence, or a kill).
+    pub fn quitting(&mut self) {
+        let keys = self.runs.iter().filter(|(_, r)| r.state.is_running()).map(|(k, _)| k.clone());
+        self.stopped_to_quit.extend(keys);
+    }
+
     /// Stops everything to quit, remembering what ran.
     pub fn stop_all(&mut self, cx: &mut Context<Self>) {
+        self.quitting();
         let keys: Vec<RunKey> = self.runs.iter().filter(|(_, r)| r.state == RunState::Running).map(|(k, _)| k.clone()).collect();
-        self.stopped_to_quit.extend(keys.iter().cloned());
         for k in keys {
             self.stop(&k, cx);
         }
@@ -346,7 +358,7 @@ impl Runner {
         self.runs
             .iter()
             .filter(|(_, r)| r.state.is_running() && r.control.as_ref().is_some_and(|c| c.pid().is_some()))
-            .filter_map(|(k, _)| Some(devdeck_core::process::StopKind::of(self.command(k)?.1).total()))
+            .map(|(_, r)| r.stop)
             .max()
             .unwrap_or_default()
     }

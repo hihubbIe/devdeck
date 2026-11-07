@@ -34,6 +34,14 @@ pub struct Deck {
     savers: HashMap<ViewRef, views::Saver>,
     /// States saved last time, handed to each view when it's built (then dropped).
     restored: devdeck_core::state::ViewStates,
+    /// The views' states as last written (or about to be).
+    written: devdeck_core::state::ViewStates,
+    /// Views built as a message because their target was missing, with the state saved
+    /// for them (kept, and handed over when they're built again).
+    missing: HashMap<ViewRef, Option<serde_json::Value>>,
+    /// The catalog the views were last built against.
+    catalog: Option<std::rc::Rc<devdeck_core::catalog::Catalog>>,
+    _services: Option<gpui::Subscription>,
     /// The workspace's services, handed to every view (`None` in bare decks: demo views only).
     services: Option<Entity<crate::services::Services>>,
     /// Detached windows only. `None` while the OS window is being opened (deferred).
@@ -84,6 +92,10 @@ impl Deck {
             focus: HashMap::new(),
             savers: HashMap::new(),
             restored: Default::default(),
+            written: Default::default(),
+            missing: HashMap::new(),
+            catalog: None,
+            _services: None,
             services: None,
             os_windows: HashMap::new(),
             released: Vec::new(),
@@ -112,6 +124,36 @@ impl Deck {
     pub fn with_services(mut self, services: Entity<crate::services::Services>) -> Self {
         self.services = Some(services);
         self
+    }
+
+    /// Builds the views whose target was missing again whenever the workspace's apps
+    /// change (a project came back, a command was added).
+    pub fn follow_services(&mut self, cx: &mut Context<Self>) {
+        let Some(services) = self.services.clone() else { return };
+        self.catalog = Some(services.read(cx).catalog.clone());
+        self._services = Some(cx.observe(&services, |d, s, cx| {
+            let catalog = s.read(cx).catalog.clone();
+            if d.catalog.as_ref().is_some_and(|c| std::rc::Rc::ptr_eq(c, &catalog)) {
+                return;
+            }
+            d.catalog = Some(catalog);
+            d.rebuild_missing(cx);
+        }));
+    }
+
+    fn rebuild_missing(&mut self, cx: &mut Context<Self>) {
+        if self.missing.is_empty() {
+            return;
+        }
+        for (r, saved) in std::mem::take(&mut self.missing) {
+            self.focus.remove(&r);
+            self.views.remove(&r);
+            if let Some(state) = saved {
+                self.restored.insert(r.as_str().to_string(), state);
+            }
+        }
+        self.sync(cx);
+        cx.notify();
     }
 
     /// Where keys go when the active view of `pane` should have them.
@@ -393,6 +435,7 @@ impl Deck {
         for r in closed {
             self.focus.remove(&r);
             self.savers.remove(&r);
+            self.missing.remove(&r);
             if let Some(v) = self.views.remove(&r) {
                 self.released.push((v.downgrade(), self.generation));
             }
@@ -408,6 +451,9 @@ impl Deck {
                 }
                 if let Some(s) = built.save {
                     self.savers.insert(r.clone(), s);
+                }
+                if built.missing {
+                    self.missing.insert(r.clone(), saved);
                 }
                 self.views.insert(r, built.view);
             }
@@ -457,6 +503,14 @@ impl Deck {
 
     // ------------------------------------------------------------------ saving
 
+    /// A view that keeps state changed: saved soon if its state did.
+    pub fn view_changed(&mut self, r: &ViewRef, cx: &mut Context<Self>) {
+        let Some(save) = self.savers.get(r) else { return };
+        if save(cx).as_ref() != self.written.get(r.as_str()) && self.store.is_some() && self.save_task.is_none() {
+            self.schedule_save(cx);
+        }
+    }
+
     /// Marks the layout changed and starts the save timer if none runs.
     fn changed(&mut self, cx: &mut Context<Self>) {
         if self.store.is_none() {
@@ -487,16 +541,19 @@ impl Deck {
         let store = self.store.clone()?;
         self.dirty = false;
         self.saves += 1;
-        Some((store, self.workspace.clone(), self.layout.clone(), self.view_states(cx)))
+        self.written = self.view_states(cx);
+        Some((store, self.workspace.clone(), self.layout.clone(), self.written.clone()))
     }
 
     /// What the open views keep of themselves, by view ref.
     pub fn view_states(&self, cx: &App) -> devdeck_core::state::ViewStates {
-        self.savers.iter().filter_map(|(r, save)| Some((r.as_str().to_string(), save(cx)?))).collect()
+        let missing = self.missing.iter().filter_map(|(r, saved)| Some((r.as_str().to_string(), saved.clone()?)));
+        self.savers.iter().filter_map(|(r, save)| Some((r.as_str().to_string(), save(cx)?))).chain(missing).collect()
     }
 
     /// The views' states saved last time (applied as each view is built).
     pub fn with_view_states(mut self, states: devdeck_core::state::ViewStates) -> Self {
+        self.written = states.clone();
         self.restored = states;
         self
     }

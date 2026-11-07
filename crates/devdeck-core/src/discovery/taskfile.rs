@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The names `task` looks for, in its order.
-const NAMES: [&str; 8] = [
+pub(super) const NAMES: [&str; 8] = [
     "Taskfile.yml",
     "taskfile.yml",
     "Taskfile.yaml",

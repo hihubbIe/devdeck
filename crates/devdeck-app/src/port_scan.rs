@@ -86,6 +86,9 @@ pub struct Ports {
     state_dir: Option<PathBuf>,
     /// Loaded from `state_dir` when first needed.
     memory: Option<PortMemory>,
+    /// The ports each run listened on since it started (which start, and the ports): a
+    /// scan sees only what listens at that moment, the memory keeps them all.
+    seen: BTreeMap<RunKey, (u32, BTreeSet<u16>)>,
     pub scan: PortScan,
     /// Port views on screen and the port each shows.
     shown: BTreeMap<EntityId, u16>,
@@ -115,6 +118,7 @@ impl Ports {
             runner: runner.clone(),
             state_dir,
             memory: None,
+            seen: BTreeMap::new(),
             scan: PortScan::default(),
             shown: BTreeMap::new(),
             scans: 0,
@@ -217,8 +221,18 @@ impl Ports {
     fn apply(&mut self, found: Found, cx: &mut Context<Self>) {
         self.scans += 1;
         let ws = self.workspace.clone();
+        let runner = self.runner.read(cx);
+        for (key, ports) in &found.listening {
+            let start = runner.run(key).map_or(0, |r| r.runs);
+            let seen = self.seen.entry(key.clone()).or_default();
+            if seen.0 != start {
+                *seen = (start, BTreeSet::new());
+            }
+            seen.1.extend(ports);
+        }
+        let seen: Vec<(RunKey, Vec<u16>)> = found.listening.keys().map(|k| (k.clone(), self.seen[k].1.iter().copied().collect())).collect();
         if let Some(memory) = self.memory() {
-            for (key, ports) in &found.listening {
+            for (key, ports) in &seen {
                 // Best effort: a memory that can't be saved only loses the warning.
                 let _ = memory.remember(&ws, &key.app, &key.cmd, ports);
             }
@@ -336,15 +350,6 @@ fn confirm_stop(port: u16, pid: u32, command: String, window: &mut Window, cx: &
     first.focus(window, cx);
 }
 
-/// SIGTERM to `pid`, after the user confirmed it.
-///
-/// `devdeck-core` has no public SIGTERM of one process yet (`process::signal_one` is
-/// private) and this crate doesn't depend on rustix: until core offers one, `kill -TERM`
-/// does it. Never devdeck itself, init or a pid 0.
-fn terminate(pid: u32) -> Result<(), String> {
-    devdeck_core::process::terminate(pid)
-}
-
 /// "Stop node (pid 7712)?" with its command line; Enter stops, Esc cancels.
 pub struct StopProcess {
     pub port: u16,
@@ -367,7 +372,7 @@ impl StopProcess {
         // The pid may have ended and been reused since the question: it must still hold
         // the port.
         let still = matches!(holder(self.port), Some(Holder::Process { pid, .. }) if pid == self.pid);
-        let result = if still { terminate(self.pid) } else { Err(format!("pid {} no longer holds port {}", self.pid, self.port)) };
+        let result = if still { devdeck_core::process::terminate(self.pid) } else { Err(format!("pid {} no longer holds port {}", self.pid, self.port)) };
         if let Err(why) = result {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, why, vec![], cx));
         }

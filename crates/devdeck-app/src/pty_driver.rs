@@ -1,5 +1,4 @@
 //! Real runs (R6.7): the [`RunDriver`] for config workspaces, on `core::process`.
-//! Builder R1 of M2 step 3 implements this file; the interface is fixed here.
 //!
 //! - A run's environment is the toolbox's variables, with PATH replaced by
 //!   `Toolbox::path_for(app)` (the app's Node first), then the launch's own variables

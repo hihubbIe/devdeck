@@ -295,6 +295,66 @@ fn quitting_saves_what_the_views_keep_and_what_ran(cx: &mut TestAppContext) {
     assert_eq!(views[ViewAddr::App { app: "eventservice".into() }.to_ref().as_str()]["show_hidden"], true);
 }
 
+fn work_runner(shell: &Entity<Shell>, cx: &TestAppContext) -> Entity<devdeck_app::runner::Runner> {
+    cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).runner.clone())
+}
+
+fn saved_run(dir: &std::path::Path) -> Option<serde_json::Value> {
+    let Loaded::Ok(views) = StateStore::new(dir.to_path_buf()).load_views("work") else { return None };
+    views.get(run_ref().as_str()).cloned()
+}
+
+#[gpui::test]
+fn a_run_starting_is_saved_without_waiting_for_quit(cx: &mut TestAppContext) {
+    let dir = temp(cx, "views-soon");
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "views-soon");
+    let work = deck(&shell, cx, "work");
+    cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| { *l = with_run_and_app(); Ok(()) })));
+    cx.executor().advance_clock(SAVE_DELAY);
+    cx.run_until_parked();
+    assert_eq!(saved_run(&dir), Some(serde_json::json!({"follow": true, "running": false})));
+    let runner = work_runner(&shell, cx);
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&devdeck_app::runner::RunKey::new("eventservice", "go:run"), None, cx))).unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(SAVE_DELAY);
+    cx.run_until_parked();
+    assert_eq!(saved_run(&dir), Some(serde_json::json!({"follow": true, "running": true})), "saved soon, a crash wouldn't lose it");
+}
+
+#[gpui::test]
+fn a_signal_quit_keeps_what_ran_even_once_killed(cx: &mut TestAppContext) {
+    let dir = temp(cx, "views-signal");
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "views-signal");
+    let work = deck(&shell, cx, "work");
+    cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| { *l = with_run_and_app(); Ok(()) })));
+    let runner = work_runner(&shell, cx);
+    let key = devdeck_app::runner::RunKey::new("eventservice", "go:run");
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    cx.update(|cx| shell.update(cx, |s, cx| s.kill_to_quit(cx)));
+    // The killed run's exit arrives after: it still counts as running when devdeck quit.
+    let id = devdeck_app::runner::RunId { key: key.clone(), n: cx.read(|cx| runner.read(cx).run(&key).unwrap().runs) };
+    cx.update(|cx| runner.update(cx, |r, cx| r.exited(&id, devdeck_core::runs::Exit::Signal(9), cx)));
+    cx.update(|cx| shell.update(cx, |s, cx| s.flush(cx)));
+    assert_eq!(saved_run(&dir).unwrap()["running"], true);
+}
+
+#[gpui::test]
+fn a_tab_whose_app_was_missing_comes_back_with_it(cx: &mut TestAppContext) {
+    let shell = demo(cx, "missing");
+    let work = deck(&shell, cx, "work");
+    let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
+    let full = cx.read(|cx| (*services.read(cx).catalog).clone());
+    let mut without = full.clone();
+    without.apps.retain(|a| a.id != "eventservice");
+    cx.update(|cx| services.update(cx, |s, cx| s.set_catalog(without, cx)));
+    cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| { *l = with_run_and_app(); Ok(()) })));
+    cx.run_until_parked();
+    assert!(cx.read(|cx| work.read(cx).view(&run_ref()).unwrap().downcast::<RunView>().is_err()), "a message meanwhile");
+    cx.update(|cx| services.update(cx, |s, cx| s.set_catalog(full, cx)));
+    cx.run_until_parked();
+    assert!(cx.read(|cx| work.read(cx).view(&run_ref()).unwrap().downcast::<RunView>().is_ok()), "built again once the app is back");
+}
+
 #[gpui::test]
 fn reopening_brings_views_back_and_restarts_what_ran(cx: &mut TestAppContext) {
     let dir = temp(cx, "views-restore");

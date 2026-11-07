@@ -1,6 +1,5 @@
 //! Real processes for runs (R6.7, R8.2), each in a pseudo-terminal, in its own session and
-//! process group (the pid is the group id). Builder D of M2 step 2 implements this file;
-//! the interface is fixed here.
+//! process group (the pid is the group id).
 //!
 //! - Output is read on a thread and sent as bytes; the exit is sent once the output is
 //!   drained (with a timeout: a grandchild may keep the terminal open), with the code or
@@ -526,6 +525,20 @@ impl GroupLog {
         change(&mut entries);
         let text: String = entries.iter().map(|(pid, start)| format!("{pid} {start}\n")).collect();
         let _ = crate::state::write_atomic(&self.path, &text);
+    }
+
+    /// Kills leftovers the user chose to kill, the ones still the processes that were
+    /// offered (same start time), and forgets them.
+    pub fn kill(&self, pids: &[u32]) {
+        let alive: Vec<u32> = self.read().into_iter().filter(|(pid, start)| pids.contains(pid) && alive(*pid, *start)).map(|(pid, _)| pid).collect();
+        kill_all(&alive);
+        self.forget(pids);
+    }
+
+    /// Stops tracking these groups: leftovers the user chose to leave aren't killed when
+    /// this devdeck quits.
+    pub fn forget(&self, pids: &[u32]) {
+        self.update(|e| e.retain(|(p, _)| !pids.contains(p)));
     }
 
     fn add(&self, pid: u32, start: u64) {
