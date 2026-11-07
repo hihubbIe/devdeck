@@ -8,6 +8,7 @@
 pub mod app_view;
 pub mod demo;
 pub mod run_view;
+pub mod service_view;
 
 use crate::deck::Deck;
 use crate::services::Services;
@@ -74,6 +75,16 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, cx: &mut App) -> Built {
                 return message(format!("{app} has no command {cmd}."), cx);
             }
             let v = cx.new(|cx| run_view::RunView::new(app, cmd, ctx.clone(), cx));
+            focusable(v, cx)
+        }
+        (ViewAddr::Svc { env, name }, Some(ctx)) => {
+            let Some(cluster) = ctx.services.read(cx).cluster.clone() else {
+                return message("This workspace has no cluster.".into(), cx);
+            };
+            if cluster.read(cx).env(&env).is_none() {
+                return message(format!("{env} isn't an env of this workspace."), cx);
+            }
+            let v = cx.new(|cx| service_view::ServiceView::new(env, name, ctx.clone(), cluster, cx));
             focusable(v, cx)
         }
         (_, Some(_)) => message("This view comes later in M1.".into(), cx),

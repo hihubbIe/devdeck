@@ -9,6 +9,7 @@ use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
 use devdeck_app::views::app_view::AppView;
+use devdeck_app::views::service_view::ServiceView;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
@@ -212,6 +213,86 @@ fn run_not_started(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Ent
     open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "test".into() });
 }
 
+fn work_cluster(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<devdeck_app::cluster::Cluster> {
+    cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).cluster.clone().unwrap())
+}
+
+/// Opens a service view, maximized, and waits for its env to load.
+fn service(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, env: &str, name: &str, maximize: bool) -> Entity<ServiceView> {
+    let addr = ViewAddr::Svc { env: env.into(), name: name.into() };
+    open_view(cx, shell, addr.clone());
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    if maximize {
+        cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.toggle_maximize(l.main().focused))));
+    }
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<ServiceView>().unwrap())
+}
+
+fn deploy(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, env: &str, name: &str, tag: &str, wait_ms: u64) {
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| {
+        c.update(cx, |c, cx| {
+            c.deployments(env, cx);
+        })
+    });
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.update(|cx| c.update(cx, |c, cx| c.set_image(env, name, tag, true, cx))).expect("deploys");
+    cx.advance_clock(Duration::from_millis(wait_ms));
+    cx.run_until_parked();
+}
+
+fn svc_ready(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    deploy(cx, shell, "dev33", "entityservice", "lan-150", 3500);
+    service(cx, shell, "dev35", "entityservice", true);
+    cx.advance_clock(Duration::from_secs(6));
+    cx.run_until_parked();
+}
+
+fn svc_rolling(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    service(cx, shell, "dev35", "boardservice", true);
+    deploy(cx, shell, "dev35", "boardservice", "lan-160", 1000);
+}
+
+fn svc_failed(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    service(cx, shell, "dev35", "graphservice", true);
+    deploy(cx, shell, "dev35", "graphservice", "lan-broken", 1100);
+}
+
+fn svc_protected(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let v = service(cx, shell, "hades", "proxyapi", true);
+    cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-161", cx))));
+}
+
+fn svc_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let v = service(cx, shell, "dev35", "entityservice", true);
+    cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-160", cx))));
+    let _ = cx.update_window(w, |_, window, _| window.refresh());
+    cx.run_until_parked();
+    cx.update(|cx| v.update(cx, |v, cx| v.save(cx)));
+}
+
+fn svc_suggestions(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    deploy(cx, shell, "dev35", "entityservice", "lan-160", 3500);
+    let v = service(cx, shell, "dev35", "entityservice", true);
+    let items = cx.update(|cx| ServiceView::suggestions_for(&v, cx));
+    let _ = cx.update_window(w, |_, window, cx| open_menu(point(logical(720.), logical(140.)), items, window, cx));
+}
+
+fn svc_loading(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, ViewAddr::Svc { env: "dev34".into(), name: "vesselservice".into() });
+}
+
+fn svc_unreachable(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    service(cx, shell, "dev36", "vesselservice", false);
+}
+
+fn svc_forbidden_narrow(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    service(cx, shell, "lab", "tadawebapi", false);
+}
+
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
     l.find_view(&ViewRef::new(v)).expect("view open").0
 }
@@ -324,6 +405,16 @@ fn states() -> Vec<State> {
         w("73-run-exited-0", "work", 1.0, Some(run_exited)),
         w("74-run-crashed-toast", "work", 1.0, Some(run_crashed)),
         w("75-run-not-started", "work", 1.0, Some(run_not_started)),
+        w("80-svc-ready", "work", 1.0, Some(svc_ready)),
+        w("81-svc-rolling", "work", 1.0, Some(svc_rolling)),
+        w("82-svc-failed-undo", "work", 1.0, Some(svc_failed)),
+        w("83-svc-protected-locked", "work", 1.0, Some(svc_protected)),
+        w("84-svc-confirm", "work", 1.0, Some(svc_confirm)),
+        w("85-svc-suggestions", "work", 1.0, Some(svc_suggestions)),
+        w("86-svc-loading", "work", 1.0, Some(svc_loading)),
+        w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),
+        w("88-svc-forbidden-narrow", "work", 1.0, Some(svc_forbidden_narrow)),
+        w("89-svc-ready-150", "work", 1.5, Some(svc_ready)),
     ]
 }
 
