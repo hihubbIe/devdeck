@@ -8,8 +8,10 @@ use devdeck_core::apps::{App, Command, Tools};
 use devdeck_core::catalog::Catalog;
 use devdeck_core::runs::{Exit, RunState};
 use devdeck_core::terminal::{TermSize, Terminal};
-use gpui::{Context, EventEmitter, Task};
+use crate::port_scan::{PortHolder, Ports};
+use gpui::{Context, EventEmitter, Task, WeakEntity};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::rc::Rc;
 
 /// Lines of history kept per run, on top of the screen. A full terminal costs about
@@ -92,6 +94,24 @@ pub struct Run {
     restart_after_stop: bool,
 }
 
+/// Why a start was refused, so the UI can act on it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RunRefusal {
+    /// It can't run (no such command, a missing tool) or it already runs.
+    Cannot(String),
+    /// A port it listens on (declared, or remembered from an earlier run) is held (R6.9).
+    PortHeld { port: u16, holder: PortHolder },
+}
+
+impl fmt::Display for RunRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunRefusal::Cannot(why) => write!(f, "{why}"),
+            RunRefusal::PortHeld { port, holder } => write!(f, "port {port} is held by {holder}"),
+        }
+    }
+}
+
 pub enum RunnerEvent {
     /// A run ended on its own and failed (exit code, signal, or it couldn't start).
     Failed { key: RunKey, code: i32 },
@@ -105,13 +125,20 @@ pub struct Runner {
     catalog: Rc<Catalog>,
     runs: BTreeMap<RunKey, Run>,
     driver: Rc<dyn RunDriver>,
+    /// The workspace's ports, checked before a start (none: no check).
+    ports: Option<WeakEntity<Ports>>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, ports: None }
+    }
+
+    /// The ports checked before a start ([`Ports::new`] sets them).
+    pub fn set_ports(&mut self, ports: WeakEntity<Ports>) {
+        self.ports = Some(ports);
     }
 
     /// A new catalog (tools found, apps rediscovered). Runs of commands that disappeared
@@ -180,9 +207,30 @@ impl Runner {
         self.blocked(key).or_else(|| (self.state(key) == Some(RunState::Running)).then(|| "already running".to_string()))
     }
 
+    /// Why `key` can't start now, held ports included. Reads the machine's sockets: on a
+    /// start, not per frame (use [`Runner::refusal`] there).
+    pub fn refusal_detail(&self, key: &RunKey, cx: &mut gpui::App) -> Option<RunRefusal> {
+        if let Some(why) = self.refusal(key) {
+            return Some(RunRefusal::Cannot(why));
+        }
+        // Its own process may still hold its ports: it starts once stopped, checked then.
+        if self.state(key) == Some(RunState::Stopping) {
+            return None;
+        }
+        let ports = self.ports.as_ref()?.upgrade()?;
+        let declared = self.command(key).map(|(_, c)| c.ports.clone()).unwrap_or_default();
+        let (port, holder) = ports.update(cx, |p, _| p.conflict(key, &declared, self))?;
+        Some(RunRefusal::PortHeld { port, holder })
+    }
+
     /// Starts a command with `env`. Starting while it stops restarts it once stopped.
     pub fn start(&mut self, key: &RunKey, env: Option<String>, cx: &mut Context<Self>) -> Result<(), String> {
-        if let Some(why) = self.refusal(key) {
+        self.try_start(key, env, cx).map_err(|why| why.to_string())
+    }
+
+    /// [`Runner::start`], refused with a reason the UI can act on (a held port's holder).
+    pub fn try_start(&mut self, key: &RunKey, env: Option<String>, cx: &mut Context<Self>) -> Result<(), RunRefusal> {
+        if let Some(why) = self.refusal_detail(key, cx) {
             return Err(why);
         }
         if let Some(r) = self.runs.get_mut(key)
