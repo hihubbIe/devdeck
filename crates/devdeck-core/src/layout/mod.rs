@@ -177,12 +177,12 @@ impl std::error::Error for LayoutError {}
 pub type Result<T> = std::result::Result<T, LayoutError>;
 
 /// What closing a window led to.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloseOutcome {
     /// The main window closed: the app quits.
     Quit,
-    /// A detached window closed: its tabs went back to the main window.
-    Reattached(PaneId),
+    /// A detached window closed together with its tabs.
+    Closed(Vec<ViewRef>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -609,15 +609,25 @@ impl Layout {
         self.move_pane(pane, drop)
     }
 
-    /// Closing the main window quits; closing a detached one re-attaches its tabs to
-    /// the main window's focused pane.
+    /// Closing the main window quits; closing a detached one closes its tabs too.
     pub fn close_window(&mut self, window: WindowId) -> Result<CloseOutcome> {
         if window == MAIN_WINDOW {
             return Ok(CloseOutcome::Quit);
         }
+        let Node::Pane(pane) = self.window(window)?.root else {
+            return Err(LayoutError::Invalid("detached window root is not a pane".into()));
+        };
+        self.windows.retain(|w| w.id != window);
+        let views = self.panes.remove(&pane).map(|p| p.tabs).unwrap_or_default();
+        self.repair();
+        Ok(CloseOutcome::Closed(views))
+    }
+
+    /// Sends a detached window's tabs back into the main window's focused pane.
+    pub fn reattach(&mut self, window: WindowId) -> Result<PaneId> {
         let target = self.main().focused;
         self.attach(window, Drop::Into(target))?;
-        Ok(CloseOutcome::Reattached(target))
+        Ok(target)
     }
 
     // ---------------------------------------------------------------- geometry

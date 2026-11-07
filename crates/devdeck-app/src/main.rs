@@ -133,8 +133,7 @@ fn stress_steps(n: u64) -> Vec<Step> {
         s.push(Box::new(move |l| {
             let (p, _) = at(l, &v)?;
             let w = l.window_of(p)?;
-            let target = l.main().focused;
-            l.attach(w, Drop::Into(target))
+            l.reattach(w).map(|_| ())
         }));
     }
     s.push(Box::new(move |l| l.close_view(&view)));

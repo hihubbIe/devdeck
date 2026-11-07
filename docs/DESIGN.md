@@ -93,8 +93,11 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - A view is open at most once across all windows.
 - Weights are fractions of their split, renormalized after every operation; the app
   converts pixel drags to weights and enforces a minimum pane size in pixels.
-- A detached window's root is always a single pane. Closing a detached window
-  re-attaches its tabs to the main window.
+- A detached window's root is always a single pane. Its title bar has ⇲ (send the
+  tabs back to the main window's focused pane) next to × (close the window and its
+  tabs).
+- "Send to…" moves a tab or a whole pane to any pane of any window, or to a new
+  window: number badges appear on every pane, pick by key or click.
 - Each window has a focused pane; focus moves by pure rules after close, move and
   detach, and directionally using pane rectangles computed from the model.
 - View instances (GPUI entities) are owned by an app-level registry keyed by `ViewRef`,
@@ -147,6 +150,14 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 | config | serde + toml | | |
 | file watching | notify | discover new folders | |
 
+## Settings and scaling
+
+- Settings open as a full-window view from a title-bar button, not as a tab.
+- UI scale multiplies every theme size (text, rows, tab strips, rails, icons). It is
+  applied on top of the desktop's scale factor, which GPUI already honours.
+- Global, per-machine settings live in `~/.config/devdeck/settings.toml`; per-workspace
+  choices live with the workspace.
+
 ## Decisions log
 
 - 2026-11-07 Native Rust over a web app: user wants native, fast, low memory.
@@ -157,6 +168,10 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 No git or editor features (user decision).
 - 2026-11-07 Lists are Pinned + All, alphabetical; no "mine", no "recent" (user decision).
 - 2026-11-07 Separate workspaces, one shown at a time, others keep running (user decision).
+- 2026-11-07 No tab drag between windows; "Send to…" with numbered panes instead, plus
+  ⇲ re-attach and × close on detached windows (user decision after the M0 finding).
+- 2026-11-07 Settings as a full-window view; UI scale is the first setting, early in M1
+  (user decision).
 
 ## Open questions
 

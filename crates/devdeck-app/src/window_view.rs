@@ -130,10 +130,7 @@ impl WindowView {
 
     fn reattach(&mut self, cx: &mut Context<Self>) {
         let id = self.id;
-        self.deck.update(cx, |d, cx| {
-            let target = d.layout.main().focused;
-            d.apply(cx, |l| l.attach(id, Drop::Into(target)));
-        });
+        self.deck.update(cx, |d, cx| d.reattach(id, cx));
     }
 }
 
@@ -200,10 +197,14 @@ impl Render for WindowView {
             })
             .child(div().text_color(t.hi).child("devdeck"))
             .child(div().text_color(t.mute).child(if is_main { "M0 spike" } else { "detached window" }))
-            .when(!is_main, |d| {
-                d.child(button("reattach", "⇲ re-attach (ctrl shift a)", &t).on_click(cx.listener(|this, _, _, cx| this.reattach(cx))))
-            })
             .child(div().flex_1())
+            .when(!is_main, |d| {
+                d.child(
+                    button("reattach", "⇲", &t)
+                        .tooltip(|_, cx| cx.new(|_| Tip("send back to the main window (ctrl shift a)".into())).into())
+                        .on_click(cx.listener(|this, _, _, cx| this.reattach(cx))),
+                )
+            })
             .child(button("min", "—", &t).on_click(|_, window, _| window.minimize_window()))
             .child(button("max", "□", &t).on_click(|_, window, _| window.zoom_window()))
             .child(button("close", "×", &t).on_click(move |_, _, cx| {

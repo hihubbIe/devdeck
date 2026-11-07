@@ -14,9 +14,14 @@ Each milestone ends with a manual test by the user.
 
 ## M1 · Native prototype with fake data
 Everything from the approved HTML prototype plus the later changes, backed by a fake
-data provider: workspaces, pane tree with drag and drop, collapse, detach, layouts,
-activities and lists (Pinned + All), all views, palette, menus, cheat sheet, theme,
-quit guard.
+data provider. Steps (each planned, reviewed, built, checked, tested, committed):
+1. Settings view (full window) with UI scale and theme; all sizes derive from the scale.
+2. Shared components crate and theme files.
+3. Workspaces: separate state, switcher in the title bar, quit guard.
+4. Activities and lists: Apps, Cluster, Ports, Layouts, Pinned + All, alphabetical.
+5. Views with fake data: app, command output, service inspector, logs, pod, text, matrix, ports.
+6. Actions everywhere: palette, context menus, "Send to…", cheat sheet, hint bar.
+7. Layouts per workspace, keep-in-every-layout; M1 measurements.
 
 ## M2 · Real local runner
 Config loading, discovery, tool detection, pseudo-terminal runs, env bindings, ports,

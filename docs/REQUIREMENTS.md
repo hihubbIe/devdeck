@@ -29,7 +29,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R3.5** Dividers are resizable by dragging.
 - [~] **R3.6** A pane can collapse to only its tab strip, giving its space to its neighbours. Clicking a tab (or a key) expands it again.
 - [~] **R3.7** A pane can be maximized and restored.
-- [~] **R3.8** A tab can be detached into its own OS window. That window contains a single pane (it can receive more tabs), nothing else of the app. It is owned by the main process: closing the main app closes it. A tab can be re-attached by dragging it back or from its menu.
+- [~] **R3.8** A tab can be detached into its own OS window. That window contains a single pane (it can receive more tabs), nothing else of the app. It is owned by the main process: closing the main app closes it. The detached window's title bar has a re-attach button (⇲) next to close (×): ⇲ sends its tabs back to the main window, × closes the window and its tabs. Dragging tabs between windows is not required (decided 2026-11-07: GPUI can't do it on Wayland; "Send to…" covers it).
+- [ ] **R3.11** "Send to…" on a tab and on a pane (menu, pane button, key): every pane of every window shows a number and is listed by its active tab and position, plus "new window". Pick by number key, by clicking the list, or by clicking the pane. Esc cancels. Sending a pane moves all its tabs.
 - [~] **R3.9** Panes never overlap. Each pane clips its own content; content wider than the pane scrolls inside it.
 - [ ] **R3.10** Named layouts per workspace: save the current arrangement, switch between layouts. A view can be marked "keep in every layout".
 
@@ -83,6 +84,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R9.1** Dark, dense, flat look of the approved prototype: 24 px rows, hairline dividers, color only for state and always paired with a glyph.
 - [ ] **R9.2** Themes are data files of color tokens. One theme ships for now: the prototype's dark theme with slightly more contrast.
 - [ ] **R9.3** A shared component library (rows, tabs, buttons, inputs, menus, badges, key hints, text view, terminal view…) is the only way views draw UI, for visual parity.
+
+- [ ] **R9.4** A Settings button in the title bar opens settings as a full-window view (not a tab). It holds global, per-machine choices: UI scale (for example 90–150 %, on top of the desktop's own scaling) and theme, and later more. Every size in the UI derives from the UI scale. Settings are saved to the config folder and apply immediately.
 
 ## 10. Configuration and setup
 

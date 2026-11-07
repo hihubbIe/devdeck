@@ -63,11 +63,16 @@ impl Deck {
         out
     }
 
-    /// Closing the main window quits; closing a detached one re-attaches its tabs.
+    /// Closing the main window quits; closing a detached one closes its tabs too.
     pub fn close_window(&mut self, id: WindowId, cx: &mut Context<Self>) {
         if let Some(CloseOutcome::Quit) = self.apply(cx, |l| l.close_window(id)) {
             cx.quit();
         }
+    }
+
+    /// Sends a detached window's tabs back to the main window (⇲).
+    pub fn reattach(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        self.apply(cx, |l| l.reattach(id).map(|_| ()));
     }
 
     /// Called when the OS closed a window on its own (window manager close).

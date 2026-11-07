@@ -47,7 +47,7 @@ fn detach_opens_a_window_and_reattach_closes_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn closing_a_detached_window_reattaches_its_tabs(cx: &mut TestAppContext) {
+fn closing_a_detached_window_closes_its_tabs(cx: &mut TestAppContext) {
     let deck = setup(cx);
     let window = cx
         .update(|cx| {
@@ -63,11 +63,27 @@ fn closing_a_detached_window_reattaches_its_tabs(cx: &mut TestAppContext) {
     cx.update(|cx| deck.update(cx, |d, cx| d.close_window(window, cx)));
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 1);
-    let main_views = cx.read(|cx| {
-        let l = &deck.read(cx).layout;
-        l.panes_in(MAIN_WINDOW).unwrap().iter().map(|p| l.pane(*p).unwrap().tabs.len()).sum::<usize>()
-    });
-    assert_eq!(main_views, 4);
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 3, "the detached tab closed with its window");
+}
+
+#[gpui::test]
+fn reattach_button_path_sends_tabs_back(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let window = cx
+        .update(|cx| {
+            deck.update(cx, |d, cx| {
+                d.apply(cx, |l| {
+                    let (p, i) = l.find_view(&ViewRef::new("demo/notes")).expect("notes open");
+                    l.detach(p, i)
+                })
+            })
+        })
+        .expect("detached");
+    cx.run_until_parked();
+    cx.update(|cx| deck.update(cx, |d, cx| d.reattach(window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 1);
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 4);
 }
 
 #[gpui::test]

@@ -349,12 +349,26 @@ fn moving_last_tab_out_of_detached_window_closes_it() {
 }
 
 #[test]
-fn closing_detached_window_reattaches_and_closing_main_quits() {
+fn closing_detached_window_closes_its_tabs_and_closing_main_quits() {
     let (mut l, p) = with_tabs(&["a", "b"]);
     let w = l.detach(p, 1).unwrap();
-    assert_eq!(l.close_window(w).unwrap(), CloseOutcome::Reattached(p));
-    assert_eq!(l.pane(p).unwrap().tabs, vec![v("a"), v("b")]);
+    let Node::Pane(d) = l.window(w).unwrap().root else { panic!() };
+    l.open(v("c"), d).unwrap();
+    assert_eq!(l.close_window(w).unwrap(), CloseOutcome::Closed(vec![v("b"), v("c")]));
+    ok(&l);
+    assert_eq!(l.views(), [v("a")].into_iter().collect());
+    assert!(l.window(w).is_err());
     assert_eq!(l.close_window(MAIN_WINDOW).unwrap(), CloseOutcome::Quit);
+}
+
+#[test]
+fn reattach_sends_tabs_to_main_focused_pane() {
+    let (mut l, p) = with_tabs(&["a", "b"]);
+    let w = l.detach(p, 1).unwrap();
+    assert_eq!(l.reattach(w).unwrap(), p);
+    assert_eq!(l.pane(p).unwrap().tabs, vec![v("a"), v("b")]);
+    assert_eq!(l.windows.len(), 1);
+    assert_eq!(l.reattach(MAIN_WINDOW), Err(LayoutError::NotDetached));
     ok(&l);
 }
 
@@ -535,7 +549,14 @@ fn apply(l: &mut Layout, op: &Op) {
             let _ = l.attach(nth(&windows, w), drop_for(nth(&panes, p), e));
         }
         Op::CloseWindow(w) => {
-            let _ = l.close_window(nth(&windows, w));
+            if let Ok(CloseOutcome::Closed(views)) = l.close_window(nth(&windows, w)) {
+                let mut expected = before.clone();
+                views.iter().for_each(|v| {
+                    expected.remove(v);
+                });
+                assert_eq!(l.views(), expected, "closing a window drops exactly its views");
+                return;
+            }
         }
         Op::Cycle(p, d) => {
             let _ = l.cycle_tab(nth(&panes, p), d as isize);
