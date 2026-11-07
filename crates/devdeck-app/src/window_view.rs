@@ -7,6 +7,7 @@
 
 use crate::actions::*;
 use crate::deck::{Deck, SendSource};
+use crate::places::{self, Place};
 use crate::stats;
 use crate::app_settings;
 use crate::settings_view::SettingsView;
@@ -354,7 +355,7 @@ impl WindowView {
         let origin = self.panes_origin.get();
         let at = rect.map_or(origin, |r| point(origin.x + logical(r.x) + t.size(24.), origin.y + logical(r.y) + t.tab_h));
         let d = self.deck.read(cx);
-        let items = tab_menu(&self.deck, p, active, self.id, d.layout(), &d.book.keep);
+        let items = tab_menu(&self.deck, p, active, self.id, d.layout(), &d.book.keep, cx);
         open_menu(at, items, window, cx);
     }
 
@@ -492,7 +493,7 @@ impl WindowView {
         let Some(pane) = self.focused_pane(cx) else { return };
         self.deck.update(cx, |d, cx| {
             let dir = d.terminal_folder(Some(pane), cx);
-            d.open_terminal(&dir, Some(pane), cx);
+            d.open_terminal(&dir, Place::Pane(pane), cx);
         });
         if let Some(f) = self.deck.read(cx).view_focus(pane) {
             f.focus(window, cx);
@@ -1060,7 +1061,7 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
 }
 
 /// The menu of a tab (right-click, shift+F10).
-fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout, keep: &std::collections::BTreeSet<ViewRef>) -> Vec<MenuItem> {
+fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout, keep: &std::collections::BTreeSet<ViewRef>, cx: &App) -> Vec<MenuItem> {
     let Some(view) = layout.pane(pane).ok().and_then(|p| p.tabs.get(idx).cloned()) else { return Vec::new() };
     let alone = layout.is_detached(window) && layout.pane(pane).is_ok_and(|p| p.tabs.len() == 1);
     let maximized = layout.window(window).is_ok_and(|w| w.maximized == Some(pane));
@@ -1069,6 +1070,7 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
     let (v1, v2, v3) = (view.clone(), view.clone(), view.clone());
     let kept = keep.contains(&view);
     let d7 = deck.clone();
+    let terminal = open_terminal_item(deck, pane, window, Some(&view), cx);
     let mut detach = MenuItem::new("Detach to a window", move |_, cx| apply_on(&d3, cx, |l| l.detach(pane, idx).map(|_| ())));
     if alone {
         detach = detach.disabled("already alone in its window");
@@ -1097,11 +1099,24 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
             })
         })
         .checked(kept),
+        MenuItem::separator(),
+        terminal,
     ]
 }
 
+/// "Open terminal here": a shell in the folder of `view` (the pane's active tab when
+/// `None`), in `pane` on a click, elsewhere from its submenu.
+fn open_terminal_item(deck: &Entity<Deck>, pane: PaneId, window: WindowId, view: Option<&ViewRef>, cx: &App) -> MenuItem {
+    let d = deck.read(cx);
+    let folder = match view {
+        Some(v) => d.folder_of(Some(v), cx),
+        None => d.terminal_folder(Some(pane), cx),
+    };
+    places::item("Open terminal here", Place::Pane(pane), window, deck, None, cx, move |d, place, cx| d.open_terminal(&folder, place, cx))
+}
+
 /// The menu of a pane (right-click on its tab strip or grip).
-fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout) -> Vec<MenuItem> {
+fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Vec<MenuItem> {
     let tabs = layout.pane(pane).map(|p| p.tabs.len()).unwrap_or(0);
     let d = |deck: &Entity<Deck>| deck.clone();
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
@@ -1113,6 +1128,8 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout) -> Vec<MenuItem
         MenuItem::new("Collapse", move |_, cx| apply_on(&d3, cx, |l| l.toggle_collapse(pane))),
         MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))),
         MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx)),
+        MenuItem::separator(),
+        open_terminal_item(deck, pane, layout.window_of(pane).unwrap_or(MAIN_WINDOW), None, cx),
         MenuItem::separator(),
         MenuItem::new("Close pane", move |_, cx| {
             apply_on(&d6, cx, |l| {
@@ -1181,7 +1198,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             let deck = f.deck.clone();
             move |e, window, cx| {
                 let layout = deck.read(cx).layout().clone();
-                open_menu(e.position, pane_menu(&deck, pane, &layout), window, cx);
+                let items = pane_menu(&deck, pane, &layout, cx);
+                open_menu(e.position, items, window, cx);
             }
         })
         .on_drop({
@@ -1259,7 +1277,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     move |e, window, cx| {
                         cx.stop_propagation();
                         let d = deck.read(cx);
-                        let items = tab_menu(&deck, pane, i, window_id, d.layout(), &d.book.keep);
+                        let items = tab_menu(&deck, pane, i, window_id, d.layout(), &d.book.keep, cx);
                         open_menu(e.position, items, window, cx);
                     }
                 })

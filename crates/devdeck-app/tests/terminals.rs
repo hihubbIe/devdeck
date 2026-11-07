@@ -11,7 +11,7 @@ use devdeck_app::views::run_view::RunView;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::runs::RunState;
 use devdeck_core::view_addr::ViewAddr;
-use gpui::{AnyWindowHandle, AppContext, Entity, TestAppContext};
+use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use std::time::Duration;
 
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
@@ -250,4 +250,96 @@ fn quitting_with_idle_shells_hangs_them_up_first(cx: &mut TestAppContext) {
     settle(cx);
     assert!(!cx.read(|cx| r.read(cx).state(&RunKey::terminal(n))).is_some_and(|s| s.is_running()), "hung up before quitting");
     assert_eq!(cx.read(|cx| shell.read(cx).quits), 1);
+}
+
+fn app_dir(shell: &Entity<Shell>, app: &str, cx: &TestAppContext) -> String {
+    cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).catalog.app(app).unwrap().dir.display().to_string())
+}
+
+fn terminal_dir(r: &ViewRef) -> String {
+    let ViewAddr::Terminal { dir, .. } = ViewAddr::parse(r) else { panic!("not a terminal: {r:?}") };
+    dir
+}
+
+#[gpui::test]
+fn open_terminal_here_from_a_tab_and_in_a_new_window(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-here");
+    let main = main_window(&shell, cx);
+    let deck = deck(&shell, cx);
+    let app = ViewAddr::App { app: "eventservice".into() }.to_ref();
+    let pane = cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(app.clone(), l.main().focused)))).unwrap();
+    cx.run_until_parked();
+    let tab_menu = |cx: &mut TestAppContext, r: &ViewRef| {
+        let i = cx.read(|cx| deck.read(cx).layout().find_view(r).unwrap().1);
+        let mut vcx = VisualTestContext::from_window(main, cx);
+        let at = vcx.debug_bounds(Box::leak(format!("tab-{}-{i}", pane.0).into_boxed_str())).expect("the tab").center();
+        vcx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+        vcx.run_until_parked();
+    };
+    // The tab's menu; "Open terminal here" is its last item: a click (⏎) opens it in this pane.
+    tab_menu(cx, &app);
+    cx.simulate_keystrokes(main, "up enter");
+    cx.run_until_parked();
+    let tabs = terminal_tabs(&deck, cx);
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(terminal_dir(&tabs[0]), app_dir(&shell, "eventservice", cx), "in the tab's app folder");
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tabs[0]).map(|(p, _)| p)), Some(pane), "in this pane");
+    let view = cx.read(|cx| deck.read(cx).view(&tabs[0]).unwrap().downcast::<RunView>().unwrap());
+    assert!(cx.update_window(main, |_, window, cx| view.read(cx).terminal_focused(window)).unwrap(), "the keys go to it");
+    // From the terminal's tab, its submenu's last place (→, then ↑ from the first): a new window.
+    tab_menu(cx, &tabs[0]);
+    cx.simulate_keystrokes(main, "up right up enter");
+    cx.run_until_parked();
+    let tabs = terminal_tabs(&deck, cx);
+    assert_eq!(tabs.len(), 2, "a second shell");
+    let new = tabs.iter().find(|r| cx.read(|cx| deck.read(cx).layout().find_view(r).map(|(p, _)| p)) != Some(pane)).expect("elsewhere").clone();
+    let detached = cx.read(|cx| {
+        let l = deck.read(cx).layout();
+        l.find_view(&new).and_then(|(p, _)| l.window_of(p).ok()).is_some_and(|w| l.is_detached(w))
+    });
+    assert!(detached, "in a window of its own");
+    assert_eq!(terminal_dir(&new), app_dir(&shell, "eventservice", cx), "a terminal's folder is its own");
+}
+
+#[gpui::test]
+fn the_terminals_list_opens_a_shell_in_another_pane(cx: &mut TestAppContext) {
+    use devdeck_app::places::Place;
+    let shell = start(cx, "term-places");
+    let main = main_window(&shell, cx);
+    let deck = deck(&shell, cx);
+    let r = runner(&shell, cx);
+    let panes = cx.read(|cx| deck.read(cx).layout().numbered_panes());
+    assert!(panes.len() >= 2, "the demo has several panes: {panes:?}");
+    let (first, second) = (panes[0].0, panes[1].0);
+    cx.update(|cx| deck.update(cx, |d, cx| d.open_terminal(std::path::Path::new("/tmp"), Place::Pane(first), cx)));
+    cx.run_until_parked();
+    let tab = terminal_tabs(&deck, cx)[0].clone();
+    let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&tab) else { unreachable!() };
+    // Its row's menu: "Open" → its places; the first is where it is (refused), the
+    // second takes it.
+    cx.simulate_keystrokes(main, "ctrl-5 down shift-f10 right enter");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tab).map(|(p, _)| p)), Some(first), "already here: nothing moved");
+    cx.simulate_keystrokes(main, "down enter");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tab).map(|(p, _)| p)), Some(second), "moved to the second pane");
+    assert_eq!(cx.read(|cx| r.read(cx).run(&RunKey::terminal(n)).map(|run| run.runs)), Some(1), "the same shell");
+}
+
+#[gpui::test]
+fn an_app_rows_menu_opens_a_terminal_in_its_folder(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-app-row");
+    let main = main_window(&shell, cx);
+    let deck = deck(&shell, cx);
+    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.run_until_parked();
+    let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
+    cx.update(|cx| sidebar.update(cx, |s, _| s.selected = Some("eventservice".into())));
+    cx.simulate_keystrokes(main, "shift-f10 up enter");
+    cx.run_until_parked();
+    let tabs = terminal_tabs(&deck, cx);
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(terminal_dir(&tabs[0]), app_dir(&shell, "eventservice", cx));
+    let focused = cx.read(|cx| deck.read(cx).layout().main().focused);
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tabs[0]).map(|(p, _)| p)), Some(focused), "in the main window's focused pane");
 }

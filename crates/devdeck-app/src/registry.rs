@@ -192,6 +192,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("menu.up", "up", "Menus", Some("Menu"), ["up"], ov::MenuUp),
         spec!("menu.confirm", "pick", "Menus", Some("Menu"), ["enter"], ov::MenuConfirm),
         spec!("menu.close", "close", "Menus", Some("Menu"), ["escape"], ov::MenuClose),
+        spec!("menu.open_sub", "places", "Menus", Some("Menu"), ["right"], ov::MenuOpenSub),
+        spec!("menu.close_sub", "back", "Menus", Some("Menu"), ["left"], ov::MenuCloseSub),
         spec!("modal.next", "next", "Menus", Some("Modal"), ["tab"], ov::ModalNext),
         spec!("modal.prev", "previous", "Menus", Some("Modal"), ["shift-tab"], ov::ModalPrev),
         spec!("modal.close", "cancel", "Menus", Some("Modal"), ["escape"], ov::ModalClose),

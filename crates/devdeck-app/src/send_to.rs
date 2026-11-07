@@ -6,7 +6,6 @@
 
 use crate::deck::{Deck, SendSource};
 use crate::views;
-use devdeck_core::layout::MAIN_WINDOW;
 use devdeck_ui::overlay::ModalClose;
 use devdeck_ui::overlay::PRIORITY_MODAL;
 use devdeck_ui::{label, pop_modal, push_modal, theme};
@@ -86,20 +85,10 @@ impl Render for SendTo {
             None => String::new(),
         };
         let mut list = div().flex().flex_col();
-        let numbered = d.layout().numbered_panes();
-        let mut detached: Vec<_> = numbered.iter().map(|(_, w)| *w).filter(|w| *w != MAIN_WINDOW).collect();
-        detached.dedup();
-        for (i, (pane, win)) in numbered.iter().enumerate() {
+        for (i, (pane, name)) in crate::places::panes(d.layout()).into_iter().enumerate() {
             let n = i + 1;
-            let active = d.layout().pane(*pane).ok().and_then(|p| p.active_view().cloned()).map(|r| views::title(&r)).unwrap_or_else(|| "empty".into());
-            let place = if *win == MAIN_WINDOW {
-                "main window".to_string()
-            } else {
-                let nth = detached.iter().position(|w| w == win).map_or(0, |i| i + 1);
-                format!("detached window {nth}")
-            };
-            let refusal = d.send_refusal(Some(*pane));
-            list = list.child(target_row(("target", n), format!("{n}"), format!("{place} · {active}"), refusal, &t).on_click(cx.listener(move |this, _, _, cx| this.pick(Some(n), cx))));
+            let refusal = d.send_refusal(Some(pane));
+            list = list.child(target_row(("target", n), format!("{n}"), name, refusal, &t).on_click(cx.listener(move |this, _, _, cx| this.pick(Some(n), cx))));
         }
         let refusal = d.send_refusal(None);
         list = list.child(target_row("target-new", "+".into(), "new window".into(), refusal, &t).on_click(cx.listener(|this, _, _, cx| this.pick(None, cx))));

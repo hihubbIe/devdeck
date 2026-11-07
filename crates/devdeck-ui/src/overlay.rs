@@ -4,6 +4,9 @@
 //!
 //! - Menus and modals sit on an occluding backdrop: an outside click closes them without
 //!   reaching what's underneath.
+//! - A menu item can carry a submenu (where to do it): a click does the item's default,
+//!   resting the pointer on it for [`SUBMENU_DELAY`] (or →) opens the submenu beside it;
+//!   ↑↓ and Enter then work in it, ← or Esc close it.
 //! - Each overlay has its own focus and key context (`Menu`, `Modal`), so pane keys never
 //!   act behind it, and focus goes back where it was when it closes.
 //! - Toasts expire on a single timer that stops when the stack is empty, so idle CPU
@@ -14,9 +17,10 @@ use crate::theme::{Theme, theme};
 use gpui::{
     Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global,
     Pixels, Point, Render, ScrollHandle, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
-    deferred, div, point, prelude::*,
+    deferred, div, point, prelude::*, px,
 };
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -25,7 +29,10 @@ pub const PRIORITY_MODAL: usize = 10;
 pub const PRIORITY_MENU: usize = 20;
 pub const PRIORITY_TOAST: usize = 30;
 
-actions!(overlay, [MenuUp, MenuDown, MenuConfirm, MenuClose, ModalNext, ModalPrev, ModalClose]);
+actions!(overlay, [MenuUp, MenuDown, MenuConfirm, MenuClose, MenuOpenSub, MenuCloseSub, ModalNext, ModalPrev, ModalClose]);
+
+/// How long the pointer rests on an item before its submenu opens.
+pub const SUBMENU_DELAY: Duration = Duration::from_millis(300);
 
 // ------------------------------------------------------------------ menu model
 
@@ -40,14 +47,21 @@ pub struct MenuItem {
     pub disabled: Option<SharedString>,
     pub separator: bool,
     pub run: Option<MenuAction>,
+    /// Shown beside it on rest or →: other ways to do it (other places).
+    pub submenu: Vec<MenuItem>,
 }
 
 impl MenuItem {
     pub fn new(label: impl Into<SharedString>, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), hint: None, checked: false, disabled: None, separator: false, run: Some(Rc::new(run)) }
+        Self { label: label.into(), hint: None, checked: false, disabled: None, separator: false, run: Some(Rc::new(run)), submenu: Vec::new() }
     }
     pub fn separator() -> Self {
-        Self { label: "".into(), hint: None, checked: false, disabled: None, separator: true, run: None }
+        Self { label: "".into(), hint: None, checked: false, disabled: None, separator: true, run: None, submenu: Vec::new() }
+    }
+    /// Other ways to do it, in a submenu; clicking the item itself still does its own.
+    pub fn submenu(mut self, items: Vec<MenuItem>) -> Self {
+        self.submenu = items;
+        self
     }
     pub fn hint(mut self, hint: impl Into<SharedString>) -> Self {
         self.hint = Some(hint.into());
@@ -93,6 +107,15 @@ pub struct Menu {
     window: AnyWindowHandle,
     /// The list's scroll, so the row the keys select stays in view.
     scroll: ScrollHandle,
+    /// The open submenu: whose it is, and its selection.
+    sub: Option<(usize, Option<usize>)>,
+    /// Where each row was drawn last: a submenu opens beside its row.
+    rows: Rc<RefCell<BTreeMap<usize, gpui::Bounds<Pixels>>>>,
+    /// The pointer resting on a row with a submenu, until [`SUBMENU_DELAY`].
+    resting: Option<Task<()>>,
+    /// The row under the pointer: only entering a row acts, so a jitter on a row whose
+    /// submenu was just closed with ← or Esc doesn't open it again.
+    pointer: Option<usize>,
     _blur: Option<Subscription>,
 }
 
@@ -120,6 +143,65 @@ impl Menu {
         cx.notify();
     }
 
+    /// The pointer is on row `i`: it's selected, and after [`SUBMENU_DELAY`] there its
+    /// submenu opens (or another row's closes). The open one stays meanwhile, so the
+    /// pointer can cross rows on its way to it.
+    fn hover(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.pointer.replace(i) == Some(i) {
+            return;
+        }
+        let parent = self.sub.map(|(p, _)| p);
+        self.selected = Some(i);
+        self.resting = (parent != Some(i) && (parent.is_some() || !self.items[i].submenu.is_empty())).then(|| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SUBMENU_DELAY).await;
+                let _ = this.update(cx, |m, cx| {
+                    m.resting = None;
+                    if m.selected == Some(i) {
+                        m.sub = None;
+                        m.open_sub(i, cx);
+                        cx.notify();
+                    }
+                });
+            })
+        });
+        cx.notify();
+    }
+
+    /// The pointer is on submenu item `j`: it's selected, and its row stays the menu's.
+    fn hover_sub(&mut self, j: usize, cx: &mut Context<Self>) {
+        let Some((p, s)) = self.sub else { return };
+        self.pointer = None;
+        if s == Some(j) && self.selected == Some(p) && self.resting.is_none() {
+            return;
+        }
+        self.sub = Some((p, Some(j)));
+        self.selected = Some(p);
+        self.resting = None;
+        cx.notify();
+    }
+
+    /// Opens row `i`'s submenu, its first item selected. Not before the row was drawn
+    /// (it opens beside it), so keys never act in a submenu that isn't shown.
+    fn open_sub(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(item) = self.items.get(i).filter(|it| !it.submenu.is_empty() && it.disabled.is_none()) else { return };
+        if !self.rows.borrow().contains_key(&i) {
+            return;
+        }
+        self.resting = None;
+        self.sub = Some((i, step_selection(&item.submenu, None, 1)));
+        cx.notify();
+    }
+
+    /// A key wins over the pointer resting somewhere: the rest is cancelled, and with a
+    /// submenu open its row is the selected one again (the keys act in the submenu).
+    fn take_keys(&mut self) {
+        self.resting = None;
+        if let Some((p, _)) = self.sub {
+            self.selected = Some(p);
+        }
+    }
+
     fn run(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         let item = self.items[i].clone();
         if item.disabled.is_some() || item.separator {
@@ -130,6 +212,32 @@ impl Menu {
         self.close(true, window, cx);
         if let Some(run) = item.run {
             run(window, cx);
+        }
+    }
+
+    /// Runs item `j` of the open submenu.
+    fn run_sub(&mut self, j: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((parent, _)) = self.sub else { return };
+        let Some(item) = self.items[parent].submenu.get(j).cloned() else { return };
+        if item.disabled.is_some() || item.separator {
+            self.sub = Some((parent, Some(j)));
+            cx.notify();
+            return;
+        }
+        self.close(true, window, cx);
+        if let Some(run) = item.run {
+            run(window, cx);
+        }
+    }
+
+    /// The keys' row moves in the submenu when one is open, else in the menu.
+    fn step_any(&mut self, dir: isize, cx: &mut Context<Self>) {
+        match self.sub {
+            Some((p, sel)) => {
+                self.sub = Some((p, step_selection(&self.items[p].submenu, sel, dir)));
+                cx.notify();
+            }
+            None => self.step(dir, cx),
         }
     }
 }
@@ -159,14 +267,45 @@ impl Render for Menu {
             // The backdrop under the list closes the menu on mouse down: it must not get the
             // clicks meant for rows, or the menu closes before a row's click completes.
             .occlude()
-            .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.step(1, cx)))
-            .on_action(cx.listener(|this, _: &MenuUp, _, cx| this.step(-1, cx)))
+            .on_action(cx.listener(|this, _: &MenuDown, _, cx| {
+                this.take_keys();
+                this.step_any(1, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MenuUp, _, cx| {
+                this.take_keys();
+                this.step_any(-1, cx)
+            }))
             .on_action(cx.listener(|this, _: &MenuConfirm, window, cx| {
-                if let Some(i) = this.selected {
-                    this.run(i, window, cx);
+                this.take_keys();
+                match this.sub {
+                    Some((_, Some(j))) => this.run_sub(j, window, cx),
+                    Some((_, None)) => {}
+                    None => {
+                        if let Some(i) = this.selected {
+                            this.run(i, window, cx);
+                        }
+                    }
                 }
             }))
-            .on_action(cx.listener(|this, _: &MenuClose, window, cx| this.close(true, window, cx)));
+            .on_action(cx.listener(|this, _: &MenuOpenSub, _, cx| {
+                this.take_keys();
+                if let Some(i) = this.selected {
+                    this.open_sub(i, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &MenuCloseSub, _, cx| {
+                this.take_keys();
+                this.sub = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &MenuClose, window, cx| {
+                this.take_keys();
+                if this.sub.take().is_some() {
+                    cx.notify();
+                } else {
+                    this.close(true, window, cx);
+                }
+            }));
         for (i, item) in self.items.iter().enumerate() {
             if item.separator {
                 list = list.child(div().my_1().h(t.hairline).bg(t.line));
@@ -174,8 +313,11 @@ impl Render for Menu {
             }
             let selected = self.selected == Some(i);
             let reason = item.disabled.clone().filter(|_| selected);
+            let rows = self.rows.clone();
             let row = div()
                 .id(("menu-item", i))
+                .debug_selector(move || format!("menu-item-{i}"))
+                .relative()
                 .flex()
                 .items_center()
                 .gap_2()
@@ -183,19 +325,60 @@ impl Render for Menu {
                 .px_3()
                 .when(selected, |d| d.bg(t.selected))
                 .when(item.disabled.is_some(), |d| d.text_color(t.dim))
-                .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                    if this.selected != Some(i) {
-                        this.selected = Some(i);
-                        cx.notify();
-                    }
-                }))
+                .on_mouse_move(cx.listener(move |this, _, _, cx| this.hover(i, cx)))
                 .on_click(cx.listener(move |this, _, window, cx| this.run(i, window, cx)))
                 .child(div().w(t.size(14.)).flex_none().text_color(t.accent).child(if item.checked { "✓" } else { "" }))
                 .child(label(item.label.clone()).flex_1())
                 .when_some(reason, |d, r| d.child(label(r).text_color(t.warn).max_w(t.size(200.))))
-                .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h)));
+                .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h)))
+                .when(!item.submenu.is_empty(), |d| d.child(div().flex_none().text_color(t.mute).child("›")))
+                .child(gpui::canvas(move |b, _, _| rows.borrow_mut().insert(i, b), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
             list = list.child(row);
         }
+        // The open submenu, beside its row.
+        // Its first item level with the row: both lists have the same border and padding.
+        let inset = px(1.) + window.rem_size() * 0.25;
+        let submenu = self.sub.and_then(|(parent, sel)| {
+            let at = self.rows.borrow().get(&parent).map(|b| point(b.right(), b.top() - inset))?;
+            let mut sub = div()
+                .id("submenu")
+                .min_w(t.size(200.))
+                .max_w(t.size(420.))
+                .py_1()
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.line)
+                .rounded(t.radius_m)
+                .text_size(t.text)
+                .font_family(t.font.clone())
+                .text_color(t.fg)
+                .occlude();
+            for (j, item) in self.items[parent].submenu.iter().enumerate() {
+                if item.separator {
+                    sub = sub.child(div().my_1().h(t.hairline).bg(t.line));
+                    continue;
+                }
+                let selected = sel == Some(j);
+                sub = sub.child(
+                    div()
+                        .id(("submenu-item", j))
+                        .debug_selector(move || format!("submenu-item-{j}"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .h(t.row_h)
+                        .px_3()
+                        .when(selected, |d| d.bg(t.selected))
+                        .when(item.disabled.is_some(), |d| d.text_color(t.dim))
+                        .on_mouse_move(cx.listener(move |this, _, _, cx| this.hover_sub(j, cx)))
+                        .on_click(cx.listener(move |this, _, window, cx| this.run_sub(j, window, cx)))
+                        .child(div().w(t.size(14.)).flex_none().text_color(t.accent).child(if item.checked { "✓" } else { "" }))
+                        .child(label(item.label.clone()).flex_1())
+                        .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h))),
+                );
+            }
+            Some((at, sub))
+        });
         let backdrop = div()
             .id("menu-backdrop")
             .w(viewport.width)
@@ -205,6 +388,7 @@ impl Render for Menu {
         div()
             .child(deferred(anchored().position(point(Pixels::ZERO, Pixels::ZERO)).child(backdrop)).with_priority(PRIORITY_MENU - 1))
             .child(deferred(anchored().position(self.position).snap_to_window_with_margin(t.size(4.)).child(list)).with_priority(PRIORITY_MENU))
+            .children(submenu.map(|(at, sub)| deferred(anchored().position(at).snap_to_window_with_margin(t.size(4.)).child(sub)).with_priority(PRIORITY_MENU + 1)))
     }
 }
 
@@ -318,6 +502,10 @@ pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Win
         restore,
         window: handle,
         scroll: ScrollHandle::new(),
+        sub: None,
+        rows: Rc::default(),
+        resting: None,
+        pointer: None,
         _blur: None,
     });
     let focus = menu.read(cx).focus.clone();

@@ -13,6 +13,7 @@ pub mod kube_feed;
 pub mod layouts;
 pub mod lifecycle;
 pub mod palette;
+pub mod places;
 pub mod port_scan;
 pub mod pty_driver;
 pub mod registry;

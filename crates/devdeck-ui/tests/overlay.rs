@@ -8,7 +8,8 @@ mod common;
 
 use common::{host, the_theme};
 use devdeck_ui::overlay::{
-    MenuAction, MenuClose, MenuConfirm, MenuDown, MenuUp, ModalClose, ModalNext, ModalPrev, layer_state, toast_lifetime,
+    MenuAction, MenuClose, MenuCloseSub, MenuConfirm, MenuDown, MenuOpenSub, MenuUp, ModalClose, ModalNext, ModalPrev, SUBMENU_DELAY,
+    layer_state, toast_lifetime,
 };
 use devdeck_ui::{MenuItem, ModalFocus, Theme, ToastKind, logical, modal_frame, open_menu, pop_modal, push_modal, theme, toasts};
 use gpui::{
@@ -355,6 +356,183 @@ fn focus_moved_elsewhere_closes_the_menu_and_stays_there(cx: &mut TestAppContext
     assert!(!menu_open(&mut vcx, window));
     assert!(ran(&log).is_empty());
     assert!(focused(&mut vcx, &under.other), "focus stayed where it was moved");
+}
+
+/// A menu whose first row ("here") has a submenu of other places, then a plain row.
+fn places_menu(log: &Log) -> Vec<MenuItem> {
+    vec![item("here", log).submenu(vec![item("there", log), item("elsewhere", log)]), item("plain", log)]
+}
+
+fn submenu_shown(vcx: &mut VisualTestContext) -> bool {
+    vcx.run_until_parked();
+    vcx.debug_bounds("submenu-item-0").is_some()
+}
+
+#[gpui::test]
+fn resting_on_an_item_opens_its_submenu_after_the_delay(cx: &mut TestAppContext) {
+    let (mut vcx, window, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, places_menu(&log));
+    hover(&mut vcx, row_at(at, 0, 0, &t));
+    advance(&mut vcx, SUBMENU_DELAY - Duration::from_millis(50));
+    assert!(!submenu_shown(&mut vcx), "not before the delay");
+    advance(&mut vcx, Duration::from_millis(50));
+    assert!(submenu_shown(&mut vcx));
+    let row = vcx.debug_bounds("menu-item-0").expect("drawn");
+    let first = vcx.debug_bounds("submenu-item-0").expect("drawn");
+    assert!(first.left() >= row.right() && first.top() == row.top(), "beside its row, its first item level with it: {first:?} {row:?}");
+    let second = vcx.debug_bounds("submenu-item-1").expect("drawn").center();
+    vcx.simulate_click(second, Modifiers::none());
+    assert_eq!(ran(&log), ["elsewhere"], "the submenu item ran, not the row's default");
+    assert!(!menu_open(&mut vcx, window));
+}
+
+#[gpui::test]
+fn clicking_an_item_with_a_submenu_does_its_default(cx: &mut TestAppContext) {
+    let (mut vcx, window, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, places_menu(&log));
+    vcx.simulate_click(row_at(at, 0, 0, &t), Modifiers::none());
+    assert_eq!(ran(&log), ["here"]);
+    assert!(!menu_open(&mut vcx, window));
+    advance(&mut vcx, SUBMENU_DELAY);
+    assert!(!menu_open(&mut vcx, window), "the rest timer doesn't bring it back");
+}
+
+#[gpui::test]
+fn the_pointer_can_cross_rows_on_its_way_to_the_submenu(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, places_menu(&log));
+    hover(&mut vcx, row_at(at, 0, 0, &t));
+    advance(&mut vcx, SUBMENU_DELAY);
+    // On the way down to "elsewhere", the pointer passes over "plain".
+    hover(&mut vcx, row_at(at, 1, 0, &t));
+    assert!(submenu_shown(&mut vcx), "passing over another row keeps the submenu");
+    let second = vcx.debug_bounds("submenu-item-1").expect("drawn").center();
+    hover(&mut vcx, second);
+    advance(&mut vcx, SUBMENU_DELAY);
+    assert!(submenu_shown(&mut vcx), "reaching it in time keeps it");
+    vcx.dispatch_action(MenuConfirm);
+    assert_eq!(ran(&log), ["elsewhere"]);
+}
+
+#[gpui::test]
+fn resting_on_another_row_closes_the_submenu(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, places_menu(&log));
+    hover(&mut vcx, row_at(at, 0, 0, &t));
+    advance(&mut vcx, SUBMENU_DELAY);
+    hover(&mut vcx, row_at(at, 1, 0, &t));
+    advance(&mut vcx, SUBMENU_DELAY);
+    assert!(!submenu_shown(&mut vcx));
+    vcx.dispatch_action(MenuConfirm);
+    assert_eq!(ran(&log), ["plain"], "the row the pointer rests on is the selected one");
+}
+
+#[gpui::test]
+fn keys_open_walk_and_close_the_submenu(cx: &mut TestAppContext) {
+    let (mut vcx, window, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, places_menu(&log));
+    vcx.dispatch_action(MenuOpenSub);
+    assert!(submenu_shown(&mut vcx), "→ opens the selected (first) row's at once");
+    vcx.dispatch_action(MenuDown);
+    vcx.dispatch_action(MenuConfirm);
+    assert_eq!(ran(&log), ["elsewhere"], "its first item was selected; ↓ moved within it");
+    assert!(!menu_open(&mut vcx, window));
+
+    open(&mut vcx, at, places_menu(&log));
+    vcx.dispatch_action(MenuOpenSub);
+    vcx.dispatch_action(MenuCloseSub);
+    assert!(!submenu_shown(&mut vcx), "← closes it");
+    vcx.dispatch_action(MenuConfirm);
+    assert_eq!(ran(&log), ["elsewhere", "here"], "back in the menu, on its row");
+
+    open(&mut vcx, at, places_menu(&log));
+    vcx.dispatch_action(MenuOpenSub);
+    vcx.dispatch_action(MenuClose);
+    assert!(!submenu_shown(&mut vcx) && menu_open(&mut vcx, window), "Esc closes the submenu first");
+    vcx.dispatch_action(MenuClose);
+    assert!(!menu_open(&mut vcx, window));
+    assert_eq!(ran(&log), ["elsewhere", "here"]);
+}
+
+#[gpui::test]
+fn a_closed_submenu_stays_closed_while_the_pointer_stays_on_its_row(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    let row = row_at(at, 0, 0, &t);
+    open(&mut vcx, at, places_menu(&log));
+    for esc in [false, true] {
+        hover(&mut vcx, row);
+        advance(&mut vcx, SUBMENU_DELAY);
+        assert!(submenu_shown(&mut vcx));
+        if esc {
+            vcx.dispatch_action(MenuClose);
+        } else {
+            vcx.dispatch_action(MenuCloseSub);
+        }
+        hover(&mut vcx, row + point(t.size(3.), Pixels::ZERO));
+        advance(&mut vcx, SUBMENU_DELAY);
+        assert!(!submenu_shown(&mut vcx), "a jitter on the row doesn't reopen it (esc: {esc})");
+        // Leaving the row and coming back does.
+        hover(&mut vcx, row_at(at, 1, 0, &t));
+    }
+}
+
+#[gpui::test]
+fn a_key_wins_over_a_pending_rest(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, places_menu(&log));
+    // → before the rest is over, then ↓ in the submenu: the rest doesn't reset it.
+    hover(&mut vcx, row_at(at, 0, 0, &t));
+    vcx.dispatch_action(MenuOpenSub);
+    vcx.dispatch_action(MenuDown);
+    advance(&mut vcx, SUBMENU_DELAY);
+    vcx.dispatch_action(MenuConfirm);
+    assert_eq!(ran(&log), ["elsewhere"]);
+    // On the way to another row, a key: the keys act in the open submenu, which stays.
+    open(&mut vcx, at, places_menu(&log));
+    hover(&mut vcx, row_at(at, 0, 0, &t));
+    advance(&mut vcx, SUBMENU_DELAY);
+    hover(&mut vcx, row_at(at, 1, 0, &t));
+    vcx.dispatch_action(MenuDown);
+    advance(&mut vcx, SUBMENU_DELAY);
+    assert!(submenu_shown(&mut vcx), "the key cancelled the rest on the other row");
+    vcx.dispatch_action(MenuConfirm);
+    assert_eq!(ran(&log), ["elsewhere", "elsewhere"]);
+}
+
+#[gpui::test]
+fn a_disabled_item_doesnt_open_its_submenu(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    let mut items = places_menu(&log);
+    items[0] = items[0].clone().disabled("no folder");
+    open(&mut vcx, at, items);
+    hover(&mut vcx, row_at(at, 0, 0, &t));
+    advance(&mut vcx, SUBMENU_DELAY);
+    vcx.dispatch_action(MenuOpenSub);
+    assert!(!submenu_shown(&mut vcx));
 }
 
 // ------------------------------------------------------------------ modal

@@ -247,14 +247,16 @@ fn terminals(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<She
     cx.update(|cx| {
         deck.update(cx, |d, cx| {
             d.save_layout_as("other", cx).unwrap();
-            d.open_terminal(&home.join("Documents/repos"), None, cx);
+            let here = devdeck_app::places::Place::Pane(d.layout().main().focused);
+            d.open_terminal(&home.join("Documents/repos"), here, cx);
         })
     });
     cx.run_until_parked();
     cx.update(|cx| {
         deck.update(cx, |d, cx| {
             d.switch_layout("default", cx).unwrap();
-            d.open_terminal(&home.join("Documents/private_repos/devdeck"), None, cx);
+            let here = devdeck_app::places::Place::Pane(d.layout().main().focused);
+            d.open_terminal(&home.join("Documents/private_repos/devdeck"), here, cx);
         })
     });
     cx.advance_clock(Duration::from_millis(500));
@@ -512,6 +514,15 @@ fn tab_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>)
     let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::actions::ContextMenu), cx));
 }
 
+/// The tab menu's last item, "Open terminal here", with its places open beside it.
+fn tab_menu_places(cx: &mut HeadlessAppContext, w: AnyWindowHandle, s: &Entity<Shell>) {
+    tab_menu(cx, w, s);
+    cx.run_until_parked();
+    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_ui::overlay::MenuUp), cx));
+    cx.run_until_parked();
+    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_ui::overlay::MenuOpenSub), cx));
+}
+
 fn send_to(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     let deck = cx.update(|cx| shell.read(cx).active_deck());
     cx.update(|cx| {
@@ -727,6 +738,7 @@ fn states() -> Vec<State> {
         w("A4-palette-drill", "work", 1.0, Some(palette_drill)),
         w("A5-palette-env", "work", 1.0, Some(palette_env)),
         w("A6-tab-menu", "work", 1.0, Some(tab_menu)),
+        w("A6b-tab-menu-places", "work", 1.0, Some(tab_menu_places)),
         w("A7-send-to", "work", 1.0, Some(send_to)),
         w("A8-palette-150", "work", 1.5, Some(palette_matches)),
         w("B0-layout-menu", "work", 1.0, Some(layout_menu)),

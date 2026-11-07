@@ -405,6 +405,30 @@ saved layout, and a tab only starts a shell the runner never ran: `exit` stays e
 until ⏎); the arguments key restarted a shell; a terminal's ports showed as a run;
 quitting with only idle shells skipped their hang-up; terminal rows could be pinned.
 
+## Open terminal here, with places (2026-11-07)
+
+- **Submenus, generic (devdeck-ui):** a menu item can carry a submenu of other ways to
+  do it. A click does the item's default; resting the pointer on it 300 ms, or →,
+  opens the submenu beside its row (first item level with it); ↑↓ ⏎ act in it, ← or
+  Esc close it (Esc then closes the menu). An open submenu stays while the pointer
+  crosses other rows towards it; resting on another row for the delay switches. A key
+  wins over a pending rest.
+- **Places (`places.rs`):** every pane, named as "Send to…" lists them (`n · window ·
+  active tab`, now shared), and "new window". `places::item` makes the item: click →
+  its default place, submenu → any place; places a view already open can't go to are
+  disabled ("already here", "already alone in its window"). After opening in a pane of
+  the menu's window, the keys go there.
+- **Where it is:** "Open terminal here" in the tab menu (the tab's folder, this pane),
+  the pane menu (its active tab's folder) and an app row's menu (the app's folder, the
+  focused pane); a Terminals row's "Open" has the places too (moving the shell, the same
+  one). Future items ("start a Claude Code session") use the same `places::item`.
+
+Outcome: built. Review of the diff (subagent), all **fixed**: a jitter on a row whose
+submenu was just closed with ← or Esc reopened it (only entering a row acts now); a
+pending rest reset a submenu the keys had opened and walked; a submenu whose row wasn't
+drawn yet could take keys unseen; while resting on another row the highlight and the
+keys' target disagreed. Each has a test that fails without its fix.
+
 ## States to check
 
 No config; config error; app vs library; missing tool; `.nvmrc` wants a missing Node;

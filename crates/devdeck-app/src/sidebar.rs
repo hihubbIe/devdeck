@@ -13,11 +13,12 @@
 //! the matches show with their folders open and the saved state is left as it was.
 
 use crate::deck::Deck;
+use crate::places::{self, Place};
 use crate::runner::RunKey;
 use crate::services::Services;
 use devdeck_core::cluster::{Env, Remote};
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_core::layout::{Drop, Layout, Result as LayoutResult, ViewRef};
+use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, Result as LayoutResult, ViewRef};
 use devdeck_core::list::{self, Kids, ListItem, Row, Section};
 use devdeck_core::state::{SidebarState, StateStore};
 use devdeck_ui::{DragGhost, InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
@@ -595,11 +596,19 @@ impl Sidebar {
     }
 
     pub fn item_menu(this: &Entity<Self>, key: &str, pinned: bool, cx: &App) -> Vec<MenuItem> {
+        let deck = this.read(cx).deck.clone();
         if this.read(cx).activity() == Activity::Terminals {
-            let (open, end) = (this.clone(), this.clone());
-            let (k1, n) = (key.to_string(), key.parse::<u32>().unwrap_or_default());
+            let end = this.clone();
+            let n = key.parse::<u32>().unwrap_or_default();
+            let Some(view) = this.read(cx).view_ref(key, cx) else { return Vec::new() };
+            // Opened where it shows, else in the main window's focused pane.
+            let l = deck.read(cx).layout();
+            let here = l.find_view(&view).map_or(l.main().focused, |(p, _)| p);
+            let v = view.clone();
             return vec![
-                MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
+                places::item("Open", Place::Pane(here), MAIN_WINDOW, &deck, Some(&view), cx, move |d, place, cx| {
+                    d.apply(cx, |l| places::open(l, v.clone(), place))
+                }),
                 MenuItem::new("End", move |_, cx| end.update(cx, |s, cx| s.end_terminal(n, cx))),
             ];
         }
@@ -628,10 +637,23 @@ impl Sidebar {
         }
         let (open, pin) = (this.clone(), this.clone());
         let (k1, k2) = (key.to_string(), key.to_string());
-        vec![
+        let mut items = vec![
             MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
             MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
-        ]
+        ];
+        // An app's shell, in its folder (not a folder row's).
+        if this.read(cx).activity() == Activity::Apps
+            && this.read(cx).services.read(cx).catalog.app(key).is_some()
+            && let Some(view) = this.read(cx).view_ref(key, cx)
+        {
+            let d = deck.read(cx);
+            let (folder, focused) = (d.folder_of(Some(&view), cx), d.layout().main().focused);
+            items.push(MenuItem::separator());
+            items.push(places::item("Open terminal here", Place::Pane(focused), MAIN_WINDOW, &deck, None, cx, move |d, place, cx| {
+                d.open_terminal(&folder, place, cx)
+            }));
+        }
+        items
     }
 
     pub fn env_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {

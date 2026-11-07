@@ -9,6 +9,7 @@
 //! - schedules a save of the layout (one timer, about a second after the first change),
 //! - notifies observers so every window re-renders.
 
+use crate::places::{self, Place};
 use crate::runner::RunKey;
 use crate::views::{self, ViewCx};
 use devdeck_core::view_addr::ViewAddr;
@@ -162,23 +163,26 @@ impl Deck {
         }
     }
 
-    /// Opens a new terminal in `dir`, in `pane` (the focused one when `None`).
-    pub fn open_terminal(&mut self, dir: &std::path::Path, pane: Option<PaneId>, cx: &mut Context<Self>) {
+    /// Opens a new terminal in `dir`, at `place`. Returns the pane showing it.
+    pub fn open_terminal(&mut self, dir: &std::path::Path, place: Place, cx: &mut Context<Self>) -> Option<PaneId> {
         let addr = ViewAddr::Terminal { n: self.next_terminal(cx), dir: dir.display().to_string() };
-        self.apply(cx, |l| {
-            let p = pane.unwrap_or(l.main().focused);
-            l.open(addr.to_ref(), p).map(|_| ())
-        });
+        self.apply(cx, |l| places::open(l, addr.to_ref(), place))
     }
 
-    /// Where a new terminal starts for `pane`: the folder of its active tab's app (an app
-    /// or a run tab), else the workspace's first folder, else the home folder.
+    /// Where a new terminal starts for `pane`: the folder of its active tab (see
+    /// [`Deck::folder_of`]); the main window's focused pane when `None`.
     pub fn terminal_folder(&self, pane: Option<PaneId>, cx: &App) -> std::path::PathBuf {
+        let active = pane.or(Some(self.layout.main().focused)).and_then(|p| self.layout.pane(p).ok()?.active_view().cloned());
+        self.folder_of(active.as_ref(), cx)
+    }
+
+    /// The folder of a view: its app's (an app or a run tab) or a terminal's own, else
+    /// the workspace's first folder, else the home folder.
+    pub fn folder_of(&self, view: Option<&ViewRef>, cx: &App) -> std::path::PathBuf {
         let home = || std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| "/".into());
         let Some(services) = &self.services else { return home() };
         let s = services.read(cx);
-        let active = pane.or(Some(self.layout.main().focused)).and_then(|p| self.layout.pane(p).ok()?.active_view().cloned());
-        let app = active.and_then(|r| match ViewAddr::parse(&r) {
+        let app = view.and_then(|r| match ViewAddr::parse(r) {
             ViewAddr::App { app } | ViewAddr::Run { app, .. } => s.catalog.app(&app).map(|a| a.dir.clone()),
             ViewAddr::Terminal { dir, .. } => Some(dir.into()),
             _ => None,
