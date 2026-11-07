@@ -408,3 +408,73 @@ container (GPUI focus-on-mouse-down), so its keys did nothing; fixed once in
 Checks: 10 tests in `tests/sidebar.rs` plus 3 core unit tests; snapshots 50–60 (pins
 and selection, filter with and without matches, running only, env menu, protected env,
 personal without cluster, sidebar hidden, 150 %, row menu, ports) and 01, 20 again.
+
+## Step 5 · Views with fake data
+
+Covers, on fake data: R3.3 (view registry), R6.3, R6.5, R6.6 (shown, not applied),
+R6.7 (runs, stop, restart, exit status, crash toast; plain lines until M2's terminal
+grid), R6.9 (ports shown), R7.1–R7.7, R5.5 (reasons on disabled actions). Three commits:
+5a apps and runs, 5b service inspector, 5c logs, pod, matrix, ports.
+
+Architecture:
+- **New crate `devdeck-views`** (DESIGN's crate map): one module per view type and a
+  `ViewRegistry` mapping a `ViewRef` prefix (`app/`, `run/`, `svc/`, `logs/`, `pod/`,
+  `matrix`, `port/`) to a builder and a title function. The app registers the demo views
+  too; `Deck` asks the registry, so adding a view type never touches the layout engine.
+  Sidebar rows open `app/<id>`, `svc/<env>/<name>`, `port/<n>` (renamed from `deploy/`).
+- **Core domain models** (pure, tested): `apps` (App, Command with tier
+  primary/secondary/hidden, required tools, `EnvBinding` with how it applies), `tools`
+  (availability with a reason), `runs` (RunId, RunState idle/running/exited(code)/
+  crashed, output lines with a level), `cluster` (Deployment, Pod, container state,
+  Metrics, DeployRecord, RolloutState), `Remote<T>` (Loading/Ready/Error) for anything
+  fetched.
+- **Fake services in the app** (`fake/`): a `FakeRunner` entity per workspace (scripted
+  output over time via timers, one long-running server, one that crashes after a few
+  seconds, apps whose tool is missing refuse to start with the reason) and a
+  `FakeCluster` entity per workspace with a cluster (deployments per env, pods, metrics
+  random walk sampled only while a service view is visible, rollout simulation:
+  progressing → ready, or image pull failure for tags containing `broken`, undo to the
+  previous tag, deploy history). Both are entities that views observe; M2/M3 replace
+  them behind the same models.
+- Sidebar running indicators and the quit guard read the runner (the demo log stream
+  stops counting as a process).
+
+Views:
+- **App** (`app/<id>`): header (name, kind, folder, env chip with how the env applies,
+  ⚠ missing tools named), commands grouped Primary / Secondary / Hidden (collapsed),
+  each with state glyph, ▶ run / ■ stop / ↻ restart, last exit code, ports. Keys:
+  up/down, enter runs, s stops, r restarts, o opens output.
+- **Run output** (`run/<app>/<cmd>`): toolbar (command, `@env`, state, exit code,
+  stop/restart, follow), virtualized lines colored by level, never wrapping. Crash →
+  error toast with "View output".
+- **Service inspector** (`svc/<env>/<name>`): header (name, env chip, ⊘ protected,
+  status, tag, ready n/m, running since), actions row (restart, scale, port-forward,
+  logs, shell, k9s; unavailable ones disabled with the reason), tag editor (input with
+  suggestions menu from other envs and history, unsaved marker, ctrl+s / Save), confirm
+  modal stating the exact change and the exact `kubectl set image …` command, rollout
+  progress line, failure with one-action Undo, protected envs require typing the env
+  name first. Sections: metrics (CPU and memory against request and limit, numbers and
+  bars), pods table (status, ready, restarts, last termination reason, age, node, cpu,
+  mem), container (image, ports, resources, configmap), history (devdeck's deploys).
+- **Logs** (`logs/<env>/<name>`): merged pods with a pod column, level filter, pause /
+  follow, find (highlights, n / shift+n).
+- **Pod** (`pod/<env>/<pod>`): pod details, container states, events-like history.
+- **Branch matrix** (`matrix`): services × envs, tag per cell, click a cell to highlight
+  that tag everywhere; protected env columns marked.
+- **Port** (`port/<n>`): holder, command line, "Stop holder" (fake).
+
+States to snapshot: app with all tiers and a missing tool; run output streaming,
+exited 0, crashed; service ready, rolling out, failed with undo, protected locked,
+confirm modal, tag suggestions menu, loading and error (fake cluster unreachable);
+logs filtered and searching; pod; matrix with a highlighted tag; port.
+
+Tests: core models (tiers ordering, tool availability reasons, rollout state machine,
+undo target, protected rules); app: run/stop/restart and exit codes on the fake clock,
+crash toast, missing tool refuses with reason, sidebar running indicator follows runs,
+quit guard lists runs per workspace, tag edit → confirm → rollout → ready, broken tag →
+failure → undo, protected unlock flow (wrong name refused), metrics stop sampling when
+the view is hidden, logs filter/find, registry builds every prefix and unknown refs fall
+back to a "not available" view.
+
+Out of scope: real processes, PTY and terminal grid (M2), real cluster (M3), palette
+(step 6), shell/k9s actually opening (disabled with "comes in M3").
