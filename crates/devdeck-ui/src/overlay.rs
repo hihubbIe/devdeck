@@ -141,6 +141,9 @@ impl Render for Menu {
             .text_size(t.text)
             .font_family(t.font.clone())
             .text_color(t.fg)
+            // The backdrop under the list closes the menu on mouse down: it must not get the
+            // clicks meant for rows, or the menu closes before a row's click completes.
+            .occlude()
             .on_action(cx.listener(|this, _: &MenuDown, _, cx| {
                 this.selected = step_selection(&this.items, this.selected, 1);
                 cx.notify();

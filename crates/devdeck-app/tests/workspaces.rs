@@ -134,6 +134,19 @@ fn ctrl_alt_n_switches_in_alphabetical_order(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn the_workspace_menu_switches_by_mouse(cx: &mut TestAppContext) {
+    let shell = demo(cx, "menu-click");
+    let main = main_window(&shell, cx);
+    let t = cx.update(|cx| devdeck_ui::theme(cx).clone());
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    let button = vcx.debug_bounds("workspace-button").expect("title bar button");
+    vcx.simulate_click(button.center(), gpui::Modifiers::none());
+    // The menu opens at the click, alphabetical: `personal` is the first row.
+    vcx.simulate_click(point(button.center().x + t.size(40.), button.center().y + t.row_h * 0.5 + t.size(4.)), gpui::Modifiers::none());
+    assert_eq!(vcx.read(|cx| shell.read(cx).active_name().to_string()), "personal");
+}
+
+#[gpui::test]
 fn quit_with_nothing_running_quits_at_once(cx: &mut TestAppContext) {
     let shell = start(cx, vec![WorkspaceSpec::new("empty", "empty", devdeck_app::personal_layout)], None, "idle");
     cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));

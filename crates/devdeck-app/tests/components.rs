@@ -67,6 +67,24 @@ fn menu_keyboard_flow_runs_item_and_restores_focus(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn clicking_a_menu_row_runs_it(cx: &mut TestAppContext) {
+    let _deck = setup(cx);
+    let main = cx.windows()[0];
+    let ran = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (a, b) = (ran.clone(), ran.clone());
+    let items = vec![devdeck_ui::MenuItem::new("first", move |_, _| a.set(1)), devdeck_ui::MenuItem::new("second", move |_, _| b.set(2))];
+    let at = point(logical(400.), logical(300.));
+    cx.update_window(main, |_, window, cx| open_menu(at, items, window, cx)).unwrap();
+    let t = cx.update(|cx| devdeck_ui::theme(cx).clone());
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    // The second row, below the list's top padding and the first row.
+    vcx.simulate_click(point(at.x + t.size(40.), at.y + t.row_h * 1.5 + t.size(4.)), Modifiers::none());
+    assert_eq!(ran.get(), 2, "the row under the pointer ran (the backdrop under the list didn't close the menu first)");
+    assert_eq!(vcx.update(|_, cx| layer_state(main, cx)), (false, 0), "and the menu closed");
+}
+
+#[gpui::test]
 fn outside_click_closes_menu_without_clicking_through(cx: &mut TestAppContext) {
     let deck = setup(cx);
     let main = cx.windows()[0];
