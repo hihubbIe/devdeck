@@ -1,13 +1,29 @@
 //! Taskfile tasks (`task:`). Included Taskfiles are not followed.
 
-use super::{Cx, Listing, Part, quote, yaml};
+use super::{Cx, Facts, Listing, Part, Toolchain, quote, yaml};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The names `task` looks for, in its order.
-pub(super) const NAMES: [&str; 8] = [
+pub struct GoTask;
+
+impl Toolchain for GoTask {
+    fn sources(&self) -> &'static [&'static str] {
+        &["task"]
+    }
+
+    fn reads(&self, name: &str) -> bool {
+        NAMES.contains(&name)
+    }
+
+    fn scan(&self, dir: &Path, listing: &Listing, _parent: Option<&Facts>, cx: &mut Cx) -> Option<Part> {
+        scan(dir, listing, cx)
+    }
+}
+
+const NAMES: [&str; 8] = [
     "Taskfile.yml",
     "taskfile.yml",
     "Taskfile.yaml",
@@ -66,7 +82,7 @@ impl Cmd {
     }
 }
 
-pub(super) fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
+fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
     let name = NAMES.into_iter().find(|n| listing.file(n))?;
     let mut part = Part::new("task");
     let path = dir.join(name);

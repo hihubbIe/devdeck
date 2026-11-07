@@ -1,20 +1,21 @@
-//! The environment runs get (R6.5, R6.8, R1.4): the login shell's variables, the
-//! programs on its PATH, and the Node version each app asks for.
+//! The environment runs get (R6.5, R1.4): the login shell's variables and the PATH, and
+//! the tool check.
 //!
 //! An app started from the desktop doesn't see what `~/.bashrc` sets (nvm, pnpm,
 //! `~/go/bin`), so the user's login shell is asked once (`$SHELL -lic env`, with a
 //! timeout) and its variables are the base for every run; the machine config's `path`
-//! goes in front. Node: `.nvmrc` is searched from the app's folder upward to its
-//! workspace folder; versions (`20`, `v20.11.1`, `lts/*`, `lts/iron`, using
-//! `~/.nvm/alias` for aliases) resolve against the installs found in the machine
-//! config's `node_dirs`; the chosen Node's `bin` goes first on the run's PATH, which
-//! also decides whether `pnpm` and `npm` exist for that app. Without an `.nvmrc`, an
-//! app's `engines.node` range (`>=22`, `^18.17 || 20`) keeps the default Node when it
-//! fits, else takes the newest install that does.
+//! goes in front. What toolchains find on the machine (Node installs) loads with it.
+//!
+//! The tool check, for a command of an app: each toolchain gives the folders to put
+//! first on the app's PATH (Node: the app's Node); a command needing a program from a
+//! toolchain that can't serve the app is refused with its reason; then the command's
+//! programs are looked up on the run's PATH (those folders, then the base); then its
+//! toolchain says whether the project is installed.
 
 use crate::apps::{App, Command};
+use crate::toolchains::{self, Machine};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -28,35 +29,20 @@ const AFTER_EXIT: Duration = Duration::from_millis(300);
 const MARKER: &str = "__devdeck_env__\n";
 const PRINT: &str = "printf '%s%s\\n' __devdeck_ env__; env -0";
 
-/// Programs that come with a Node install or are installed into one, so they're looked
-/// up with the app's Node first on the PATH.
-const NODE_TOOLS: [&str; 6] = ["node", "npm", "npx", "pnpm", "yarn", "corepack"];
-
 /// Variables describing the shell that was asked, not the environment.
 const SHELL_ONLY: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NodeInstall {
-    /// `22.23.3`.
-    pub version: String,
-    /// Its `bin` folder.
-    pub bin: PathBuf,
-}
 
 /// What runs need, found once per workspace load.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Toolbox {
     /// The login shell's variables (PATH included, machine `path` in front).
     pub vars: Vec<(String, String)>,
-    pub node: Vec<NodeInstall>,
-    /// Where nvm keeps aliases (`~/.nvm/alias`), when it exists.
-    pub aliases: Option<PathBuf>,
-    /// The version of the Node first on the PATH, when it's one of `node`.
-    pub default_node: Option<String>,
+    /// What toolchains found on this machine.
+    pub machine: Machine,
 }
 
 impl Toolbox {
-    /// Asks the login shell for its environment and finds Node installs.
+    /// Asks the login shell for its environment, and what toolchains find.
     pub fn load(machine: &crate::config::MachineConfig) -> Result<Toolbox, String> {
         let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
         let out = capture(shell_command(&shell), SHELL_TIMEOUT).map_err(|e| format!("login shell {shell}: {e}"))?;
@@ -70,108 +56,46 @@ impl Toolbox {
         Self::from_vars(std::env::vars().collect(), machine)
     }
 
-    fn from_vars(mut vars: Vec<(String, String)>, machine: &crate::config::MachineConfig) -> Toolbox {
-        prepend_path(&mut vars, &machine.path);
+    fn from_vars(mut vars: Vec<(String, String)>, config: &crate::config::MachineConfig) -> Toolbox {
+        prepend_path(&mut vars, &config.path);
         let home = var(&vars, "HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(PathBuf::from));
-        let aliases = home.as_ref().map(|h| h.join(".nvm/alias")).filter(|a| a.is_dir());
-        // Without configured folders, nvm's own.
-        let dirs = match machine.node_dirs.is_empty() {
-            true => home.map(|h| vec![h.join(".nvm/versions/node")]).unwrap_or_default(),
-            false => machine.node_dirs.clone(),
-        };
-        Toolbox::new(vars, node_installs(&dirs), aliases)
+        let machine = Machine::load(config, home.as_deref(), &path_of(&vars));
+        Toolbox { vars, machine }
     }
 
-    fn new(vars: Vec<(String, String)>, node: Vec<NodeInstall>, aliases: Option<PathBuf>) -> Toolbox {
-        let mut tb = Toolbox { vars, node, aliases, default_node: None };
-        let first = which("node", &tb.base_path()).and_then(|n| n.parent().and_then(|b| std::fs::canonicalize(b).ok()));
-        tb.default_node = first.and_then(|bin| tb.node.iter().find(|n| std::fs::canonicalize(&n.bin).is_ok_and(|b| b == bin)).map(|n| n.version.clone()));
-        tb
-    }
-
-    /// The Node install for an app, or why there is none (`.nvmrc wants node 20, which
-    /// isn't installed`). `Ok(None)`: the default Node (the app asks for no version, or
-    /// the default fits its `engines.node`, or which one is the default isn't known and
-    /// no install fits).
-    pub fn node_for(&self, app: &App) -> Result<Option<&NodeInstall>, String> {
-        if let Some(wanted) = app.node.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
-            return self.resolve(wanted).map(Some).ok_or_else(|| format!(".nvmrc wants node {wanted}, which isn't installed"));
-        }
-        let Some(range) = app.engines.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return Ok(None) };
-        let fits = |v: &str| version_parts(v).is_some_and(|p| satisfies(&p, range));
-        if self.default_node.as_deref().is_some_and(fits) {
-            return Ok(None);
-        }
-        match self.node.iter().find(|n| fits(&n.version)) {
-            Some(n) => Ok(Some(n)),
-            None if self.default_node.is_none() => Ok(None),
-            None => Err(format!("package.json wants node {range}, which isn't installed")),
-        }
-    }
-
-    /// The PATH for a run of `app`: its Node first, then the base PATH.
+    /// The PATH for a run of `app`: what its toolchains put first, then the base PATH.
     pub fn path_for(&self, app: &App) -> Vec<PathBuf> {
-        let node = self.node_for(app).ok().flatten().map(|n| n.bin.clone());
-        node.into_iter().chain(self.base_path()).collect()
+        let front = toolchains::ALL.iter().filter_map(|t| t.front(app, &self.machine).ok()).flatten();
+        front.chain(self.base_path()).collect()
     }
 
-    /// Why `cmd` of `app` can't run (`go not found`, the Node reason, `vite isn't
-    /// installed: run pnpm install`), if it can't.
+    /// Why `cmd` of `app` can't run (`go not found`, `.nvmrc wants node 20, which isn't
+    /// installed`, `vite isn't installed: run pnpm install`), if it can't.
     pub fn missing(&self, app: &App, cmd: &Command) -> Option<String> {
-        let (mut node_path, mut base) = (None, None);
-        for tool in &cmd.tools {
-            let path: &[PathBuf] = if NODE_TOOLS.contains(&tool.as_str()) {
-                if let Err(why) = self.node_for(app) {
-                    return Some(why);
-                }
-                node_path.get_or_insert_with(|| self.path_for(app))
-            } else {
-                base.get_or_insert_with(|| self.base_path())
-            };
-            if which(tool, path).is_none() {
-                return Some(format!("{tool} not found"));
+        let mut front: Vec<PathBuf> = Vec::new();
+        for t in toolchains::ALL {
+            match t.front(app, &self.machine) {
+                Ok(dirs) => front.extend(dirs),
+                Err(why) if cmd.tools.iter().any(|tool| t.provides(tool)) => return Some(why),
+                Err(_) => {}
             }
         }
-        if !cmd.deps.is_empty() {
-            let path = node_path.get_or_insert_with(|| self.path_for(app));
-            if let Some(dep) = cmd.deps.iter().find(|d| which(d, path).is_none()) {
-                let manager = cmd.tools.first().map_or("the project's", String::as_str);
-                return Some(format!("{dep} isn't installed: run {manager} install"));
-            }
+        let path: Vec<PathBuf> = front.into_iter().chain(self.base_path()).collect();
+        if let Some(tool) = cmd.tools.iter().find(|tool| which(tool, &path).is_none()) {
+            return Some(format!("{tool} not found"));
         }
-        None
+        toolchains::of(cmd).and_then(|t| t.installed(app, cmd, &path))
     }
 
     /// The login shell's PATH (machine `path` in front), as folders.
     fn base_path(&self) -> Vec<PathBuf> {
-        var(&self.vars, "PATH").unwrap_or("").split(':').filter(|d| !d.is_empty()).map(PathBuf::from).collect()
+        path_of(&self.vars)
     }
+}
 
-    /// The newest install `wanted` names (`20`, `v20.11`, `node`), following nvm aliases
-    /// (`lts/*` → `lts/iron` → `v20.11.1`) a few levels deep, so a loop ends.
-    fn resolve(&self, wanted: &str) -> Option<&NodeInstall> {
-        let mut wanted = wanted.to_string();
-        for _ in 0..8 {
-            if wanted == "node" || wanted == "stable" {
-                return self.node.first();
-            }
-            if let Some(parts) = version_parts(&wanted) {
-                return self.node.iter().find(|n| version_parts(&n.version).is_some_and(|v| v.starts_with(&parts)));
-            }
-            wanted = self.alias(&wanted)?;
-        }
-        None
-    }
-
-    /// What the nvm alias `name` (`lts/iron`, `lts/*`, `default`) points to: the first
-    /// line of its file in the alias folder.
-    fn alias(&self, name: &str) -> Option<String> {
-        if name.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
-            return None;
-        }
-        let text = std::fs::read_to_string(self.aliases.as_ref()?.join(name)).ok()?;
-        text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
-    }
+/// The PATH in `vars`, as folders.
+fn path_of(vars: &[(String, String)]) -> Vec<PathBuf> {
+    var(vars, "PATH").unwrap_or("").split(':').filter(|d| !d.is_empty()).map(PathBuf::from).collect()
 }
 
 /// The program `name` in `path`, when it's there and executable.
@@ -183,25 +107,6 @@ pub fn which(name: &str, path: &[PathBuf]) -> Option<PathBuf> {
     path.iter()
         .map(|d| d.join(name))
         .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
-}
-
-/// The version an `.nvmrc` at `dir` or above (up to `stop`, included) asks for, trimmed
-/// (`20`, `v20.11.1`, `lts/iron`). Discovery sets `App::node` with it.
-pub fn nvmrc(dir: &Path, stop: &Path) -> Option<String> {
-    let mut at = Some(dir);
-    while let Some(d) = at {
-        // A file with only comments or blank lines asks for nothing: keep looking up.
-        if let Ok(text) = std::fs::read_to_string(d.join(".nvmrc"))
-            && let Some(v) = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))
-        {
-            return Some(v.to_string());
-        }
-        if d == stop {
-            break;
-        }
-        at = d.parent();
-    }
-    None
 }
 
 /// `shell` as a login, interactive shell (so it reads the rc files that set nvm, pnpm
@@ -303,127 +208,12 @@ fn var<'a>(vars: &'a [(String, String)], key: &str) -> Option<&'a str> {
     vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
-/// The Node installs in `dirs` (`v22.23.3/bin/node`), newest first. A version found in
-/// two folders keeps the first.
-fn node_installs(dirs: &[PathBuf]) -> Vec<NodeInstall> {
-    let mut found: Vec<(Vec<u64>, NodeInstall)> = Vec::new();
-    for entry in dirs.iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten() {
-        let name = entry.file_name();
-        let Some(version) = name.to_str().and_then(|n| n.strip_prefix('v')) else { continue };
-        let Some(parts) = version_parts(version).filter(|p| p.len() == 3) else { continue };
-        let bin = entry.path().join("bin");
-        if found.iter().any(|(p, _)| *p == parts) || which("node", std::slice::from_ref(&bin)).is_none() {
-            continue;
-        }
-        found.push((parts, NodeInstall { version: version.to_string(), bin }));
-    }
-    found.sort_by(|a, b| b.0.cmp(&a.0));
-    found.into_iter().map(|(_, n)| n).collect()
-}
-
-/// `20`, `v20.11`, `20.11.1` as numbers (one to three parts); `None` for anything else.
-/// Whether `version` (1 to 3 parts) fits an npm semver range: alternatives joined by
-/// `||`, each a list of comparators (`>=18`, `<21`, `^18.17`, `~20.1`, `20.x`, `20`,
-/// `*`) or a hyphen range (`18 - 20`). An unreadable comparator fits nothing.
-fn satisfies(version: &[u64], range: &str) -> bool {
-    let v = [0, 1, 2].map(|i| version.get(i).copied().unwrap_or(0));
-    range.split("||").any(|alt| {
-        let alt = alt.trim();
-        if alt.is_empty() || alt == "*" || alt == "x" {
-            return true;
-        }
-        if let Some((lo, hi)) = alt.split_once(" - ") {
-            return compare(&v, ">=", lo.trim()) && compare(&v, "<=", hi.trim());
-        }
-        // `>= 18` is one comparator.
-        let mut comparators: Vec<String> = Vec::new();
-        for token in alt.split_whitespace() {
-            match comparators.last_mut() {
-                Some(last) if last.chars().all(|c| "<>=~^".contains(c)) => last.push_str(token),
-                _ => comparators.push(token.to_string()),
-            }
-        }
-        comparators.iter().all(|c| {
-            let op_len = c.find(|ch: char| !"<>=~^".contains(ch)).unwrap_or(c.len());
-            compare(&v, &c[..op_len], &c[op_len..])
-        })
-    })
-}
-
-/// `v op partial`, with npm's meaning for partial versions (`>1.2` is `>=1.3.0`).
-fn compare(v: &[u64; 3], op: &str, partial: &str) -> bool {
-    let partial = partial.strip_prefix('v').unwrap_or(partial);
-    let mut given: Vec<u64> = Vec::new();
-    for p in partial.split('.') {
-        match p {
-            "x" | "X" | "*" | "" => break,
-            p => match p.parse() {
-                Ok(n) => given.push(n),
-                Err(_) => return false,
-            },
-        }
-        if given.len() == 3 {
-            break;
-        }
-    }
-    let n = given.len();
-    let low = [0, 1, 2].map(|i| given.get(i).copied().unwrap_or(0));
-    // Just above every version starting with what's given (`1.2` → `1.3.0`).
-    let above = |upto: usize| {
-        let mut a = [0; 3];
-        a[..upto].copy_from_slice(&low[..upto]);
-        if upto > 0 {
-            a[upto - 1] += 1;
-        }
-        a
-    };
-    match op {
-        "" | "=" if n == 0 => true,
-        "" | "=" => v[..n] == low[..n],
-        ">=" => *v >= low,
-        ">" if n == 3 => *v > low,
-        ">" => n == 0 || *v >= above(n),
-        "<" => *v < low,
-        "<=" if n == 3 => *v <= low,
-        "<=" => n == 0 || *v < above(n),
-        "~" if n <= 1 => v[..n] == low[..n],
-        "~" => *v >= low && *v < above(2),
-        "^" if n == 0 => true,
-        "^" => {
-            let upto = if low[0] > 0 || n == 1 { 1 } else if low[1] > 0 || n == 2 { 2 } else { 3 };
-            *v >= low && *v < above(upto)
-        }
-        _ => false,
-    }
-}
-
-fn version_parts(s: &str) -> Option<Vec<u64>> {
-    let s = s.strip_prefix('v').unwrap_or(s);
-    let parts: Vec<u64> = s
-        .split('.')
-        .map(|p| if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) { p.parse().ok() } else { None })
-        .collect::<Option<_>>()?;
-    (1..=3).contains(&parts.len()).then_some(parts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::apps::{EnvApply, Tier};
-
-    #[test]
-    fn nvmrc_is_found_upward_until_the_workspace_folder() {
-        let root = crate::testing::TempDir::new("nvmrc");
-        let app = root.join("front-end/apps/x");
-        std::fs::create_dir_all(&app).unwrap();
-        assert_eq!(nvmrc(&app, &root), None);
-        std::fs::write(root.join("front-end/.nvmrc"), "# node\n 20 \n").unwrap();
-        assert_eq!(nvmrc(&app, &root).as_deref(), Some("20"));
-        assert_eq!(nvmrc(&app, &root.join("front-end/apps")), None, "stops at the workspace folder");
-        std::fs::write(app.join(".nvmrc"), "# only a comment\n\n").unwrap();
-        assert_eq!(nvmrc(&app, &root).as_deref(), Some("20"), "an .nvmrc asking for nothing doesn't stop the search");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
+    use crate::toolchains::node;
+    use std::path::Path;
 
     /// An empty folder of its own for one test.
     fn tmp(tag: &str) -> crate::testing::TempDir {
@@ -445,192 +235,64 @@ mod tests {
         }
     }
 
-    fn app(node: Option<&str>) -> App {
-        App {
-            id: "a".into(),
-            name: "a".into(),
-            folder: "/a".into(),
-            dir: "/a".into(),
-            kind: "pnpm".into(),
-            library: false,
-            node: node.map(str::to_string),
-            engines: None,
-            commands: vec![],
-            env: EnvApply::None,
-            urls: vec![],
-        }
+    /// An app whose `.nvmrc` asks for `nvmrc`.
+    fn app(nvmrc: Option<&str>) -> App {
+        let facts = toolchains::Facts { node: nvmrc.map(|v| node::Facts { nvmrc: Some(v.into()), ..Default::default() }) };
+        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: "pnpm".into(), library: false, facts, commands: vec![], env: EnvApply::None, urls: vec![] }
     }
 
     fn cmd(tools: &[&str]) -> Command {
-        Command { id: "pnpm:dev".into(), line: "x".into(), tier: Tier::Primary, tools: tools.iter().map(|t| t.to_string()).collect(), deps: vec![], ports: vec![] }
+        Command { id: "pnpm:dev".into(), line: "x".into(), tier: Tier::Primary, tools: tools.iter().map(|t| t.to_string()).collect(), from_install: vec![], setup: false, ports: vec![] }
     }
 
-    fn toolbox(node_dirs: &[&Path], path: &[&Path], aliases: Option<PathBuf>) -> Toolbox {
+    /// Node installs in `node_dirs`, and `path` as the PATH.
+    fn toolbox(node_dirs: &[&Path], path: &[&Path]) -> Toolbox {
         let node_dirs: Vec<PathBuf> = node_dirs.iter().map(|d| d.to_path_buf()).collect();
-        let path = path.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(":");
-        Toolbox::new(vec![("PATH".into(), path)], node_installs(&node_dirs), aliases)
-    }
-
-    fn versions(tb: &Toolbox) -> Vec<&str> {
-        tb.node.iter().map(|n| n.version.as_str()).collect()
-    }
-
-    fn wants<'a>(tb: &'a Toolbox, v: &str) -> Result<Option<&'a str>, String> {
-        tb.node_for(&app(Some(v))).map(|n| n.map(|n| n.version.as_str()))
+        let vars = vec![("PATH".to_string(), path.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(":"))];
+        let config = crate::config::MachineConfig { node_dirs, path: vec![] };
+        let machine = Machine::load(&config, None, &path_of(&vars));
+        Toolbox { vars, machine }
     }
 
     #[test]
-    fn installs_are_found_newest_first() {
-        let d = tmp("installs");
-        let (a, b) = (d.join("a"), d.join("b"));
-        for v in ["18.20.4", "20.9.0", "20.11.1", "22.1.0"] {
-            node(&a, v, &[]);
-        }
-        std::fs::create_dir_all(a.join("v21.0.0/bin")).unwrap();
-        std::fs::create_dir_all(a.join("notes/bin")).unwrap();
-        node(&b, "20.11.1", &[]);
-        node(&b, "16.0.0", &[]);
-        let tb = toolbox(&[&a, &b, &d.join("absent")], &[], None);
-        assert_eq!(versions(&tb), ["22.1.0", "20.11.1", "20.9.0", "18.20.4", "16.0.0"], "v21 has no node");
-        assert_eq!(tb.node[1].bin, a.join("v20.11.1/bin"), "the first folder wins");
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn versions_resolve_to_the_newest_match() {
-        let d = tmp("resolve");
-        for v in ["18.20.4", "20.9.0", "20.11.1", "22.1.0"] {
-            node(&d, v, &[]);
-        }
-        let tb = toolbox(&[&d], &[], None);
-        assert_eq!(tb.node_for(&app(None)), Ok(None), "asks for nothing");
-        assert_eq!(wants(&tb, "20"), Ok(Some("20.11.1")));
-        assert_eq!(wants(&tb, "v20"), Ok(Some("20.11.1")));
-        assert_eq!(wants(&tb, "v20.9.0"), Ok(Some("20.9.0")));
-        assert_eq!(wants(&tb, "20.9"), Ok(Some("20.9.0")));
-        assert_eq!(wants(&tb, " 18 "), Ok(Some("18.20.4")));
-        assert_eq!(wants(&tb, "node"), Ok(Some("22.1.0")));
-        assert_eq!(wants(&tb, "stable"), Ok(Some("22.1.0")));
-        assert_eq!(wants(&tb, "20").unwrap(), wants(&tb, "20.11").unwrap());
-        assert_eq!(wants(&tb, "19"), Err(".nvmrc wants node 19, which isn't installed".into()));
-        assert!(wants(&tb, "2").is_err(), "a prefix of numbers, not of text");
-        assert!(wants(&tb, "20.9.0.1").is_err());
-        assert!(wants(&tb, "iojs").is_err(), "no alias folder");
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn nvm_aliases_lead_to_versions() {
-        let d = tmp("aliases");
-        let installs = d.join("node");
-        for v in ["20.11.1", "22.1.0"] {
-            node(&installs, v, &[]);
-        }
-        let alias = d.join("alias");
-        std::fs::create_dir_all(alias.join("lts")).unwrap();
-        for (name, to) in [("lts/*", "lts/iron\n"), ("lts/iron", "v20.11.1\n"), ("lts/hydrogen", "v18.19.0"), ("default", "22"), ("loop", "loop")] {
-            std::fs::write(alias.join(name), to).unwrap();
-        }
-        let tb = toolbox(&[&installs], &[], Some(alias));
-        assert_eq!(wants(&tb, "lts/*"), Ok(Some("20.11.1")));
-        assert_eq!(wants(&tb, "lts/iron"), Ok(Some("20.11.1")));
-        assert_eq!(wants(&tb, "default"), Ok(Some("22.1.0")));
-        assert_eq!(wants(&tb, "lts/hydrogen"), Err(".nvmrc wants node lts/hydrogen, which isn't installed".into()));
-        assert!(wants(&tb, "lts/jod").is_err(), "no alias file");
-        assert!(wants(&tb, "loop").is_err(), "an alias loop ends");
-        assert!(wants(&tb, "../alias/default").is_err(), "stays in the alias folder");
-        let without = toolbox(&[&installs], &[], None);
-        assert!(wants(&without, "lts/iron").is_err(), "no alias folder");
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn semver_ranges_as_npm_reads_them() {
-        let fits = |v: &str, r: &str| satisfies(&version_parts(v).unwrap(), r);
-        for (v, r) in [
-            ("22.1.0", ">=22.0.0"),
-            ("22.1.0", ">= 22"),
-            ("20.11.1", "^20.10"),
-            ("20.11.1", "~20.11.0"),
-            ("20.11.1", "20.x"),
-            ("20.11.1", "20"),
-            ("18.20.4", "^18.17.0 || >=20"),
-            ("20.11.1", ">=18 <21"),
-            ("20.11.1", "18 - 20"),
-            ("0.2.5", "^0.2.3"),
-            ("1.3.0", ">1.2"),
-            ("26.0.0", "*"),
-        ] {
-            assert!(fits(v, r), "{v} fits {r}");
-        }
-        for (v, r) in [
-            ("20.20.2", ">=22.0.0"),
-            ("21.0.0", "^20.10"),
-            ("20.12.0", "~20.11.0"),
-            ("21.0.0", ">=18 <21"),
-            ("21.0.0", "18 - 20"),
-            ("0.3.0", "^0.2.3"),
-            ("1.2.9", ">1.2"),
-            ("20.0.0", "lts/iron"),
-        ] {
-            assert!(!fits(v, r), "{v} doesn't fit {r}");
-        }
-    }
-
-    #[test]
-    fn engines_keep_the_default_node_when_it_fits() {
-        let d = tmp("engines");
-        let installs = d.join("node");
-        for v in ["20.20.2", "22.23.3", "26.0.0"] {
-            node(&installs, v, &[]);
-        }
-        let tb = toolbox(&[&installs], &[&installs.join("v20.20.2/bin")], None);
-        assert_eq!(tb.default_node.as_deref(), Some("20.20.2"), "the PATH's node is an install");
-        let engines = |r: &str| App { engines: Some(r.into()), ..app(None) };
-        let picked = |a: &App| tb.node_for(a).map(|n| n.map(|n| n.version.clone()));
-        assert_eq!(picked(&engines(">=18")), Ok(None), "the default fits");
-        assert_eq!(picked(&engines(">=22.0.0")), Ok(Some("26.0.0".into())), "the newest that fits");
-        assert_eq!(picked(&engines("^22")), Ok(Some("22.23.3".into())));
-        assert_eq!(picked(&engines(">=30")), Err("package.json wants node >=30, which isn't installed".into()));
-        assert_eq!(picked(&App { node: Some("22".into()), ..engines(">=26") }), Ok(Some("22.23.3".into())), ".nvmrc first");
-        let unknown = toolbox(&[&installs], &[], None);
-        assert_eq!(unknown.node_for(&engines(">=30")), Ok(None), "the default isn't known: let it try");
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn programs_the_install_provides_say_to_install() {
-        let d = tmp("deps");
-        let bin = d.join("bin");
-        exe(&bin.join("npm"));
-        exe(&bin.join("node"));
-        exe(&bin.join("tsc"));
-        let tb = toolbox(&[], &[&bin], None);
-        let with = |deps: &[&str]| Command { deps: deps.iter().map(|d| d.to_string()).collect(), ..cmd(&["npm", "node"]) };
-        assert_eq!(tb.missing(&app(None), &with(&["vite"])).as_deref(), Some("vite isn't installed: run npm install"));
-        assert_eq!(tb.missing(&app(None), &with(&["tsc"])), None, "on the PATH (installed globally)");
-        assert_eq!(tb.missing(&app(None), &Command { tools: vec!["pnpm".into()], ..with(&["vite"]) }).as_deref(), Some("pnpm not found"), "tools first");
-        std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    #[test]
-    fn node_tools_follow_the_apps_node() {
+    fn a_program_from_a_toolchain_that_cant_serve_the_app_refuses() {
         let d = tmp("tools");
         let installs = d.join("node");
         node(&installs, "20.11.1", &["npm", "pnpm"]);
         node(&installs, "22.1.0", &["npm"]);
         let bin = d.join("bin");
         exe(&bin.join("go"));
-        let tb = toolbox(&[&installs], &[&bin], None);
+        let tb = toolbox(&[&installs], &[&bin]);
         assert_eq!(tb.missing(&app(Some("20")), &cmd(&["pnpm", "node"])), None);
         assert_eq!(tb.missing(&app(Some("22")), &cmd(&["node", "pnpm"])).as_deref(), Some("pnpm not found"), "pnpm only under 20");
         assert_eq!(tb.missing(&app(Some("19")), &cmd(&["pnpm"])).as_deref(), Some(".nvmrc wants node 19, which isn't installed"));
-        assert_eq!(tb.missing(&app(Some("19")), &cmd(&["go"])), None, "other tools don't need the Node");
+        assert_eq!(tb.missing(&app(Some("19")), &cmd(&["go"])), None, "other programs don't need the Node");
         assert_eq!(tb.missing(&app(None), &cmd(&["go", "docker"])).as_deref(), Some("docker not found"));
         assert_eq!(tb.missing(&app(None), &cmd(&["node"])).as_deref(), Some("node not found"), "no Node asked, none on the PATH");
         exe(&bin.join("pnpm"));
         assert_eq!(tb.missing(&app(Some("22")), &cmd(&["pnpm"])), None, "pnpm on the base PATH");
         assert_eq!(tb.missing(&app(None), &cmd(&[])), None);
+        // Programs are looked up on the run's PATH: the app's Node folder counts for all.
+        exe(&installs.join("v20.11.1/bin/tsx"));
+        assert_eq!(tb.missing(&app(Some("20")), &cmd(&["tsx"])), None, "found in the app's Node folder");
+        assert_eq!(tb.missing(&app(None), &cmd(&["tsx"])).as_deref(), Some("tsx not found"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn the_commands_toolchain_says_whether_the_project_is_installed() {
+        let d = tmp("installed");
+        let bin = d.join("bin");
+        for p in ["npm", "node", "tsc"] {
+            exe(&bin.join(p));
+        }
+        let tb = toolbox(&[], &[&bin]);
+        let with = |from_install: &[&str]| Command { id: "npm:dev".into(), from_install: from_install.iter().map(|d| d.to_string()).collect(), ..cmd(&["npm", "node"]) };
+        assert_eq!(tb.missing(&app(None), &with(&["vite"])).as_deref(), Some("vite isn't installed: run npm install"));
+        assert_eq!(tb.missing(&app(None), &with(&["tsc"])), None, "on the PATH (installed globally)");
+        assert_eq!(tb.missing(&app(None), &Command { tools: vec!["pnpm".into()], ..with(&["vite"]) }).as_deref(), Some("pnpm not found"), "programs first");
+        let config_only = Command { id: "sh:x".into(), from_install: vec!["vite".into()], ..cmd(&["npm"]) };
+        assert_eq!(tb.missing(&app(None), &config_only), None, "no toolchain owns it: the generic check only");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -638,7 +300,7 @@ mod tests {
     fn the_apps_node_comes_first_on_the_path() {
         let d = tmp("path");
         node(&d, "20.11.1", &[]);
-        let tb = toolbox(&[&d], &[Path::new("/a"), Path::new("/b")], None);
+        let tb = toolbox(&[&d], &[Path::new("/a"), Path::new("/b")]);
         let base = [PathBuf::from("/a"), PathBuf::from("/b")];
         assert_eq!(tb.path_for(&app(Some("20"))), [d.join("v20.11.1/bin"), base[0].clone(), base[1].clone()]);
         assert_eq!(tb.path_for(&app(None)), base);

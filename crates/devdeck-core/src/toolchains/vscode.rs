@@ -3,11 +3,27 @@
 //! requests and configurations using variables other than `${workspaceFolder}`
 //! (`${file}`, `${env:X}`, `${input:x}`) are skipped quietly. `envFile` isn't read.
 
-use super::{Cx, Listing, Part, quote};
+use super::{Cx, Facts, Listing, Part, Toolchain, quote};
 use serde_json::Value;
 use std::path::Path;
 
-pub(super) fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
+pub struct VsCode;
+
+impl Toolchain for VsCode {
+    fn sources(&self) -> &'static [&'static str] {
+        &["vscode"]
+    }
+
+    fn reads(&self, name: &str) -> bool {
+        name == "launch.json"
+    }
+
+    fn scan(&self, dir: &Path, listing: &Listing, _parent: Option<&Facts>, cx: &mut Cx) -> Option<Part> {
+        scan(dir, listing, cx)
+    }
+}
+
+fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
     if !listing.dir(".vscode") {
         return None;
     }
@@ -152,6 +168,8 @@ fn subst(s: &str, root: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apps::Tier;
+    use crate::testing::{Tree, app, ids, lines, tier};
     use serde_json::json;
 
     #[test]
@@ -183,5 +201,43 @@ mod tests {
         assert!(launch(&json!({"type": "go", "program": ".", "env": {"PATH": "${env:PATH}"}}), Path::new("/w")).is_none());
         assert!(launch(&json!({"type": "python", "program": "a.py"}), Path::new("/w")).is_none());
         assert!(launch(&json!({"type": "node"}), Path::new("/w")).is_none(), "nothing to run");
+    }
+
+    #[test]
+    fn launch_configurations_become_commands() {
+        let t = Tree::new("vscode");
+        let launch = r#"{
+      // VS Code writes comments and trailing commas
+      "version": "0.2.0",
+      "configurations": [
+        {"name": "Server", "type": "go", "request": "launch", "program": "${workspaceFolder}", "args": ["serve"],},
+        {"name": "Attach", "type": "go", "request": "attach", "mode": "local"},
+        {"name": "Script", "type": "node", "request": "launch", "program": "${workspaceFolder}/index.js"},
+        {"name": "Current file", "type": "go", "request": "launch", "program": "${file}"},
+        {"name": "Py", "type": "python", "request": "launch", "program": "x.py"},
+      ],
+    }"#;
+        t.file("tool/go.mod", "module tool\n").file("tool/main.go", "package main\n").file("tool/.vscode/launch.json", launch);
+        t.file("script/.vscode/launch.json", launch);
+        t.file("settings/.vscode/settings.json", "{}");
+        let found = t.scan();
+        assert!(found.problems.is_empty(), "{:?}", found.problems);
+        assert_eq!(ids(&found), ["script", "tool"], "a launch.json with commands is enough; settings alone isn't");
+
+        let tool = app(&found, "tool");
+        assert_eq!(
+            lines(tool),
+            [
+                ("go:build", "go build ./..."),
+                ("go:run", "go run ."),
+                ("go:test", "go test ./..."),
+                ("vscode:Script", "node ./index.js"),
+                ("vscode:Server", "go run . serve"),
+            ]
+        );
+        assert_eq!(tier(tool, "go:run"), Tier::Hidden, "launch.json runs it");
+        assert_eq!(tool.command("vscode:Script").unwrap().tools, ["node"]);
+        assert_eq!(app(&found, "script").kind, "vscode");
+        assert!(found.watch.contains(&t.path("tool/.vscode")));
     }
 }

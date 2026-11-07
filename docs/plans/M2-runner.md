@@ -291,6 +291,17 @@ Review of the plan (subagent) and assessment, all **accepted**:
   green, then moved); Cargo; the app side. A contract test checks `ALL` (sources
   unique, `reads` covering each manifest).
 
+Part A outcome: built as planned, with these notes.
+- The diff review by a subagent was refused by the permission check; reviewed by the
+  lead instead: no language names left in generic code outside tests.
+- On the real workspaces, discovery gives the same results as before (`personal` 35
+  apps, `tadaweb` 449 apps, 2844 visible commands, 2048 ready), except the intended
+  Cargo changes: `game` → `cargo run` and `cargo run -p xtask --bin xtask`;
+  `tangine-dino`'s second binary next to its `default-run`.
+- A test checks every toolchain's contract; the extra rescan's test fails without it.
+- Seen once under load: `ports::tests::a_real_ipv4_listener_is_found` (another test
+  can take the freed port); unchanged code, left as is.
+
 **Part B: arguments per command** (planned in detail after A, with snapshots, then a
 GO): commands stay the real distinct ones; each command gets arguments, chosen in the
 run tab from a dropdown of recent ones (per workspace, app and command, most recent

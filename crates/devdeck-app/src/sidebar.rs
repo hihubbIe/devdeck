@@ -240,12 +240,11 @@ impl Sidebar {
         match self.activity() {
             Activity::Apps => {
                 let runner = s.runner.read(cx);
-                let tools = runner.tools();
                 s.catalog
                     .apps
                     .iter()
                     .map(|a| {
-                        let warning = tools.unusable(a);
+                        let warning = s.unusable.get(&a.id).cloned();
                         ListItem::new(a.id.clone(), a.name.clone())
                             .detail(a.kind.clone())
                             .running(runner.app_running(&a.id))

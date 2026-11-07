@@ -112,7 +112,7 @@ impl RunDriver for Claims {
 }
 
 fn command(id: &str, tools: &[&str]) -> Command {
-    Command { id: id.into(), line: id.into(), tier: Tier::Primary, tools: tools.iter().map(|t| t.to_string()).collect(), deps: vec![], ports: vec![] }
+    Command { id: id.into(), line: id.into(), tier: Tier::Primary, tools: tools.iter().map(|t| t.to_string()).collect(), from_install: vec![], setup: false, ports: vec![] }
 }
 
 #[gpui::test]
@@ -124,8 +124,7 @@ fn quitting_waits_for_the_slowest_stop_sequence(cx: &mut TestAppContext) {
         dir: "/stack".into(),
         kind: "docker".into(),
         library: false,
-        node: None,
-        engines: None,
+        facts: Default::default(),
         commands: vec![command("compose:up", &["docker"]), command("make:dev", &["make"])],
         env: EnvApply::None,
         urls: vec![],

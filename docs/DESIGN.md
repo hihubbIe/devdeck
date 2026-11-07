@@ -119,6 +119,21 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - All workspaces are loaded at start; only the active one renders. Processes of
   inactive workspaces keep running; their output keeps buffering.
 
+### Toolchains
+
+- Everything about one language or tool (Node, Cargo, Go, Taskfile, Make, compose,
+  VS Code launch configs) lives in its module under `devdeck-core/src/toolchains/`,
+  behind one `Toolchain` trait: what it reads and finds in a project folder, which
+  folders it keeps to itself, its monorepo packages, which of its commands others
+  already run, the programs it provides, what it puts first on a run's PATH, and
+  whether the project is installed. Discovery, the watcher and the tool check only go
+  through the trait and the list `toolchains::ALL`.
+- What a toolchain keeps about an app (`Facts`) or the machine (`Machine`) is one
+  field per toolchain, so values stay plain, comparable data. Shared pieces sit next
+  to the trait: reading a project folder, shell scripts into programs.
+- Adding a toolchain: a module, a line in `ALL` (its place decides an app's kind), and
+  its `Facts`/`Machine` fields and machine config key when it keeps anything.
+
 ### Processes
 
 - Each run is a child in a pseudo-terminal opened with rustix (the mechanism

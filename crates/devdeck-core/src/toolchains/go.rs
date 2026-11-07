@@ -1,14 +1,37 @@
 //! Go modules: `go:run` for a main package at the root, `go:<x>` for `cmd/<x>`, plus
 //! `go:build` and `go:test`. A module without a main package is a library.
 
-use super::{Cx, Listing, Part, quote};
+use super::{Cx, Facts, Listing, Part, Toolchain, quote};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 pub(super) const KIND: &str = "go";
 
-pub(super) fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
+pub struct Go;
+
+impl Toolchain for Go {
+    fn sources(&self) -> &'static [&'static str] {
+        &[KIND]
+    }
+
+    fn reads(&self, name: &str) -> bool {
+        name == "go.mod" || name.strip_suffix(".go").is_some_and(|stem| !stem.ends_with("_test"))
+    }
+
+    fn scan(&self, dir: &Path, listing: &Listing, _parent: Option<&Facts>, cx: &mut Cx) -> Option<Part> {
+        scan(dir, listing, cx)
+    }
+
+    /// `go:run` (or `go:<x>`) when a Taskfile, Makefile, script or launch.json already
+    /// runs that main: theirs carry the arguments and variables.
+    fn covered(&self, runs: &[String]) -> BTreeSet<String> {
+        runs.iter().flat_map(|r| targets(r)).collect()
+    }
+}
+
+fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
     if !listing.file("go.mod") {
         return None;
     }
@@ -88,7 +111,7 @@ fn package_of(path: &Path) -> Option<String> {
 
 /// The Go command ids a shell text runs with `go run`: `go:run` for the root package
 /// (`go run .`, `go run -race main.go`), `go:<x>` for `./cmd/<x>`.
-pub(super) fn targets(text: &str) -> Vec<String> {
+fn targets(text: &str) -> Vec<String> {
     /// Build flags followed by a value when written without `=`.
     const VALUED: [&str; 12] = ["-tags", "-ldflags", "-gcflags", "-asmflags", "-mod", "-modfile", "-exec", "-p", "-pkgdir", "-overlay", "-o", "-C"];
     let words: Vec<&str> = text

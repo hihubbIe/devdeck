@@ -1,19 +1,35 @@
 //! Makefile targets (`make:`). Included makefiles are not followed; file and pattern
 //! targets (`bin/app`, `%.o`) and special ones (`.PHONY`) are left out.
 
-use super::{Cx, Listing, Part, quote};
+use super::{Cx, Facts, Listing, Part, Toolchain, quote};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The names `make` looks for, in its order.
-pub(super) const NAMES: [&str; 3] = ["GNUmakefile", "makefile", "Makefile"];
+const NAMES: [&str; 3] = ["GNUmakefile", "makefile", "Makefile"];
+
+pub struct Make;
+
+impl Toolchain for Make {
+    fn sources(&self) -> &'static [&'static str] {
+        &["make"]
+    }
+
+    fn reads(&self, name: &str) -> bool {
+        NAMES.contains(&name)
+    }
+
+    fn scan(&self, dir: &Path, listing: &Listing, _parent: Option<&Facts>, cx: &mut Cx) -> Option<Part> {
+        scan(dir, listing, cx)
+    }
+}
 
 /// Lines that start with these are directives, not rules.
 const DIRECTIVES: [&str; 9] = ["include", "-include", "sinclude", "export", "unexport", "override", "vpath", "undefine", "private"];
 /// Conditionals can sit between a rule and its recipe lines.
 const CONDITIONALS: [&str; 6] = ["ifeq", "ifneq", "ifdef", "ifndef", "else", "endif"];
 
-pub(super) fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
+fn scan(dir: &Path, listing: &Listing, cx: &mut Cx) -> Option<Part> {
     let name = NAMES.into_iter().find(|n| listing.file(n))?;
     let mut part = Part::new("make");
     let Some(text) = cx.read(&dir.join(name)) else { return Some(part) };

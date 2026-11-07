@@ -21,7 +21,7 @@ pub fn catalog(workspace: &str) -> Catalog {
 /// `id` is `source:name` (`go:run`), as discovery makes them.
 fn command(id: &str, line: &str, tools: &[&str], ports: &[u16]) -> Command {
     let name = id.split_once(':').map_or(id, |(_, n)| n);
-    Command { id: id.into(), line: line.into(), tier: Tier::of(name, &[]), tools: tools.iter().map(|t| t.to_string()).collect(), deps: Vec::new(), ports: ports.to_vec() }
+    Command { id: id.into(), line: line.into(), tier: Tier::of(name, &[]), tools: tools.iter().map(|t| t.to_string()).collect(), from_install: Vec::new(), setup: false, ports: ports.to_vec() }
 }
 
 fn app(id: &str, folder: String, kind: &str, commands: Vec<Command>, env: EnvApply) -> App {
@@ -32,8 +32,7 @@ fn app(id: &str, folder: String, kind: &str, commands: Vec<Command>, env: EnvApp
         folder,
         kind: kind.into(),
         library: false,
-        node: None,
-        engines: None,
+        facts: Default::default(),
         commands,
         env,
         urls: Vec::new(),
@@ -60,7 +59,7 @@ fn pnpm_app(name: &str, port: u16) -> App {
         command("pnpm:prepare", "pnpm run prepare", &["pnpm", "node"], &[]),
     ];
     let mut a = app(name, format!("~/Documents/repos/front-end/apps/{short}"), "pnpm", commands, EnvApply::FileRewrite(".env.local".into()));
-    a.node = Some("22".into());
+    a.facts.node = Some(crate::toolchains::node::Facts { nvmrc: Some("22".into()), ..Default::default() });
     a
 }
 

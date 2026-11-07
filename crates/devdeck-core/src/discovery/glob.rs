@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 const MAX_DEPTH: usize = 12;
 
 #[derive(Debug, Default)]
-pub(super) struct Matches {
+pub(crate) struct Matches {
     /// Matching folders relative to the root, with `/`, alphabetical.
     pub dirs: Vec<String>,
     /// Folders whose children were matched against a pattern (`apps` for `apps/*`,
@@ -20,7 +20,7 @@ pub(super) struct Matches {
 }
 
 /// The folders below `root` that `patterns` match; `!pattern` excludes.
-pub(super) fn expand(root: &Path, patterns: &[String], cx: &mut Cx) -> Matches {
+pub(crate) fn expand(root: &Path, patterns: &[String], cx: &mut Cx) -> Matches {
     let mut walk = Walk { found: BTreeSet::new(), listed: Vec::new(), ancestors: Vec::new(), seen: HashSet::new() };
     let mut excluded = Vec::new();
     for pattern in patterns {

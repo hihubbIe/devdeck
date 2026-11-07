@@ -6,13 +6,16 @@
 //!   `workspaces/` folder. Access events are dropped (reading a file is not a change).
 //! - Changes are grouped ([`PAUSE`]). A change that can change what's found rescans that
 //!   workspace (in the background): a file discovery reads, a folder created or
-//!   renamed, an install's programs (`discovery::concerns`), a watched folder removed.
+//!   renamed, an install's programs (`toolchains::concerns`), a watched folder removed.
 //!   Logs and build files written next to manifests don't. A changed workspace file reloads the configs and rescans
 //!   that workspace with its new config; `machine.toml` reloads the environment (unless
 //!   it can't be read: the current one stays, and a toast says why). The config files'
 //!   problems are read again each time. Adding or removing a workspace file needs a
 //!   restart: a toast says so, once per change of the set of files.
 //! - After a rescan the watched folders change (`Services::watch`): the watcher follows.
+//!   When it starts watching folders that were already there (an install's
+//!   `node_modules/.bin`), what changed in them before is unseen: that workspace is
+//!   rescanned once more.
 //! - The watcher's thread hands paths to the UI thread over a channel; nothing blocks it.
 
 use crate::services::{Rescanned, Services};
@@ -67,7 +70,11 @@ pub fn start(shell: &Entity<Shell>, config_dir: PathBuf, cx: &mut App) -> Option
         .iter()
         .map(|s| {
             let (shell, config_dir, watching) = (shell.clone(), config_dir.clone(), watching.clone());
-            cx.subscribe(s, move |_, _: &Rescanned, cx| follow(&shell, &config_dir, &watching, cx))
+            cx.subscribe(s, move |services, _: &Rescanned, cx| {
+                if follow(&shell, &config_dir, &watching, cx) {
+                    services.update(cx, |s, cx| s.rescan(None, cx));
+                }
+            })
         })
         .collect();
     let shell = shell.clone();
@@ -97,13 +104,14 @@ struct Watching {
 }
 
 /// Watches what should be watched now, and stops watching what shouldn't. The first
-/// folder that can't be watched (other than a missing one) is reported, once.
-fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>, cx: &mut App) {
+/// folder that can't be watched (other than a missing one) is reported, once. Whether
+/// it started watching a folder.
+fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>, cx: &mut App) -> bool {
     let mut wanted: BTreeSet<PathBuf> = [config_dir.to_path_buf(), config_dir.join(WORKSPACES_DIR)].into();
     for w in &shell.read(cx).workspaces {
         wanted.extend(w.services.read(cx).watch.iter().cloned());
     }
-    let mut failed = None;
+    let (mut failed, mut started) = (None, false);
     {
         let w = &mut *watching.borrow_mut();
         for gone in w.watched.difference(&wanted).cloned().collect::<Vec<_>>() {
@@ -115,6 +123,7 @@ fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>
             match w.debouncer.watch(new, RecursiveMode::NonRecursive) {
                 Ok(()) => {
                     w.watched.insert(new.clone());
+                    started = true;
                 }
                 Err(e) if new.exists() && !w.warned => {
                     w.warned = true;
@@ -127,6 +136,7 @@ fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>
     if let Some(text) = failed {
         toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
     }
+    started
 }
 
 /// Rescans what `paths` concern. `files`: the workspace files there were.
@@ -185,7 +195,7 @@ fn rescan_concerned(shell: &Entity<Shell>, paths: &[PathBuf], cx: &mut App) {
         let concerned = {
             let s = s.read(cx);
             let watched = |p: &Path| s.watch.iter().any(|w| w == p);
-            s.config.is_some() && paths.iter().any(|p| watched(p) || (p.parent().is_some_and(watched) && devdeck_core::discovery::concerns(p)))
+            s.config.is_some() && paths.iter().any(|p| watched(p) || (p.parent().is_some_and(watched) && devdeck_core::toolchains::concerns(p)))
         };
         if concerned {
             s.update(cx, |s, cx| s.rescan(None, cx));

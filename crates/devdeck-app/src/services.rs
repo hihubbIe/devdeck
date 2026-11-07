@@ -15,7 +15,7 @@ use crate::runner::{RunKey, Runner, fake_runner};
 use devdeck_core::catalog::Catalog;
 use devdeck_core::config::{WorkspaceConfig, apply_overrides};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -36,6 +36,14 @@ pub struct Services {
     pub ports: Entity<Ports>,
     /// The rescan under way; a new one replaces it.
     scan: Option<Task<()>>,
+    /// Why each app that can't be used can't (`Tools::unusable`), by app id: checked
+    /// once per catalog, not on every render.
+    pub unusable: BTreeMap<String, String>,
+}
+
+/// Why each app of `catalog` that can't be used can't, by app id.
+fn unusable(catalog: &Catalog) -> BTreeMap<String, String> {
+    catalog.apps.iter().filter_map(|a| Some((a.id.clone(), catalog.tools.unusable(a)?))).collect()
 }
 
 /// A rescan finished (the folders to watch may have changed).
@@ -70,7 +78,8 @@ impl Services {
             if let Some(c) = &cluster {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
-            Services { workspace: workspace.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None }
+            let unusable = unusable(&catalog);
+            Services { workspace: workspace.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
         })
     }
 
@@ -95,7 +104,8 @@ impl Services {
                 this.set_catalog(Catalog { tools, ..(*this.catalog).clone() }, cx);
             })
             .detach();
-            Services { workspace: config.id.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch, ports, scan: None }
+            let unusable = unusable(&catalog);
+            Services { workspace: config.id.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch, ports, scan: None, unusable }
         })
     }
 
@@ -132,6 +142,7 @@ impl Services {
             return;
         }
         let catalog = Rc::new(catalog);
+        self.unusable = unusable(&catalog);
         self.env = catalog.pick_env(self.env.clone());
         self.catalog = catalog.clone();
         self.runner.update(cx, |r, cx| r.set_catalog(catalog, cx));

@@ -67,6 +67,61 @@ fn sweep() {
     }
 }
 
+/// A folder tree for discovery tests, removed when dropped: files are written with their
+/// folders, then the tree is scanned as one workspace folder.
+#[cfg(test)]
+pub(crate) struct Tree(pub TempDir);
+
+#[cfg(test)]
+impl Tree {
+    pub fn new(name: &str) -> Tree {
+        Tree(TempDir::new(name))
+    }
+
+    pub fn file(&self, rel: &str, text: &str) -> &Tree {
+        let path = self.0.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+        self
+    }
+
+    pub fn dir(&self, rel: &str) -> &Tree {
+        std::fs::create_dir_all(self.0.join(rel)).unwrap();
+        self
+    }
+
+    pub fn path(&self, rel: &str) -> PathBuf {
+        self.0.join(rel)
+    }
+
+    pub fn scan(&self) -> crate::discovery::Found {
+        crate::discovery::scan(&[self.0.to_path_buf()], None)
+    }
+}
+
+/// The app `id` a scan found.
+#[cfg(test)]
+pub(crate) fn app<'a>(found: &'a crate::discovery::Found, id: &str) -> &'a crate::apps::App {
+    found.apps.iter().find(|a| a.id == id).unwrap_or_else(|| panic!("no app {id} in {:?}", ids(found)))
+}
+
+/// The ids of the apps a scan found.
+#[cfg(test)]
+pub(crate) fn ids(found: &crate::discovery::Found) -> Vec<&str> {
+    found.apps.iter().map(|a| a.id.as_str()).collect()
+}
+
+/// `id → line` of every command, in order.
+#[cfg(test)]
+pub(crate) fn lines(app: &crate::apps::App) -> Vec<(&str, &str)> {
+    app.commands.iter().map(|c| (c.id.as_str(), c.line.as_str())).collect()
+}
+
+#[cfg(test)]
+pub(crate) fn tier(app: &crate::apps::App, id: &str) -> crate::apps::Tier {
+    app.command(id).unwrap_or_else(|| panic!("no command {id} in {:?}", lines(app))).tier
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

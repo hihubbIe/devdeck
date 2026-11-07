@@ -21,4 +21,5 @@ pub mod state;
 pub mod terminal;
 pub mod testing;
 pub mod theme_file;
+pub mod toolchains;
 pub mod view_addr;

@@ -68,6 +68,8 @@ fn tools_are_checked_once_the_environment_is_known(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(refusal(cx).as_deref(), Some("pnpm not found"));
+    let unusable = cx.read(|cx| s.read(cx).unusable.clone());
+    assert_eq!(unusable.get("web").map(String::as_str), Some("pnpm not found"), "checked once per catalog, for the list");
 }
 
 #[gpui::test]

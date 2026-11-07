@@ -142,3 +142,20 @@ fn a_broken_machine_file_keeps_the_settings(cx: &mut TestAppContext) {
     let loading = cx.update(|cx| matches!(devdeck_app::environment::environment(cx).read(cx).state, devdeck_app::environment::EnvState::Loading));
     assert!(loading, "no load with a broken file");
 }
+
+#[gpui::test]
+fn folders_watched_for_the_first_time_are_scanned_again(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    write(&s.projects.join("web/package.json"), r#"{"scripts": {"dev": "vite"}}"#);
+    let (n, _sub) = rescans(&s, cx);
+    until(cx, "web's package.json read", |_| n.get() >= 1);
+    let before = n.get();
+    // An install: `node_modules` appears, then its programs.
+    write(&s.projects.join("web/node_modules/.bin/vite"), "");
+    until(cx, "a rescan, then one more once node_modules is watched", |_| n.get() >= before + 2);
+    let from_install = cx.read(|cx| {
+        let services = s.shell.read(cx).workspaces[0].services.clone();
+        services.read(cx).catalog.app("web").unwrap().command("npm:dev").unwrap().from_install.clone()
+    });
+    assert_eq!(from_install, [] as [&str; 0], "vite is installed");
+}

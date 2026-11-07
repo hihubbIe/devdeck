@@ -36,7 +36,7 @@ fn setup(cx: &mut TestAppContext, dir: Option<PathBuf>, commands: &[(&str, &str)
     let toolbox = Toolbox { vars, ..Toolbox::default() };
     let commands = commands
         .iter()
-        .map(|(name, line)| Command { id: format!("sh:{name}"), line: line.to_string(), tier: Tier::Secondary, tools: Vec::new(), deps: Vec::new(), ports: Vec::new() })
+        .map(|(name, line)| Command { id: format!("sh:{name}"), line: line.to_string(), tier: Tier::Secondary, tools: Vec::new(), from_install: Vec::new(), setup: false, ports: Vec::new() })
         .collect();
     let app = App {
         id: APP.into(),
@@ -45,8 +45,7 @@ fn setup(cx: &mut TestAppContext, dir: Option<PathBuf>, commands: &[(&str, &str)
         dir: dir.unwrap_or(home),
         kind: "sh".into(),
         library: false,
-        node: None,
-        engines: None,
+        facts: Default::default(),
         commands,
         env: EnvApply::Variable("APP_ENV".into()),
         urls: Vec::new(),

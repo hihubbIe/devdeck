@@ -1,65 +1,40 @@
-//! Finding apps in a workspace's folders (R6.1, R6.2, R6.3), one file per source next
-//! to this one.
+//! Finding apps in a workspace's folders (R6.1, R6.2, R6.3): the walk. What a folder
+//! holds is the toolchains' business ([`crate::toolchains`]); this module only knows
+//! folders.
 //!
-//! Each child folder of a workspace folder is a project. A folder that isn't one is
-//! looked into for projects, down to [`NESTED_DEPTH`] levels under the workspace folder
-//! (`vhult/graph`); a project's own inside is its sources' business (monorepo packages).
-//! Sources, each giving commands with ids `source:name`:
-//! - `package.json` scripts (`npm:`, `pnpm:` or `yarn:` from the lockfile or the
-//!   `packageManager` field); pnpm and npm workspaces expand into one app per package
-//!   (never looking inside `node_modules`);
-//! - `Taskfile.yml`/`.yaml` tasks (`task:`), Makefile targets (`make:`), docker compose
-//!   files (`compose:up`, `compose:down`), `.vscode/launch.json` configurations
-//!   (`vscode:`, turned into a command line), Go main packages (`go:run` for the root,
-//!   `go:<cmd>` for `cmd/<cmd>`, plus `go:build` and `go:test`), Cargo (`cargo:run`,
-//!   `cargo:build`, `cargo:test`).
+//! Each child folder of a workspace folder is a project when a toolchain finds
+//! something in it. A folder that isn't one is looked into for projects, down to
+//! [`NESTED_DEPTH`] levels under the workspace folder (`vhult/graph`); a project's own
+//! inside is its toolchains' (a monorepo root's packages, found with the globs its
+//! toolchain gives and scanned by every toolchain with the root's facts).
 //!
-//! Precedence: when a Taskfile, Makefile or launch.json runs the Go main, the bare
-//! `go:run` is hidden (it lacks their arguments and variables). Tiers come from
-//! [`Tier::of`](crate::apps::Tier::of) with the source's other names as siblings.
-//! Libraries (a package with no runnable script, a Go module without a main) are listed
-//! with `library: true`. Tools: each command names the programs it needs (`pnpm`,
-//! `node`, `task`, `go`…).
-//!
-//! `App::node` comes from [`nvmrc`](crate::environment::nvmrc).
+//! An app is assembled from every toolchain's part: the first part's kind (the order of
+//! `toolchains::ALL`), the commands of all of them (a command a toolchain says another
+//! already runs is hidden), the facts each keeps, then completed by every toolchain.
+//! An app is a library when a toolchain judges its package and none has something to
+//! run nor a primary command. Tiers come from [`Tier::of`] with the source's other
+//! names as siblings.
 //!
 //! App ids are the folder relative to the workspace folder (`front-end/mastertadaapp`);
 //! the same id found under two workspace folders is reported and the second skipped.
 //! Unreadable folders, broken manifests and symlink loops are problems, not panics.
-//!
-//! Details:
-//! - A folder is an app when it has a manifest (`package.json`, `go.mod`, `Cargo.toml`,
-//!   a Taskfile, a Makefile, a compose file), even a broken one, or a launch.json that
-//!   gives commands. Hidden folders and `node_modules` are never projects or packages.
-//! - The kind is the first source found in this order: go, cargo, the Node package
-//!   manager, task, make, docker, vscode.
-//! - Precedence applies to every other source's shell text (package.json scripts too),
-//!   and to `go:<cmd>` as well: `task run` running `go run ./cmd/api` hides `go:api`.
-//! - An app is a library when it has a package (package.json, Go module, Cargo) and
-//!   nothing runnable: no primary command, no Go main, no Cargo binary. Folders with
-//!   only a Taskfile, a Makefile or compose files are never libraries.
-//! - Watched besides the projects and packages: the folders monorepo globs list
-//!   (`apps` for `apps/*`, so new packages are noticed), `.vscode` and Go's `cmd`, and
-//!   the folders looked into for nested projects.
+//! Watched: the workspace folders, every folder looked into, each project and package,
+//! and what toolchains ask for (glob folders, `.vscode`, Go's `cmd`, `node_modules`).
 
-mod cargo;
-mod compose;
-mod glob;
-mod go;
-mod make;
-mod node;
-mod taskfile;
-mod vscode;
+pub(crate) mod glob;
 #[cfg(test)]
 mod tests;
 
 use crate::apps::{App, Command, EnvApply, Tier};
-use crate::environment::nvmrc;
-use serde::de::DeserializeOwned;
-use std::collections::{BTreeMap, BTreeSet};
+use crate::toolchains::{ALL, Facts, Listing, Part, Toolchain};
+use std::any::{Any, TypeId};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+pub(crate) use crate::toolchains::skipped;
+use crate::toolchains::reason;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Found {
@@ -68,8 +43,7 @@ pub struct Found {
     /// Shown to the user (a broken `package.json`, a duplicate id…).
     pub problems: Vec<String>,
     /// Folders to watch (non-recursively) so new projects and changed manifests are
-    /// noticed: the workspace folders, each project, each monorepo package folder, and
-    /// the folders globs, `.vscode` and Go's `cmd` read. Sorted, no repeats.
+    /// noticed. Sorted, no repeats; some may not exist yet.
     pub watch: Vec<PathBuf>,
 }
 
@@ -83,34 +57,11 @@ pub fn discover(folders: &[PathBuf]) -> Found {
     scan(folders, home.as_deref())
 }
 
-/// Whether discovery reads files of this name, so a change to one can change what's
-/// found (a log or a build file written next to them can't).
-pub fn reads(name: &str) -> bool {
-    const NAMES: [&str; 8] = ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "go.mod", "Cargo.toml", "launch.json", ".nvmrc"];
-    NAMES.contains(&name)
-        || taskfile::NAMES.contains(&name)
-        || make::NAMES.contains(&name)
-        || compose::DEFAULTS.contains(&name)
-        || compose::variant(name).is_some()
-        || name.strip_suffix(".go").is_some_and(|stem| !stem.ends_with("_test"))
-}
-
-/// Whether a change at `path`, in a watched folder, can change what's found: a file
-/// discovery reads, a folder (a new project or package, a rename), a project's
-/// `node_modules/.bin` appearing or the programs in it changing (an install).
-pub fn concerns(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    match path.parent().and_then(Path::file_name).and_then(|n| n.to_str()) {
-        Some("node_modules") => name == ".bin",
-        Some(".bin") => true,
-        _ => reads(name) || path.is_dir(),
-    }
-}
-
 /// [`discover`] with the home folder given (`~` in `App::folder` and problems).
-fn scan(folders: &[PathBuf], home: Option<&Path>) -> Found {
-    let mut cx = Cx { home, found: Found::default(), owners: BTreeMap::new(), bins: BTreeMap::new() };
+pub(crate) fn scan(folders: &[PathBuf], home: Option<&Path>) -> Found {
+    let mut cx = Cx { home, found: Found::default(), owners: BTreeMap::new(), workspace: PathBuf::new(), memos: HashMap::new() };
     for ws in folders {
+        cx.workspace = ws.clone();
         cx.workspace_folder(ws);
     }
     let mut found = cx.found;
@@ -120,42 +71,48 @@ fn scan(folders: &[PathBuf], home: Option<&Path>) -> Found {
     found
 }
 
-/// One discovery pass: what was found so far.
-struct Cx<'a> {
+/// One discovery pass: what was found so far. Toolchains read through it.
+pub(crate) struct Cx<'a> {
     home: Option<&'a Path>,
     found: Found,
     /// The workspace folder each app id came from, to report duplicates.
     owners: BTreeMap<String, PathBuf>,
-    /// The programs in each `node_modules/.bin` read so far, by the folder holding it.
-    bins: BTreeMap<PathBuf, BTreeSet<String>>,
+    /// The workspace folder being walked.
+    workspace: PathBuf,
+    /// What toolchains computed for a folder during this pass, by type and folder.
+    memos: HashMap<(TypeId, PathBuf), Box<dyn Any>>,
+}
+
+/// A project a toolchain found: what its toolchains keep about it, and the package
+/// globs of a monorepo root, by the toolchain that gave them.
+struct Project {
+    facts: Facts,
+    packages: Vec<(&'static dyn Toolchain, Vec<String>)>,
 }
 
 impl Cx<'_> {
-    fn problem(&mut self, path: &Path, what: impl std::fmt::Display) {
+    pub(crate) fn problem(&mut self, path: &Path, what: impl std::fmt::Display) {
         let at = display(path, self.home);
         self.found.problems.push(format!("{at}: {what}"));
     }
 
-    fn watch(&mut self, dir: &Path) {
+    pub(crate) fn watch(&mut self, dir: &Path) {
         self.found.watch.push(dir.to_path_buf());
     }
 
-    /// Whether `program` is in a `node_modules/.bin` of `dir` or a folder above it: where
-    /// npm, pnpm and yarn look first when they run a script.
-    fn installed(&mut self, dir: &Path, program: &str) -> bool {
-        dir.ancestors().any(|d| {
-            self.bins
-                .entry(d.to_path_buf())
-                .or_insert_with(|| {
-                    let entries = fs::read_dir(d.join("node_modules/.bin")).into_iter().flatten().flatten();
-                    entries.filter_map(|e| e.file_name().into_string().ok()).collect()
-                })
-                .contains(program)
-        })
+    /// The workspace folder being walked.
+    pub(crate) fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    /// What `make` gives for `key`, computed once per pass.
+    pub(crate) fn memo<T: 'static>(&mut self, key: &Path, make: impl FnOnce() -> T) -> &T {
+        let value = self.memos.entry((TypeId::of::<T>(), key.to_path_buf())).or_insert_with(|| Box::new(make()));
+        value.downcast_ref().expect("stored by its type")
     }
 
     /// A file's text; `None` when it doesn't exist (quietly) or can't be read (a problem).
-    fn read(&mut self, path: &Path) -> Option<String> {
+    pub(crate) fn read(&mut self, path: &Path) -> Option<String> {
         match fs::read_to_string(path) {
             Ok(text) => Some(text),
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -167,7 +124,7 @@ impl Cx<'_> {
     }
 
     /// A folder's entries; entries that can't be followed are problems.
-    fn listing(&mut self, dir: &Path) -> Option<Listing> {
+    pub(crate) fn listing(&mut self, dir: &Path) -> Option<Listing> {
         match Listing::read(dir) {
             Ok(listing) => {
                 for (name, why) in listing.broken() {
@@ -204,9 +161,7 @@ impl Cx<'_> {
     fn project(&mut self, ws: &Path, dir: &Path, id: &str, depth: usize) {
         self.watch(dir);
         let Some(listing) = self.listing(dir) else { return };
-        let node = node::scan(dir, &listing, None, self);
-        let monorepo = node.as_ref().filter(|n| !n.workspaces.is_empty()).map(|n| (n.manager, n.workspaces.clone(), n.engines.clone()));
-        if !self.app(ws, dir, id, &listing, node) {
+        let Some(project) = self.app(ws, dir, id, &listing, None) else {
             if depth < NESTED_DEPTH {
                 let names: Vec<String> = listing.folders().map(String::from).collect();
                 for name in names {
@@ -214,65 +169,66 @@ impl Cx<'_> {
                 }
             }
             return;
-        }
-        let Some((manager, patterns, engines)) = monorepo else { return };
-        let matches = glob::expand(dir, &patterns, self);
-        for listed in &matches.listed {
-            self.watch(listed);
-        }
-        for rel in matches.dirs {
-            let package = dir.join(&rel);
-            if !package.join("package.json").is_file() {
-                continue;
+        };
+        for (toolchain, patterns) in project.packages {
+            let matches = glob::expand(dir, &patterns, self);
+            for listed in &matches.listed {
+                self.watch(listed);
             }
-            self.watch(&package);
-            let Some(listing) = self.listing(&package) else { continue };
-            let mut node = node::scan(&package, &listing, Some(manager), self);
-            if let Some(n) = node.as_mut() {
-                n.engines = n.engines.take().or_else(|| engines.clone());
+            for rel in matches.dirs {
+                let package = dir.join(&rel);
+                let Some(listing) = Listing::read(&package).ok().filter(|l| toolchain.is_package(l)) else { continue };
+                for (name, why) in listing.broken() {
+                    self.problem(&package.join(name), why);
+                }
+                self.watch(&package);
+                self.app(ws, &package, &format!("{id}/{rel}"), &listing, Some(&project.facts));
             }
-            self.app(ws, &package, &format!("{id}/{rel}"), &listing, node);
         }
     }
 
-    /// The app at `dir` from every source, when there is one; whether `dir` is a project
-    /// (even one skipped as a duplicate).
-    fn app(&mut self, ws: &Path, dir: &Path, id: &str, listing: &Listing, node: Option<node::Node>) -> bool {
-        let engines = node.as_ref().and_then(|n| n.engines.clone());
-        let parts: Vec<Part> = [
-            go::scan(dir, listing, self),
-            cargo::scan(dir, listing, self),
-            node.map(|n| n.part),
-            taskfile::scan(dir, listing, self),
-            make::scan(dir, listing, self),
-            compose::scan(dir, listing, self),
-            vscode::scan(dir, listing, self),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let Some(kind) = parts.first().map(|p| p.kind) else { return false };
+    /// The app at `dir` from every toolchain, when one finds something (even when the
+    /// app is skipped as a duplicate). `parent`: the monorepo root's facts.
+    fn app(&mut self, ws: &Path, dir: &Path, id: &str, listing: &Listing, parent: Option<&Facts>) -> Option<Project> {
+        let mut parts: Vec<(&'static dyn Toolchain, Part)> = Vec::new();
+        for t in ALL {
+            if let Some(part) = t.scan(dir, listing, parent, self) {
+                parts.push((t, part));
+            }
+        }
+        let kind = parts.first()?.1.kind;
+        let mut project = Project { facts: Facts::default(), packages: Vec::new() };
+        for (t, part) in &mut parts {
+            project.facts.merge(std::mem::take(&mut part.facts));
+            if !part.packages.is_empty() {
+                project.packages.push((*t, std::mem::take(&mut part.packages)));
+            }
+        }
+        for t in ALL {
+            t.complete(&mut project.facts, dir, self);
+        }
         if let Some(first) = self.owners.get(id) {
             let first = display(first, self.home);
             self.problem(dir, format!("`{id}` is also in {first}; skipped"));
-            return true;
+            return Some(Project { packages: Vec::new(), ..project });
         }
         self.owners.insert(id.to_string(), ws.to_path_buf());
 
-        let hidden: BTreeSet<String> = parts
-            .iter()
-            .filter(|p| p.kind != go::KIND)
-            .flat_map(|p| &p.runs)
-            .flat_map(|run| go::targets(run))
+        // Commands a toolchain says the others already run.
+        let covered: Vec<BTreeSet<String>> = (0..parts.len())
+            .map(|i| {
+                let others: Vec<String> = parts.iter().enumerate().filter(|(j, _)| *j != i).flat_map(|(_, (_, p))| p.runs.clone()).collect();
+                parts[i].0.covered(&others)
+            })
             .collect();
-        let judged: Vec<bool> = parts.iter().filter_map(|p| p.runnable).collect();
+        let judged: Vec<bool> = parts.iter().filter_map(|(_, p)| p.runnable).collect();
         let mut commands: Vec<Command> = Vec::new();
-        for part in parts {
+        for ((_, part), covered) in parts.into_iter().zip(covered) {
             for mut c in part.commands {
                 if commands.iter().any(|o| o.id == c.id) {
                     continue;
                 }
-                if part.kind == go::KIND && hidden.contains(&c.id) {
+                if covered.contains(&c.id) {
                     c.tier = Tier::Hidden;
                 }
                 commands.push(c);
@@ -287,117 +243,12 @@ impl Cx<'_> {
             dir: dir.to_path_buf(),
             kind: kind.to_string(),
             library,
-            node: nvmrc(dir, ws),
-            engines,
+            facts: project.facts.clone(),
             commands,
             env: EnvApply::None,
             urls: Vec::new(),
         });
-        true
-    }
-}
-
-/// What one source found in a folder.
-struct Part {
-    /// `go`, `pnpm`, `task`…: the app's kind when this is its main source.
-    kind: &'static str,
-    commands: Vec<Command>,
-    /// The shell text its commands run, to see which of them run a Go main.
-    runs: Vec<String>,
-    /// For a package (package.json, Go module, Cargo): whether it has something to
-    /// run. `None` when the source doesn't say (or its manifest is broken).
-    runnable: Option<bool>,
-}
-
-impl Part {
-    fn new(kind: &'static str) -> Part {
-        Part { kind, commands: Vec::new(), runs: Vec::new(), runnable: None }
-    }
-
-    /// Adds `source:name`, tiered among `siblings`.
-    fn add(&mut self, source: &str, name: &str, line: String, siblings: &[&str], tools: &[&str]) {
-        self.commands.push(Command {
-            id: format!("{source}:{name}"),
-            line,
-            tier: Tier::of(name, siblings),
-            tools: tools.iter().map(|t| t.to_string()).collect(),
-            deps: Vec::new(),
-            ports: Vec::new(),
-        });
-    }
-}
-
-/// A folder's entries, read once so sources only look names up.
-struct Listing(BTreeMap<String, Entry>);
-
-enum Entry {
-    File,
-    Dir,
-    /// A link that can't be followed (a loop…), with the reason.
-    Broken(String),
-}
-
-impl Listing {
-    fn read(dir: &Path) -> io::Result<Listing> {
-        let mut entries = BTreeMap::new();
-        for e in fs::read_dir(dir)? {
-            let Ok(e) = e else { continue };
-            let Ok(name) = e.file_name().into_string() else { continue };
-            let entry = match e.file_type() {
-                Ok(t) if t.is_dir() => Entry::Dir,
-                Ok(t) if t.is_symlink() => match fs::metadata(e.path()) {
-                    Ok(m) if m.is_dir() => Entry::Dir,
-                    // A dangling link reads as missing later.
-                    Ok(_) => Entry::File,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => Entry::File,
-                    Err(e) => Entry::Broken(reason(&e)),
-                },
-                Ok(_) => Entry::File,
-                Err(e) => Entry::Broken(reason(&e)),
-            };
-            entries.insert(name, entry);
-        }
-        Ok(Listing(entries))
-    }
-
-    fn file(&self, name: &str) -> bool {
-        matches!(self.0.get(name), Some(Entry::File))
-    }
-
-    fn dir(&self, name: &str) -> bool {
-        matches!(self.0.get(name), Some(Entry::Dir))
-    }
-
-    /// File names, alphabetical.
-    fn files(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().filter(|(_, e)| matches!(e, Entry::File)).map(|(n, _)| n.as_str())
-    }
-
-    /// Child folders that can be projects or packages: not hidden, not `node_modules`.
-    fn folders(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().filter(|(n, e)| matches!(e, Entry::Dir) && !skipped(n)).map(|(n, _)| n.as_str())
-    }
-
-    /// Entries that can't be followed, except hidden ones.
-    fn broken(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0.iter().filter(|(n, _)| !skipped(n)).filter_map(|(n, e)| match e {
-            Entry::Broken(why) => Some((n.as_str(), why.as_str())),
-            _ => None,
-        })
-    }
-}
-
-/// Folders never looked into.
-fn skipped(name: &str) -> bool {
-    name.starts_with('.') || name == "node_modules"
-}
-
-/// An IO error as shown.
-fn reason(e: &io::Error) -> String {
-    if rustix::io::Errno::from_io_error(e) == Some(rustix::io::Errno::LOOP) {
-        "symlink loop".into()
-    } else {
-        e.to_string()
+        Some(project)
     }
 }
 
@@ -409,20 +260,4 @@ fn display(path: &Path, home: Option<&Path>) -> String {
         return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
     }
     path.display().to_string()
-}
-
-/// `s` as one shell word: unchanged when safe, else single-quoted.
-fn quote(s: &str) -> String {
-    let safe = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "_-./:=@%+,".contains(c));
-    if safe { s.to_string() } else { format!("'{}'", s.replace('\'', r"'\''")) }
-}
-
-/// A YAML document; empty gives the default. Duplicate keys are tolerated (the last
-/// wins), as the tools reading these files do.
-fn yaml<T: DeserializeOwned + Default>(text: &str) -> Result<T, String> {
-    let options = serde_saphyr::options! { duplicate_keys: serde_saphyr::DuplicateKeyPolicy::LastWins };
-    match serde_saphyr::from_str_with_options::<Option<T>>(text, options) {
-        Ok(v) => Ok(v.unwrap_or_default()),
-        Err(e) => Err(e.to_string().lines().next().unwrap_or_default().trim_start_matches("error: ").to_string()),
-    }
 }
