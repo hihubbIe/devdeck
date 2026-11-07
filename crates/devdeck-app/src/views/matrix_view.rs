@@ -153,7 +153,7 @@ impl Render for MatrixView {
                     .border_color(t.line_soft)
                     .child(div().text_color(t.hi).child("branch matrix"))
                     .child(label(match &self.highlight {
-                        Some(h) => format!("highlighting {h} · esc clears"),
+                        Some(h) => format!("highlighting {h}"),
                         None => "click a tag to highlight it everywhere · double-click opens the service".into(),
                     })
                     .text_color(t.mute)),

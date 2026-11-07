@@ -232,9 +232,4 @@ fn follow_keys_reach_the_view_after_any_way_back_to_the_panes(cx: &mut TestAppCo
     cx.simulate_keystrokes(main, "ctrl-1 escape alt-f");
     cx.run_until_parked();
     assert!(!cx.read(|cx| view.read(cx).follow), "alt+f toggled follow");
-    // The hint bar puts the run view's own keys first.
-    cx.update_window(main, |_, window, _| window.refresh()).unwrap();
-    cx.run_until_parked();
-    let hints = cx.update_window(main, |_, window, cx| devdeck_app::window_view::hint_bar_items(window, cx)).unwrap();
-    assert_eq!(hints.first().map(|(_, l)| *l), Some("run"), "{hints:?}");
 }

@@ -47,7 +47,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts.
 - [~] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
 - [~] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
-- [x] **R5.4** k9s-inspired single-key shortcuts, a context-sensitive hint bar, and a searchable cheat sheet (`?`).
+- [~] **R5.4** k9s-inspired single-key shortcuts. Shortcuts are not shown in the UI (no key hints in menus, tooltips, labels or a hint bar: it clutters); they are listed on one page, today the searchable cheat sheet (`?`, ctrl+/), to be redesigned later (changed 2026-11-07, user decision).
 - [~] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
 
 ## 6. Local apps

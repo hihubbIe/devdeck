@@ -209,9 +209,9 @@ impl Render for ServiceLogsView {
         let matches = self.matches(cx);
         let count = rows.len();
         let longest = self.output.longest();
-        let level_button = |id: &'static str, text: &'static str, l: MinLevel, key: &'static str, cx: &mut Context<Self>| {
+        let level_button = |id: &'static str, text: &'static str, l: MinLevel, cx: &mut Context<Self>| {
             toggle_button(id, text, self.min_level == l, &t)
-                .tooltip(tip(format!("show {text} ({key})")))
+                .tooltip(tip(format!("show {text}")))
                 .on_click(cx.listener(move |this, _, _, cx| this.set_min_level(l, cx)))
         };
         let toolbar = div()
@@ -225,10 +225,10 @@ impl Render for ServiceLogsView {
             .border_color(t.line_soft)
             .child(div().flex_none().text_color(t.hi).child(format!("{} › {}", self.env, self.name)))
             .child(div().flex_none().text_color(t.mute).px_2().child(format!("{pods} pods · {count} lines")))
-            .child(level_button("lvl-err", "errors", MinLevel::Error, "1", cx))
-            .child(level_button("lvl-warn", "warn+", MinLevel::Warn, "2", cx))
-            .child(level_button("lvl-info", "info+", MinLevel::Info, "3", cx))
-            .child(level_button("lvl-all", "all", MinLevel::All, "4", cx))
+            .child(level_button("lvl-err", "errors", MinLevel::Error, cx))
+            .child(level_button("lvl-warn", "warn+", MinLevel::Warn, cx))
+            .child(level_button("lvl-info", "info+", MinLevel::Info, cx))
+            .child(level_button("lvl-all", "all", MinLevel::All, cx))
             .child(div().w(t.size(180.)).px_1().debug_selector(|| "logs-find".into()).child(self.find.clone()))
             .child(div().flex_none().text_color(t.mute).child(match (self.current, matches.len()) {
                 (_, 0) => String::new(),
@@ -238,13 +238,13 @@ impl Render for ServiceLogsView {
             .child(div().flex_1())
             .child(
                 toggle_button("pause", if self.paused { "paused" } else { "pause" }, self.paused, &t)
-                    .tooltip(tip("pause the stream (p)"))
+                    .tooltip(tip("pause the stream"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.paused = !this.paused;
                         cx.notify();
                     })),
             )
-            .child(toggle_button("follow", "follow", self.follow, &t).tooltip(tip("follow (alt f)")).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))));
+            .child(toggle_button("follow", "follow", self.follow, &t).tooltip(tip("follow")).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))));
 
         let body = if pods == 0 {
             div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label("no pods")).into_any_element()

@@ -142,17 +142,17 @@ impl Render for RunView {
             .child(div().flex_none().text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute }).child(state_text))
             .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(format!("⚠ {r}"))))
             .child(
-                button("start", "▶", !running && refusal.is_none(), refusal.clone().map_or("run (⏎)".into(), |r| format!("can't run: {r}")))
+                button("start", "▶", !running && refusal.is_none(), refusal.clone().map_or("run".into(), |r| format!("can't run: {r}")))
                     .when(!running && refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("run", cx)))),
             )
-            .child(button("stop", "■", running, "stop (s)".into()).when(running, |d| d.on_click(cx.listener(|this, _, _, cx| this.act("stop", cx)))))
+            .child(button("stop", "■", running, "stop".into()).when(running, |d| d.on_click(cx.listener(|this, _, _, cx| this.act("stop", cx)))))
             .child(
-                button("restart", "↻", refusal.is_none(), "restart (r)".into())
+                button("restart", "↻", refusal.is_none(), "restart".into())
                     .when(refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("restart", cx)))),
             )
             .child(
                 toggle_button("follow", "follow", follow, &t)
-                    .tooltip(tip("follow the output (alt f)"))
+                    .tooltip(tip("follow the output"))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))),
             );
 
@@ -163,7 +163,7 @@ impl Render for RunView {
                 .items_center()
                 .justify_center()
                 .text_color(t.mute)
-                .child(label(refusal.map_or("Not started. ⏎ or ▶ runs it.".to_string(), |r| format!("Can't run: {r}."))))
+                .child(label(refusal.map_or("Not started. ▶ runs it.".to_string(), |r| format!("Can't run: {r}."))))
                 .into_any_element()
         } else {
             let (ok, warn, err, mute, fg) = (t.ok, t.warn, t.err, t.mute, t.fg);

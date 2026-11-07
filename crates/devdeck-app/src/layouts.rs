@@ -3,7 +3,6 @@
 //! are shown in the modal; Esc cancels.
 
 use crate::deck::Deck;
-use crate::registry;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{InputEvent, MenuItem, ModalFocus, TextInput, label, modal_frame, pop_modal, push_modal, theme};
 use gpui::{
@@ -29,7 +28,7 @@ pub fn menu(deck: &Entity<Deck>, cx: &App) -> Vec<MenuItem> {
         .collect();
     items.push(MenuItem::separator());
     let d = deck.clone();
-    items.push(MenuItem::new("Save layout as…", move |window, cx| open_save_as(d.clone(), window, cx)).hint(registry::key_for("layout.save_as")));
+    items.push(MenuItem::new("Save layout as…", move |window, cx| open_save_as(d.clone(), window, cx)));
     items
 }
 
@@ -121,8 +120,7 @@ impl Render for NameLayout {
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
             .child(div().text_color(t.hi).child(title))
             .child(div().w(t.size(360.)).debug_selector(|| "layout-name".into()).child(self.input.clone()))
-            .children(self.error.clone().map(|e| label(e).text_color(t.err)))
-            .child(label("enter saves · esc cancels").text_color(t.dim));
+            .children(self.error.clone().map(|e| label(e).text_color(t.err)));
         modal_frame(content.into_any_element(), window, &t)
     }
 }

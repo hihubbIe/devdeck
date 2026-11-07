@@ -102,7 +102,7 @@ impl Render for SendTo {
             list = list.child(target_row(("target", n), format!("{n}"), format!("{place} · {active}"), refusal, &t).on_click(cx.listener(move |this, _, _, cx| this.pick(Some(n), cx))));
         }
         let refusal = d.send_refusal(None);
-        list = list.child(target_row("target-new", "n".into(), "new window".into(), refusal, &t).on_click(cx.listener(|this, _, _, cx| this.pick(None, cx))));
+        list = list.child(target_row("target-new", "+".into(), "new window".into(), refusal, &t).on_click(cx.listener(|this, _, _, cx| this.pick(None, cx))));
         let content = div()
             .key_context("Modal SendTo")
             .track_focus(&self.focus)
@@ -116,8 +116,7 @@ impl Render for SendTo {
                 this.close(window, cx);
             }))
             .child(div().text_color(t.hi).child(what))
-            .child(list)
-            .child(label("press a number or n · click a row or a pane's badge · esc cancels").text_color(t.dim));
+            .child(list);
         // A floating panel without a backdrop: the panes stay clickable (R3.11).
         let viewport = window.viewport_size();
         let width = t.size(560.);

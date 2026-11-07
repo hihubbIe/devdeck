@@ -15,7 +15,6 @@ The interactive HTML prototype that was approved is the visual reference
 │          │                │ ├ pane (collapsed) ─────┤│                                     │ │
 │          │                │ │ tab · tab · tab       ││                                     │ │
 ├──────────┴────────────────┴─┴───────────────────────┴┴─────────────────────────────────────┤ │
-│ hint bar: keys for the focused thing ……………………………………………………………… env · cluster          │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -24,7 +23,8 @@ The interactive HTML prototype that was approved is the visual reference
 - **Sidebar**: the activity's list. Always Pinned + All, alphabetical, filter field.
 - **Pane tree**: everything else. No fixed docks: "bottom output" and "pinned logs on
   the right" are just panes placed there.
-- **Hint bar**: shows the keys that apply to what has focus.
+- **No hint bar** and no key hints anywhere else in the UI: shortcuts are listed on one
+  page (the cheat sheet), redesigned later.
 
 ## Visual language
 
@@ -43,7 +43,7 @@ The interactive HTML prototype that was approved is the visual reference
 | token | prototype | shipped | use |
 |---|---|---|---|
 | bg | #111214 | #0f1012 | pane background |
-| bar | #16171a | #15161a | tab strips, title, hint bar |
+| bar | #16171a | #15161a | tab strips, title |
 | raised | #1b1c20 | #1c1d22 | menus, palette |
 | line | #2a2c31 | #30333a | dividers |
 | fg | #d4d5d8 | #e1e2e5 | text |
@@ -181,6 +181,16 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 Context menus open with `window.prevent_default()`, otherwise GPUI hands
   focus back to the focusable ancestor of the clicked element as the mouse down bubbles.
 
+- 2026-11-07 Shortcuts are not shown in the UI (menus, tooltips, labels, hint bar); one
+  page lists them (user decision: it clutters). Layout errors, shown in the hint bar
+  before, are toasts, as is a detached window that fails to open.
+- 2026-11-07 Window resize edges are computed from the drawn size and offered only on
+  sides the compositor doesn't hold (maximized, fullscreen and snapped sides have none):
+  GPUI's bounds of a maximized window are its restore size on Wayland, which made most
+  of a maximized window behave as a resize border. Each edge has its own hitbox, so the
+  cursor follows the pointer without a redraw. The window size is remembered only while
+  no side is held, so a maximized or snapped size never becomes the size to reopen with.
+
 ## Open questions
 
 - 2026-11-07 Views stay in `devdeck-app/src/views/` for M1 (one module per view, the
@@ -193,8 +203,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   while their view is on screen (active tab, expanded pane, shown workspace); rollouts
   and runs keep going regardless.
 - 2026-11-07 One action registry (`devdeck-app/src/registry.rs`) binds every key, the
-  shared components' too; menus, palette, cheat sheet, hint bar and tooltips read
-  labels and keys from it. App-wide keys don't fire under a modal or a menu.
+  shared components' too; menus, palette and the cheat sheet read labels from it,
+  and only the cheat sheet shows keys. App-wide keys don't fire under a modal or a menu.
 - 2026-11-07 "Send to…" shows a floating list without a backdrop, so every pane (in
   every window) stays clickable as a target while the pick runs.
 - 2026-11-07 The deploy confirmation shows the whole command, wrapping if needed: the one

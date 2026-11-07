@@ -503,7 +503,7 @@ impl Render for Toasts {
         deferred(
             anchored()
                 .anchor(Anchor::BottomRight)
-                .position(point(viewport.width - margin, viewport.height - t.status_h - margin))
+                .position(point(viewport.width - margin, viewport.height - margin))
                 .child(stack),
         )
         .with_priority(PRIORITY_TOAST)

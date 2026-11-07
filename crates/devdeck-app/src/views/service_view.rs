@@ -335,7 +335,7 @@ impl Render for ServiceView {
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(action("logs", "logs (l)", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
+            .child(action("logs", "logs", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
             .child(action("restart", "restart", later()))
             .child(action("scale", "replicas", later()))
             .child(action("port-forward", "port-forward", later()))
@@ -354,7 +354,6 @@ impl Render for ServiceView {
                 )
             });
 
-        let save_label = if dirty { "save (ctrl s)" } else { "save" };
         let editor = div()
             .flex_none()
             .px_3()
@@ -373,7 +372,7 @@ impl Render for ServiceView {
             })
             .child(div().flex_none().text_color(if dirty { t.warn } else { t.bg }).child("● unsaved"))
             .child(
-                button("save", save_label, &t)
+                button("save", "save", &t)
                     .debug_selector(|| "tag-save".into())
                     .when(blocked.is_some(), |b| b.text_color(t.dim))
                     .tooltip(tip(blocked.clone().unwrap_or_else(|| "confirm and deploy".into())))
@@ -396,7 +395,7 @@ impl Render for ServiceView {
                 .gap_2()
                 .child(label(text).text_color(color).flex_1())
                 .when(undo, |d| {
-                    d.child(button("undo", "undo (u)", &t).debug_selector(|| "rollout-undo".into()).on_click(cx.listener(|this, _, _, cx| this.undo(cx))))
+                    d.child(button("undo", "undo", &t).debug_selector(|| "rollout-undo".into()).on_click(cx.listener(|this, _, _, cx| this.undo(cx))))
                 })
         });
 
@@ -473,8 +472,8 @@ impl Render for ServiceView {
                             open_menu(
                                 e.position,
                                 vec![
-                                    MenuItem::new("Open pod", move |_, cx| c1.open(pod.clone(), cx)).hint("⏎"),
-                                    MenuItem::new("Logs", move |_, cx| c2.open(logs.clone(), cx)).hint(crate::registry::key_for("svc.logs")),
+                                    MenuItem::new("Open pod", move |_, cx| c1.open(pod.clone(), cx)),
+                                    MenuItem::new("Logs", move |_, cx| c2.open(logs.clone(), cx)),
                                 ],
                                 window,
                                 cx,
@@ -617,8 +616,7 @@ impl Render for ConfirmDeploy {
                                 this.service.update(cx, |s, cx| s.deploy(cx));
                             })),
                     ),
-            )
-            .child(label("enter deploys · esc cancels").text_color(t.dim));
+            );
         modal_frame(content.into_any_element(), window, &t)
     }
 }
@@ -697,8 +695,7 @@ impl Render for UnlockEnv {
                     .justify_end()
                     .gap_2()
                     .child(focus_button("unlock-cancel", "Cancel", &self.focus.0[1], &t).on_click(cx.listener(|this, _, w, cx| this.close(w, cx)))),
-            )
-            .child(label("enter unlocks · esc cancels").text_color(t.dim));
+            );
         modal_frame(content.into_any_element(), window, &t)
     }
 }

@@ -131,17 +131,3 @@ pub fn section(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
         .text_color(t.mute)
         .child(label(text))
 }
-
-/// A key hint like `ctrl k`.
-pub fn kbd(keys: impl Into<SharedString>, t: &Theme) -> gpui::Div {
-    div()
-        .flex_none()
-        .px_1()
-        .border_1()
-        .border_color(t.line)
-        .rounded(t.radius_s)
-        .text_size(t.text_small)
-        .text_color(t.mute)
-        .whitespace_nowrap()
-        .child(keys.into())
-}

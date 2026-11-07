@@ -661,11 +661,8 @@ fn main() -> Result<(), String> {
             all
         });
         for (i, w) in windows.iter().enumerate() {
-            // Twice: the hint bar reads the focus path of the previous frame.
-            for _ in 0..2 {
-                cx.update_window(*w, |_, window, _| window.refresh()).map_err(|e| e.to_string())?;
-                cx.run_until_parked();
-            }
+            cx.update_window(*w, |_, window, _| window.refresh()).map_err(|e| e.to_string())?;
+            cx.run_until_parked();
             let image = cx.capture_screenshot(*w).map_err(|e| e.to_string())?;
             let path = out.join(format!("{}-w{i}.png", state.name));
             image.save(&path).map_err(|e| e.to_string())?;

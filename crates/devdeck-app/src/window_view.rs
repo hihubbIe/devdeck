@@ -1,4 +1,4 @@
-//! Root view of one OS window: title bar, pane tree, status bar, window edges.
+//! Root view of one OS window: title bar, pane tree, window edges.
 //! The main window shows the active workspace's `Deck` and switches with it; a
 //! detached window always belongs to the deck that opened it.
 //!
@@ -10,7 +10,6 @@ use crate::deck::{Deck, SendSource};
 use crate::stats;
 use crate::app_settings;
 use crate::settings_view::SettingsView;
-use crate::registry;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
@@ -18,9 +17,9 @@ use devdeck_ui::{DragGhost, Empty, MenuItem, Theme, apply_window_scale, button, 
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
-    FocusHandle, Focusable, Hitbox, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
+    FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Point, Render, ResizeEdge, SharedString, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
-    WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, relative,
+    Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, relative,
     size,
 };
 use std::cell::Cell;
@@ -71,12 +70,6 @@ pub struct WindowView {
     sidebar: Option<(Entity<Sidebar>, Subscription)>,
     /// Top-left of the pane area (keyboard-opened menus are placed from it).
     panes_origin: Rc<Cell<Point<Pixels>>>,
-    /// Hint bar entries of the last frame (re-render once when they change).
-    last_hints: Vec<(String, &'static str)>,
-    /// A frame has been drawn (GPUI's focus path needs one).
-    drawn: bool,
-    /// Focus the hint bar was computed for.
-    hints_for: Option<(Option<FocusHandle>, bool)>,
     /// Focused pane and its active view when keys last moved to a view.
     view_target: Option<(PaneId, Option<devdeck_core::layout::ViewRef>)>,
     _observe: Vec<Subscription>,
@@ -94,9 +87,26 @@ pub fn window_options((w, h): (f32, f32), cx: &App) -> WindowOptions {
     }
 }
 
-fn logical_size(window: &Window) -> (f32, f32) {
+/// The window's size to remember, or `None` while the compositor holds it to the screen
+/// (maximized, fullscreen, snapped): that size isn't the one to reopen with, and the
+/// last free size stays.
+fn free_size(window: &Window) -> Option<(f32, f32)> {
+    if tiling(window) != Tiling::default() {
+        return None;
+    }
     let s = window.bounds().size;
-    (f32::from(s.width), f32::from(s.height))
+    Some((f32::from(s.width), f32::from(s.height)))
+}
+
+/// The sides the compositor holds against the screen. GPUI reports maximized and
+/// fullscreen as every side; with server decorations it reports none, so those two are
+/// asked directly.
+fn tiling(window: &Window) -> Tiling {
+    match window.window_decorations() {
+        Decorations::Client { tiling } => tiling,
+        Decorations::Server if window.is_maximized() || window.is_fullscreen() => Tiling::tiled(),
+        Decorations::Server => Tiling::default(),
+    }
 }
 
 /// The workspace menu (title-bar button): alphabetical, current one checked.
@@ -106,8 +116,7 @@ pub fn workspace_menu_items(shell: &Entity<Shell>, cx: &App) -> Vec<MenuItem> {
         .iter()
         .enumerate()
         .map(|(i, w)| {
-            let item = MenuItem::new(w.name.clone(), move |_, cx| shell::switch(i, cx)).checked(i == s.active);
-            if i < 9 { item.hint(format!("ctrl alt {}", i + 1)) } else { item }
+            MenuItem::new(w.name.clone(), move |_, cx| shell::switch(i, cx)).checked(i == s.active)
         })
         .collect()
 }
@@ -141,8 +150,9 @@ impl WindowView {
         ];
         let size_shell = shell.downgrade();
         observe.push(cx.observe_window_bounds(window, move |_, window, cx| {
-            let size = logical_size(window);
-            let _ = size_shell.update(cx, |s, _| s.main_size = Some(size));
+            if let Some(size) = free_size(window) {
+                let _ = size_shell.update(cx, |s, _| s.main_size = Some(size));
+            }
         }));
         window.on_window_should_close(cx, |_, cx| {
             cx.defer(shell::request_quit);
@@ -160,8 +170,9 @@ impl WindowView {
         let mut observe = vec![cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify())];
         let size_deck = deck.downgrade();
         observe.push(cx.observe_window_bounds(window, move |_, window, cx| {
-            let size = logical_size(window);
-            let _ = size_deck.update(cx, |d, cx| d.record_size(id, size, cx));
+            if let Some(size) = free_size(window) {
+                let _ = size_deck.update(cx, |d, cx| d.record_size(id, size, cx));
+            }
         }));
         let close_deck = deck.clone();
         window.on_window_should_close(cx, move |_, cx| {
@@ -197,9 +208,6 @@ impl WindowView {
             sidebar: None,
             view_target: None,
             panes_origin: Rc::new(Cell::new(Point::default())),
-            last_hints: Vec::new(),
-            drawn: false,
-            hints_for: None,
             _observe: observe,
         };
         this.sync_view_focus(window, cx);
@@ -419,8 +427,7 @@ impl WindowView {
                 w -= t.sidebar_w;
             }
         }
-        let bottom = if self.is_main() { t.status_h } else { Pixels::ZERO };
-        (f32::from(w), f32::from(s.height - t.title_h - bottom))
+        (f32::from(w), f32::from(s.height - t.title_h))
     }
 
     fn focus_dir(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
@@ -490,7 +497,7 @@ impl Render for WindowView {
         if settings_open && self.settings.is_none() {
             self.settings = Some(cx.new(SettingsView::new));
         }
-        let (layout, views, live, last_error) = {
+        let (layout, views) = {
             let d = self.deck.read(cx);
             let views: HashMap<PaneId, AnyView> = d
                 .layout()
@@ -498,7 +505,7 @@ impl Render for WindowView {
                 .iter()
                 .filter_map(|(id, p)| p.active_view().and_then(|r| d.view(r)).map(|v| (*id, v)))
                 .collect();
-            (d.layout().clone(), views, d.live_views(), d.last_error.clone())
+            (d.layout().clone(), views)
         };
         let Ok(w) = layout.window(self.id) else {
             return div().size_full().bg(t.bg).into_any_element();
@@ -524,31 +531,6 @@ impl Render for WindowView {
             Some(p) => render_pane(&frame, p, None),
             None => render_node(&frame, &w.root, None),
         };
-        let _ = live;
-        // The focus path comes from the last drawn frame; there is none before the first.
-        // The first render is part of drawing the first frame; every later one has a frame.
-        // Derived from the focus path only, so recomputed when focus moves (or Settings
-        // open), not on every frame of a streaming view.
-        let focus_key = (window.focused(cx), settings_open);
-        let hints = if !self.drawn {
-            Vec::new()
-        } else if self.hints_for.as_ref() == Some(&focus_key) {
-            self.last_hints.clone()
-        } else {
-            self.hints_for = Some(focus_key);
-            hint_bar_items(window, cx)
-        };
-        let first = !self.drawn;
-        self.drawn = true;
-        if first || hints != self.last_hints {
-            // Built from the last frame's focus path: draw once more so a modal or a view
-            // that just appeared shows its own keys.
-            self.last_hints = hints.clone();
-            self.hints_for = None;
-            cx.on_next_frame(window, |_, _, cx| cx.notify());
-        }
-        let env_text = self.active_sidebar().and_then(|s| s.read(cx).env(cx)).map(|e| format!(" · @{}", e.name)).unwrap_or_default();
-        let place = if is_main { format!("{ws_name}{env_text}") } else { format!("{ws_name} · detached") };
         let id = self.id;
         let close_deck = self.deck.clone();
         let menu_shell = shell.clone();
@@ -578,7 +560,7 @@ impl Render for WindowView {
                 d.child(
                     button("workspace", format!("{ws_name} ▾"), &t)
                         .debug_selector(|| "workspace-button".into())
-                        .tooltip(tip("switch workspace (ctrl alt 1…9)"))
+                        .tooltip(tip("switch workspace"))
                         .on_click({
                             let shell = shell.clone();
                             move |e, window, cx| {
@@ -599,7 +581,7 @@ impl Render for WindowView {
                     button("env", text, &t)
                         .text_color(if env.protected { t.err } else { t.env })
                         .debug_selector(|| "env-button".into())
-                        .tooltip(tip("env for runs and the cluster list (ctrl e)"))
+                        .tooltip(tip("env for runs and the cluster list"))
                         .on_click({
                             let sidebar = sidebar.clone();
                             move |e, window, cx| {
@@ -621,7 +603,7 @@ impl Render for WindowView {
                 d.child(
                     button("layout", format!("{current} ▾"), &t)
                         .debug_selector(|| "layout-button".into())
-                        .tooltip(tip(format!("layouts ({})", registry::key_for("sidebar.layouts"))))
+                        .tooltip(tip("layouts"))
                         .on_click(move |e, window, cx| {
                             let items = crate::layouts::menu(&deck, cx);
                             open_menu(e.position(), items, window, cx);
@@ -632,27 +614,27 @@ impl Render for WindowView {
             .child(div().flex_1())
             .when(is_main, |d| {
                 d.child(
-                    button("search", format!("search {}", registry::key_for("app.palette")), &t)
+                    button("search", "search", &t)
                         .debug_selector(|| "search-button".into())
                         .on_click(|_, window, cx| crate::palette::open(window, cx)),
                 )
                 .child(
                     button("keys", "?", &t)
-                        .tooltip(tip(format!("keys ({})", registry::key_for("app.cheat_sheet"))))
+                        .tooltip(tip("keyboard shortcuts"))
                         .on_click(|_, window, cx| crate::cheat_sheet::open(window, cx)),
                 )
             })
             .when(is_main, |d| {
                 d.child(
                     button("settings", if settings_open { "⚙ settings ✓" } else { "⚙ settings" }, &t)
-                        .tooltip(tip("settings (ctrl ,)"))
+                        .tooltip(tip("settings"))
                         .on_click(cx.listener(move |this, _, window, cx| this.set_settings_open(!settings_open, window, cx))),
                 )
             })
             .when(!is_main, |d| {
                 d.child(
                     button("reattach", "⇲", &t)
-                        .tooltip(tip("send back to the main window (ctrl shift a)"))
+                        .tooltip(tip("send back to the main window"))
                         .on_click(cx.listener(|this, _, _, cx| this.reattach(cx))),
                 )
             })
@@ -665,26 +647,6 @@ impl Render for WindowView {
                     close_deck.update(cx, |d, cx| d.close_window(id, cx));
                 }
             }));
-
-        let status_bar = div()
-            .flex_none()
-            .h(t.status_h)
-            .px_3()
-            .flex()
-            .items_center()
-            .bg(t.bar)
-            .border_t_1()
-            .border_color(t.line)
-            .gap_3()
-            .text_color(t.mute)
-            .debug_selector(|| "hint-bar".into())
-            .child(
-                div().flex_1().min_w_0().overflow_hidden().flex().gap_3().children(hints.into_iter().map(|(key, label)| {
-                    div().flex_none().flex().gap_1().child(div().text_color(t.fg).child(key)).child(div().text_color(t.mute).child(label))
-                })),
-            )
-            .when_some(last_error, |d, e| d.child(label(e).text_color(t.warn).max_w(relative(0.4))))
-            .child(div().flex_none().text_color(t.mute).child(place));
 
         let panes = div()
             .id("panes")
@@ -803,8 +765,6 @@ impl Render for WindowView {
             .when(!settings_open, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
             .child(title_bar)
             .child(body)
-            // A detached window holds its pane and nothing else (R3.8).
-            .when(is_main, |d| d.child(status_bar))
             .children(devdeck_ui::render_layer(window, cx))
             .when(is_main, |d| d.child(devdeck_ui::toasts(cx)));
 
@@ -817,8 +777,11 @@ impl Render for WindowView {
                 .size_full()
                 .relative()
                 .capture_any_mouse_down(move |e, window, cx| {
-                    let size = window.window_bounds().get_bounds().size;
-                    if let Some(edge) = resize_edge(e.position, size, edge) {
+                    // Left button only, like the compositor's own borders.
+                    if e.button != MouseButton::Left {
+                        return;
+                    }
+                    if let Some(edge) = window_edge_at(window, e.position, edge) {
                         window.start_window_resize(edge);
                         cx.stop_propagation();
                     }
@@ -829,21 +792,6 @@ impl Render for WindowView {
             }
         }
     }
-}
-
-/// What the hint bar shows: registry actions that would run from where focus is (a
-/// handler on the focus path and a key binding matching the context there), the
-/// focused thing's own keys first, the app's palette and cheat sheet last.
-pub fn hint_bar_items(window: &Window, cx: &App) -> Vec<(String, &'static str)> {
-    let mut out: Vec<(String, &'static str)> = Vec::new();
-    for spec in registry::applicable(&window.context_stack()).into_iter().filter(|s| s.hint) {
-        let action = (spec.build)();
-        if out.iter().any(|(_, l)| *l == spec.label) || !window.is_action_available(action.as_ref(), cx) {
-            continue;
-        }
-        out.push((spec.key_text().unwrap_or_default(), spec.label));
-    }
-    out
 }
 
 /// The activity bar: one button per activity the workspace offers. Clicking the shown
@@ -869,7 +817,7 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                 .when(on, |d| d.border_l_2().border_color(t.accent))
                 .hover(move |s| s.bg(hover))
                 .cursor_pointer()
-                .tooltip(tip(format!("{} ({})", a.title(), a.key_hint())))
+                .tooltip(tip(a.title()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if on {
                         this.set_sidebar_visible(false, window, cx);
@@ -882,8 +830,8 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                     move |e, window, cx| {
                         let (m1, m2) = (me.clone(), me.clone());
                         let items = vec![
-                            MenuItem::new(format!("Show {}", a.title()), move |window, cx| m1.update(cx, |v, cx| v.show_activity(a, window, cx))).hint(a.key_hint()),
-                            MenuItem::new("Hide sidebar", move |window, cx| m2.update(cx, |v, cx| v.set_sidebar_visible(false, window, cx))).hint(registry::key_for("sidebar.toggle")),
+                            MenuItem::new(format!("Show {}", a.title()), move |window, cx| m1.update(cx, |v, cx| v.show_activity(a, window, cx))),
+                            MenuItem::new("Hide sidebar", move |window, cx| m2.update(cx, |v, cx| v.set_sidebar_visible(false, window, cx))),
                         ];
                         open_menu(e.position, items, window, cx);
                     }
@@ -894,24 +842,26 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
     bar
 }
 
-/// Sets resize cursors along the window border (client-side decorations; GNOME on
-/// Wayland draws none). The resize itself starts in `capture_any_mouse_down`.
+/// Resize cursors along the window border (client-side decorations; GNOME on Wayland
+/// draws none): one hitbox per band, so GPUI picks the cursor as the pointer moves,
+/// without a redraw. The resize itself starts in `capture_any_mouse_down`.
 fn window_edge_cursors(edge_width: Pixels) -> impl IntoElement {
     canvas(
-        |_bounds, window, _cx| {
-            let size = window.window_bounds().get_bounds().size;
-            window.insert_hitbox(gpui::Bounds::new(point(Pixels::ZERO, Pixels::ZERO), size), HitboxBehavior::Normal)
+        move |_bounds, window, _cx| {
+            // Corners last: they sit on top of the side bands they overlap.
+            let mut bands = edge_bands(window.viewport_size(), tiling(window), edge_width);
+            bands.reverse();
+            bands.into_iter().map(|(edge, b)| (edge, window.insert_hitbox(b, HitboxBehavior::Normal))).collect::<Vec<_>>()
         },
-        move |_bounds, hitbox: Hitbox, window, _cx| {
-            let size = window.window_bounds().get_bounds().size;
-            if let Some(edge) = resize_edge(window.mouse_position(), size, edge_width) {
+        |_bounds, hitboxes, window, _cx| {
+            for (edge, hitbox) in &hitboxes {
                 let style = match edge {
                     ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
                     ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
                     ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
                     ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
                 };
-                window.set_cursor_style(style, &hitbox);
+                window.set_cursor_style(style, hitbox);
             }
         },
     )
@@ -919,21 +869,37 @@ fn window_edge_cursors(edge_width: Pixels) -> impl IntoElement {
     .size_full()
 }
 
-fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>, edge: Pixels) -> Option<ResizeEdge> {
-    let (l, r, t, b) = (pos.x < edge, pos.x > size.width - edge, pos.y < edge, pos.y > size.height - edge);
-    Some(match (t, b, l, r) {
-        (true, _, true, _) => ResizeEdge::TopLeft,
-        (true, _, _, true) => ResizeEdge::TopRight,
-        (_, true, true, _) => ResizeEdge::BottomLeft,
-        (_, true, _, true) => ResizeEdge::BottomRight,
-        (true, ..) => ResizeEdge::Top,
-        (_, true, ..) => ResizeEdge::Bottom,
-        (_, _, true, _) => ResizeEdge::Left,
-        (_, _, _, true) => ResizeEdge::Right,
-        _ => return None,
-    })
+/// The window edge under `pos`, if the window can be resized from there.
+fn window_edge_at(window: &Window, pos: Point<Pixels>, edge: Pixels) -> Option<ResizeEdge> {
+    resize_edge(pos, window.viewport_size(), tiling(window), edge)
 }
 
+fn resize_edge(pos: Point<Pixels>, size: Size<Pixels>, tiling: Tiling, edge: Pixels) -> Option<ResizeEdge> {
+    edge_bands(size, tiling, edge).into_iter().find(|(_, b)| b.contains(&pos)).map(|(e, _)| e)
+}
+
+/// Where the window can be resized from, corners first: a band `edge` wide along each
+/// side the compositor doesn't hold (see [`tiling`]), a corner where two such sides meet.
+/// `size` is the drawn size (`viewport_size`): `window_bounds()` of a maximized window
+/// is its restore size on Wayland, which once made most of the window an "edge".
+fn edge_bands(size: Size<Pixels>, tiling: Tiling, edge: Pixels) -> Vec<(ResizeEdge, Bounds<Pixels>)> {
+    let (w, h) = (size.width, size.height);
+    let b = |x, y, bw, bh| Bounds::new(point(x, y), gpui::size(bw, bh));
+    let (top, bottom, left, right) = (!tiling.top, !tiling.bottom, !tiling.left, !tiling.right);
+    let corners = [
+        (top && left, ResizeEdge::TopLeft, b(Pixels::ZERO, Pixels::ZERO, edge, edge)),
+        (top && right, ResizeEdge::TopRight, b(w - edge, Pixels::ZERO, edge, edge)),
+        (bottom && left, ResizeEdge::BottomLeft, b(Pixels::ZERO, h - edge, edge, edge)),
+        (bottom && right, ResizeEdge::BottomRight, b(w - edge, h - edge, edge, edge)),
+    ];
+    let sides = [
+        (top, ResizeEdge::Top, b(Pixels::ZERO, Pixels::ZERO, w, edge)),
+        (bottom, ResizeEdge::Bottom, b(Pixels::ZERO, h - edge, w, edge)),
+        (left, ResizeEdge::Left, b(Pixels::ZERO, Pixels::ZERO, edge, h)),
+        (right, ResizeEdge::Right, b(w - edge, Pixels::ZERO, edge, h)),
+    ];
+    corners.into_iter().chain(sides).filter(|(on, ..)| *on).map(|(_, e, r)| (e, r)).collect()
+}
 
 fn eid(name: &'static str, a: u64, b: usize) -> (&'static str, u64) {
     (name, a * 10_000 + b as u64)
@@ -1069,12 +1035,12 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
     let (v1, v2, v3) = (view.clone(), view.clone(), view.clone());
     let kept = keep.contains(&view);
     let d7 = deck.clone();
-    let mut detach = MenuItem::new("Detach to a window", move |_, cx| apply_on(&d3, cx, |l| l.detach(pane, idx).map(|_| ()))).hint(registry::key_for("pane.detach"));
+    let mut detach = MenuItem::new("Detach to a window", move |_, cx| apply_on(&d3, cx, |l| l.detach(pane, idx).map(|_| ())));
     if alone {
         detach = detach.disabled("already alone in its window");
     }
     vec![
-        MenuItem::new("Close", move |_, cx| apply_on(&d1, cx, |l| l.close_view(&v1))).hint(registry::key_for("pane.close_tab")),
+        MenuItem::new("Close", move |_, cx| apply_on(&d1, cx, |l| l.close_view(&v1))),
         MenuItem::new("Close others", move |_, cx| {
             apply_on(&d2, cx, |l| {
                 let others: Vec<_> = l.pane(pane)?.tabs.iter().filter(|r| **r != v2).cloned().collect();
@@ -1085,11 +1051,11 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
             })
         }),
         MenuItem::separator(),
-        MenuItem::new("Send to…", move |window, cx| crate::send_to::open(d4.clone(), SendSource::Tab(view.clone()), window, cx)).hint(registry::key_for("pane.send_tab")),
+        MenuItem::new("Send to…", move |window, cx| crate::send_to::open(d4.clone(), SendSource::Tab(view.clone()), window, cx)),
         detach,
         MenuItem::separator(),
-        MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized).hint(registry::key_for("pane.maximize")),
-        MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))).hint(registry::key_for("pane.collapse")),
+        MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized),
+        MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))),
         MenuItem::separator(),
         MenuItem::new("Keep in every layout", move |_, cx| {
             d7.update(cx, |d, cx| {
@@ -1107,12 +1073,12 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout) -> Vec<MenuItem
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
     let split = |item: MenuItem| if tabs < 2 { item.disabled("needs two tabs") } else { item };
     vec![
-        split(MenuItem::new("Split right", move |_, cx| apply_on(&d1, cx, |l| split_active(l, pane, Edge::Right))).hint(registry::key_for("pane.split_right"))),
-        split(MenuItem::new("Split down", move |_, cx| apply_on(&d2, cx, |l| split_active(l, pane, Edge::Bottom))).hint(registry::key_for("pane.split_down"))),
+        split(MenuItem::new("Split right", move |_, cx| apply_on(&d1, cx, |l| split_active(l, pane, Edge::Right)))),
+        split(MenuItem::new("Split down", move |_, cx| apply_on(&d2, cx, |l| split_active(l, pane, Edge::Bottom)))),
         MenuItem::separator(),
-        MenuItem::new("Collapse", move |_, cx| apply_on(&d3, cx, |l| l.toggle_collapse(pane))).hint(registry::key_for("pane.collapse")),
-        MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))).hint(registry::key_for("pane.maximize")),
-        MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx)).hint(registry::key_for("pane.send_pane")),
+        MenuItem::new("Collapse", move |_, cx| apply_on(&d3, cx, |l| l.toggle_collapse(pane))),
+        MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))),
+        MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx)),
         MenuItem::separator(),
         MenuItem::new("Close pane", move |_, cx| {
             apply_on(&d6, cx, |l| {
@@ -1293,25 +1259,25 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             .px_1()
             .when(!is_detached, |d| {
                 d.child(
-                    icon_button(("collapse", pane.0), if p.collapsed { "▾" } else { "▴" }, "collapse or expand (ctrl shift c)", t)
+                    icon_button(("collapse", pane.0), if p.collapsed { "▾" } else { "▴" }, "collapse or expand", t)
                         .on_click(move |_, _, cx| apply_on(&d_col, cx, |l| l.toggle_collapse(pane))),
                 )
                 .child(
-                    icon_button(("maximize", pane.0), if maximized { "◱" } else { "□" }, "maximize or restore (ctrl shift m)", t)
+                    icon_button(("maximize", pane.0), if maximized { "◱" } else { "□" }, "maximize or restore", t)
                         .on_click(move |_, _, cx| apply_on(&d_max, cx, |l| l.toggle_maximize(pane))),
                 )
             })
             .when(!p.tabs.is_empty(), |d| {
                 let deck = f.deck.clone();
                 d.child(
-                    icon_button(("send", pane.0), "⇢", "send this pane's tabs to another pane (ctrl alt shift s)", t).on_click(move |_, window, cx| {
+                    icon_button(("send", pane.0), "⇢", "send this pane's tabs to another pane", t).on_click(move |_, window, cx| {
                         crate::send_to::open(deck.clone(), SendSource::Pane(pane), window, cx);
                     }),
                 )
             })
             .when(can_detach, |d| {
                 d.child(
-                    icon_button(("detach", pane.0), "⇱", "detach tab to its own window (ctrl shift d)", t)
+                    icon_button(("detach", pane.0), "⇱", "detach tab to its own window", t)
                         .on_click(move |_, _, cx| apply_on(&d_det, cx, |l| l.detach(pane, active).map(|_| ()))),
                 )
             }),
@@ -1413,4 +1379,37 @@ fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity
                 apply_on(&d_pane, cx, |l| l.move_pane(p, drop));
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resize_edge;
+    use devdeck_ui::logical as px;
+    use gpui::{ResizeEdge, Tiling, point, size};
+
+    #[test]
+    fn edges_are_a_thin_band_of_the_drawn_size() {
+        let (s, e, free) = (size(px(1000.), px(600.)), px(6.), Tiling::default());
+        assert_eq!(resize_edge(point(px(500.), px(300.)), s, free, e), None, "the middle is content");
+        assert_eq!(resize_edge(point(px(997.), px(300.)), s, free, e), Some(ResizeEdge::Right));
+        assert_eq!(resize_edge(point(px(2.), px(2.)), s, free, e), Some(ResizeEdge::TopLeft));
+        assert_eq!(resize_edge(point(px(500.), px(598.)), s, free, e), Some(ResizeEdge::Bottom));
+        // The bug: a maximized 1920 px window measured with its 1000 px restore size made
+        // everything past x = 994 an edge.
+        assert_eq!(resize_edge(point(px(1500.), px(300.)), size(px(1920.), px(1080.)), free, e), None);
+    }
+
+    #[test]
+    fn sides_held_by_the_compositor_have_no_edge() {
+        let (s, e) = (size(px(1920.), px(1080.)), px(6.));
+        // Maximized and fullscreen: GPUI reports every side as tiled.
+        for p in [point(px(2.), px(2.)), point(px(1918.), px(540.)), point(px(960.), px(1078.))] {
+            assert_eq!(resize_edge(p, s, Tiling::tiled(), e), None, "{p:?}");
+        }
+        // Snapped to the left half: only the right side resizes, and no corner.
+        let left_half = Tiling { top: true, bottom: true, left: true, right: false };
+        assert_eq!(resize_edge(point(px(2.), px(540.)), s, left_half, e), None);
+        assert_eq!(resize_edge(point(px(1918.), px(540.)), s, left_half, e), Some(ResizeEdge::Right));
+        assert_eq!(resize_edge(point(px(1918.), px(2.)), s, left_half, e), Some(ResizeEdge::Right));
+    }
 }

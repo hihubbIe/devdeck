@@ -77,15 +77,6 @@ impl Activity {
             Activity::Layouts => "◫",
         }
     }
-
-    pub fn key_hint(self) -> &'static str {
-        match self {
-            Activity::Apps => "ctrl 1",
-            Activity::Cluster => "ctrl 2",
-            Activity::Ports => "ctrl 3",
-            Activity::Layouts => "ctrl 4",
-        }
-    }
 }
 
 /// A list row being dragged: onto the other section to pin/unpin, onto a pane to open.
@@ -475,8 +466,7 @@ impl Sidebar {
                     d1.update(cx, |d, cx| {
                         let _ = d.switch_layout(&k1, cx);
                     })
-                })
-                .hint("⏎"),
+                }),
                 MenuItem::new("Rename…", move |window, cx| crate::layouts::open_rename(d2.clone(), k2.clone(), window, cx)),
                 delete,
             ];
@@ -484,8 +474,8 @@ impl Sidebar {
         let (open, pin) = (this.clone(), this.clone());
         let (k1, k2) = (key.to_string(), key.to_string());
         vec![
-            MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))).hint("⏎"),
-            MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))).hint("p"),
+            MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
+            MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
         ]
     }
 
@@ -512,7 +502,7 @@ impl Focusable for Sidebar {
 fn empty_text(section: Section, filtered: bool, running_only: bool, status: Option<&str>) -> String {
     match (section, status) {
         (Section::All, Some(s)) => s.to_string(),
-        (Section::Pinned, _) => "nothing pinned · p pins".into(),
+        (Section::Pinned, _) => "nothing pinned".into(),
         (Section::All, None) if filtered => "no match".into(),
         (Section::All, None) if running_only => "nothing running".into(),
         (Section::All, None) => "empty".into(),
@@ -523,8 +513,7 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let activity = self.activity();
-        let (items, rows) = self.rows(cx);
-        let count = rows.len();
+        let count = self.rows(cx).1.len();
         let list_focused = self.list_focus.is_focused(window);
         let filtered = !self.filter.read(cx).text().trim().is_empty();
         let running_only = self.running_only;
@@ -557,7 +546,7 @@ impl Render for Sidebar {
             .when(activity == Activity::Apps, |d| {
                 d.child(
                     toggle_button("running-only", "running", running_only, &t)
-                        .tooltip(tip("show running only (r)"))
+                        .tooltip(tip("show running only"))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_running_only(cx))),
                 )
             });
@@ -625,18 +614,7 @@ impl Render for Sidebar {
                     .when(!list_focused, |d| d.border_t_1().border_color(t.line_soft))
                     .child(list),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .h(t.status_h)
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(t.line_soft)
-                    .text_color(t.dim)
-                    .child(label(format!("{} items · ↑↓ ⏎ open · p pin · / filter", items.len()))),
-            )
+
     }
 }
 

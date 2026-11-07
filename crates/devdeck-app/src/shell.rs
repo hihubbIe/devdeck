@@ -451,8 +451,7 @@ impl Render for QuitGuard {
             .child(div().text_color(t.hi).child("Quit devdeck?"))
             .child(label("These are still running:").text_color(t.mute))
             .child(list)
-            .child(buttons)
-            .child(label("enter picks · tab moves · esc cancels").text_color(t.mute));
+            .child(buttons);
         modal_frame(content.into_any_element(), window, &t)
     }
 }

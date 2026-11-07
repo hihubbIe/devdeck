@@ -69,7 +69,7 @@ pub struct Palette {
 
 impl Palette {
     fn new(shell: Entity<Shell>, restore: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new("search apps, commands, services, envs, actions · @35 picks an env", cx));
+        let input = cx.new(|cx| TextInput::new("search apps, commands, services, envs, layouts, actions", cx));
         let sub = cx.subscribe_in(&input, window, |this, _, e: &InputEvent, window, cx| match e {
             InputEvent::Changed(_) => {
                 this.selected = 0;
@@ -131,7 +131,7 @@ impl Palette {
         for app in &services.catalog.apps {
             out.push(Entry {
                 label: app.name.clone(),
-                detail: format!("app · {} · tab: commands", app.kind),
+                detail: format!("app · {}", app.kind),
                 item: Item::App(app.id.clone()),
                 disabled: runner.tools().unusable(app),
             });
@@ -166,7 +166,7 @@ impl Palette {
         for (i, w) in s.workspaces.iter().enumerate() {
             out.push(Entry {
                 label: format!("workspace {}", w.name),
-                detail: if i == s.active { "current".into() } else { format!("switch · ctrl alt {}", i + 1) },
+                detail: if i == s.active { "current".into() } else { "switch".into() },
                 item: Item::Workspace(i),
                 disabled: None,
             });
@@ -183,7 +183,7 @@ impl Palette {
             }
             out.push(Entry {
                 label: spec.label.to_string(),
-                detail: format!("{} · {}", spec.group, spec.key_text().unwrap_or_default()),
+                detail: spec.group.to_lowercase(),
                 item: Item::Action(spec.id),
                 disabled: None,
             });
@@ -317,7 +317,7 @@ impl Render for Palette {
         let selected = self.selected.min(n.saturating_sub(1));
         let (_, env) = self.query(cx);
         let header = match (&self.drill, &env) {
-            (Some(app), _) => format!("{app} › commands · esc back"),
+            (Some(app), _) => format!("{app} › commands"),
             (None, Some(e)) => format!("runs on @{e}"),
             (None, None) => String::new(),
         };
@@ -371,8 +371,7 @@ impl Render for Palette {
                     .child(self.input.clone()),
             )
             .when(!header.is_empty(), |d| d.child(label(header).text_color(t.env)))
-            .child(if n == 0 { div().h(t.size(360.)).child(label("no match").text_color(t.dim)).into_any_element() } else { list.into_any_element() })
-            .child(label("↑↓ choose · ⏎ run · tab commands · esc back/close").text_color(t.dim));
+            .child(if n == 0 { div().h(t.size(360.)).child(label("no match").text_color(t.dim)).into_any_element() } else { list.into_any_element() });
         modal_frame(content.into_any_element(), window, &t)
     }
 }

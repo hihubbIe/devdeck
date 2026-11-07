@@ -44,16 +44,16 @@ impl Gallery {
                 })
             })
             .collect();
-        Self { empty, filled, last_event: "type, press enter or esc".into(), _subs: subs }
+        Self { empty, filled, last_event: "type something".into(), _subs: subs }
     }
 }
 
 pub fn demo_menu_items() -> Vec<MenuItem> {
     vec![
-        MenuItem::new("Inspect", |_, _| {}).hint("⏎"),
-        MenuItem::new("Pin logs to the right", |_, _| {}).hint("L"),
+        MenuItem::new("Inspect", |_, _| {}),
+        MenuItem::new("Pin logs to the right", |_, _| {}).hint("secondary text"),
         MenuItem::separator(),
-        MenuItem::new("Restart", |_, _| {}).disabled("hades is protected").hint("R"),
+        MenuItem::new("Restart", |_, _| {}).disabled("hades is protected"),
         MenuItem::new("Follow output", |_, _| {}).checked(true),
         MenuItem::new("Show a toast", |_, cx| {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Ok, "Picked from the menu.", vec![], cx));
@@ -154,8 +154,7 @@ impl Render for DemoModal {
                     .gap_2()
                     .child(focus_button("modal-cancel", "Cancel", &self.focus.0[1], &t).on_click(cx.listener(|this, _, w, cx| this.close(w, cx))))
                     .child(focus_button("modal-save", "Save", &self.focus.0[2], &t).on_click(cx.listener(|this, _, w, cx| this.close(w, cx)))),
-            )
-            .child(label("tab cycles inside · esc closes").text_color(t.mute));
+            );
         modal_frame(content.into_any_element(), window, &t)
     }
 }

@@ -1,15 +1,14 @@
-//! M1 step 6: the action registry, hint bar, cheat sheet, palette, Send to and context
+//! M1 step 6: the action registry, cheat sheet, palette, Send to and context
 //! menus (R5.1–R5.5, R3.11), on GPUI's test platform.
 
 use devdeck_app::registry;
 use devdeck_app::runner::RunKey;
 use devdeck_app::shell::Shell;
-use devdeck_app::window_view::hint_bar_items;
 use devdeck_core::layout::{MAIN_WINDOW, ViewRef};
 use devdeck_core::runs::RunState;
-use devdeck_core::view_addr::ViewAddr;
+
 use devdeck_ui::overlay::layer_state;
-use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
+use gpui::{AnyWindowHandle, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use std::collections::HashSet;
 
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
@@ -32,13 +31,6 @@ fn overlay(shell: &Entity<Shell>, cx: &mut TestAppContext) -> (bool, usize) {
     cx.update(|cx| layer_state(main, cx))
 }
 
-fn hints(main: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<&'static str> {
-    cx.run_until_parked();
-    cx.update_window(main, |_, window, _| window.refresh()).unwrap();
-    cx.run_until_parked();
-    cx.update_window(main, |_, window, cx| hint_bar_items(window, cx).into_iter().map(|(_, l)| l).collect()).unwrap()
-}
-
 #[gpui::test]
 fn registry_ids_are_unique_and_no_key_is_bound_twice_in_one_context() {
     let mut ids = HashSet::new();
@@ -51,7 +43,7 @@ fn registry_ids_are_unique_and_no_key_is_bound_twice_in_one_context() {
     }
     assert_eq!(registry::key_text("ctrl-shift-d"), "ctrl shift d");
     assert_eq!(registry::key_text("ctrl--"), "ctrl -");
-    assert_eq!(registry::key_for("pane.split_right"), "ctrl \\");
+    assert_eq!(registry::by_id("pane.split_right").and_then(|s| s.key_text()).as_deref(), Some("ctrl \\"));
 }
 
 #[gpui::test]
@@ -79,25 +71,29 @@ fn app_keys_wait_while_a_modal_is_open(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_hint_bar_shows_the_keys_of_what_has_focus(cx: &mut TestAppContext) {
-    let shell = start(cx, "hints");
+fn shortcuts_are_listed_in_the_cheat_sheet_only(cx: &mut TestAppContext) {
+    let shell = start(cx, "keys-page");
     let main = main_window(&shell, cx);
-    let in_panes = hints(main, cx);
-    assert!(in_panes.contains(&"split right") && in_panes.contains(&"command palette"), "{in_panes:?}");
-    assert!(!in_panes.contains(&"pin"));
-    cx.simulate_keystrokes(main, "ctrl-1");
-    let in_sidebar = hints(main, cx);
-    assert!(in_sidebar.contains(&"pin") && in_sidebar.contains(&"open"), "{in_sidebar:?}");
-    assert!(!in_sidebar.contains(&"split right"), "pane keys don't apply in the sidebar");
-    cx.simulate_keystrokes(main, "escape");
+    // Menus name actions, not keys.
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(ViewAddr::App { app: "proxyapi".into() }.to_ref(), l.main().focused).map(|_| ()))));
-    let in_app = hints(main, cx);
-    assert_eq!(in_app.first(), Some(&"run"), "the app view's own keys come first: {in_app:?}");
-    assert!(in_app.contains(&"restart") && in_app.contains(&"split right"));
+    let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
+    let menus = cx.update(|cx| {
+        let mut all = devdeck_app::window_view::workspace_menu_items(&shell, cx);
+        all.extend(devdeck_app::layouts::menu(&deck, cx));
+        all.extend(devdeck_app::sidebar::Sidebar::item_menu(&sidebar, "proxyapi", false, cx));
+        all
+    });
+    assert!(menus.iter().all(|m| m.hint.is_none()), "no key hints in menus");
+    // The cheat sheet lists every bound action with its keys and filters them.
     cx.simulate_keystrokes(main, "ctrl-/");
-    let in_sheet = hints(main, cx);
-    assert!(in_sheet.contains(&"cancel") && !in_sheet.contains(&"split right"), "{in_sheet:?}");
+    cx.simulate_input(main, "split right");
+    cx.run_until_parked();
+    let sheet = cx.update(|cx| {
+        let modal = devdeck_ui::overlay::layer(main, cx).read(cx).modals.last().cloned().unwrap();
+        modal.downcast::<devdeck_app::cheat_sheet::CheatSheet>().unwrap()
+    });
+    let labels: Vec<&str> = cx.read(|cx| sheet.read(cx).entries(cx).iter().map(|s| s.label).collect());
+    assert_eq!(labels, ["split right"]);
 }
 
 #[gpui::test]

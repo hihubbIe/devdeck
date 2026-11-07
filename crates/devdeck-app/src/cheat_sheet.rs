@@ -86,8 +86,7 @@ impl Render for CheatSheet {
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
             .child(div().text_color(t.hi).child("Keys"))
             .child(div().debug_selector(|| "cheat-filter".into()).child(self.filter.clone()))
-            .child(list)
-            .child(label("type to filter · esc closes").text_color(t.dim));
+            .child(list);
         modal_frame(content.into_any_element(), window, &t)
     }
 }

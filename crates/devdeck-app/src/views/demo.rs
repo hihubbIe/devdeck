@@ -173,7 +173,7 @@ impl Render for LogsView {
                             .id("follow")
                             .cursor_pointer()
                             .text_color(if follow { accent } else { mute })
-                            .child(if follow { "● following (alt f)" } else { "○ follow (alt f)" })
+                            .child(if follow { "● following" } else { "○ follow" })
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))),
                     ),
             )
@@ -226,9 +226,6 @@ impl Render for TextView {
             String::new(),
             "Panes are generic containers; any view can be dropped anywhere.".into(),
             "Drag a tab onto another tab strip to move it, onto a pane edge to split.".into(),
-            "Keys: alt+arrows focus · alt+shift+arrows move tab · ctrl+\\ split right · ctrl+alt+\\ split down".into(),
-            "      ctrl+shift+c collapse · ctrl+shift+m maximize · ctrl+shift+d detach · ctrl+shift+a re-attach".into(),
-            "      ctrl+tab next tab · ctrl+w close tab · ctrl+alt+= / ctrl+alt+- resize · ctrl+q quit".into(),
             String::new(),
             format!("This last line is deliberately very long so it must scroll horizontally rather than wrap: {}", "lorem-free filler · ".repeat(20)),
         ];

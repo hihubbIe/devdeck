@@ -106,16 +106,15 @@ impl AppView {
 impl AppView {
     /// The menu of a command row (right-click, shift+F10).
     pub fn command_menu(this: &gpui::Entity<Self>, cmd: &str) -> Vec<devdeck_ui::MenuItem> {
-        use crate::registry::key_for;
-        let item = |label: &'static str, key: &'static str, f: fn(&mut Self, &str, &mut Context<Self>)| {
+        let item = |label: &'static str, f: fn(&mut Self, &str, &mut Context<Self>)| {
             let (me, cmd) = (this.clone(), cmd.to_string());
-            devdeck_ui::MenuItem::new(label, move |_, cx| me.update(cx, |v, cx| f(v, &cmd, cx))).hint(key_for(key))
+            devdeck_ui::MenuItem::new(label, move |_, cx| me.update(cx, |v, cx| f(v, &cmd, cx)))
         };
         vec![
-            item("Run", "app_view.run", Self::run),
-            item("Stop", "app_view.stop", Self::stop),
-            item("Restart", "app_view.restart", Self::restart),
-            item("Output", "app_view.output", Self::open_output),
+            item("Run", Self::run),
+            item("Stop", Self::stop),
+            item("Restart", Self::restart),
+            item("Output", Self::open_output),
         ]
     }
 }
@@ -193,7 +192,7 @@ impl Render for AppView {
                 continue;
             }
             let collapsed = tier == Tier::Hidden && !self.show_hidden;
-            let heading = format!("{} · {}{}", tier.title(), cmds.len(), if tier == Tier::Hidden { if collapsed { "  ▸ h" } else { "  ▾ h" } } else { "" });
+            let heading = format!("{} · {}{}", tier.title(), cmds.len(), if tier == Tier::Hidden { if collapsed { "  ▸" } else { "  ▾" } } else { "" });
             let mut head = div().id(("tier", tier as usize)).child(section(heading, &t));
             if tier == Tier::Hidden {
                 head = head.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
@@ -216,7 +215,7 @@ impl Render for AppView {
                 let (r1, r2, r3, r4, r5) = (c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone());
                 let row_label: SharedString = c.id.clone().into();
                 let can_run = refusal.is_none() && state != Some(devdeck_core::runs::RunState::Running);
-                let run_tip = refusal.clone().map_or_else(|| format!("run {} (⏎)", c.id), |r| format!("can't run: {r}"));
+                let run_tip = refusal.clone().map_or_else(|| format!("run {}", c.id), |r| format!("can't run: {r}"));
                 body = body.child(
                     div()
                         .id(("cmd", n))
@@ -253,14 +252,14 @@ impl Render for AppView {
                         })
                         .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(r)))
                         .child(act(("run", n), "▶", can_run, run_tip, &t).when(can_run, |d| d.on_click(cx.listener(move |this, _, _, cx| this.run(&r2, cx)))))
-                        .child(act(("stop", n), "■", running, "stop (s)".into(), &t).when(running, |d| d.on_click(cx.listener(move |this, _, _, cx| this.stop(&r3, cx)))))
+                        .child(act(("stop", n), "■", running, "stop".into(), &t).when(running, |d| d.on_click(cx.listener(move |this, _, _, cx| this.stop(&r3, cx)))))
                         .child(
-                            act(("restart", n), "↻", refusal.is_none(), "restart (r)".into(), &t)
+                            act(("restart", n), "↻", refusal.is_none(), "restart".into(), &t)
                                 .when(refusal.is_none(), |d| d.on_click(cx.listener(move |this, _, _, cx| this.restart(&r4, cx)))),
                         )
                         .child({
                             let id = c.id.clone();
-                            act(("output", n), "≡", true, "output (o)".into(), &t).on_click(cx.listener(move |this, _, _, cx| this.open_output(&id, cx)))
+                            act(("output", n), "≡", true, "output".into(), &t).on_click(cx.listener(move |this, _, _, cx| this.open_output(&id, cx)))
                         }),
                 );
             }
@@ -299,17 +298,6 @@ impl Render for AppView {
             })
             .child(header)
             .child(body)
-            .child(
-                div()
-                    .flex_none()
-                    .h(t.status_h)
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(t.line_soft)
-                    .child(label("↑↓ select · ⏎ run · s stop · r restart · o output · h hidden").text_color(t.dim)),
-            )
             .into_any_element()
     }
 }

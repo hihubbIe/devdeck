@@ -3,7 +3,7 @@
 
 use crate::app_settings::{self, AppSettings};
 use devdeck_core::settings::SCALE_STEPS;
-use devdeck_ui::{button, kbd, label, section, theme, toggle_button};
+use devdeck_ui::{button, label, section, theme, toggle_button};
 use gpui::{
     Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     Subscription, Window, div, prelude::*,
@@ -106,8 +106,7 @@ impl Render for SettingsView {
                     .gap_3()
                     .child(div().text_color(t.hi).child("Settings"))
                     .child(div().flex_1())
-                    .child(kbd("esc", &t))
-                    .child(div().text_color(t.mute).child("close")),
+                    .child(button("close-settings", "close", &t).on_click(|_, window, cx| window.dispatch_action(Box::new(crate::actions::CloseSettings), cx))),
             )
             .child(section("Display", &t))
             .child(
@@ -129,10 +128,7 @@ impl Render for SettingsView {
                     .gap_2()
                     .mt_1()
                     .child(div().w(label_w).flex_none())
-                    .child(kbd("ctrl =", &t))
-                    .child(kbd("ctrl -", &t))
-                    .child(kbd("ctrl 0", &t))
-                    .child(label("bigger, smaller, reset · applied on top of the desktop's own scaling").text_color(t.mute)),
+                    .child(label("applied on top of the desktop's own scaling").text_color(t.mute)),
             )
             .child(section("Theme", &t))
             .child(

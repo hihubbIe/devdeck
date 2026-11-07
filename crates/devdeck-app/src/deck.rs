@@ -36,6 +36,7 @@ pub struct Deck {
     os_windows: HashMap<WindowId, Option<WindowHandle<WindowView>>>,
     /// Views closed recently, checked for release by the leak test.
     released: Vec<(AnyWeakView, u64)>,
+    /// The last refused or failed change, also shown as a toast (see [`Deck::report`]).
     pub last_error: Option<String>,
     generation: u64,
     store: Option<StateStore>,
@@ -190,7 +191,7 @@ impl Deck {
                 Some(v)
             }
             Err(e) => {
-                self.last_error = Some(describe(&e));
+                self.report(describe(&e), cx);
                 None
             }
         };
@@ -310,6 +311,14 @@ impl Deck {
         self.save_book(cx);
         cx.notify();
         kept
+    }
+
+    /// The one path for a change the deck refused or couldn't make: a toast, where the
+    /// user looks for outcomes, and `last_error` for tests.
+    fn report(&mut self, text: String, cx: &mut Context<Self>) {
+        toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text.clone(), vec![], cx));
+        self.last_error = Some(text);
+        cx.notify();
     }
 
     /// Writes the book now: a small file, changed rarely, and writes stay in order.
@@ -520,8 +529,7 @@ fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
         }
         Err(e) => {
             d.os_windows.remove(&id);
-            d.last_error = Some(format!("could not open a window: {e}"));
-            cx.notify();
+            d.report(format!("could not open a window: {e}"), cx);
         }
     });
 }
