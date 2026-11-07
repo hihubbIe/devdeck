@@ -2,6 +2,18 @@
 //! show lines (logs). A run's own output is a terminal (`terminal`).
 
 use std::collections::VecDeque;
+use std::time::Duration;
+
+/// How long a run took, as shown: `0.8 s`, `14 s`, `3 min 12 s`, `1 h 4 min`.
+pub fn took(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..10 => format!("{:.1} s", d.as_secs_f32()),
+        10..60 => format!("{s} s"),
+        60..3600 => format!("{} min {} s", s / 60, s % 60),
+        _ => format!("{} h {} min", s / 3600, s % 3600 / 60),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunState {
@@ -137,6 +149,10 @@ mod tests {
     fn states() {
         assert_eq!(RunState::Exited(1).failed(), Some(1));
         assert_eq!(RunState::Exited(0).failed(), None);
+        assert_eq!(took(Duration::from_millis(820)), "0.8 s");
+        assert_eq!(took(Duration::from_millis(14_400)), "14 s");
+        assert_eq!(took(Duration::from_secs(192)), "3 min 12 s");
+        assert_eq!(took(Duration::from_secs(3840)), "1 h 4 min");
         assert_eq!(RunState::Stopped.failed(), None);
         assert_eq!(RunState::Killed(9).failed(), Some(137));
         assert_eq!(RunState::NotStarted.failed(), Some(127));

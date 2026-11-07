@@ -204,7 +204,7 @@ pub fn run_glyph(state: Option<RunState>, t: &Theme) -> (String, Hsla) {
     match state {
         Some(RunState::Running) => ("●".into(), t.ok),
         Some(RunState::Stopping) => ("◌".into(), t.warn),
-        Some(RunState::Exited(0)) => ("○".into(), t.mute),
+        Some(RunState::Exited(0)) => ("✓".into(), t.ok),
         Some(s @ (RunState::Exited(_) | RunState::Killed(_) | RunState::NotStarted)) => (format!("✖ {}", s.failed().unwrap_or(1)), t.err),
         Some(RunState::Stopped) | None => ("○".into(), t.dim),
     }

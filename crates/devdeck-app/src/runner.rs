@@ -91,6 +91,10 @@ pub struct Run {
     pub runs: u32,
     /// Why it couldn't start, when it couldn't.
     pub error: Option<String>,
+    /// When the current start began (the executor's clock, so tests can advance it).
+    started: Option<std::time::Instant>,
+    /// How long the last start ran, once it ended.
+    pub took: Option<std::time::Duration>,
     control: Option<Box<dyn RunControl>>,
     _task: Option<Task<()>>,
     restart_after_stop: bool,
@@ -120,6 +124,8 @@ impl fmt::Display for RunRefusal {
 pub enum RunnerEvent {
     /// A run ended on its own and failed (exit code, signal, or it couldn't start).
     Failed { key: RunKey, code: i32 },
+    /// A run ended on its own with exit code 0, after this long.
+    Succeeded { key: RunKey, took: std::time::Duration },
     /// New output for a run. Output is an event, not a notification, so only views
     /// showing that run redraw; state changes notify.
     Output { key: RunKey },
@@ -302,6 +308,8 @@ impl Runner {
                 env: None,
                 runs: 0,
                 error: None,
+                started: None,
+                took: None,
                 control: None,
                 _task: None,
                 restart_after_stop: false,
@@ -310,6 +318,8 @@ impl Runner {
         };
         run.runs += 1;
         run.state = RunState::Running;
+        run.started = Some(cx.background_executor().now());
+        run.took = None;
         run.env = env.clone();
         run.error = None;
         run.restart_after_stop = false;
@@ -460,8 +470,11 @@ impl Runner {
         }
         run.control = None;
         run._task = None;
+        let took = run.started.map(|s| cx.background_executor().now().saturating_duration_since(s)).unwrap_or_default();
+        run.took = Some(took);
         let (state, text) = match (run.state, exit) {
             (RunState::Stopping, _) => (RunState::Stopped, "stopped".to_string()),
+            (_, Exit::Code(0)) => (RunState::Exited(0), format!("succeeded in {}", devdeck_core::runs::took(took))),
             (_, Exit::Code(code)) => (RunState::Exited(code), format!("exited with code {code}")),
             (_, Exit::Signal(signal)) => (RunState::Killed(signal), format!("killed by signal {signal}")),
             (_, Exit::SpawnFailed(why)) => {
@@ -476,6 +489,9 @@ impl Runner {
         run.restart_after_stop = false;
         if let Some(code) = state.failed() {
             cx.emit(RunnerEvent::Failed { key: id.key.clone(), code });
+        }
+        if state == RunState::Exited(0) {
+            cx.emit(RunnerEvent::Succeeded { key: id.key.clone(), took });
         }
         cx.emit(RunnerEvent::Output { key: id.key.clone() });
         if let Some(env) = again

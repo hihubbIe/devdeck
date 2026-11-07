@@ -174,7 +174,7 @@ impl Shell {
             .collect();
         let decks: Vec<Entity<Deck>> = workspaces.iter().map(|w| w.deck.clone()).collect();
         for (i, w) in workspaces.iter().enumerate() {
-            watch_failures(i, w, cx);
+            watch_results(i, w, cx);
         }
         let shell = cx.new(|_| Shell {
             workspaces,
@@ -404,21 +404,26 @@ pub fn report_problems(shell: &Entity<Shell>, cx: &mut App) {
     toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![("View".into(), view)], cx));
 }
 
-/// A run failing in any workspace becomes an error toast naming the workspace; "View
-/// output" shows that workspace and opens the run.
-fn watch_failures(index: usize, w: &Workspace, cx: &mut App) {
+/// A run ending on its own in any workspace becomes a toast naming the workspace: an
+/// error when it failed, a success with how long it took; "View output" shows that
+/// workspace and opens the run.
+fn watch_results(index: usize, w: &Workspace, cx: &mut App) {
     let runner = w.services.read(cx).runner.clone();
     let (name, deck) = (w.name.clone(), w.deck.downgrade());
     cx.subscribe(&runner, move |runner, event: &RunnerEvent, cx| {
-        let RunnerEvent::Failed { key, code } = event else { return };
+        let (key, kind, outcome) = match event {
+            RunnerEvent::Failed { key, code } => (key, ToastKind::Err, format!("exited {code}")),
+            RunnerEvent::Succeeded { key, took } => (key, ToastKind::Ok, format!("succeeded in {}", devdeck_core::runs::took(*took))),
+            RunnerEvent::Output { .. } => return,
+        };
         let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
         let deck = deck.clone();
         let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(move |_, cx| {
             switch(index, cx);
             crate::views::open_in(&deck, addr.clone(), cx);
         });
-        let text = format!("{name} · {} exited {code}", runner.read(cx).title(key));
-        toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![("View output".into(), view)], cx));
+        let text = format!("{name} · {} {outcome}", runner.read(cx).title(key));
+        toasts(cx).update(cx, |t, cx| t.push(kind, text, vec![("View output".into(), view)], cx));
     })
     .detach();
 }

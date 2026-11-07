@@ -430,6 +430,7 @@ impl Render for RunView {
             Some(RunState::Running) => "running".into(),
             Some(RunState::Stopping) => "stopping…".into(),
             Some(RunState::Stopped) => "stopped".into(),
+            Some(RunState::Exited(0)) => run.and_then(|r| r.took).map_or("succeeded".into(), |d| format!("succeeded in {}", devdeck_core::runs::took(d))),
             Some(RunState::Exited(code)) => format!("exited {code}"),
             Some(RunState::Killed(signal)) => format!("killed by signal {signal}"),
             Some(RunState::NotStarted) => "couldn't start".into(),
@@ -463,6 +464,28 @@ impl Render for RunView {
                 .tooltip(tip(tooltip))
                 .child(glyph)
         };
+        // What the run is takes the room left and shrinks (the line first); the actions
+        // after it always stay visible.
+        let info = div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().flex_none().text_color(color).child(glyph))
+            .child(div().flex_none().text_color(t.hi).child(runner.title(&self.key)))
+            .when_some(env, |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
+            .child(div().id("line").flex_1().min_w_0().tooltip(tip(line.clone())).child(label(line).text_color(t.dim)))
+            .child(args_field)
+            .child(
+                div()
+                    .id("state")
+                    .min_w_0()
+                    .tooltip(tip(state_text.clone()))
+                    .child(label(state_text).text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute })),
+            )
+            .when_some(refusal.clone(), |d, r| d.child(label(format!("⚠ {r}")).text_color(t.warn)));
         let toolbar = div()
             .flex_none()
             .h(t.toolbar_h)
@@ -472,13 +495,7 @@ impl Render for RunView {
             .gap_2()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(div().flex_none().text_color(color).child(glyph))
-            .child(div().flex_none().text_color(t.hi).child(runner.title(&self.key)))
-            .when_some(env, |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
-            .child(label(line).flex_1().min_w_0().text_color(t.dim))
-            .child(args_field)
-            .child(div().flex_none().text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute }).child(state_text))
-            .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(format!("⚠ {r}"))))
+            .child(info)
             .child(
                 button("start", "▶", !running && refusal.is_none(), refusal.clone().map_or("run".into(), |r| format!("can't run: {r}")))
                     .when(!running && refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("run", cx)))),

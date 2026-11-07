@@ -428,3 +428,17 @@ fn the_arguments_field_offers_recent_ones_and_takes_new_ones(cx: &mut TestAppCon
     let saved = vcx.read(|cx| deck.read(cx).view_states(cx));
     assert_eq!(saved[addr.to_ref().as_str()]["args"], "serve -p 9");
 }
+
+#[gpui::test]
+fn a_command_that_succeeds_says_so_with_how_long_it_took(cx: &mut TestAppContext) {
+    let shell = start(cx, "success");
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("pagerendererservice", "go:build");
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    advance(cx, LINE_GAP * 5);
+    assert_eq!(state(&shell, cx, "work", "pagerendererservice", "go:build"), Some(RunState::Exited(0)));
+    let took = cx.read(|cx| runner.read(cx).run(&key).unwrap().took).expect("timed");
+    let shown = devdeck_core::runs::took(took);
+    assert!(lines(&runner, &key, cx).iter().any(|l| *l == format!("succeeded in {shown}")), "in its output");
+    assert!(toast_texts(cx).contains(&format!("work · pagerendererservice · build succeeded in {shown}")), "{:?}", toast_texts(cx));
+}
