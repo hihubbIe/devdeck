@@ -762,3 +762,40 @@ hidden, closed) through `on_visibility` in a test view; Esc from an input in any
 focuses that view (app view has none, so the service tag editor and the logs find input);
 registry contexts parse once and the hint bar matches GPUI's binding resolution; existing
 suites unchanged.
+
+### Step 7b review and assessment
+
+perf baseline (streaming, DWARF stacks): text shaping of new log lines about 13 %, glyph
+painting about 8 %, memmove 6 %, malloc/free, taffy layout and the bounds tree; no devdeck
+function in the top entries, the hint bar included. Shaping new lines each frame is the
+nature of a fast stream: nothing to fix at our level for M1.
+
+1. `View && TextInput` can't match (each identifier is checked on one element). Instead the
+   `View` wrapper handles the input's `Cancel` action after the input (it propagates), with
+   no key binding, so the hint bar shows one Esc. **Accepted.**
+2. Visibility also depends on the window: Settings covering the main window, a detached
+   window still opening. The window tells the deck when its panes are covered; a detached
+   view counts as visible only once its OS window exists. **Accepted.**
+3. The deck's diff is the only source of visibility calls: a new view gets its first call
+   from the diff, a view in a hidden workspace gets none, calls only on changes. **Accepted.**
+4. `Deck.layout` becomes private (read through `layout()`), so every change goes through
+   `apply`. **Accepted.**
+5. The hint bar's cost was not the per-render parse (perf shows no devdeck frame). The
+   real issue is ownership: the registry owns parsed contexts and the group → key context
+   mapping; the hint bar keeps a memo keyed by focus (derived state with a clear input),
+   documented as such. **Accepted with that framing.**
+6. The group → context table moves into the registry, so a new view type doesn't edit the
+   window. Key text keeps coming from the registry; GPUI's `highest_precedence…` reads the
+   frame's own stack, not the focus path (found in step 6). **Accepted.**
+7. `toggle_follow` downcasts per type: `ToggleFollow` becomes an action each following view
+   handles (the demo log view becomes focusable). **Accepted.**
+8. One Esc in a view's input cancels the edit (revert, clear) and returns to the view; same
+   for every input in a view. The sidebar filter keeps its two steps (it isn't in a view).
+   **Decided.**
+9. Harness: each cycle does one of everything, including an Esc dispatched from an input in
+   a view; heap diffs skip warm-up cycles (10, then 10 vs 30); checkpoints assert no
+   sampler is left. **Accepted.**
+10. Tests: visibility across tab switch, send to another pane, detach/re-attach, layout
+    switch with a kept view, hidden workspace, Settings open, one call per change; Esc in a
+    detached window, in a modal input (doesn't focus the view), in the sidebar (unchanged),
+    from a view without a focus handle. **Accepted.**
