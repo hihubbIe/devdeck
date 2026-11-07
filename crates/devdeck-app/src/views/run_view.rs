@@ -517,7 +517,7 @@ impl Render for RunView {
         }
 
         let button = |id: &'static str, i: Icon, enabled: bool, tooltip: String| {
-            action_button(id, i, enabled, tooltip, &t).debug_selector(move || format!("run-{id}"))
+            action_button(id, i, t.icon, enabled, tooltip, &t).debug_selector(move || format!("run-{id}"))
         };
         // What the run is takes the room left and shrinks (the line first, then the
         // arguments and the name; the state stays whole); the actions always stay visible.
@@ -528,7 +528,7 @@ impl Render for RunView {
             .flex()
             .items_center()
             .gap_2()
-            .child(run_mark(state, "run-state", &t))
+            .child(run_mark(state, "run-state", t.icon, &t))
             .child(div().id("title").min_w_0().tooltip(tip(runner.title(&self.key))).child(label(runner.title(&self.key)).text_color(t.hi)))
             .when_some(env.filter(|_| !self.key.is_terminal()), |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
             .when(!self.key.is_terminal(), |d| {

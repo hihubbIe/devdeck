@@ -6,7 +6,7 @@
 //! The app serves them with [`Assets`]; tests without it draw nothing in their place.
 
 use crate::theme::Theme;
-use gpui::{Animation, AnimationElement, AnimationExt, AssetSource, ElementId, Hsla, SharedString, Styled, Svg, Transformation, percentage, svg};
+use gpui::{Animation, AnimationElement, AnimationExt, AssetSource, ElementId, Hsla, Pixels, SharedString, Styled, Svg, Transformation, percentage, svg};
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -49,7 +49,8 @@ icons! {
     Run => "play",
     Stop => "square",
     Restart => "rotate-cw",
-    Output => "scroll-text",
+    /// A command's output: its terminal.
+    Output => "square-terminal",
     /// Something in progress (stopping, rolling out, loading); see [`spinner`].
     Busy => "loader-circle",
     // States and messages.
@@ -101,10 +102,10 @@ pub fn icon(icon: Icon, color: Hsla, t: &Theme) -> Svg {
     svg().path(icon.path()).size(t.icon).flex_none().text_color(color)
 }
 
-/// [`Icon::Busy`], turning once a second. It redraws while shown: only for what lasts
-/// seconds (a run stopping), never for a state that can stay.
-pub fn spinner(id: impl Into<ElementId>, color: Hsla, t: &Theme) -> AnimationElement<Svg> {
-    icon(Icon::Busy, color, t).with_animation(id, Animation::new(Duration::from_secs(1)).repeat(), |s, delta| {
+/// [`Icon::Busy`], `size` wide, turning once a second. It redraws while shown: only for
+/// what lasts seconds (a run stopping), never for a state that can stay.
+pub fn spinner(id: impl Into<ElementId>, color: Hsla, size: Pixels, t: &Theme) -> AnimationElement<Svg> {
+    icon(Icon::Busy, color, t).size(size).with_animation(id, Animation::new(Duration::from_secs(1)).repeat(), |s, delta| {
         s.with_transformation(Transformation::rotate(percentage(delta)))
     })
 }

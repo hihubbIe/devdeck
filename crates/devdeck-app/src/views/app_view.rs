@@ -243,8 +243,8 @@ impl Render for AppView {
                             cx.notify();
                         }))
                         .child(div().flex_none().min_w(t.size(28.)).flex().items_center().child(match refusal {
-                            Some(_) => icon(Icon::Warning, t.warn, &t).into_any_element(),
-                            None => run_mark(state, ("cmd-state", n), &t),
+                            Some(_) => icon(Icon::Warning, t.warn, &t).size(t.icon_small).into_any_element(),
+                            None => run_mark(state, ("cmd-state", n), t.icon_small, &t),
                         }))
                         .child(div().flex_none().w(t.size(110.)).truncate().text_color(if refusal.is_some() { t.dim } else { t.fg }).child(row_label))
                         .child(label(c.line.clone()).flex_1().min_w_0().text_color(t.dim))
@@ -252,15 +252,15 @@ impl Render for AppView {
                             d.child(div().flex_none().text_color(t.mute).child(c.ports.iter().map(|p| format!(":{p}")).collect::<Vec<_>>().join(" ")))
                         })
                         .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(r)))
-                        .child(action_button(("run", n), Icon::Run, can_run, run_tip, &t).when(can_run, |d| d.on_click(cx.listener(move |this, _, _, cx| this.run(&r2, cx)))))
-                        .child(action_button(("stop", n), Icon::Stop, running, "stop", &t).when(running, |d| d.on_click(cx.listener(move |this, _, _, cx| this.stop(&r3, cx)))))
+                        .child(action_button(("run", n), Icon::Run, t.icon_small, can_run, run_tip, &t).when(can_run, |d| d.on_click(cx.listener(move |this, _, _, cx| this.run(&r2, cx)))))
+                        .child(action_button(("stop", n), Icon::Stop, t.icon_small, running, "stop", &t).when(running, |d| d.on_click(cx.listener(move |this, _, _, cx| this.stop(&r3, cx)))))
                         .child(
-                            action_button(("restart", n), Icon::Restart, refusal.is_none(), "restart", &t)
+                            action_button(("restart", n), Icon::Restart, t.icon_small, refusal.is_none(), "restart", &t)
                                 .when(refusal.is_none(), |d| d.on_click(cx.listener(move |this, _, _, cx| this.restart(&r4, cx)))),
                         )
                         .child({
                             let id = c.id.clone();
-                            action_button(("output", n), Icon::Output, true, "output", &t).on_click(cx.listener(move |this, _, _, cx| this.open_output(&id, cx)))
+                            action_button(("output", n), Icon::Output, t.icon_small, true, "output", &t).on_click(cx.listener(move |this, _, _, cx| this.open_output(&id, cx)))
                         }),
                 );
             }

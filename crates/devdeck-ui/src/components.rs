@@ -4,7 +4,7 @@
 use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
-    AnyView, App, AppContext, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Render, SharedString,
+    AnyView, App, AppContext, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     Stateful, StatefulInteractiveElement, Styled, Svg, Window, div, prelude::*,
 };
 
@@ -142,9 +142,10 @@ pub fn icon_button(id: impl Into<ElementId>, i: Icon, tooltip: &'static str, t: 
         .child(button_icon(i, t))
 }
 
-/// An action's icon button: bright when it can be used, dim when not (its tooltip says
-/// why). The caller adds the click when enabled.
-pub fn action_button(id: impl Into<ElementId>, i: Icon, enabled: bool, tooltip: impl Into<SharedString>, t: &Theme) -> Stateful<gpui::Div> {
+/// An action's icon button, its icon `size` wide ([`Theme::icon`], or
+/// [`Theme::icon_small`] in a dense list): bright when it can be used, dim when not (its
+/// tooltip says why). The caller adds the click when enabled.
+pub fn action_button(id: impl Into<ElementId>, i: Icon, size: Pixels, enabled: bool, tooltip: impl Into<SharedString>, t: &Theme) -> Stateful<gpui::Div> {
     let hover = t.hover;
     div()
         .id(id)
@@ -157,7 +158,7 @@ pub fn action_button(id: impl Into<ElementId>, i: Icon, enabled: bool, tooltip: 
         .rounded(t.radius_s)
         .when(enabled, |d| d.hover(move |s| s.bg(hover)).cursor_pointer())
         .tooltip(tip(tooltip))
-        .child(icon(i, if enabled { t.fg } else { t.dim }, t))
+        .child(icon(i, if enabled { t.fg } else { t.dim }, t).size(size))
 }
 
 /// A status dot (running, ready, unsaved…), filled or a ring, in a cell the size of an

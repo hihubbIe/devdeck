@@ -53,6 +53,8 @@ pub struct Theme {
     pub icon_button: Pixels,
     /// An icon's side, in a button or beside text.
     pub icon: Pixels,
+    /// In a dense list (an app's commands): 80 % of [`Theme::icon`].
+    pub icon_small: Pixels,
     pub grip_w: Pixels,
     pub tab_min_w: Pixels,
     pub tab_max_w: Pixels,
@@ -118,6 +120,7 @@ impl Theme {
             button_h: s(24.),
             icon_button: s(22.),
             icon: s(14.),
+            icon_small: s(14. * 0.8),
             grip_w: s(18.),
             tab_min_w: s(60.),
             tab_max_w: s(280.),

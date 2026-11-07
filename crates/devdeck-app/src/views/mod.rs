@@ -24,7 +24,7 @@ use devdeck_core::runs::RunState;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{Icon, Theme, dot, icon, label, spinner, theme};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, ElementId, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity,
+    AnyElement, AnyView, App, AppContext, ElementId, Entity, FocusHandle, Focusable, IntoElement, Pixels, ParentElement, Render, SharedString, Styled, WeakEntity,
     Window, div,
 };
 
@@ -209,15 +209,20 @@ pub fn title(r: &ViewRef) -> String {
 
 /// The mark of a run state (DESIGN visual language): a dot while running, a ring when
 /// stopped or never run, turning while stopping, a check for a success, a cross and the
-/// code for a failure. `id` is the stopping spinner's.
-pub fn run_mark(state: Option<RunState>, id: impl Into<ElementId>, t: &Theme) -> AnyElement {
+/// code for a failure. `id` is the stopping spinner's; icons are `size` wide.
+pub fn run_mark(state: Option<RunState>, id: impl Into<ElementId>, size: Pixels, t: &Theme) -> AnyElement {
     match state {
         Some(RunState::Running) => dot(t.ok, true, t).into_any_element(),
-        Some(RunState::Stopping) => spinner(id, t.warn, t).into_any_element(),
-        Some(RunState::Exited(0)) => icon(Icon::Check, t.ok, t).into_any_element(),
-        Some(s @ (RunState::Exited(_) | RunState::Killed(_) | RunState::NotStarted)) => {
-            div().flex().items_center().gap_1().text_color(t.err).child(icon(Icon::Error, t.err, t)).child(s.failed().unwrap_or(1).to_string()).into_any_element()
-        }
+        Some(RunState::Stopping) => spinner(id, t.warn, size, t).into_any_element(),
+        Some(RunState::Exited(0)) => icon(Icon::Check, t.ok, t).size(size).into_any_element(),
+        Some(s @ (RunState::Exited(_) | RunState::Killed(_) | RunState::NotStarted)) => div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_color(t.err)
+            .child(icon(Icon::Error, t.err, t).size(size))
+            .child(s.failed().unwrap_or(1).to_string())
+            .into_any_element(),
         Some(RunState::Stopped) | None => dot(t.dim, false, t).into_any_element(),
     }
 }
