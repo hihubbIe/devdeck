@@ -722,3 +722,43 @@ Checks:
 - 2 tests in `tests/workspaces.rs` and 1 in `tests/actions.rs`.
 - 4 core tests, including the keep merge not taking the active tab.
 - Snapshots B0–B3.
+
+## Step 7b · Cleanup before closing M1
+
+Measuring M1 led to fixes. Reviewing them by level, three sit at the wrong level and some
+tooling is scaffolding. The root cause and the generic fix for each:
+
+1. **View visibility.** The service and logs views each observe the deck, defer a first
+   check (a view built during the deck's update can't read the deck), and work out their
+   own visibility: the same logic twice, and every future live view would copy it. Root
+   cause: the engine doesn't tell views they are on screen. Fix: the Deck keeps the set of
+   visible views, recomputed in one place after every change (layout op, sync, workspace
+   shown or hidden), and emits an event only when the set changes. `ViewCx` knows the
+   view's own address and offers `on_visibility(cx, f)`, which calls `f` once after
+   creation and on every change. The two views use it; their own code goes.
+2. **Esc in an input inside a view.** Only the tag editor gives the keys back to its view
+   on Esc (focus code in the service view). Root cause: the engine has no notion of "the
+   view this input belongs to". Fix: the pane wraps every view in a `View` key context
+   with a `FocusView` action that focuses that view; Esc in a text input inside a view
+   (`View && TextInput`, after the input's own Cancel) runs it. Every view gets it, the
+   service view's special case goes.
+3. **Hint bar cost.** It is cached per focus because it re-parsed every registry context
+   on every render. Root cause: contexts are parsed in two places. Fix: the registry
+   parses each context once (when binding) and keeps it; the hint bar uses those; the
+   per-focus cache goes. perf then says whether computing the hints per frame matters.
+4. **Measurement tooling.** The counting allocator (`alloc-count`) is replaced by
+   heaptrack and goes. The stress run does one of everything every cycle (each view type,
+   a run, overlays, a detached window with a menu, a workspace and a layout switch), so
+   short runs see every path; `DEVDECK_STRESS_EXIT=hard` (renamed) skips teardown for heap
+   diffs. `measure.py` gains `heapdiff` (heaptrack on 5 and 25 cycles, growth by call site,
+   recordings deleted) and the USS leak run defaults to 1 000 cycles.
+
+Kept as they are (right level): run output lines as events while state changes notify;
+cached views (rule: a view notifies whenever anything it draws changes); focus-safe
+`open_menu`.
+
+Tests: visibility (shown, hidden by another tab, collapsed, maximized elsewhere, workspace
+hidden, closed) through `on_visibility` in a test view; Esc from an input in any view
+focuses that view (app view has none, so the service tag editor and the logs find input);
+registry contexts parse once and the hint bar matches GPUI's binding resolution; existing
+suites unchanged.

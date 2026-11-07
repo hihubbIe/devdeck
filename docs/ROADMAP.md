@@ -12,7 +12,7 @@ Each milestone ends with a manual test by the user.
 - Measure: RAM at idle, CPU at idle, CPU while streaming, keystroke-to-frame latency.
 - Outcome: keep GPUI or rethink, before building on it.
 
-## M1 · Native prototype with fake data
+## M1 · Native prototype with fake data — done 2026-11-07, waiting for the user's manual test
 Everything from the approved HTML prototype plus the later changes, backed by a fake
 data provider. Steps (each planned, reviewed, built, checked, tested, committed):
 1. Settings view (full window) with UI scale and theme; all sizes derive from the scale.
@@ -22,6 +22,9 @@ data provider. Steps (each planned, reviewed, built, checked, tested, committed)
 5. Views with fake data: app, command output, service inspector, logs, pod, text, matrix, ports.
 6. Actions everywhere: palette, context menus, "Send to…", cheat sheet, hint bar.
 7. Layouts per workspace, keep-in-every-layout; M1 measurements.
+
+What to try: [plans/M1-manual-test.md](plans/M1-manual-test.md). Numbers:
+[perf/M1.md](perf/M1.md).
 
 ## M2 · Real local runner
 Config loading, discovery, tool detection, pseudo-terminal runs, env bindings, ports,
