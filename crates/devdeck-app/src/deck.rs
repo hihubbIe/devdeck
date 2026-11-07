@@ -15,22 +15,23 @@ use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, PaneId, ViewRef, Wi
 use devdeck_core::layout_book::{BookError, LayoutBook};
 use devdeck_core::state::StateStore;
 use devdeck_ui::{ToastKind, toasts};
-use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, FocusHandle, Task, WindowHandle};
-use std::collections::HashMap;
+use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Task, WindowHandle};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// How long after a change the layout is written.
 pub const SAVE_DELAY: Duration = Duration::from_millis(1000);
 
 pub struct Deck {
-    pub layout: Layout,
+    /// Read through [`Deck::layout`]; every change goes through [`Deck::apply`].
+    layout: Layout,
     pub workspace: String,
     active: bool,
     views: HashMap<ViewRef, AnyView>,
     /// Focus handles of views that take keys.
     focus: HashMap<ViewRef, FocusHandle>,
-    /// What views get to reach their workspace (`None` in bare decks: demo views only).
-    ctx: Option<ViewCx>,
+    /// The workspace's services, handed to every view (`None` in bare decks: demo views only).
+    services: Option<Entity<crate::services::Services>>,
     /// Detached windows only. `None` while the OS window is being opened (deferred).
     os_windows: HashMap<WindowId, Option<WindowHandle<WindowView>>>,
     /// Views closed recently, checked for release by the leak test.
@@ -47,7 +48,18 @@ pub struct Deck {
     pub send: Option<SendSource>,
     /// Named layouts of the workspace (R3.10).
     pub book: LayoutBook,
+    /// Views on screen now; changes are announced with [`DeckEvent::Visibility`].
+    visible: HashSet<ViewRef>,
+    /// The main window shows something else over its panes (Settings).
+    covered: bool,
 }
+
+pub enum DeckEvent {
+    /// Views that came on screen and views that left it, since the last change.
+    Visibility { shown: Vec<ViewRef>, hidden: Vec<ViewRef> },
+}
+
+impl EventEmitter<DeckEvent> for Deck {}
 
 /// What a "Send to…" pick moves.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +77,7 @@ impl Deck {
             active: true,
             views: HashMap::new(),
             focus: HashMap::new(),
-            ctx: None,
+            services: None,
             os_windows: HashMap::new(),
             released: Vec::new(),
             last_error: None,
@@ -77,6 +89,8 @@ impl Deck {
             saves: 0,
             send: None,
             book: LayoutBook::default(),
+            visible: HashSet::new(),
+            covered: false,
         }
     }
 
@@ -88,8 +102,8 @@ impl Deck {
         self
     }
 
-    pub fn with_ctx(mut self, ctx: ViewCx) -> Self {
-        self.ctx = Some(ctx);
+    pub fn with_services(mut self, services: Entity<crate::services::Services>) -> Self {
+        self.services = Some(services);
         self
     }
 
@@ -99,13 +113,53 @@ impl Deck {
         self.focus.get(r).cloned()
     }
 
-    /// Whether a view is on screen: active tab of an expanded pane, workspace shown.
+    /// Whether a view is on screen: the shown workspace, its window drawn and not
+    /// covered, the active tab of an expanded pane, not hidden by a maximized one.
     pub fn is_visible(&self, r: &ViewRef) -> bool {
-        self.active
-            && self.layout.find_view(r).is_some_and(|(p, i)| {
-                self.layout.pane(p).is_ok_and(|pane| pane.active == i && !pane.collapsed)
-                    && self.layout.window_of(p).ok().and_then(|w| self.layout.window(w).ok()).is_some_and(|w| w.maximized.is_none_or(|m| m == p))
+        self.visible.contains(r)
+    }
+
+    fn compute_visible(&self) -> HashSet<ViewRef> {
+        if !self.active {
+            return HashSet::new();
+        }
+        let l = &self.layout;
+        let window_drawn = |w: WindowId| if w == MAIN_WINDOW { !self.covered } else { matches!(self.os_windows.get(&w), Some(Some(_))) };
+        l.windows
+            .iter()
+            .filter(|w| window_drawn(w.id))
+            .flat_map(|w| {
+                let panes = match w.maximized {
+                    Some(m) => vec![m],
+                    None => l.panes_in(w.id).unwrap_or_default(),
+                };
+                panes.into_iter().filter_map(|p| l.pane(p).ok().filter(|p| !p.collapsed).and_then(|p| p.active_view().cloned()))
             })
+            .collect()
+    }
+
+    /// Recomputes what is on screen; the one place visibility changes are announced.
+    fn refresh_visibility(&mut self, cx: &mut Context<Self>) {
+        let now = self.compute_visible();
+        if now == self.visible {
+            return;
+        }
+        let shown: Vec<ViewRef> = now.difference(&self.visible).cloned().collect();
+        let hidden: Vec<ViewRef> = self.visible.difference(&now).cloned().collect();
+        self.visible = now;
+        cx.emit(DeckEvent::Visibility { shown, hidden });
+    }
+
+    /// The main window covers its panes (Settings) or shows them again.
+    pub fn set_covered(&mut self, covered: bool, cx: &mut Context<Self>) {
+        if self.covered != covered {
+            self.covered = covered;
+            self.refresh_visibility(cx);
+        }
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.layout
     }
 
     pub fn view(&self, r: &ViewRef) -> Option<AnyView> {
@@ -174,6 +228,7 @@ impl Deck {
     /// Called when the window manager closed a detached window.
     pub fn os_window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
         self.os_windows.remove(&id);
+        self.refresh_visibility(cx);
         if id != MAIN_WINDOW && self.layout.window(id).is_ok() {
             self.close_window(id, cx);
         }
@@ -317,6 +372,9 @@ impl Deck {
         // Views: create missing, drop closed.
         let open = self.layout.views();
         let closed: Vec<ViewRef> = self.views.keys().filter(|r| !open.contains(*r)).cloned().collect();
+        // Views already gone need no watching: the list only holds possible leaks, so
+        // it stays as small as the leaks themselves.
+        self.released.retain(|(weak, _)| weak.upgrade().is_some());
         for r in closed {
             self.focus.remove(&r);
             if let Some(v) = self.views.remove(&r) {
@@ -325,7 +383,9 @@ impl Deck {
         }
         for r in open {
             if !self.views.contains_key(&r) {
-                let built = views::build(&r, self.ctx.as_ref(), cx);
+                let deck = cx.weak_entity();
+                let ctx = self.services.clone().map(|services| ViewCx { services, deck, view: r.clone() });
+                let built = views::build(&r, ctx.as_ref(), cx);
                 if let Some(f) = built.focus {
                     self.focus.insert(r.clone(), f);
                 }
@@ -356,6 +416,7 @@ impl Deck {
                 cx.defer(move |cx| open_os_window(deck, id, cx));
             }
         }
+        self.refresh_visibility(cx);
     }
 
     /// Views closed more than `age` generations ago that are still alive.
@@ -455,6 +516,7 @@ fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
     deck.update(cx, |d, cx| match result {
         Ok(h) => {
             d.os_windows.insert(id, Some(h));
+            d.refresh_visibility(cx);
         }
         Err(e) => {
             d.os_windows.remove(&id);

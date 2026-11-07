@@ -418,7 +418,7 @@ fn send_to(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell
     });
     cx.run_until_parked();
     let source = cx.update(|cx| {
-        let l = &deck.read(cx).layout;
+        let l = deck.read(cx).layout();
         devdeck_app::deck::SendSource::Tab(l.pane(l.main().focused).unwrap().active_view().unwrap().clone())
     });
     let _ = cx.update_window(w, |_, window, cx| devdeck_app::send_to::open(deck.clone(), source, window, cx));

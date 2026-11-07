@@ -9,7 +9,6 @@ use crate::deck::Deck;
 use crate::runner::RunnerEvent;
 use crate::services::Services;
 use crate::sidebar::Sidebar;
-use crate::views::ViewCx;
 use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::Layout;
@@ -135,10 +134,7 @@ impl Shell {
                     }
                     _ => LayoutBook::default(),
                 };
-                let deck = cx.new(|cx| {
-                    let ctx = ViewCx { services: deck_services, deck: cx.weak_entity() };
-                    Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_ctx(ctx).with_book(book)
-                });
+                let deck = cx.new(|_| Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_services(deck_services).with_book(book));
                 let (ws, sidebar_deck, sidebar_store) = (spec.id.clone(), deck.clone(), store.clone());
                 let sidebar_services = services.clone();
                 let sidebar = cx.new(|cx| Sidebar::new(ws, sidebar_services, sidebar_deck, sidebar_store, sidebar_state, cx));
@@ -333,14 +329,13 @@ impl Shell {
 fn watch_failures(index: usize, w: &Workspace, cx: &mut App) {
     let runner = w.services.read(cx).runner.clone();
     let (name, deck) = (w.name.clone(), w.deck.downgrade());
-    let services = w.services.clone();
     cx.subscribe(&runner, move |_, event: &RunnerEvent, cx| {
         let RunnerEvent::Failed { key, code } = event else { return };
         let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
-        let ctx = ViewCx { services: services.clone(), deck: deck.clone() };
+        let deck = deck.clone();
         let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(move |_, cx| {
             switch(index, cx);
-            ctx.open(addr.clone(), cx);
+            crate::views::open_in(&deck, addr.clone(), cx);
         });
         let text = format!("{name} · {} exited {code}", key.title());
         toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![("View output".into(), view)], cx));

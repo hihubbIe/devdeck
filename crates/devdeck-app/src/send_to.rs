@@ -64,7 +64,7 @@ impl SendTo {
     fn pick(&mut self, n: Option<usize>, cx: &mut Context<Self>) {
         let target = match n {
             None => None,
-            Some(n) => match self.deck.read(cx).layout.numbered_panes().get(n.wrapping_sub(1)) {
+            Some(n) => match self.deck.read(cx).layout().numbered_panes().get(n.wrapping_sub(1)) {
                 Some((p, _)) => Some(*p),
                 None => return,
             },
@@ -86,12 +86,12 @@ impl Render for SendTo {
             None => String::new(),
         };
         let mut list = div().flex().flex_col();
-        let numbered = d.layout.numbered_panes();
+        let numbered = d.layout().numbered_panes();
         let mut detached: Vec<_> = numbered.iter().map(|(_, w)| *w).filter(|w| *w != MAIN_WINDOW).collect();
         detached.dedup();
         for (i, (pane, win)) in numbered.iter().enumerate() {
             let n = i + 1;
-            let active = d.layout.pane(*pane).ok().and_then(|p| p.active_view().cloned()).map(|r| views::title(&r)).unwrap_or_else(|| "empty".into());
+            let active = d.layout().pane(*pane).ok().and_then(|p| p.active_view().cloned()).map(|r| views::title(&r)).unwrap_or_else(|| "empty".into());
             let place = if *win == MAIN_WINDOW {
                 "main window".to_string()
             } else {

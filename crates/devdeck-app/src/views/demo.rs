@@ -5,22 +5,24 @@ use crate::kube_feed::{self, KubeState};
 use devdeck_ui::{label, theme};
 use devdeck_core::layout::ViewRef;
 use gpui::{
-    AnyView, App, AppContext, Context, IntoElement, ListHorizontalSizingBehavior, ParentElement, Render, SharedString,
+    AnyView, App, AppContext, Context, FocusHandle, Focusable, IntoElement, ListHorizontalSizingBehavior, ParentElement, Render, SharedString,
     Styled, Task, UniformListScrollHandle, Window, div, prelude::*, uniform_list,
 };
 use std::time::Duration;
 
-pub fn build(r: &ViewRef, cx: &mut App) -> AnyView {
+pub fn build(r: &ViewRef, ctx: Option<&super::ViewCx>, cx: &mut App) -> super::Built {
     let s = r.as_str();
+    let plain = |view: AnyView| super::Built { view, focus: None };
     if s == "demo/logs" {
-        cx.new(LogsView::new).into()
+        let v = cx.new(|cx| LogsView::new(ctx, cx));
+        super::focusable(v, cx)
     } else if s == "demo/deployments" {
-        cx.new(DeploymentsView::new).into()
+        plain(cx.new(DeploymentsView::new).into())
     } else if s == "demo/gallery" {
-        cx.new(crate::gallery::Gallery::new).into()
+        plain(cx.new(crate::gallery::Gallery::new).into())
     } else {
         let title: SharedString = title(r).into();
-        cx.new(|_| TextView::new(title)).into()
+        plain(cx.new(|_| TextView::new(title)).into())
     }
 }
 
@@ -45,8 +47,16 @@ pub struct LogsView {
     longest: usize,
     follow: bool,
     scroll: UniformListScrollHandle,
-    /// The stream; `None` once it finished or was stopped.
+    /// The stream; `None` while hidden and once it finished.
     feed: Option<Task<()>>,
+    focus: FocusHandle,
+    _visibility: Option<gpui::Subscription>,
+}
+
+impl Focusable for LogsView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
 }
 
 const LOG_TARGET: usize = 50_000;
@@ -54,27 +64,49 @@ const LOG_BATCH: usize = 100;
 const LOG_TICK: Duration = Duration::from_millis(50);
 
 impl LogsView {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let feed = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(LOG_TICK).await;
-                let done = this
-                    .update(cx, |v, cx| {
-                        v.push_batch();
-                        let done = v.lines.len() >= LOG_TARGET;
-                        if done {
-                            v.feed = None;
-                        }
-                        cx.notify();
-                        done
-                    })
-                    .unwrap_or(true);
-                if done {
-                    break;
+    /// Streams only while on screen (the engine's visibility), like every live view;
+    /// without a workspace (bare decks) it streams at once.
+    fn new(ctx: Option<&super::ViewCx>, cx: &mut Context<Self>) -> Self {
+        let mut this = Self {
+            lines: Vec::new(),
+            longest: 0,
+            follow: true,
+            scroll: UniformListScrollHandle::new(),
+            feed: None,
+            focus: cx.focus_handle(),
+            _visibility: None,
+        };
+        match ctx {
+            Some(ctx) => this._visibility = ctx.on_visibility(cx, |v, visible, cx| v.set_streaming(visible, cx)),
+            None => this.set_streaming(true, cx),
+        }
+        this
+    }
+
+    fn set_streaming(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            self.feed = None;
+        } else if self.feed.is_none() && self.lines.len() < LOG_TARGET {
+            self.feed = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(LOG_TICK).await;
+                    let done = this
+                        .update(cx, |v, cx| {
+                            v.push_batch();
+                            let done = v.lines.len() >= LOG_TARGET;
+                            if done {
+                                v.feed = None;
+                            }
+                            cx.notify();
+                            done
+                        })
+                        .unwrap_or(true);
+                    if done {
+                        break;
+                    }
                 }
-            }
-        });
-        Self { lines: Vec::new(), longest: 0, follow: true, scroll: UniformListScrollHandle::new(), feed: Some(feed) }
+            }));
+        }
     }
 
     fn push_batch(&mut self) {
@@ -100,16 +132,6 @@ impl LogsView {
         }
     }
 
-    /// Counts as a running process for the quit guard until M2 brings real ones.
-    pub fn is_streaming(&self) -> bool {
-        self.feed.is_some()
-    }
-
-    pub fn stop(&mut self, cx: &mut Context<Self>) {
-        self.feed = None;
-        cx.notify();
-    }
-
     pub fn toggle_follow(&mut self, cx: &mut Context<Self>) {
         self.follow = !self.follow;
         if self.follow {
@@ -127,6 +149,8 @@ impl Render for LogsView {
         let count = self.lines.len();
         let follow = self.follow;
         div()
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
             .size_full()
             .flex()
             .flex_col()

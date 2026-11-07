@@ -799,3 +799,19 @@ nature of a fast stream: nothing to fix at our level for M1.
     switch with a kept view, hidden workspace, Settings open, one call per change; Esc in a
     detached window, in a modal input (doesn't focus the view), in the sidebar (unchanged),
     from a view without a focus handle. **Accepted.**
+
+### Step 7b outcome
+
+Built as assessed, then reviewed by a subagent on the diff. That review found:
+- **A regression:** alt+f stopped working when focus came back to the pane area by a direct path (Esc in the sidebar, a workspace switch, closing Settings). Fixed in the engine: every way back to the panes goes through `focus_panes`, which focuses the focused pane's view. A test now covers it.
+- **Weak tests.** The visibility test now checks the exact event sequences; the layout-switch test really changes the tree.
+- **Stress steps that never reached the engine**, and leftovers: a duplicate doc line, a `ViewCx` built just to open a view (now `views::open_in`), an overclaiming doc on `registry::applicable`.
+
+Found while profiling the new short heap diff (10 vs 30 cycles, about 40 s):
+- **The demo log stream ignored the visibility rule.** It kept streaming behind other tabs; it now follows `on_visibility` like the real views.
+- **The leak check's own list of closed views grew forever** in normal use, because it was pruned only when the check ran. It is now pruned on every sync.
+- Exit-time GPU queue state made heap snapshots noisy; the harness lets it drain first.
+
+What still grows, per cycle:
+- about 400 B in GPUI's Wayland window objects for each OS window opened and closed (`gpui-pre-linux` `wayland/window.rs:864`; to report upstream);
+- the run output buffer, which is capped.

@@ -33,7 +33,7 @@ fn gallery(deck: &Entity<Deck>, cx: &gpui::App) -> Entity<Gallery> {
 }
 
 fn panes(deck: &Entity<Deck>, cx: &TestAppContext) -> usize {
-    cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len())
+    cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len())
 }
 
 #[gpui::test]
@@ -42,12 +42,12 @@ fn typing_in_an_input_never_triggers_pane_keys(cx: &mut TestAppContext) {
     let main = cx.windows()[0];
     let input = cx.read(|cx| gallery(&deck, cx).read(cx).empty.clone());
     cx.update_window(main, |_, window, cx| input.read(cx).focus_handle(cx).focus(window, cx)).unwrap();
-    let tabs_before = cx.read(|cx| deck.read(cx).layout.views().len());
+    let tabs_before = cx.read(|cx| deck.read(cx).layout().views().len());
     cx.simulate_input(main, "pw");
     cx.simulate_keystrokes(main, "ctrl-w alt-f");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| input.read(cx).text().to_string()), "pw");
-    assert_eq!(cx.read(|cx| deck.read(cx).layout.views().len()), tabs_before, "ctrl-w inside an input closed nothing");
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().views().len()), tabs_before, "ctrl-w inside an input closed nothing");
 }
 
 #[gpui::test]
@@ -75,11 +75,11 @@ fn outside_click_closes_menu_without_clicking_through(cx: &mut TestAppContext) {
         .unwrap();
     let mut vcx = VisualTestContext::from_window(main, cx);
     vcx.run_until_parked();
-    let before = vcx.read(|cx| deck.read(cx).layout.clone());
+    let before = vcx.read(|cx| deck.read(cx).layout().clone());
     let modal_button = vcx.debug_bounds("open-modal").expect("gallery visible");
     vcx.simulate_click(modal_button.center(), Modifiers::none());
     assert_eq!(vcx.update(|_, cx| layer_state(main, cx)), (false, 0), "menu closed, and the button under it was not pressed");
-    assert_eq!(vcx.read(|cx| deck.read(cx).layout.clone()), before);
+    assert_eq!(vcx.read(|cx| deck.read(cx).layout().clone()), before);
 }
 
 #[gpui::test]

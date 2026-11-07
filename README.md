@@ -4,7 +4,7 @@ A native, keyboard- and mouse-friendly cockpit for developers: see all your apps
 services, pick an env, run their commands, watch output, and inspect or deploy
 services on a Kubernetes cluster, without typing command lines.
 
-Status: early development. See [docs/ROADMAP.md](docs/ROADMAP.md).
+Status: M1, a native prototype on fake data (see [docs/plans/M1-manual-test.md](docs/plans/M1-manual-test.md)). See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Build
 

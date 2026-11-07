@@ -206,6 +206,7 @@ impl Render for RunView {
             .size_full()
             .flex()
             .flex_col()
+            .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
             .on_action(cx.listener(|this, _: &RunAgain, _, cx| this.act("run", cx)))
             .on_action(cx.listener(|this, _: &Stop, _, cx| this.act("stop", cx)))
             .on_action(cx.listener(|this, _: &Restart, _, cx| this.act("restart", cx)))

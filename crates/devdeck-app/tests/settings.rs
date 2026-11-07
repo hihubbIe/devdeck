@@ -55,7 +55,7 @@ fn scale_keys_step_save_and_reset(cx: &mut TestAppContext) {
 fn settings_view_blocks_pane_keys_and_restores_focus(cx: &mut TestAppContext) {
     let (deck, _dir) = setup(cx, "focus");
     let main = cx.windows()[0];
-    let panes = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len());
+    let panes = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len());
     cx.simulate_keystrokes(main, "ctrl-,");
     assert!(cx.read(app_settings::is_open));
     cx.simulate_keystrokes(main, "ctrl-\\");

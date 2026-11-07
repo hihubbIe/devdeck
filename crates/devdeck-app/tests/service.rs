@@ -9,7 +9,7 @@ use devdeck_core::cluster::Rollout;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::overlay::layer_state;
-use gpui::{AnyWindowHandle, Entity, TestAppContext};
+use gpui::{AnyWindowHandle, AppContext, Entity, Focusable, TestAppContext};
 use std::time::Duration;
 
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
@@ -215,4 +215,56 @@ fn unreachable_missing_and_forbidden_states(cx: &mut TestAppContext) {
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(unknown.clone(), l.main().focused).map(|_| ()))));
     cx.run_until_parked();
     assert!(cx.read(|cx| deck.read(cx).view(&unknown)).is_some(), "an unknown env gets a message view");
+}
+
+#[gpui::test]
+fn esc_in_an_input_returns_to_its_view_in_any_window(cx: &mut TestAppContext) {
+    let shell = start(cx, "esc");
+    let main = main_window(&shell, cx);
+    let view = open_service(&shell, cx, "dev35", "entityservice");
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let svc = ViewAddr::Svc { env: "dev35".into(), name: "entityservice".into() }.to_ref();
+    // In a detached window.
+    let r = svc.clone();
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| {
+        let (p, i) = l.find_view(&r).unwrap();
+        l.detach(p, i).map(|_| ())
+    })));
+    cx.run_until_parked();
+    let detached = cx.windows().into_iter().find(|w| *w != main).expect("detached window");
+    let focus = cx.read(|cx| view.read(cx).focus_handle(cx));
+    cx.update_window(detached, |_, window, cx| focus.focus(window, cx)).unwrap();
+    cx.simulate_keystrokes(detached, "t");
+    let tag = cx.read(|cx| view.read(cx).tag.read(cx).focus_handle(cx));
+    assert!(cx.update_window(detached, |_, window, _| tag.is_focused(window)).unwrap(), "t edits the tag");
+    cx.simulate_keystrokes(detached, "escape");
+    assert!(cx.update_window(detached, |_, window, _| focus.is_focused(window)).unwrap(), "Esc gives the keys back to the view");
+}
+
+#[gpui::test]
+fn esc_in_a_modal_input_closes_the_modal_and_esc_in_a_view_without_focus_goes_to_the_panes(cx: &mut TestAppContext) {
+    let shell = start(cx, "esc-modal");
+    let main = main_window(&shell, cx);
+    let view = open_service(&shell, cx, "hades", "proxyapi");
+    type_tag(main, cx, "lan-1");
+    cx.simulate_keystrokes(main, "ctrl-s");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 1, "unlock modal with its input focused");
+    cx.simulate_keystrokes(main, "escape");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 0, "Esc closes the modal");
+    let tag = cx.read(|cx| view.read(cx).tag.read(cx).focus_handle(cx));
+    assert!(cx.update_window(main, |_, window, _| tag.is_focused(window)).unwrap(), "focus back where it was, not taken by the view");
+    // The gallery has inputs but no focus handle of its own: Esc goes to the pane area.
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(devdeck_core::layout::ViewRef::new("demo/gallery"), l.main().focused).map(|_| ()))));
+    cx.run_until_parked();
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    let input = vcx.debug_bounds("empty-input").expect("gallery input");
+    vcx.simulate_click(input.center(), gpui::Modifiers::none());
+    vcx.simulate_keystrokes("escape");
+    let panes = vcx.read(|cx| deck.read(cx).layout().panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap().len());
+    vcx.simulate_keystrokes("ctrl-\\");
+    vcx.run_until_parked();
+    assert_eq!(vcx.read(|cx| deck.read(cx).layout().panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap().len()), panes + 1, "pane keys work");
 }

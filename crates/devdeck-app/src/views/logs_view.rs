@@ -7,7 +7,6 @@ use super::ViewCx;
 use crate::cluster::Cluster;
 use devdeck_core::cluster::Pod;
 use devdeck_core::runs::{Level, Output};
-use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{InputEvent, TextInput, label, theme, tip, toggle_button};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
@@ -43,7 +42,6 @@ fn shown(level: Level, min: MinLevel) -> bool {
 pub struct ServiceLogsView {
     pub env: String,
     pub name: String,
-    ctx: ViewCx,
     cluster: Entity<Cluster>,
     focus: FocusHandle,
     pub find: Entity<TextInput>,
@@ -77,20 +75,13 @@ impl ServiceLogsView {
                 }
             }),
         ];
-        if let Some(deck) = ctx.deck.upgrade() {
-            subs.push(cx.observe(&deck, |this, _, cx| this.visibility_changed(cx)));
-        }
+        subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
         cluster.update(cx, |c, cx| {
             c.deployments(&env, cx);
-        });
-        let me = cx.weak_entity();
-        cx.defer(move |cx| {
-            let _ = me.update(cx, |this, cx| this.visibility_changed(cx));
         });
         Self {
             env,
             name,
-            ctx,
             cluster,
             focus: cx.focus_handle(),
             find,
@@ -111,9 +102,7 @@ impl ServiceLogsView {
     }
 
     /// The fake feed runs only while the view is on screen.
-    fn visibility_changed(&mut self, cx: &mut Context<Self>) {
-        let addr = ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() }.to_ref();
-        let visible = self.ctx.deck.upgrade().is_some_and(|d| d.read(cx).is_visible(&addr));
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if visible && self.feed.is_none() {
             self.feed = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -307,6 +296,7 @@ impl Render for ServiceLogsView {
             .size_full()
             .flex()
             .flex_col()
+            .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
             .on_action(cx.listener(|this, _: &Find, window, cx| this.find.read(cx).focus_handle(cx).focus(window, cx)))
             .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(1, cx)))
             .on_action(cx.listener(|this, _: &PrevMatch, _, cx| this.step_match(-1, cx)))

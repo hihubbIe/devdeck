@@ -232,12 +232,55 @@ pub fn key_for(id: &str) -> String {
     by_id(id).and_then(ActionSpec::key_text).unwrap_or_default()
 }
 
+/// Each key context and the group of actions it brings into play. A new view type adds
+/// its context here, next to its actions.
+pub const CONTEXT_GROUPS: &[(&str, &str)] = &[
+    ("TextInput", "Text"),
+    ("Menu", "Menus"),
+    ("Modal", "Menus"),
+    ("Palette", "Palette"),
+    ("SendTo", "Send to"),
+    ("QuitGuard", "App"),
+    ("Settings", "App"),
+    ("Sidebar", "Sidebar"),
+    ("AppView", "App view"),
+    ("RunView", "Run output"),
+    ("ServiceView", "Service"),
+    ("LogsView", "Logs"),
+    ("MatrixView", "Branch matrix"),
+    ("Panes", "Panes"),
+];
+
+thread_local! {
+    /// Every entry's context, parsed once (GPUI predicates aren't thread-safe).
+    static CONTEXTS: Vec<Option<Rc<KeyBindingContextPredicate>>> = all()
+        .iter()
+        .map(|s| s.context.map(|c| Rc::new(KeyBindingContextPredicate::parse(c).unwrap_or_else(|e| panic!("{}: bad context {c}: {e}", s.id)))))
+        .collect();
+}
+
+/// The entries whose binding is enabled for this key context stack (GPUI's own test,
+/// `depth_of`), ordered by group: the deepest context's group first, app-wide last. A
+/// deeper binding on the same key can still shadow one of them (Esc in an input).
+pub fn applicable(stack: &[gpui::KeyContext]) -> Vec<&'static ActionSpec> {
+    let groups: Vec<&str> = stack
+        .iter()
+        .rev()
+        .flat_map(|c| CONTEXT_GROUPS.iter().filter(move |(k, _)| c.contains(k)).map(|(_, g)| *g))
+        .collect();
+    let rank = |g: &str| groups.iter().position(|x| *x == g).unwrap_or(if g == "App" { usize::MAX } else { usize::MAX - 1 });
+    let mut out: Vec<&'static ActionSpec> = CONTEXTS.with(|ctx| {
+        all().iter().zip(ctx.iter()).filter(|(_, p)| p.as_ref().is_none_or(|p| p.depth_of(stack).is_some())).map(|(s, _)| s).collect()
+    });
+    out.sort_by_key(|s| rank(s.group));
+    out
+}
+
 /// Binds every key of every action.
 pub fn bind(cx: &mut App) {
     let mut bindings = Vec::new();
-    for spec in all() {
-        let predicate: Option<Rc<KeyBindingContextPredicate>> =
-            spec.context.map(|c| Rc::new(KeyBindingContextPredicate::parse(c).unwrap_or_else(|e| panic!("{}: bad context {c}: {e}", spec.id))));
+    let contexts = CONTEXTS.with(|c| c.clone());
+    for (spec, predicate) in all().iter().zip(contexts) {
         for key in spec.keys {
             let b = KeyBinding::load(key, (spec.build)(), predicate.clone(), false, None, cx).unwrap_or_else(|e| panic!("{}: bad key {key}: {e:?}", spec.id));
             bindings.push(b);

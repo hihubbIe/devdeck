@@ -129,12 +129,12 @@ fn the_palette_finds_drills_runs_on_an_env_and_dispatches_actions(cx: &mut TestA
     assert_eq!(overlay(&shell, cx).1, 0);
     // An action runs where focus was (the panes).
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let panes = cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len());
+    let panes = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len());
     cx.simulate_keystrokes(main, "ctrl-k");
     cx.simulate_input(main, "split right");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len()), panes + 1);
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len()), panes + 1);
     // A disabled item says why and keeps the palette open.
     cx.simulate_keystrokes(main, "ctrl-k");
     cx.simulate_input(main, "remotedesktopapp up");
@@ -148,7 +148,7 @@ fn send_to_by_number_new_window_pane_and_cancel(cx: &mut TestAppContext) {
     let shell = start(cx, "send");
     let main = main_window(&shell, cx);
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let find = |cx: &TestAppContext, v: &str| cx.read(|cx| deck.read(cx).layout.find_view(&ViewRef::new(v)).map(|(p, _)| p));
+    let find = |cx: &TestAppContext, v: &str| cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new(v)).map(|(p, _)| p));
     let deployments = find(cx, "demo/deployments").unwrap();
     // Focused pane: logs (number 1). Send its active tab to pane 2 (deployments).
     cx.simulate_keystrokes(main, "ctrl-shift-s");
@@ -172,7 +172,7 @@ fn send_to_by_number_new_window_pane_and_cancel(cx: &mut TestAppContext) {
     // A whole pane, by clicking a badge.
     let notes = find(cx, "demo/notes").unwrap();
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.focus(notes))));
-    let main_focus = cx.read(|cx| deck.read(cx).layout.main().focused);
+    let main_focus = cx.read(|cx| deck.read(cx).layout().main().focused);
     assert_eq!(main_focus, notes);
     cx.simulate_keystrokes(main, "ctrl-alt-shift-s");
     cx.run_until_parked();
@@ -180,8 +180,8 @@ fn send_to_by_number_new_window_pane_and_cancel(cx: &mut TestAppContext) {
     let badge = vcx.debug_bounds("send-target-1").expect("pick targets drawn");
     vcx.simulate_mouse_down(badge.center(), MouseButton::Left, Modifiers::none());
     vcx.run_until_parked();
-    assert!(vcx.read(|cx| deck.read(cx).layout.pane(notes).is_err()), "the pane moved out whole");
-    assert!(vcx.read(|cx| deck.read(cx).layout.find_view(&ViewRef::new("demo/notes")).is_some()), "and its tab is still open");
+    assert!(vcx.read(|cx| deck.read(cx).layout().pane(notes).is_err()), "the pane moved out whole");
+    assert!(vcx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/notes")).is_some()), "and its tab is still open");
 }
 
 #[gpui::test]
@@ -240,11 +240,11 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     // Change the live layout, then switch back to default from the Layouts list.
     cx.simulate_keystrokes(main, "ctrl-w");
     cx.run_until_parked();
-    let fewer = cx.read(|cx| deck.read(cx).layout.views().len());
+    let fewer = cx.read(|cx| deck.read(cx).layout().views().len());
     cx.simulate_keystrokes(main, "ctrl-4 down enter");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| deck.read(cx).book.current.clone()), "default", "first row (alphabetical) is default");
-    assert_eq!(cx.read(|cx| deck.read(cx).layout.views().len()), fewer + 1, "default has the closed tab");
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().views().len()), fewer + 1, "default has the closed tab");
     // From the palette, back to triage.
     cx.simulate_keystrokes(main, "escape ctrl-k");
     cx.simulate_input(main, "layout triage");
@@ -252,8 +252,8 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| deck.read(cx).book.current.clone()), "triage");
     // Focus lands in the panes, so pane keys work right away.
-    let panes = cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len());
+    let panes = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len());
     cx.simulate_keystrokes(main, "ctrl-\\");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len()), panes + 1);
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len()), panes + 1);
 }

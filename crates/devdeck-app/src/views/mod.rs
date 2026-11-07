@@ -14,7 +14,7 @@ pub mod port_view;
 pub mod run_view;
 pub mod service_view;
 
-use crate::deck::Deck;
+use crate::deck::{Deck, DeckEvent};
 use crate::services::Services;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::runs::RunState;
@@ -27,25 +27,48 @@ use gpui::{
 
 pub use demo::LogsView;
 
-/// What a view knows about its workspace.
+/// What a view knows about its workspace and itself.
 #[derive(Clone)]
 pub struct ViewCx {
     pub services: Entity<Services>,
     /// The deck the view lives in (to open other views next to it).
     pub deck: WeakEntity<Deck>,
+    /// The address the view was built for.
+    pub view: ViewRef,
 }
 
 impl ViewCx {
+    /// Calls `f(view, true)` when the view comes on screen and `f(view, false)` when it
+    /// leaves (another tab in front, pane collapsed or covered, workspace hidden, window
+    /// closed). Only changes are reported; the first one comes once the view is shown.
+    pub fn on_visibility<V: 'static>(&self, cx: &mut gpui::Context<V>, f: impl Fn(&mut V, bool, &mut gpui::Context<V>) + 'static) -> Option<gpui::Subscription> {
+        let deck = self.deck.upgrade()?;
+        let me = self.view.clone();
+        Some(cx.subscribe(&deck, move |this, _, e: &DeckEvent, cx| {
+            let DeckEvent::Visibility { shown, hidden } = e;
+            if shown.contains(&me) {
+                f(this, true, cx);
+            } else if hidden.contains(&me) {
+                f(this, false, cx);
+            }
+        }))
+    }
+
     /// Opens (or activates) a view in the main window's focused pane.
     pub fn open(&self, addr: ViewAddr, cx: &mut App) {
-        if let Some(deck) = self.deck.upgrade() {
-            deck.update(cx, |d, cx| {
-                d.apply(cx, |l| {
-                    let p = l.main().focused;
-                    l.open(addr.to_ref(), p).map(|_| ())
-                });
+        open_in(&self.deck, addr, cx);
+    }
+}
+
+/// Opens (or activates) a view in a deck's main window, focused pane.
+pub fn open_in(deck: &WeakEntity<Deck>, addr: ViewAddr, cx: &mut App) {
+    if let Some(deck) = deck.upgrade() {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let p = l.main().focused;
+                l.open(addr.to_ref(), p).map(|_| ())
             });
-        }
+        });
     }
 }
 
@@ -64,7 +87,7 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, cx: &mut App) -> Built {
     let addr = ViewAddr::parse(r);
     let message = |text: String, cx: &mut App| Built { view: cx.new(|_| Message(text.into())).into(), focus: None };
     match (addr, ctx) {
-        (ViewAddr::Other(_), _) => Built { view: demo::build(r, cx), focus: None },
+        (ViewAddr::Other(_), ctx) => demo::build(r, ctx, cx),
         (_, None) => message("This view needs a workspace.".into(), cx),
         (ViewAddr::App { app }, Some(ctx)) => {
             if ctx.services.read(cx).catalog.app(&app).is_none() {
@@ -133,17 +156,6 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Matrix => "branch matrix".into(),
         ViewAddr::Port { port } => format!(":{port}"),
         ViewAddr::Other(_) => demo::title(r),
-    }
-}
-
-/// Toggles follow on any view that follows its output (alt+f).
-pub fn toggle_follow(view: &AnyView, cx: &mut App) {
-    if let Ok(v) = view.clone().downcast::<LogsView>() {
-        v.update(cx, |v, cx| v.toggle_follow(cx));
-    } else if let Ok(v) = view.clone().downcast::<run_view::RunView>() {
-        v.update(cx, |v, cx| v.toggle_follow(cx));
-    } else if let Ok(v) = view.clone().downcast::<logs_view::ServiceLogsView>() {
-        v.update(cx, |v, cx| v.toggle_follow(cx));
     }
 }
 

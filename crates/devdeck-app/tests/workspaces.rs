@@ -86,13 +86,13 @@ fn switching_keeps_each_workspace_alive(cx: &mut TestAppContext) {
     let shell = demo(cx, "alive");
     let work = deck(&shell, cx, "work");
     let personal = deck(&shell, cx, "personal");
-    let (work_layout, work_views) = cx.read(|cx| (work.read(cx).layout.clone(), work.read(cx).live_views()));
+    let (work_layout, work_views) = cx.read(|cx| (work.read(cx).layout().clone(), work.read(cx).live_views()));
     switch(&shell, cx, "personal");
     assert!(cx.read(|cx| personal.read(cx).is_active() && !work.read(cx).is_active()));
     assert_eq!(cx.read(|cx| work.read(cx).live_views()), work_views, "hidden workspace keeps its views");
     assert!(cx.read(|cx| shell.read(cx).running(cx)).iter().any(|(ws, _)| ws == "work"), "and keeps running");
     switch(&shell, cx, "work");
-    assert_eq!(cx.read(|cx| work.read(cx).layout.clone()), work_layout);
+    assert_eq!(cx.read(|cx| work.read(cx).layout().clone()), work_layout);
     assert_eq!(cx.windows().len(), 1);
 }
 
@@ -104,7 +104,7 @@ fn detached_windows_follow_their_workspace(cx: &mut TestAppContext) {
     assert_eq!(cx.windows().len(), 2);
     switch(&shell, cx, "personal");
     assert_eq!(cx.windows().len(), 1, "work's detached window closes while hidden");
-    assert_eq!(cx.read(|cx| work.read(cx).layout.windows.len()), 2, "but stays in the model");
+    assert_eq!(cx.read(|cx| work.read(cx).layout().windows.len()), 2, "but stays in the model");
     switch(&shell, cx, "work");
     assert_eq!(cx.windows().len(), 2, "and comes back");
     // Quick A → B → A without letting deferred work run in between.
@@ -210,7 +210,7 @@ fn layout_is_saved_once_after_a_burst(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| work.read(cx).saves), 1, "one write for the burst");
     let saved = StateStore::new(dir.clone()).load_layout("work");
-    assert_eq!(saved, Loaded::Ok(cx.read(|cx| work.read(cx).layout.clone())));
+    assert_eq!(saved, Loaded::Ok(cx.read(|cx| work.read(cx).layout().clone())));
     // A pending change is written on quit.
     cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&ViewRef::new("demo/a")))));
     cx.update(|cx| shell.update(cx, |s, cx| s.flush(cx)));
@@ -237,9 +237,9 @@ fn saved_state_is_restored_and_broken_files_fall_back(cx: &mut TestAppContext) {
     let shell = start(cx, devdeck_app::demo_workspaces(), Some(store), "restore");
     assert_eq!(cx.read(|cx| shell.read(cx).active_name().to_string()), "personal", "active workspace restored");
     let work = deck(&shell, cx, "work");
-    assert_eq!(cx.read(|cx| work.read(cx).layout.clone()), custom_work(), "saved layout restored");
+    assert_eq!(cx.read(|cx| work.read(cx).layout().clone()), custom_work(), "saved layout restored");
     let personal = deck(&shell, cx, "personal");
-    assert_eq!(cx.read(|cx| personal.read(cx).layout.clone()), devdeck_app::personal_layout(), "broken file → default");
+    assert_eq!(cx.read(|cx| personal.read(cx).layout().clone()), devdeck_app::personal_layout(), "broken file → default");
     assert!(dir.join("workspaces/personal/layout.json.bad").exists(), "broken file kept aside");
     let toasts = cx.update(|cx| toasts(cx).read(cx).queue.items.len());
     assert_eq!(toasts, 1, "the problem is reported");
@@ -296,7 +296,7 @@ fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
     // Switch to triage: its tabs come back, the kept notes tab follows.
     cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("Triage", cx))).unwrap();
     cx.run_until_parked();
-    let l = cx.read(|cx| work.read(cx).layout.clone());
+    let l = cx.read(|cx| work.read(cx).layout().clone());
     assert!(l.find_view(&logs).is_some() && l.find_view(&ViewRef::new("demo/notes")).is_some());
     assert!(!cx.read(|cx| work.read(cx).view(&logs).unwrap().entity_id() == logs_view.entity_id()), "logs closed in between: a new instance");
     // Written at once: both files agree.
@@ -321,7 +321,7 @@ fn a_switch_replaces_detached_windows_even_with_colliding_ids(cx: &mut TestAppCo
     let work = deck(&shell, cx, "work");
     // "a": notes detached. "b": long detached (same window id in both layouts).
     detach_notes(&work, cx);
-    let wa = cx.read(|cx| work.read(cx).layout.windows[1].id);
+    let wa = cx.read(|cx| work.read(cx).layout().windows[1].id);
     cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("a", cx))).unwrap();
     // Save as "b" (a copy, now current), then change b.
     cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
@@ -337,13 +337,13 @@ fn a_switch_replaces_detached_windows_even_with_colliding_ids(cx: &mut TestAppCo
         })
     });
     cx.run_until_parked();
-    let wb = cx.read(|cx| work.read(cx).layout.windows[1].id);
+    let wb = cx.read(|cx| work.read(cx).layout().windows[1].id);
     assert_eq!(wa, wb, "the two layouts use the same detached window id");
     cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("a", cx))).unwrap();
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 2);
     let detached_view = cx.read(|cx| {
-        let l = &work.read(cx).layout;
+        let l = &work.read(cx).layout();
         l.pane(l.windows[1].focused).unwrap().active_view().cloned()
     });
     assert_eq!(detached_view, Some(ViewRef::new("demo/notes")), "a's detached window shows a's tab");

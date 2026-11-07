@@ -18,6 +18,7 @@ pub mod settings_view;
 pub mod shell;
 pub mod sidebar;
 pub mod stats;
+pub mod stress;
 pub mod views;
 pub mod window_view;
 

@@ -117,6 +117,8 @@ struct Frame<'a> {
     layout: &'a Layout,
     /// Send to badges: pane → (number, can take the pick).
     numbers: &'a HashMap<PaneId, (usize, bool)>,
+    /// Where Esc in an input of a pane's view sends focus (the view, else the panes).
+    view_focus: &'a HashMap<PaneId, FocusHandle>,
     views: &'a HashMap<PaneId, AnyView>,
     window: WindowId,
     deck: &'a Entity<Deck>,
@@ -129,7 +131,12 @@ impl WindowView {
     pub fn main(shell: Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let deck = shell.read(cx).active_deck();
         let mut observe = vec![
-            cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify()),
+            // Settings cover the panes: their views are off screen meanwhile.
+            cx.observe(&app_settings::settings(cx), |this, _, cx| {
+                let open = app_settings::is_open(cx);
+                this.deck.update(cx, |d, cx| d.set_covered(open, cx));
+                cx.notify();
+            }),
             cx.observe_in(&shell, window, |this, shell, window, cx| this.follow_shell(&shell, window, cx)),
         ];
         let size_shell = shell.downgrade();
@@ -209,17 +216,27 @@ impl WindowView {
     /// When the focused pane or its active tab changed while focus is in the pane area,
     /// gives focus to that view (if it takes keys) so its keys work without a click.
     fn sync_view_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.focused_pane(cx).map(|p| (p, self.deck.read(cx).layout.pane(p).ok().and_then(|p| p.active_view().cloned())));
+        let target = self.focused_pane(cx).map(|p| (p, self.deck.read(cx).layout().pane(p).ok().and_then(|p| p.active_view().cloned())));
         if target == self.view_target {
             return;
         }
         self.view_target = target.clone();
-        let Some((pane, _)) = target else { return };
-        // Only when focus is in the pane area, or nowhere (its view just closed).
-        if !self.panes_focus.contains_focused(window, cx) && window.focused(cx).is_some() {
+        if target.is_none() {
             return;
         }
-        match self.deck.read(cx).view_focus(pane) {
+        // Only when focus is in the pane area, or not in this window at all (its view
+        // closed or moved to another window); never away from the sidebar or Settings.
+        if !self.panes_focus.contains_focused(window, cx) && self.focus.contains_focused(window, cx) {
+            return;
+        }
+        self.focus_panes(window, cx);
+    }
+
+    /// Gives the keys to the pane area: the focused pane's view when it takes keys (so its
+    /// own keys work), else the pane area itself. Every "back to the panes" goes here.
+    fn focus_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.focused_pane(cx);
+        match pane.and_then(|p| self.deck.read(cx).view_focus(p)) {
             Some(h) => h.focus(window, cx),
             None => self.panes_focus.focus(window, cx),
         }
@@ -240,6 +257,8 @@ impl WindowView {
                 self.remembered.insert(self.deck.entity_id(), f.downgrade());
             }
             self.deck_sub = Self::observe_deck(&deck, window, cx);
+            let open = app_settings::is_open(cx);
+            deck.update(cx, |d, cx| d.set_covered(open, cx));
             self.deck = deck;
             self.view_target = None;
             let sidebar = shell.read(cx).active_sidebar();
@@ -248,7 +267,7 @@ impl WindowView {
             if !app_settings::is_open(cx) {
                 match self.remembered.get(&self.deck.entity_id()).and_then(WeakFocusHandle::upgrade) {
                     Some(h) => h.focus(window, cx),
-                    None => self.panes_focus.focus(window, cx),
+                    None => self.focus_panes(window, cx),
                 }
             }
         }
@@ -269,7 +288,7 @@ impl WindowView {
         } else {
             match self.before_settings.take().and_then(|h| h.upgrade()) {
                 Some(h) => h.focus(window, cx),
-                None => self.panes_focus.focus(window, cx),
+                None => self.focus_panes(window, cx),
             }
         }
         cx.notify();
@@ -281,7 +300,7 @@ impl WindowView {
         let source = if pane {
             SendSource::Pane(p)
         } else {
-            match self.deck.read(cx).layout.pane(p).ok().and_then(|p| p.active_view().cloned()) {
+            match self.deck.read(cx).layout().pane(p).ok().and_then(|p| p.active_view().cloned()) {
                 Some(v) => SendSource::Tab(v),
                 None => return,
             }
@@ -307,13 +326,13 @@ impl WindowView {
         let (rect, active) = {
             let d = self.deck.read(cx);
             let size = self.body_size(window, &t, cx);
-            let rect = d.layout.pane_rects(self.id, size, f32::from(t.tab_h)).ok().and_then(|r| r.into_iter().find(|(q, _)| *q == p)).map(|(_, r)| r);
-            (rect, d.layout.pane(p).map(|p| p.active).unwrap_or(0))
+            let rect = d.layout().pane_rects(self.id, size, f32::from(t.tab_h)).ok().and_then(|r| r.into_iter().find(|(q, _)| *q == p)).map(|(_, r)| r);
+            (rect, d.layout().pane(p).map(|p| p.active).unwrap_or(0))
         };
         let origin = self.panes_origin.get();
         let at = rect.map_or(origin, |r| point(origin.x + logical(r.x) + t.size(24.), origin.y + logical(r.y) + t.tab_h));
         let d = self.deck.read(cx);
-        let items = tab_menu(&self.deck, p, active, self.id, &d.layout, &d.book.keep);
+        let items = tab_menu(&self.deck, p, active, self.id, d.layout(), &d.book.keep);
         open_menu(at, items, window, cx);
     }
 
@@ -361,7 +380,7 @@ impl WindowView {
         if visible {
             sidebar.read(cx).list_focus.clone().focus(window, cx);
         } else if had_focus {
-            self.panes_focus.focus(window, cx);
+            self.focus_panes(window, cx);
         }
     }
 
@@ -387,7 +406,7 @@ impl WindowView {
     }
 
     fn focused_pane(&self, cx: &App) -> Option<PaneId> {
-        self.deck.read(cx).layout.window(self.id).ok().map(|w| w.focused)
+        self.deck.read(cx).layout().window(self.id).ok().map(|w| w.focused)
     }
 
     /// The pane area's size: the window body minus the activity bar and sidebar.
@@ -474,12 +493,12 @@ impl Render for WindowView {
         let (layout, views, live, last_error) = {
             let d = self.deck.read(cx);
             let views: HashMap<PaneId, AnyView> = d
-                .layout
+                .layout()
                 .panes
                 .iter()
                 .filter_map(|(id, p)| p.active_view().and_then(|r| d.view(r)).map(|v| (*id, v)))
                 .collect();
-            (d.layout.clone(), views, d.live_views(), d.last_error.clone())
+            (d.layout().clone(), views, d.live_views(), d.last_error.clone())
         };
         let Ok(w) = layout.window(self.id) else {
             return div().size_full().bg(t.bg).into_any_element();
@@ -492,7 +511,11 @@ impl Render for WindowView {
                 HashMap::new()
             }
         };
-        let frame = Frame { layout: &layout, numbers: &numbers, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
+        let view_focus: HashMap<PaneId, FocusHandle> = {
+            let d = self.deck.read(cx);
+            layout.panes.keys().map(|p| (*p, d.view_focus(*p).unwrap_or_else(|| self.panes_focus.clone()))).collect()
+        };
+        let frame = Frame { layout: &layout, numbers: &numbers, view_focus: &view_focus, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
         let deck_id = self.deck.entity_id();
         let workspace = self.deck.read(cx).workspace.clone();
         let shell = self.shell.as_ref().and_then(WeakEntity::upgrade);
@@ -504,8 +527,8 @@ impl Render for WindowView {
         let _ = live;
         // The focus path comes from the last drawn frame; there is none before the first.
         // The first render is part of drawing the first frame; every later one has a frame.
-        // Recomputed when focus moved (or settings opened): it walks the whole
-        // registry, too much for every frame of a streaming view.
+        // Derived from the focus path only, so recomputed when focus moves (or Settings
+        // open), not on every frame of a streaming view.
         let focus_key = (window.focused(cx), settings_open);
         let hints = if !self.drawn {
             Vec::new()
@@ -708,14 +731,6 @@ impl Render for WindowView {
             .on_action(cx.listener(|this, _: &SendPane, w, cx| this.start_send(true, w, cx)))
             .on_action(cx.listener(|this, _: &GrowPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, 0.05))))
             .on_action(cx.listener(|this, _: &ShrinkPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, -0.05))))
-            .on_action(cx.listener(|this, _: &ToggleFollow, _, cx| {
-                let Some(p) = this.focused_pane(cx) else { return };
-                let deck = this.deck.read(cx);
-                let view = deck.layout.pane(p).ok().and_then(|p| p.active_view().cloned()).and_then(|r| deck.view(&r));
-                if let Some(v) = view {
-                    views::toggle_follow(&v, cx);
-                }
-            }))
             // Per-workspace id, so element state never carries over between workspaces.
             .child(div().id(("ws", deck_id.as_u64())).size_full().min_w_0().min_h_0().flex().child(tree))
             .child({
@@ -783,7 +798,7 @@ impl Render for WindowView {
                     }))
                     .on_action(cx.listener(|this, _: &OpenEnvMenu, w, cx| this.open_env_menu(w, cx)))
                     // Esc with an empty filter: back to the panes.
-                    .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.panes_focus.focus(w, cx)))
+                    .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.focus_panes(w, cx)))
             })
             .when(!settings_open, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
             .child(title_bar)
@@ -820,46 +835,15 @@ impl Render for WindowView {
 /// handler on the focus path and a key binding matching the context there), the
 /// focused thing's own keys first, the app's palette and cheat sheet last.
 pub fn hint_bar_items(window: &Window, cx: &App) -> Vec<(String, &'static str)> {
-    let stack = window.context_stack();
-    // Group order: deepest key context first.
-    let groups: Vec<&str> = stack
-        .iter()
-        .rev()
-        .flat_map(|c| {
-            ["TextInput", "Menu", "Modal", "QuitGuard", "Sidebar", "AppView", "RunView", "ServiceView", "LogsView", "MatrixView", "Settings", "Panes"]
-                .into_iter()
-                .filter(move |k| c.contains(k))
-        })
-        .map(|k| match k {
-            "TextInput" => "Text",
-            "Menu" | "Modal" => "Menus",
-            "Sidebar" => "Sidebar",
-            "AppView" => "App view",
-            "RunView" => "Run output",
-            "ServiceView" => "Service",
-            "LogsView" => "Logs",
-            "MatrixView" => "Branch matrix",
-            "Panes" => "Panes",
-            _ => "App",
-        })
-        .collect();
-    let mut out: Vec<(usize, String, &'static str)> = Vec::new();
-    for spec in registry::all().iter().filter(|s| s.hint) {
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for spec in registry::applicable(&window.context_stack()).into_iter().filter(|s| s.hint) {
         let action = (spec.build)();
-        // A handler on the focus path, and the entry's context true there.
-        // Exactly as GPUI enables a binding: the predicate holds at some depth.
-        let applies = spec.context.is_none_or(|c| gpui::KeyBindingContextPredicate::parse(c).is_ok_and(|p| p.depth_of(&stack).is_some()));
-        if !applies || !window.is_action_available(action.as_ref(), cx) {
+        if out.iter().any(|(_, l)| *l == spec.label) || !window.is_action_available(action.as_ref(), cx) {
             continue;
         }
-        if out.iter().any(|(_, _, l)| *l == spec.label) {
-            continue;
-        }
-        let rank = groups.iter().position(|g| *g == spec.group).unwrap_or(if spec.group == "App" { usize::MAX } else { usize::MAX - 1 });
-        out.push((rank, spec.key_text().unwrap_or_default(), spec.label));
+        out.push((spec.key_text().unwrap_or_default(), spec.label));
     }
-    out.sort_by_key(|(rank, _, _)| *rank);
-    out.into_iter().map(|(_, k, l)| (k, l)).collect()
+    out
 }
 
 /// The activity bar: one button per activity the workspace offers. Clicking the shown
@@ -1196,7 +1180,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         .on_mouse_down(MouseButton::Right, {
             let deck = f.deck.clone();
             move |e, window, cx| {
-                let layout = deck.read(cx).layout.clone();
+                let layout = deck.read(cx).layout().clone();
                 open_menu(e.position, pane_menu(&deck, pane, &layout), window, cx);
             }
         })
@@ -1267,7 +1251,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     move |e, window, cx| {
                         cx.stop_propagation();
                         let d = deck.read(cx);
-                        let items = tab_menu(&deck, pane, i, window_id, &d.layout, &d.book.keep);
+                        let items = tab_menu(&deck, pane, i, window_id, d.layout(), &d.book.keep);
                         open_menu(e.position, items, window, cx);
                     }
                 })
@@ -1348,14 +1332,24 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         .min_h_0()
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            let needs = d_focus.read(cx).layout.window(window).is_ok_and(|w| w.focused != pane);
+            let needs = d_focus.read(cx).layout().window(window).is_ok_and(|w| w.focused != pane);
             if needs {
                 apply_on(&d_focus, cx, |l| l.focus(pane));
             }
         })
         .child(match f.views.get(&pane) {
-            // Each view is redrawn only when it changes (or on a theme/scale refresh).
-            Some(v) => div().size_full().child(v.clone().cached(StyleRefinement::default().size_full())).into_any_element(),
+            // Each view is redrawn only when it changes (or on a theme/scale refresh). Esc in
+            // an input inside it cancels the edit (the input's own handler runs first and
+            // lets it through), then gives the keys back to the view.
+            Some(v) => {
+                let back = f.view_focus.get(&pane).cloned();
+                div()
+                    .size_full()
+                    .key_context("View")
+                    .when_some(back, |d, back| d.on_action(move |_: &devdeck_ui::text_input::Cancel, window, cx| back.focus(window, cx)))
+                    .child(v.clone().cached(StyleRefinement::default().size_full()))
+                    .into_any_element()
+            }
             None => div()
                 .size_full()
                 .flex()

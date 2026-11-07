@@ -46,7 +46,7 @@ fn detach_opens_a_window_and_reattach_closes_it(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         deck.update(cx, |d, cx| {
-            let target = d.layout.main().focused;
+            let target = d.layout().main().focused;
             d.apply(cx, |l| l.attach(window, Drop::Into(target)));
         })
     });
@@ -116,7 +116,7 @@ fn closed_views_are_released(cx: &mut TestAppContext) {
 fn keyboard_shortcuts_reach_the_layout(cx: &mut TestAppContext) {
     let deck = setup(cx);
     let main = cx.windows()[0];
-    let panes = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len());
+    let panes = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len());
     assert_eq!(panes(cx), 3);
     // The focused pane starts as the logs pane, which has two tabs: split it.
     cx.simulate_keystrokes(main, "ctrl-\\");
@@ -125,7 +125,7 @@ fn keyboard_shortcuts_reach_the_layout(cx: &mut TestAppContext) {
     // Focus followed the moved tab into the new pane; detach it to a window.
     cx.simulate_keystrokes(main, "ctrl-shift-d");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).layout.windows.len()), 2, "ctrl-shift-d detaches");
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().windows.len()), 2, "ctrl-shift-d detaches");
     assert_eq!(cx.windows().len(), 2);
     assert_eq!(panes(cx), 3, "the emptied pane is removed");
 }
@@ -133,9 +133,126 @@ fn keyboard_shortcuts_reach_the_layout(cx: &mut TestAppContext) {
 #[gpui::test]
 fn invalid_operations_report_an_error_instead_of_changing_layout(cx: &mut TestAppContext) {
     let deck = setup(cx);
-    let before = cx.read(|cx| deck.read(cx).layout.clone());
+    let before = cx.read(|cx| deck.read(cx).layout().clone());
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.attach(MAIN_WINDOW, Drop::Into(l.main().focused)))));
-    let (after, error) = cx.read(|cx| (deck.read(cx).layout.clone(), deck.read(cx).last_error.clone()));
+    let (after, error) = cx.read(|cx| (deck.read(cx).layout().clone(), deck.read(cx).last_error.clone()));
     assert_eq!(after, before);
     assert!(error.is_some());
+}
+
+// ------------------------------------------------------------------ visibility (engine)
+
+use devdeck_app::deck::DeckEvent;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+type Log = Rc<RefCell<Vec<(String, bool)>>>;
+
+/// Records every visibility change the deck announces.
+fn watch(deck: &Entity<Deck>, cx: &mut TestAppContext) -> Log {
+    let log: Log = Rc::default();
+    let l = log.clone();
+    cx.update(|cx| {
+        cx.subscribe(deck, move |_, e: &DeckEvent, _| {
+            let DeckEvent::Visibility { shown, hidden } = e;
+            l.borrow_mut().extend(shown.iter().map(|r| (r.as_str().to_string(), true)));
+            l.borrow_mut().extend(hidden.iter().map(|r| (r.as_str().to_string(), false)));
+        })
+        .detach()
+    });
+    log
+}
+
+fn take(log: &Log, view: &str) -> Vec<bool> {
+    let mut l = log.borrow_mut();
+    let out = l.iter().filter(|(v, _)| v == view).map(|(_, s)| *s).collect();
+    l.retain(|(v, _)| v != view);
+    out
+}
+
+fn apply(deck: &Entity<Deck>, cx: &mut TestAppContext, op: impl FnOnce(&mut devdeck_core::layout::Layout) -> devdeck_core::layout::Result<()>) {
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, op)));
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn the_deck_announces_each_visibility_change_once(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let log = watch(&deck, cx);
+    let (logs_pane, _) = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/logs")).unwrap());
+    let long_index = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/long")).unwrap().1);
+    // Another tab in front.
+    apply(&deck, cx, |l| l.activate(logs_pane, long_index));
+    assert_eq!(take(&log, "demo/long"), [true]);
+    assert_eq!(take(&log, "demo/logs"), [false]);
+    // Collapsed and expanded.
+    apply(&deck, cx, |l| l.toggle_collapse(logs_pane));
+    apply(&deck, cx, |l| l.toggle_collapse(logs_pane));
+    assert_eq!(take(&log, "demo/long"), [false, true]);
+    // Another pane maximized hides this one, restoring shows it.
+    let (dep, _) = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/deployments")).unwrap());
+    apply(&deck, cx, |l| l.toggle_maximize(dep));
+    apply(&deck, cx, |l| l.toggle_maximize(dep));
+    assert_eq!(take(&log, "demo/long"), [false, true]);
+    assert!(take(&log, "demo/deployments").is_empty(), "the maximized pane stays shown");
+    assert_eq!(take(&log, "demo/notes"), [false, true], "the other panes too");
+    // Sent to another pane, active there: the same instance, still shown, no event.
+    let notes = ViewRef::new("demo/notes");
+    let instance = cx.read(|cx| deck.read(cx).view(&notes).unwrap().entity_id());
+    apply(&deck, cx, |l| l.send_tab(&ViewRef::new("demo/notes"), Some(logs_pane)));
+    assert_eq!(cx.read(|cx| deck.read(cx).view(&notes).unwrap().entity_id()), instance);
+    assert!(take(&log, "demo/notes").is_empty());
+    take(&log, "demo/long");
+    // Detached into its own window and re-attached.
+    let w = cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let (p, i) = l.find_view(&ViewRef::new("demo/notes")).unwrap();
+                l.detach(p, i)
+            })
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| deck.read(cx).is_visible(&notes)), "shown in its window once it is open");
+    cx.update(|cx| deck.update(cx, |d, cx| d.reattach(w.unwrap(), cx)));
+    cx.run_until_parked();
+    assert!(cx.read(|cx| deck.read(cx).is_visible(&notes)), "and back in the main window");
+    log.borrow_mut().clear();
+    // Covered by Settings, then shown again: one event each way per view.
+    cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(true, cx)));
+    assert_eq!(take(&log, "demo/deployments"), [false]);
+    cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(true, cx)));
+    assert!(take(&log, "demo/deployments").is_empty(), "no event without a change");
+    cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(false, cx)));
+    assert_eq!(take(&log, "demo/deployments"), [true]);
+    // The workspace hidden.
+    cx.update(|cx| deck.update(cx, |d, cx| d.set_active(false, cx)));
+    assert_eq!(take(&log, "demo/deployments"), [false]);
+    cx.update(|cx| deck.update(cx, |d, cx| d.set_active(true, cx)));
+    assert_eq!(take(&log, "demo/deployments"), [true]);
+    // Closed.
+    apply(&deck, cx, |l| l.close_view(&ViewRef::new("demo/deployments")));
+    assert_eq!(take(&log, "demo/deployments"), [false]);
+}
+
+#[gpui::test]
+fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let main = cx.windows()[0];
+    let deployments = ViewRef::new("demo/deployments");
+    cx.simulate_keystrokes(main, "ctrl-,");
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| deck.read(cx).is_visible(&deployments)), "Settings cover the panes");
+    cx.simulate_keystrokes(main, "escape");
+    cx.run_until_parked();
+    assert!(cx.read(|cx| deck.read(cx).is_visible(&deployments)));
+    // Layout b keeps deployments and drops notes; default has notes.
+    cx.update(|cx| deck.update(cx, |d, cx| d.toggle_keep(&deployments, cx)));
+    cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
+    apply(&deck, cx, |l| l.close_view(&ViewRef::new("demo/notes")));
+    let log = watch(&deck, cx);
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx))).unwrap();
+    cx.run_until_parked();
+    assert_eq!(take(&log, "demo/notes"), [true], "the other layout's tab comes on screen");
+    assert!(take(&log, "demo/deployments").is_empty(), "the kept view never left the screen");
 }

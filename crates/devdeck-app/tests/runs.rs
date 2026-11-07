@@ -80,7 +80,7 @@ fn app_view_keys_run_a_command_to_its_exit_code(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let run = ViewAddr::Run { app: "pagerendererservice".into(), cmd: "test".into() }.to_ref();
-    assert!(cx.read(|cx| deck.read(cx).layout.find_view(&run).is_some()));
+    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&run).is_some()));
 }
 
 #[gpui::test]
@@ -168,7 +168,7 @@ fn a_crash_in_a_hidden_workspace_names_it_and_leads_there(cx: &mut TestAppContex
     assert_eq!(cx.read(|cx| shell.read(cx).active), work, "View output shows the workspace");
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let run = ViewAddr::Run { app: "boardservice".into(), cmd: "run".into() }.to_ref();
-    assert!(cx.read(|cx| deck.read(cx).layout.find_view(&run).is_some()), "and opens the run");
+    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&run).is_some()), "and opens the run");
 }
 
 fn restored() -> Layout {
@@ -217,4 +217,24 @@ fn closed_run_and_app_views_are_released(cx: &mut TestAppContext) {
     }
     assert_eq!(cx.update(|cx| deck.update(cx, |d, _| d.leaked_views(3))), 0);
     let _ = cx.read(|cx| cx.windows().len());
+}
+
+#[gpui::test]
+fn follow_keys_reach_the_view_after_any_way_back_to_the_panes(cx: &mut TestAppContext) {
+    let shell = start(cx, "follow");
+    let main = main_window(&shell, cx);
+    open(&shell, cx, ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() });
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let r = ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() }.to_ref();
+    let view = cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<RunView>().unwrap());
+    assert!(cx.read(|cx| view.read(cx).follow));
+    // Into the sidebar and back with Esc: the run view has the keys again.
+    cx.simulate_keystrokes(main, "ctrl-1 escape alt-f");
+    cx.run_until_parked();
+    assert!(!cx.read(|cx| view.read(cx).follow), "alt+f toggled follow");
+    // The hint bar puts the run view's own keys first.
+    cx.update_window(main, |_, window, _| window.refresh()).unwrap();
+    cx.run_until_parked();
+    let hints = cx.update_window(main, |_, window, cx| devdeck_app::window_view::hint_bar_items(window, cx)).unwrap();
+    assert_eq!(hints.first().map(|(_, l)| *l), Some("run"), "{hints:?}");
 }

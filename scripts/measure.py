@@ -9,12 +9,17 @@ Scenarios
             DEVDECK_KUBE_CONTEXT, DEVDECK_KUBE_NAMESPACE in the environment)
   latency   X11 only: sends real key presses with xdotool and reads GPUI's
             input-to-frame histogram (needs the `profile` build)
-  leak      runs DEVDECK_STRESS cycles and prints memory every 500 cycles
+  leak      runs DEVDECK_STRESS cycles (default 1000) and prints memory every 250; the
+            verdict compares 500-1000 (keep going only if that is flat)
+  heapdiff  heaptrack on a 10- and a 30-cycle run (teardown skipped), prints what grows
+            per cycle by call site, deletes the recordings; needs a build with symbols:
+            CARGO_PROFILE_RELEASE_DEBUG=true CARGO_PROFILE_RELEASE_STRIP=false \
+              cargo build --release --target-dir target/profiling
 
 Options
   --x11            force X11 (unset WAYLAND_DISPLAY)
   --bin PATH       binary (default target/release/devdeck)
-  --cycles N       leak cycles (default 5000)
+  --cycles N       leak cycles (default 1000)
 """
 
 import argparse
@@ -168,14 +173,61 @@ def scenario_leak(args):
     if len(warm) >= 2:
         (c0, _, _, u0), (c1, _, _, u1) = warm[0], warm[-1]
         report("leak.uss_bytes_per_cycle_after_warmup", f"{(u1 - u0) * 1024 / (c1 - c0):.1f}")
+    if any("step failed" in l for l in open(args.log)):
+        report("leak.failed_steps", sum(1 for l in open(args.log) if "step failed" in l))
+
+
+def scenario_heapdiff(args):
+    """What grows per cycle, by call site: heaptrack on two run lengths past warm-up,
+    teardown skipped so everything alive counts, diffed."""
+    if not shutil.which("heaptrack"):
+        sys.exit("heaptrack is not installed")
+    out_dir = tempfile.mkdtemp(prefix="devdeck-heapdiff-")
+    TEMP_DIRS.append(out_dir)
+    files = {}
+    for n in (args.short, args.long):
+        env = isolated_env(dict(os.environ))
+        env.update({"DEVDECK_STRESS": str(n), "DEVDECK_STRESS_EXIT": "hard", "DEVDECK_STRESS_REPORT": str(n)})
+        if args.x11:
+            env.pop("WAYLAND_DISPLAY", None)
+        base = os.path.join(out_dir, f"heap{n}")
+        with open(args.log, "w") as log:
+            subprocess.run(["heaptrack", "-o", base, args.bin], env=env, stdout=log, stderr=subprocess.STDOUT, timeout=600)
+        files[n] = base + ".zst"
+    diff = subprocess.run(
+        ["heaptrack_print", "-f", files[args.long], "-d", files[args.short], "-p", "0", "-a", "0", "-T", "0", "-l", "1", "-n", "40", "-s", "1"],
+        capture_output=True, text=True,
+    ).stdout.splitlines()
+    cycles = args.long - args.short
+    groups = []
+    for i, line in enumerate(diff):
+        m = re.match(r"^(-?[\d.]+)([KMG]?)B? leaked over (\d+) calls from", line)
+        if not m:
+            continue
+        kb = float(m.group(1)) * {"": 1 / 1024, "K": 1, "M": 1024, "G": 1024 * 1024}[m.group(2)]
+        # Symbols are v0-mangled (heaptrack can't demangle them): name the place by the
+        # first source lines of our crates in the backtrace.
+        here = os.path.abspath("crates") + "/"
+        places = [f.strip().removeprefix("at ").replace(here, "") for f in diff[i + 1 : i + 80] if f.strip().startswith("at " + here)]
+        groups.append((kb, places[:3]))
+    total = sum(kb for kb, _ in groups if kb > 0)
+    report("heapdiff.cycles", f"{args.short} -> {args.long}")
+    report("heapdiff.growth_bytes_per_cycle", f"{total * 1024 / cycles:.0f}")
+    for kb, frames in sorted(groups, key=lambda g: -g[0])[:8]:
+        if kb <= 0:
+            break
+        where = " < ".join(frames) if frames else "(gpui or a library, no devdeck frame)"
+        print(f"  {kb * 1024 / cycles:8.0f} B/cycle  {where}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak"])
+    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak", "heapdiff"])
     ap.add_argument("--x11", action="store_true")
     ap.add_argument("--bin", default="target/release/devdeck")
-    ap.add_argument("--cycles", type=int, default=5000)
+    ap.add_argument("--cycles", type=int, default=1000)
+    ap.add_argument("--short", type=int, default=10)
+    ap.add_argument("--long", type=int, default=30)
     ap.add_argument("--keys", type=int, default=60)
     ap.add_argument("--idle", type=float, default=20.0)
     ap.add_argument("--log", default="target/measure.log")
@@ -187,6 +239,10 @@ def main():
         scenario_idle(args, label="kube")
     elif args.scenario == "latency":
         scenario_latency(args)
+    elif args.scenario == "heapdiff":
+        if args.bin == "target/release/devdeck":
+            args.bin = "target/profiling/release/devdeck"
+        scenario_heapdiff(args)
     else:
         scenario_leak(args)
     for d in TEMP_DIRS:

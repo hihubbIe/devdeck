@@ -117,7 +117,7 @@ fn list_keys_select_pin_and_open(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "enter enter");
     cx.run_until_parked();
     let view = ViewRef::new("app/visualizerservice");
-    let tabs = cx.read(|cx| deck.read(cx).layout.panes.values().flat_map(|p| p.tabs.iter()).filter(|r| **r == view).count());
+    let tabs = cx.read(|cx| deck.read(cx).layout().panes.values().flat_map(|p| p.tabs.iter()).filter(|r| **r == view).count());
     assert_eq!(tabs, 1, "opened once, then activated rather than duplicated");
     assert!(list_focused(&s, main, cx), "focus stays in the list");
     cx.simulate_keystrokes(main, "r");
@@ -138,7 +138,7 @@ fn filter_typing_never_triggers_row_keys(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "backspace enter");
     cx.run_until_parked();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    assert!(cx.read(|cx| deck.read(cx).layout.find_view(&ViewRef::new("app/proxyapi")).is_some()), "enter opens the match");
+    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("app/proxyapi")).is_some()), "enter opens the match");
     cx.simulate_keystrokes(main, "escape");
     assert_eq!(cx.read(|cx| s.read(cx).filter.read(cx).text().to_string()), "", "esc clears the filter");
     assert!(list_focused(&s, main, cx));
@@ -160,10 +160,10 @@ fn hiding_a_focused_sidebar_returns_focus_to_the_panes(cx: &mut TestAppContext) 
     cx.run_until_parked();
     assert!(!list_focused(&s, main, cx));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let panes = cx.read(|cx| deck.read(cx).layout.panes.len());
+    let panes = cx.read(|cx| deck.read(cx).layout().panes.len());
     cx.simulate_keystrokes(main, "ctrl-\\");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).layout.panes.len()), panes + 1, "pane keys work again");
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().panes.len()), panes + 1, "pane keys work again");
 }
 
 #[gpui::test]
@@ -218,9 +218,9 @@ fn pane_neighbours_ignore_the_sidebar_width(cx: &mut TestAppContext) {
     let shell = start(cx, None, "geometry");
     let main = main_window(&shell, cx);
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let focused = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout.main().focused);
-    let logs = cx.read(|cx| deck.read(cx).layout.find_view(&ViewRef::new("demo/logs")).unwrap().0);
-    let right = cx.read(|cx| deck.read(cx).layout.find_view(&ViewRef::new("demo/deployments")).unwrap().0);
+    let focused = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout().main().focused);
+    let logs = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/logs")).unwrap().0);
+    let right = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/deployments")).unwrap().0);
     for visible in [true, false] {
         let s = sidebar(&shell, cx);
         cx.update(|cx| s.update(cx, |s, cx| s.set_visible(visible, cx)));

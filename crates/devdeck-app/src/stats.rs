@@ -1,7 +1,7 @@
 //! Self-measurement used by `scripts/measure.sh` (R11.4).
 //!
 //! - `DEVDECK_STATS=<seconds>` prints a stats line on that interval.
-//! - `DEVDECK_STRESS=<cycles>` runs layout cycles to look for leaks, then quits.
+//! - `DEVDECK_STRESS=<cycles>` runs the leak run ([`crate::stress`]), then quits.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

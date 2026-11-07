@@ -5,7 +5,7 @@
 //!
 //! Metrics are sampled only while the view is visible (it holds a [`Sampling`] handle).
 //! Keys (`ServiceView`): ctrl+s save, u undo, l logs, t edit tag; Esc in the tag editor
-//! reverts it and returns the keys to the view.
+//! reverts it (the pane then gives the keys back to the view).
 
 use super::ViewCx;
 use crate::cluster::{Cluster, Sampling};
@@ -47,47 +47,26 @@ impl ServiceView {
             cx.observe(&cluster, |this, _, cx| this.cluster_changed(cx)),
             cx.subscribe(&tag, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit(_) => this.save(cx),
-                InputEvent::Cancel => {
-                    // Esc: revert the tag and give the keys back to the view (u, l, t).
-                    this.revert(cx);
-                    let focus = this.focus.clone();
-                    this.in_window(cx, move |window, cx| focus.focus(window, cx));
-                }
+                InputEvent::Cancel => this.revert(cx),
                 InputEvent::Changed(_) => cx.notify(),
             }),
         ];
-        if let Some(deck) = ctx.deck.upgrade() {
-            subs.push(cx.observe(&deck, |this, _, cx| this.visibility_changed(cx)));
-        }
+        subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
         cluster.update(cx, |c, cx| {
             c.deployments(&env, cx);
         });
         let mut this = Self { env, name, ctx, cluster, focus: cx.focus_handle(), tag, shown_tag: None, unlocked: false, sampling: None, window: None, _subs: subs };
         this.cluster_changed(cx);
-        // Built while the deck updates: check visibility once that update is over.
-        let me = cx.weak_entity();
-        cx.defer(move |cx| {
-            let _ = me.update(cx, |this, cx| this.visibility_changed(cx));
-        });
         this
-    }
-
-    fn addr(&self) -> ViewAddr {
-        ViewAddr::Svc { env: self.env.clone(), name: self.name.clone() }
     }
 
     pub fn is_sampling(&self) -> bool {
         self.sampling.is_some()
     }
 
-    /// Holds a sampling handle only while visible.
-    fn visibility_changed(&mut self, cx: &mut Context<Self>) {
-        let visible = self.ctx.deck.upgrade().is_some_and(|d| d.read(cx).is_visible(&self.addr().to_ref()));
-        match (visible, self.sampling.is_some()) {
-            (true, false) => self.sampling = Some(self.cluster.update(cx, |c, cx| c.sample(cx))),
-            (false, true) => self.sampling = None,
-            _ => {}
-        }
+    /// Holds a sampling handle only while on screen.
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.sampling = visible.then(|| self.cluster.update(cx, |c, cx| c.sample(cx)));
     }
 
     /// Keeps the editor on the deployed tag unless the user changed it.
