@@ -109,6 +109,14 @@ fn tiling(window: &Window) -> Tiling {
     }
 }
 
+/// The 1px frame a window draws itself (client-side decorations), so it stands out from
+/// a background of its own colour: brighter while the window is active; none when
+/// maximized or fullscreen (the screen is its frame), nor when the compositor draws one.
+fn frame_color(decorations: Decorations, maximized: bool, fullscreen: bool, active: bool, t: &Theme) -> Option<gpui::Hsla> {
+    let ours = matches!(decorations, Decorations::Client { .. });
+    (ours && !maximized && !fullscreen).then_some(if active { t.mute } else { t.line })
+}
+
 /// The workspace menu (title-bar button): alphabetical, current one checked.
 pub fn workspace_menu_items(shell: &Entity<Shell>, cx: &App) -> Vec<MenuItem> {
     let s = shell.read(cx);
@@ -187,10 +195,12 @@ impl WindowView {
         id: WindowId,
         shell: Option<WeakEntity<Shell>>,
         deck: Entity<Deck>,
-        observe: Vec<Subscription>,
+        mut observe: Vec<Subscription>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // The frame is brighter while the window is active.
+        observe.push(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
         let deck_sub = Self::observe_deck(&deck, window, cx);
         let focus = cx.focus_handle();
         let panes_focus = cx.focus_handle();
@@ -773,12 +783,14 @@ impl Render for WindowView {
 
         match window.window_decorations() {
             Decorations::Server => root.into_any_element(),
-            Decorations::Client { .. } => {
+            decorations @ Decorations::Client { .. } => {
                 let edge = t.window_edge;
+                let frame = frame_color(decorations, window.is_maximized(), window.is_fullscreen(), window.is_window_active(), &t);
                 div()
                 .id("csd")
                 .size_full()
                 .relative()
+                .when_some(frame, |d, color| d.border_1().border_color(color))
                 .capture_any_mouse_down(move |e, window, cx| {
                     // Left button only, like the compositor's own borders.
                     if e.button != MouseButton::Left {
@@ -1386,9 +1398,24 @@ fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity
 
 #[cfg(test)]
 mod tests {
-    use super::resize_edge;
+    use super::{frame_color, resize_edge};
+    use devdeck_ui::Theme;
     use devdeck_ui::logical as px;
-    use gpui::{ResizeEdge, Tiling, point, size};
+    use gpui::{Decorations, ResizeEdge, Tiling, point, size};
+
+    #[test]
+    fn the_frame_shows_unless_the_screen_or_the_compositor_frames_the_window() {
+        let t = Theme::devdeck_dark(1.0);
+        let floating = Decorations::Client { tiling: Tiling::default() };
+        let tiled = Decorations::Client { tiling: Tiling { left: true, top: true, bottom: true, right: false } };
+        assert_eq!(frame_color(floating, false, false, true, &t), Some(t.mute), "active: brighter");
+        assert_eq!(frame_color(floating, false, false, false, &t), Some(t.line));
+        assert_eq!(frame_color(tiled, false, false, true, &t), Some(t.mute), "tiled: framed too");
+        assert_eq!(frame_color(Decorations::Client { tiling: Tiling::tiled() }, true, false, true, &t), None, "maximized");
+        assert_eq!(frame_color(floating, false, true, true, &t), None, "fullscreen");
+        assert_eq!(frame_color(Decorations::Server, false, false, true, &t), None, "the compositor's frame");
+    }
+
 
     #[test]
     fn edges_are_a_thin_band_of_the_drawn_size() {
