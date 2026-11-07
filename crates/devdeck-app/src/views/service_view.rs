@@ -5,7 +5,7 @@
 //!
 //! Metrics are sampled only while the view is visible (it holds a [`Sampling`] handle).
 //! Keys (`ServiceView`): ctrl+s save, u undo, l logs, t edit tag; Esc in the tag editor
-//! reverts it.
+//! reverts it and returns the keys to the view.
 
 use super::ViewCx;
 use crate::cluster::{Cluster, Sampling};
@@ -47,7 +47,12 @@ impl ServiceView {
             cx.observe(&cluster, |this, _, cx| this.cluster_changed(cx)),
             cx.subscribe(&tag, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit(_) => this.save(cx),
-                InputEvent::Cancel => this.revert(cx),
+                InputEvent::Cancel => {
+                    // Esc: revert the tag and give the keys back to the view (u, l, t).
+                    this.revert(cx);
+                    let focus = this.focus.clone();
+                    this.in_window(cx, move |window, cx| focus.focus(window, cx));
+                }
                 InputEvent::Changed(_) => cx.notify(),
             }),
         ];

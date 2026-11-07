@@ -9,7 +9,7 @@ use devdeck_core::cluster::Rollout;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::overlay::layer_state;
-use gpui::{AnyWindowHandle, AppContext, Entity, TestAppContext};
+use gpui::{AnyWindowHandle, Entity, TestAppContext};
 use std::time::Duration;
 
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
@@ -106,10 +106,8 @@ fn broken_tag_fails_and_undo_restores(cx: &mut TestAppContext) {
     assert!(reason.starts_with("ImagePullBackOff"));
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().any(|p| p.tag == "lan-broken" && !p.ready)), "a pod stuck pulling");
     assert_eq!(cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag.clone()), tag, "still on the old tag");
-    // Focus back on the view (the editor has it), then u.
-    let focus = cx.read(|cx| gpui::Focusable::focus_handle(view.read(cx), cx));
-    cx.update_window(main, |_, window, cx| focus.focus(window, cx)).unwrap();
-    cx.simulate_keystrokes(main, "u");
+    // Esc leaves the editor (and reverts it), then u undoes.
+    cx.simulate_keystrokes(main, "escape u");
     cx.run_until_parked();
     assert!(cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").is_none()), "undo clears the failure");
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().all(|p| p.tag == tag)));
