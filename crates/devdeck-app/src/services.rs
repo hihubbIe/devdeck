@@ -69,15 +69,17 @@ impl Services {
 
     /// A workspace from its config: its apps found in its folders, real runs, no cluster
     /// (M3). Tools come from `environment` and follow it.
-    pub fn from_config(config: WorkspaceConfig, env: Option<String>, environment: Entity<Environment>, cx: &mut App) -> Entity<Services> {
+    /// `state_dir` holds what runs leave behind (started process groups, ports seen);
+    /// `None` keeps nothing (tests).
+    pub fn from_config(config: WorkspaceConfig, env: Option<String>, environment: Entity<Environment>, state_dir: Option<PathBuf>, cx: &mut App) -> Entity<Services> {
         let tools = environment.read(cx).tools();
         let (catalog, problems, watch) = discover(&config, tools);
         let catalog = Rc::new(catalog);
         let env = catalog.pick_env(env);
-        let log = Some(devdeck_core::process::GroupLog::new(&devdeck_core::state::default_state_dir()));
+        let log = state_dir.as_deref().map(devdeck_core::process::GroupLog::new);
         let driver = Rc::new(crate::pty_driver::PtyDriver { env: environment.clone(), log });
         let runner = cx.new(|_| Runner::new(config.id.clone(), catalog.clone(), driver));
-        let ports = Ports::new(&config.id, runner.clone(), Some(devdeck_core::state::default_state_dir()), cx);
+        let ports = Ports::new(&config.id, runner.clone(), state_dir, cx);
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
             cx.observe(&ports, |_, _, cx| cx.notify()).detach();

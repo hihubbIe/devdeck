@@ -131,7 +131,10 @@ impl Shell {
                     _ => SidebarState::default(),
                 };
                 let services = match spec.config.clone() {
-                    Some(c) => Services::from_config(c, sidebar_state.env.clone(), crate::environment::environment(cx), cx),
+                    Some(c) => {
+                        let env = crate::environment::environment(cx);
+                        Services::from_config(c, sidebar_state.env.clone(), env, store.as_ref().map(|s| s.dir.clone()), cx)
+                    }
                     None => Services::demo(&spec.id, &spec.name, sidebar_state.env.clone(), cx),
                 };
                 let deck_store = store.clone();

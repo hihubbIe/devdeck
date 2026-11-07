@@ -66,11 +66,7 @@ impl AppView {
             let s = self.ctx.services.read(cx);
             (s.runner.clone(), s.env.clone())
         };
-        let key = self.key(cmd);
-        if let Err(why) = runner.update(cx, |r, cx| r.start(&key, env, cx)) {
-            let text = format!("{}: {why}", runner.read(cx).title(&key));
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
-        }
+        crate::port_scan::start_or_toast(&runner, &self.key(cmd), env, cx);
     }
 
     pub fn stop(&mut self, cmd: &str, cx: &mut Context<Self>) {

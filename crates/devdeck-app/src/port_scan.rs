@@ -342,15 +342,7 @@ fn confirm_stop(port: u16, pid: u32, command: String, window: &mut Window, cx: &
 /// private) and this crate doesn't depend on rustix: until core offers one, `kill -TERM`
 /// does it. Never devdeck itself, init or a pid 0.
 fn terminate(pid: u32) -> Result<(), String> {
-    if pid <= 1 || pid == std::process::id() {
-        return Err(format!("won't stop pid {pid}"));
-    }
-    let status = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).stderr(std::process::Stdio::null()).status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(_) => Err(format!("couldn't stop pid {pid}")),
-        Err(e) => Err(format!("couldn't stop pid {pid}: {e}")),
-    }
+    devdeck_core::process::terminate(pid)
 }
 
 /// "Stop node (pid 7712)?" with its command line; Enter stops, Esc cancels.

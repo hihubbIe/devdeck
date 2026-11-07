@@ -537,6 +537,13 @@ impl GroupLog {
     }
 }
 
+/// Asks one process to end (SIGTERM): a port holder the user chose to stop. Never pid 0
+/// or 1, nor devdeck itself.
+pub fn terminate(pid: u32) -> Result<(), String> {
+    let p = ours(pid).ok_or_else(|| format!("won't stop pid {pid}"))?;
+    rustix::process::kill_process(p, Signal::TERM).map_err(|e| format!("couldn't stop pid {pid}: {e}"))
+}
+
 /// Kills these process groups and their escaped descendants (SIGKILL), now. Reads `/proc`
 /// and allocates: call it from a thread (signal-hook's iterator), not a signal handler.
 pub fn kill_all(pids: &[u32]) {

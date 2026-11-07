@@ -202,8 +202,11 @@ impl RunView {
             (s.runner.clone(), s.env.clone())
         };
         let key = self.key.clone();
+        if what == "run" {
+            crate::port_scan::start_or_toast(&runner, &key, env, cx);
+            return;
+        }
         let result = runner.update(cx, |r, cx| match what {
-            "run" => r.start(&key, env, cx),
             "restart" => r.restart(&key, env, cx),
             _ => {
                 r.stop(&key, cx);

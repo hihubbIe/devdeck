@@ -301,11 +301,7 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
                 let s = services.read(cx);
                 (s.runner.clone(), env_override.or(s.env.clone()))
             };
-            let key = RunKey::new(&app, &cmd);
-            if let Err(why) = runner.update(cx, |r, cx| r.start(&key, env, cx)) {
-                let text = format!("{}: {why}", runner.read(cx).title(&key));
-                toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
-            }
+            crate::port_scan::start_or_toast(&runner, &RunKey::new(&app, &cmd), env, cx);
         }
     }
 }
