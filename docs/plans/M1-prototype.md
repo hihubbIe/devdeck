@@ -302,3 +302,50 @@ debounced save, restore, broken-file fallback, overlay layers freed). Snapshots
 40–44 (work, personal, workspace menu, quit guard at 100 % and 150 %) and 08
 (detached) checked. The stress run now switches workspaces every 25 cycles; it runs
 with the M1 measurements at the end of the milestone, not per step.
+
+## Step 4 · Activities and lists
+
+Covers R4.1–R4.3, R2.3 (Cluster only when configured), R4.4/R4.5 (rows truncate),
+R5.1/R5.2 for list rows. Layouts (R3.10) gets its activity in step 7 with the feature.
+
+Scope:
+- **Core `list` module** (pure): `ListItem { key, label, detail, running }`, a pin set,
+  and `rows(items, pins, filter, running_only) -> Vec<Row>` giving `Header(Pinned)`,
+  pinned items, `Header(All)`, the rest. Both sections alphabetical (case-insensitive,
+  key as tie-break). Filter: case-insensitive subsequence match on the label; it only
+  hides rows, never reorders. "Running only" hides idle rows. Empty sections keep their
+  header with an empty line ("nothing pinned", "no match").
+- **Core `demo` module**: the fake catalog until M2/M3. `work`: apps named after the
+  real repos (boardservice, entityservice, front-end packages, …), envs dev31–dev36 plus
+  protected hades/dls/lab, deployments per env, a few ports. `personal`: three apps, no
+  envs, no cluster. A couple of apps marked running so the indicator and the filter show.
+- **Pins persisted** per workspace in `workspaces/<id>/pins.json` (`{ list id: [keys] }`),
+  written atomically on change (rare, so no debounce); broken file → `.bad` + toast.
+- **Activity bar** (main window, left, `rail_w` wide): Apps, Cluster (only when the
+  workspace has a cluster), Ports. Glyph + tooltip with its key. Clicking the active one
+  hides the sidebar; clicking another shows it.
+- **Sidebar** (main window, right of the activity bar, fixed `sidebar_w`, theme token):
+  header (activity name; Cluster adds the env button `dev35 ▾` with a menu of envs,
+  alphabetical, protected ones marked ⊘), filter input, "running only" toggle (Apps),
+  then the rows in a `uniform_list` (virtualized). Row: state glyph (● running, ○ idle),
+  label truncating, dim detail on the right (never pushes the glyph).
+- **Per workspace**: each workspace owns its sidebar state (activity, visible, env,
+  filter, selection, pins); switching workspace shows the other one's.
+- **Keyboard** (`Sidebar` key context): ctrl+1/2/3 picks the activity and focuses its
+  list, ctrl+b shows/hides the sidebar, up/down/home/end move the selection, enter opens
+  the selected item (a placeholder tab until step 5), `p` pins/unpins, `/` focuses the
+  filter, esc clears the filter, then returns focus to the panes. Typing in the filter
+  never triggers row keys.
+- **Mouse**: click selects, double-click opens, right-click menu (Open, Pin/Unpin),
+  drag a row onto the other section's header to pin/unpin.
+
+States to snapshot: work Apps with pins and running rows; filter with no match; running
+only; Cluster with the env menu open; personal (no Cluster icon); sidebar hidden; Apps at
+150 %; a long label truncating next to its detail.
+
+Tests: core ordering, filter, running-only, empty sections, pin/unpin (unit); app: no
+Cluster activity without a cluster, per-workspace sidebar state, keys (move, `p`, enter,
+`/`, esc chain), typing in the filter doesn't pin, right-click menu, drop on header pins,
+pins saved and restored, broken pins file.
+
+Out of scope: real discovery and views (step 5, M2), palette (step 6), resizable sidebar.

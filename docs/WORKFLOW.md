@@ -18,6 +18,15 @@
 7. **Commit.** One commit per step, message naming the step and requirement ids.
    Update the requirement checkboxes in `REQUIREMENTS.md` in the same commit.
 
+## Keep the step loop fast
+
+- A step's checks run in seconds to a minute: the tests of the crate being changed while
+  building, then the whole suite and clippy once before the commit.
+- Snapshots: render the states the step adds or touches (the snapshot tool takes a name
+  filter), not the whole set.
+- Anything long (stress and leak runs of thousands of cycles, long settle times, release
+  builds for measurements) runs once at the end of the milestone, never per step.
+
 ## A milestone, start to finish
 
 - A milestone is a series of steps (see `ROADMAP.md`).
