@@ -465,17 +465,29 @@ pub struct Link {
 /// Addresses that open: on the web, or a file.
 const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
 
-/// Runs of cells a program marked with the same address that opens.
+/// Runs of cells a program marked with the same address that opens. Output decides
+/// what is marked: an address that doesn't open is skipped over all its cells.
 fn marked_links(marked: &[((usize, usize), Option<String>)]) -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
-    let mut prev: Option<&str> = None;
+    // The address of the run the previous cell is in, and whether that run was kept.
+    let mut run: Option<(&str, bool)> = None;
     for (cell, url) in marked {
-        match url.as_deref() {
-            Some(u) if prev == Some(u) => out.last_mut().expect("started").to = *cell,
-            Some(u) if SCHEMES.iter().any(|s| u.starts_with(s)) => out.push(Link { from: *cell, to: *cell, url: u.to_string() }),
-            _ => {}
-        }
-        prev = url.as_deref();
+        run = match (url.as_deref(), run) {
+            (Some(u), Some((r, kept))) if r == u => {
+                if kept && let Some(last) = out.last_mut() {
+                    last.to = *cell;
+                }
+                Some((r, kept))
+            }
+            (Some(u), _) => {
+                let kept = SCHEMES.iter().any(|s| u.starts_with(s));
+                if kept {
+                    out.push(Link { from: *cell, to: *cell, url: u.to_string() });
+                }
+                Some((u, kept))
+            }
+            (None, _) => None,
+        };
     }
     out
 }
@@ -921,6 +933,15 @@ mod tests {
         assert_eq!((links[0].from, links[0].to), ((0, 11), (1, 2)), "33 characters wrap at 30");
         let docs = links.iter().find(|l| l.url == "https://docs.rs/gpui").unwrap();
         assert_eq!((docs.from, docs.to), ((4, 0), (4, 3)), "the marked text, not the address");
+    }
+
+    #[test]
+    fn marked_addresses_that_dont_open_are_skipped_whole() {
+        let mut t = term(40, 4);
+        t.feed(b"\x1b]8;;javascript:alert(1)\x1b\\click me\x1b]8;;\x1b\\ \x1b]8;;https://a.dev\x1b\\a\x1b]8;;\x1b\\\r\n");
+        let links = t.links(0..t.rows());
+        assert_eq!(links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(), ["https://a.dev"], "no panic, nothing else kept");
+        assert_eq!((links[0].from, links[0].to), ((0, 9), (0, 9)));
     }
 
     #[test]
