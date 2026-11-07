@@ -1,7 +1,9 @@
-//! Port (`port/<n>`, R6.9): who holds it and the command, with "Stop holder" when the
-//! holder is a devdeck run. Other holders can't be stopped from M1 (the reason says why).
+//! Port (`port/<n>`, R6.9): who holds it and the command, with "Stop holder": a devdeck
+//! run stops at once, another process after a confirmation naming it. While the view is
+//! on screen, the workspace's port scan also looks up who holds its port.
 
 use super::ViewCx;
+use crate::port_scan::{PortHolder, stop_holder};
 use crate::services::PortInfo;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{button, label, theme, tip};
@@ -10,13 +12,22 @@ use gpui::{Context, IntoElement, ParentElement, Render, StatefulInteractiveEleme
 pub struct PortView {
     pub port: String,
     ctx: ViewCx,
-    _observe: Subscription,
+    _subs: Vec<Subscription>,
 }
 
 impl PortView {
     pub fn new(port: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&ctx.services, |_, _, cx| cx.notify());
-        Self { port, ctx, _observe: observe }
+        let mut subs = vec![cx.observe(&ctx.services, |_, _, cx| cx.notify())];
+        let ports = ctx.services.read(cx).ports.clone();
+        let me = cx.entity_id();
+        let number = port.parse::<u16>().ok();
+        let shown = ports.clone();
+        subs.extend(ctx.on_visibility(cx, move |_, visible, cx| {
+            let Some(n) = number else { return };
+            shown.update(cx, |p, cx| if visible { p.show(me, n, cx) } else { p.hide(me) });
+        }));
+        subs.push(cx.on_release(move |_, cx| ports.update(cx, |p, _| p.hide(me))));
+        Self { port, ctx, _subs: subs }
     }
 
     pub fn holder(&self, cx: &gpui::App) -> Option<PortInfo> {
@@ -39,16 +50,20 @@ impl Render for PortView {
                 .into_any_element();
         };
         let run = info.run.clone();
+        let holder = match (&run, info.pid) {
+            (Some(key), _) => Some(PortHolder::Run { key: key.clone(), title: info.holder.clone() }),
+            (None, Some(pid)) => Some(PortHolder::Process { pid, command: info.command.clone() }),
+            (None, None) => None,
+        };
         let stop = {
-            let (ctx, run) = (self.ctx.clone(), run.clone());
+            let runner = self.ctx.services.read(cx).runner.downgrade();
+            let port = info.port;
+            let why = if self.ctx.services.read(cx).config.is_some() { "another user's process: stop it where it runs" } else { "not started by devdeck: stop it where it runs" };
             button("stop-holder", "stop holder", &t)
                 .debug_selector(|| "stop-holder".into())
-                .when(run.is_none(), |b| b.text_color(t.dim).tooltip(tip("not started by devdeck: stop it where it runs")))
-                .when_some(run.zip(Some(info.holder.clone())), move |b, (key, title)| {
-                    b.tooltip(tip(format!("stop {title}"))).on_click(move |_, _, cx| {
-                        let runner = ctx.services.read(cx).runner.clone();
-                        runner.update(cx, |r, cx| r.stop(&key, cx));
-                    })
+                .when(holder.is_none(), |b| b.text_color(t.dim).tooltip(tip(why)))
+                .when_some(holder, move |b, holder| {
+                    b.tooltip(tip(format!("stop {holder}"))).on_click(move |_, window, cx| stop_holder(&runner, port, &holder, window, cx))
                 })
         };
         let open_run = run.map(|key| {

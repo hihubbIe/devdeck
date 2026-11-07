@@ -8,10 +8,12 @@
 
 use crate::cluster::{Cluster, new_cluster};
 use crate::environment::Environment;
+use crate::port_scan::{PortHolder, Ports};
 use crate::runner::{RunKey, Runner, fake_runner};
 use devdeck_core::catalog::Catalog;
 use devdeck_core::config::{WorkspaceConfig, apply_overrides};
 use gpui::{App, AppContext, Context, Entity};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -30,15 +32,20 @@ pub struct Services {
     pub problems: Vec<String>,
     /// Folders to watch for new projects and changed manifests.
     pub watch: Vec<PathBuf>,
+    /// The ports runs listen on, scanned in the background, and the ports they used.
+    pub ports: Entity<Ports>,
 }
 
-/// A port someone listens on: a configured holder or a running command.
+/// A port someone listens on: a run, a process a port view shows, or a demo holder.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PortInfo {
     pub port: u16,
     pub holder: String,
     pub command: String,
+    /// The run listening, when it's one of ours.
     pub run: Option<RunKey>,
+    /// Another process listening, when we can see it (stopped after a confirmation).
+    pub pid: Option<u32>,
 }
 
 impl Services {
@@ -49,12 +56,14 @@ impl Services {
         let env = catalog.pick_env(env);
         let runner = fake_runner(workspace, catalog.clone(), env.clone(), cx);
         let cluster = catalog.cluster.clone().map(|spec| new_cluster(spec, catalog.envs.clone(), cx));
+        let ports = Ports::new(workspace, runner.clone(), None, cx);
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
+            cx.observe(&ports, |_, _, cx| cx.notify()).detach();
             if let Some(c) = &cluster {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
-            Services { workspace: workspace.into(), name: name.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new() }
+            Services { workspace: workspace.into(), name: name.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new(), ports }
         })
     }
 
@@ -68,14 +77,16 @@ impl Services {
         let log = Some(devdeck_core::process::GroupLog::new(&devdeck_core::state::default_state_dir()));
         let driver = Rc::new(crate::pty_driver::PtyDriver { env: environment.clone(), log });
         let runner = cx.new(|_| Runner::new(config.id.clone(), catalog.clone(), driver));
+        let ports = Ports::new(&config.id, runner.clone(), Some(devdeck_core::state::default_state_dir()), cx);
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
+            cx.observe(&ports, |_, _, cx| cx.notify()).detach();
             cx.observe(&environment, |this: &mut Services, e, cx| {
                 let tools = e.read(cx).tools();
                 this.set_catalog(Catalog { tools, ..(*this.catalog).clone() }, cx);
             })
             .detach();
-            Services { workspace: config.id.clone(), name: config.name.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch }
+            Services { workspace: config.id.clone(), name: config.name.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch, ports }
         })
     }
 
@@ -113,18 +124,40 @@ impl Services {
         env.and_then(|e| self.catalog.env(e)).is_some_and(|e| e.protected)
     }
 
-    /// Ports in use, alphabetical by number.
+    /// Ports in use, by number: from the last scan (nothing is read here), the demo's
+    /// holders, and the ports the demo's runs declare.
     pub fn ports(&self, cx: &App) -> Vec<PortInfo> {
         let mut out: Vec<PortInfo> = self
             .catalog
             .ports
             .iter()
-            .map(|p| PortInfo { port: p.port, holder: p.holder.clone(), command: p.command.clone(), run: None })
+            .map(|p| PortInfo { port: p.port, holder: p.holder.clone(), command: p.command.clone(), run: None, pid: None })
             .collect();
         let runner = self.runner.read(cx);
+        let line = |key: &RunKey| self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)).map(|c| c.line.clone()).unwrap_or_default();
+        let real: BTreeSet<RunKey> = runner.pids().into_iter().map(|(k, _)| k).collect();
+        // Runs without a process (the demo's fake ones): the ports their command declares.
         for (key, port) in runner.running_ports() {
-            let line = self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)).map(|c| c.line.clone()).unwrap_or_default();
-            out.push(PortInfo { port, holder: runner.title(&key), command: line, run: Some(key) });
+            if !real.contains(&key) {
+                out.push(PortInfo { port, holder: runner.title(&key), command: line(&key), run: Some(key), pid: None });
+            }
+        }
+        let scan = &self.ports.read(cx).scan;
+        for (key, ports) in scan.listening.iter().filter(|(k, _)| real.contains(*k)) {
+            for &port in ports {
+                out.push(PortInfo { port, holder: runner.title(key), command: line(key), run: Some(key.clone()), pid: None });
+            }
+        }
+        // Ports a port view shows, held by something else.
+        for (&port, holder) in &scan.held {
+            if out.iter().any(|p| p.port == port) {
+                continue;
+            }
+            out.push(match holder {
+                PortHolder::Run { key, title } => PortInfo { port, holder: title.clone(), command: line(key), run: Some(key.clone()), pid: None },
+                PortHolder::Process { pid, command } => PortInfo { port, holder: holder.to_string(), command: command.clone(), run: None, pid: Some(*pid) },
+                PortHolder::Unknown => PortInfo { port, holder: holder.to_string(), command: String::new(), run: None, pid: None },
+            });
         }
         out.sort_by_key(|p| p.port);
         out
