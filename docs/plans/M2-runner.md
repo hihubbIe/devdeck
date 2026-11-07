@@ -310,6 +310,30 @@ reach the program (`with_args`: `npm run dev -- --port 1`, `pnpm run dev --port 
 `cargo run --bin x -- --flag`); the tab header shows the full line. Suggestions read
 from projects come later if recent ones aren't enough.
 
+## Part B: arguments per command, detailed plan (2026-11-07, waiting for a GO)
+
+- **Where:** the run tab's toolbar, between the command line and the state: an
+  arguments field showing the current arguments (`args…` dim when none) with a ▾.
+- **Choosing:** a click (or `ctrl+shift+a`, a key the terminal leaves to devdeck) opens
+  a menu (the existing overlay menu): "recent", up to 10 recent arguments, most recent
+  first, the current one checked; "no arguments"; then "New arguments…", which turns
+  the field into a text input (Enter runs with them, Esc cancels). Picking an entry
+  while the run runs restarts it with them; otherwise it starts it.
+- **What runs:** the toolbar's line and the run's header (`── run 2 · …`) show the
+  full line with the arguments. They are passed as typed (your quotes are kept), added
+  by the command's toolchain (`with_args`): npm and cargo after `--`; pnpm, yarn, go,
+  make, task, compose and launch configs at the end.
+- **Kept:** the current arguments are part of the run (restart reuses them) and of the
+  tab's saved state (reopen restores them). Recent arguments are saved per workspace,
+  app and command in the state folder (`args.json`, like the port memory).
+- **Not in B:** other ways to start (app view, palette) use the run's current
+  arguments; suggestions read from projects (launch.json `args`, Taskfile variables)
+  come later if recent ones aren't enough.
+- **Built with:** `Toolchain::with_args` and its tests per toolchain; a core
+  `ArgsMemory` (load, remember, cap, order) tested on its own; `Runner` keeping
+  arguments per run (tested with the fake driver); the run view's field and menu
+  (snapshots: closed, open with recent ones, typing new ones; mouse and key tests).
+
 ## States to check
 
 No config; config error; app vs library; missing tool; `.nvmrc` wants a missing Node;
