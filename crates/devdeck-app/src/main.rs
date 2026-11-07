@@ -1,10 +1,11 @@
-//! devdeck: M0 spike. Proves the pane engine, multi-window, a streaming view and a
-//! background cluster feed on GPUI, and measures itself (see docs/plans/M0-spike.md).
+//! devdeck: the M1 prototype on fake data. Measures itself on request
+//! (`DEVDECK_STATS`, `DEVDECK_STRESS`, `DEVDECK_LATENCY`; see docs/WORKFLOW.md).
 
-use devdeck_app::deck::Deck;
+use devdeck_app::shell::{Shell, try_shell};
 use devdeck_app::stats;
+use devdeck_core::state::{StateStore, default_state_dir};
 use devdeck_core::layout::{Drop, Edge, Layout, Result as LayoutResult, ViewRef};
-use gpui::{App, AppContext, Entity};
+use gpui::{App, Entity};
 use std::time::Duration;
 
 fn env_u64(name: &str) -> Option<u64> {
@@ -14,26 +15,30 @@ fn env_u64(name: &str) -> Option<u64> {
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         devdeck_app::init(cx);
+        // Fallback only: every normal quit goes through the shell's guard.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
+                if let Some(s) = try_shell(cx) {
+                    s.update(cx, |s, cx| s.flush(cx));
+                }
                 cx.quit();
             }
         })
         .detach();
 
-        let deck = cx.new(|_| Deck::new(devdeck_app::initial_layout()));
-        deck.update(cx, |d, cx| d.sync(cx));
+        let store = StateStore::new(default_state_dir());
+        let shell = Shell::start(devdeck_app::demo_workspaces(), "work", Some(store), cx);
         cx.activate(true);
 
         if let Some(secs) = env_u64("DEVDECK_STATS") {
-            spawn_stats_printer(deck.clone(), Duration::from_secs(secs.max(1)), cx);
+            spawn_stats_printer(shell.clone(), Duration::from_secs(secs.max(1)), cx);
         }
         #[cfg(feature = "profile")]
         if std::env::var("DEVDECK_LATENCY").is_ok() {
             spawn_latency_printer(cx);
         }
         if let Some(cycles) = env_u64("DEVDECK_STRESS") {
-            spawn_stress(deck, cycles, cx);
+            spawn_stress(shell, cycles, cx);
         }
     });
 }
@@ -71,19 +76,20 @@ fn spawn_latency_printer(cx: &mut App) {
     .detach();
 }
 
-fn spawn_stats_printer(deck: Entity<Deck>, every: Duration, cx: &mut App) {
+fn spawn_stats_printer(shell: Entity<Shell>, every: Duration, cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last = stats::renders();
         loop {
             cx.background_executor().timer(every).await;
             let now = stats::renders();
             let m = stats::memory();
-            let (views, windows) = cx.update(|cx| {
-                let d = deck.read(cx);
-                (d.live_views(), d.layout.windows.len())
+            let (views, windows, layers) = cx.update(|cx| {
+                let s = shell.read(cx);
+                let views: usize = s.workspaces.iter().map(|w| w.deck.read(cx).live_views()).sum();
+                (views, cx.windows().len(), devdeck_ui::overlay::layer_count(cx))
             });
             eprintln!(
-                "devdeck-stats renders_delta={} rss_kb={} pss_kb={} uss_kb={} views={views} windows={windows}",
+                "devdeck-stats renders_delta={} rss_kb={} pss_kb={} uss_kb={} views={views} windows={windows} layers={layers}",
                 now - last,
                 m.rss,
                 m.pss,
@@ -140,14 +146,24 @@ fn stress_steps(n: u64) -> Vec<Step> {
     s
 }
 
-/// Runs stress cycles, printing memory every 500, then quits.
-fn spawn_stress(deck: Entity<Deck>, cycles: u64, cx: &mut App) {
+/// Runs stress cycles on the active workspace, switching workspaces away and back
+/// every 25th cycle, printing memory every 500, then quits (bypassing the guard).
+fn spawn_stress(shell: Entity<Shell>, cycles: u64, cx: &mut App) {
     cx.spawn(async move |cx| {
         let frame = Duration::from_millis(16);
         cx.background_executor().timer(Duration::from_secs(3)).await;
         let m = stats::memory();
         eprintln!("devdeck-stress cycle=0 rss_kb={} pss_kb={} uss_kb={}", m.rss, m.pss, m.uss);
+        let deck = cx.update(|cx| shell.read(cx).active_deck());
+        let home = cx.update(|cx| shell.read(cx).active);
+        let other = cx.update(|cx| (home + 1) % shell.read(cx).workspaces.len());
         for n in 1..=cycles {
+            if n % 25 == 0 {
+                for to in [other, home] {
+                    cx.update(|cx| shell.update(cx, |s, cx| s.switch(to, cx)));
+                    cx.background_executor().timer(frame).await;
+                }
+            }
             for step in stress_steps(n) {
                 let ok = cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| step(l)).is_some()));
                 if !ok {
@@ -158,14 +174,18 @@ fn spawn_stress(deck: Entity<Deck>, cycles: u64, cx: &mut App) {
             if n % 500 == 0 || n == cycles {
                 let m = stats::memory();
                 let leaked = cx.update(|cx| deck.update(cx, |d, _| d.leaked_views(3)));
-                let views = cx.update(|cx| deck.read(cx).live_views());
+                let (views, windows, layers) =
+                    cx.update(|cx| (deck.read(cx).live_views(), cx.windows().len(), devdeck_ui::overlay::layer_count(cx)));
                 eprintln!(
-                    "devdeck-stress cycle={n} rss_kb={} pss_kb={} uss_kb={} views={views} leaked_views={leaked}",
+                    "devdeck-stress cycle={n} rss_kb={} pss_kb={} uss_kb={} views={views} leaked_views={leaked} windows={windows} layers={layers}",
                     m.rss, m.pss, m.uss
                 );
             }
         }
-        cx.update(|cx| cx.quit());
+        cx.update(|cx| {
+            shell.update(cx, |s, cx| s.flush(cx));
+            cx.quit()
+        });
     })
     .detach();
 }

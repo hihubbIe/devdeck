@@ -7,12 +7,14 @@ pub mod deck;
 pub mod gallery;
 pub mod kube_feed;
 pub mod settings_view;
+pub mod shell;
 pub mod stats;
 pub mod views;
 pub mod window_view;
 
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
 use gpui::App;
+use shell::WorkspaceSpec;
 use std::borrow::Cow;
 
 /// The spike's starting arrangement: logs and a long-titled tab on the left,
@@ -28,6 +30,21 @@ pub fn initial_layout() -> Layout {
     l.move_tab(a, 2, Drop::Edge(b, Edge::Bottom)).expect("split down");
     l.activate(a, 0).expect("logs active");
     l
+}
+
+/// The personal demo workspace: no cluster, just notes and the component gallery.
+pub fn personal_layout() -> Layout {
+    let mut l = Layout::new();
+    let a = l.main().focused;
+    for v in ["demo/notes", "demo/gallery"] {
+        l.open(ViewRef::new(v), a).expect("open demo view");
+    }
+    l
+}
+
+/// The M1 demo workspaces (M2 reads them from the config).
+pub fn demo_workspaces() -> Vec<WorkspaceSpec> {
+    vec![WorkspaceSpec::new("personal", "personal", personal_layout), WorkspaceSpec::new("work", "work", initial_layout)]
 }
 
 pub fn load_fonts(cx: &mut App) {
@@ -52,4 +69,5 @@ pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     app_settings::init(dir, cx);
     devdeck_ui::bind_keys(cx);
     actions::bind(cx);
+    cx.on_window_closed(|cx, id| devdeck_ui::overlay::forget_layer(id, cx)).detach();
 }

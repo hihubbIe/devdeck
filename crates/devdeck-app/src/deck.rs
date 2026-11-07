@@ -1,41 +1,71 @@
-//! `Deck` owns the layout model, the view instances and the OS windows.
+//! `Deck` owns one workspace's layout model, its view instances and its detached OS
+//! windows. The main OS window belongs to the [`Shell`](crate::shell::Shell), which shows
+//! the active workspace's deck in it.
 //!
 //! Every layout change goes through [`Deck::apply`], which then
 //! - creates views for newly opened tabs and drops views whose tab closed,
-//! - opens or closes OS windows so they match the model's windows,
+//! - opens or closes detached OS windows so they match the model (only while the
+//!   workspace is active; an inactive one keeps its model and closes its windows),
+//! - schedules a save of the layout (one timer, about a second after the first change),
 //! - notifies observers so every window re-renders.
 
-use crate::views;
-use crate::window_view::WindowView;
-use devdeck_core::layout::{CloseOutcome, Layout, LayoutError, MAIN_WINDOW, ViewRef, WindowId};
-use devdeck_ui::logical;
-use gpui::{
-    AnyView, AnyWeakView, App, AppContext, Bounds, Context, Entity, WindowBounds, WindowDecorations,
-    WindowHandle, WindowOptions, size,
-};
+use crate::views::{self, LogsView};
+use crate::window_view::{WindowView, window_options};
+use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, ViewRef, WindowId};
+use devdeck_core::state::StateStore;
+use devdeck_ui::{ToastKind, toasts};
+use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, Task, WindowHandle};
 use std::collections::HashMap;
+use std::time::Duration;
+
+/// How long after a change the layout is written.
+pub const SAVE_DELAY: Duration = Duration::from_millis(1000);
 
 pub struct Deck {
     pub layout: Layout,
+    pub workspace: String,
+    active: bool,
     views: HashMap<ViewRef, AnyView>,
-    /// `None` while the OS window is being opened (deferred).
+    /// Detached windows only. `None` while the OS window is being opened (deferred).
     os_windows: HashMap<WindowId, Option<WindowHandle<WindowView>>>,
     /// Views closed recently, checked for release by the leak test.
     released: Vec<(AnyWeakView, u64)>,
     pub last_error: Option<String>,
     generation: u64,
+    store: Option<StateStore>,
+    dirty: bool,
+    save_task: Option<Task<()>>,
+    save_failed: bool,
+    /// Layout writes done (tests check the debounce).
+    pub saves: usize,
 }
 
 impl Deck {
+    /// An active deck that is never saved (tests, snapshots).
     pub fn new(layout: Layout) -> Self {
         Self {
             layout,
+            workspace: "default".into(),
+            active: true,
             views: HashMap::new(),
             os_windows: HashMap::new(),
             released: Vec::new(),
             last_error: None,
             generation: 0,
+            store: None,
+            dirty: false,
+            save_task: None,
+            save_failed: false,
+            saves: 0,
         }
+    }
+
+    /// Ties the deck to a workspace: where it saves, and whether it starts active.
+    pub fn in_workspace(mut self, id: impl Into<String>, store: Option<StateStore>, active: bool) -> Self {
+        self.workspace = id.into();
+        self.store = store;
+        self.active = active;
+        self
     }
 
     pub fn view(&self, r: &ViewRef) -> Option<AnyView> {
@@ -46,11 +76,16 @@ impl Deck {
         self.views.len()
     }
 
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     /// Runs a layout operation and brings views and windows in line with the result.
     pub fn apply<T>(&mut self, cx: &mut Context<Self>, op: impl FnOnce(&mut Layout) -> Result<T, LayoutError>) -> Option<T> {
         let out = match op(&mut self.layout) {
             Ok(v) => {
                 self.last_error = None;
+                self.changed(cx);
                 Some(v)
             }
             Err(e) => {
@@ -64,10 +99,21 @@ impl Deck {
         out
     }
 
-    /// Closing the main window quits; closing a detached one closes its tabs too.
+    /// Shows or hides the workspace: an inactive deck closes its detached OS windows
+    /// (the model keeps them) and reopens them when it becomes active again.
+    pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active != active {
+            self.active = active;
+            self.sync(cx);
+            cx.notify();
+        }
+    }
+
+    /// Closing a detached window closes its tabs too. The main window is the shell's.
     pub fn close_window(&mut self, id: WindowId, cx: &mut Context<Self>) {
-        if let Some(CloseOutcome::Quit) = self.apply(cx, |l| l.close_window(id)) {
-            cx.quit();
+        debug_assert_ne!(id, MAIN_WINDOW, "the shell handles the main window");
+        if id != MAIN_WINDOW {
+            self.apply(cx, |l| l.close_window(id).map(|_| ()));
         }
     }
 
@@ -76,13 +122,41 @@ impl Deck {
         self.apply(cx, |l| l.reattach(id).map(|_| ()));
     }
 
-    /// Called when the OS closed a window on its own (window manager close).
+    /// Called when the window manager closed a detached window.
     pub fn os_window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
         self.os_windows.remove(&id);
-        if id == MAIN_WINDOW {
-            cx.quit();
-        } else if self.layout.window(id).is_ok() {
+        if id != MAIN_WINDOW && self.layout.window(id).is_ok() {
             self.close_window(id, cx);
+        }
+    }
+
+    /// Remembers a detached window's size (saved with the layout, no re-render).
+    pub fn record_size(&mut self, id: WindowId, size: (f32, f32), cx: &mut Context<Self>) {
+        let same = self.layout.window(id).is_ok_and(|w| w.size == Some(size));
+        if !same && self.layout.set_window_size(id, size).is_ok() {
+            self.changed(cx);
+        }
+    }
+
+    /// Titles of what runs in this workspace, alphabetical (the quit guard lists them).
+    /// In M1 the demo log stream stands in for processes.
+    pub fn running(&self, cx: &App) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .views
+            .iter()
+            .filter(|(_, v)| (*v).clone().downcast::<LogsView>().is_ok_and(|l| l.read(cx).is_streaming()))
+            .map(|(r, _)| views::title(r))
+            .collect();
+        out.sort_by_key(|s| s.to_lowercase());
+        out
+    }
+
+    /// Asks everything running to stop. Stopping may take time; poll [`Deck::running`].
+    pub fn stop_all(&mut self, cx: &mut Context<Self>) {
+        for v in self.views.values() {
+            if let Ok(logs) = v.clone().downcast::<LogsView>() {
+                logs.update(cx, |l, cx| l.stop(cx));
+            }
         }
     }
 
@@ -102,9 +176,14 @@ impl Deck {
                 slot.insert(v);
             }
         }
-        // Windows: open missing OS windows, close the ones the model dropped.
-        let model: Vec<WindowId> = self.layout.windows.iter().map(|w| w.id).collect();
-        let gone: Vec<WindowId> = self.os_windows.keys().filter(|id| !model.contains(id)).copied().collect();
+        // Detached windows: open the missing ones, close the ones the model dropped (or
+        // all of them while the workspace is hidden).
+        let wanted: Vec<WindowId> = if self.active {
+            self.layout.windows.iter().map(|w| w.id).filter(|id| *id != MAIN_WINDOW).collect()
+        } else {
+            Vec::new()
+        };
+        let gone: Vec<WindowId> = self.os_windows.keys().filter(|id| !wanted.contains(id)).copied().collect();
         for id in gone {
             if let Some(Some(h)) = self.os_windows.remove(&id) {
                 cx.defer(move |cx| {
@@ -112,13 +191,14 @@ impl Deck {
                 });
             }
         }
-        let missing: Vec<WindowId> = model.into_iter().filter(|id| !self.os_windows.contains_key(id)).collect();
-        for id in missing {
-            // Opening a window renders it at once, and rendering reads the deck, so
-            // open it after this update finishes.
-            self.os_windows.insert(id, None);
-            let deck = cx.entity();
-            cx.defer(move |cx| open_os_window(deck, id, cx));
+        for id in wanted {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.os_windows.entry(id) {
+                // Opening a window renders it at once, and rendering reads the deck, so
+                // open it after this update finishes.
+                slot.insert(None);
+                let deck = cx.entity();
+                cx.defer(move |cx| open_os_window(deck, id, cx));
+            }
         }
     }
 
@@ -137,25 +217,85 @@ impl Deck {
         });
         leaked
     }
+
+    // ------------------------------------------------------------------ saving
+
+    /// Marks the layout changed and starts the save timer if none runs.
+    fn changed(&mut self, cx: &mut Context<Self>) {
+        if self.store.is_none() {
+            return;
+        }
+        self.dirty = true;
+        if self.save_task.is_none() {
+            self.schedule_save(cx);
+        }
+    }
+
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_DELAY).await;
+            let Ok(Some((store, ws, layout))) = this.update(cx, |d, _| d.take_save()) else { return };
+            let result = cx.background_executor().spawn(async move { store.save_layout(&ws, &layout) }).await;
+            let _ = this.update(cx, |d, cx| {
+                d.save_task = None;
+                d.saved(result, cx);
+                if d.dirty {
+                    d.schedule_save(cx);
+                }
+            });
+        }));
+    }
+
+    fn take_save(&mut self) -> Option<(StateStore, String, Layout)> {
+        let store = self.store.clone()?;
+        self.dirty = false;
+        self.saves += 1;
+        Some((store, self.workspace.clone(), self.layout.clone()))
+    }
+
+    /// A failing save is reported once, until a save works again.
+    fn saved(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(()) => self.save_failed = false,
+            Err(e) if !self.save_failed => {
+                self.save_failed = true;
+                let text = format!("Could not save the {} layout: {e}", self.workspace);
+                toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![], cx));
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// Writes a pending change now (quit).
+    pub fn flush(&mut self, cx: &mut Context<Self>) {
+        if !self.dirty {
+            return;
+        }
+        self.save_task = None;
+        if let Some((store, ws, layout)) = self.take_save() {
+            let result = store.save_layout(&ws, &layout);
+            self.saved(result, cx);
+        }
+    }
 }
 
 fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
-    if deck.read(cx).layout.window(id).is_err() {
-        deck.update(cx, |d, _| d.os_windows.remove(&id));
-        return;
-    }
-    let is_main = id == MAIN_WINDOW;
-    let (w, h) = if is_main { (1600., 1000.) } else { (900., 600.) };
-    let bounds = Bounds::centered(None, size(logical(w), logical(h)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_decorations: Some(WindowDecorations::Client),
-        app_id: Some("devdeck".into()),
-        window_min_size: Some(size(logical(480.), logical(320.))),
-        ..Default::default()
+    let size = {
+        let d = deck.read(cx);
+        let pending = d.os_windows.get(&id).is_some_and(Option::is_none);
+        match d.layout.window(id) {
+            Ok(w) if d.active && pending => w.size.unwrap_or((900., 600.)),
+            _ => {
+                // Closed, hidden, or handled while the open was pending.
+                if pending {
+                    deck.update(cx, |d, _| d.os_windows.remove(&id));
+                }
+                return;
+            }
+        }
     };
     let view_deck = deck.clone();
-    let result = cx.open_window(options, |window, cx| cx.new(|cx| WindowView::new(id, view_deck, window, cx)));
+    let result = cx.open_window(window_options(size, cx), |window, cx| cx.new(|cx| WindowView::detached(id, view_deck, window, cx)));
     deck.update(cx, |d, cx| match result {
         Ok(h) => {
             d.os_windows.insert(id, Some(h));

@@ -1,5 +1,6 @@
 //! Root view of one OS window: title bar, pane tree, status bar, window edges.
-//! The main window and each detached window are a `WindowView` over the same `Deck`.
+//! The main window shows the active workspace's `Deck` and switches with it; a
+//! detached window always belongs to the deck that opened it.
 //!
 //! Rendering works on a snapshot (`Frame`) taken from the deck at the start of
 //! `render`, so drawing never holds a borrow of the deck.
@@ -9,19 +10,24 @@ use crate::deck::Deck;
 use crate::stats;
 use crate::app_settings;
 use crate::settings_view::SettingsView;
+use crate::shell::{self, Shell};
 use crate::views::{self, LogsView};
-use devdeck_ui::{DragGhost, Empty, Theme, apply_window_scale, button, icon_button, label, theme, tip};
+use devdeck_ui::{DragGhost, Empty, MenuItem, Theme, apply_window_scale, button, icon_button, label, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, WindowId};
 use gpui::{
-    Focusable, AnyElement, AnyView, App, AppContext, Context, CursorStyle, Decorations, DragMoveEvent, Entity, FocusHandle,
-    Hitbox, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
-    ResizeEdge, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, Window, canvas, div, point,
-    prelude::*, relative,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
+    FocusHandle, Focusable, Hitbox, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
+    Point, Render, ResizeEdge, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
+    WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, relative,
+    size,
 };
 use std::collections::HashMap;
 
+/// Drag payloads carry their deck: a drop that lands in another workspace's tree
+/// (after a switch mid-drag) is ignored.
 #[derive(Clone)]
 pub struct DraggedTab {
+    pub deck: EntityId,
     pub pane: PaneId,
     pub index: usize,
     pub title: SharedString,
@@ -29,12 +35,14 @@ pub struct DraggedTab {
 
 #[derive(Clone)]
 pub struct DraggedPane {
+    pub deck: EntityId,
     pub pane: PaneId,
     pub title: SharedString,
 }
 
 #[derive(Clone)]
 pub struct DraggedDivider {
+    pub deck: EntityId,
     pub split: SplitId,
     pub index: usize,
     pub axis: Axis,
@@ -42,13 +50,48 @@ pub struct DraggedDivider {
 
 pub struct WindowView {
     id: WindowId,
+    /// The shell for the main window; `None` for a detached one.
+    shell: Option<WeakEntity<Shell>>,
     deck: Entity<Deck>,
     /// Root focus: global keys (scale, settings, quit).
     focus: FocusHandle,
     /// Pane area focus: pane keys only work while it (or something in it) has focus.
     panes_focus: FocusHandle,
     settings: Option<Entity<SettingsView>>,
+    /// Main window: where focus was in each workspace, restored on switching back.
+    remembered: HashMap<EntityId, WeakFocusHandle>,
+    deck_sub: Subscription,
     _observe: Vec<Subscription>,
+}
+
+/// Options shared by every devdeck window; `size` in logical pixels.
+pub fn window_options((w, h): (f32, f32), cx: &App) -> WindowOptions {
+    let bounds = Bounds::centered(None, size(logical(w), logical(h)), cx);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_decorations: Some(WindowDecorations::Client),
+        app_id: Some("devdeck".into()),
+        window_min_size: Some(size(logical(480.), logical(320.))),
+        ..Default::default()
+    }
+}
+
+fn logical_size(window: &Window) -> (f32, f32) {
+    let s = window.bounds().size;
+    (f32::from(s.width), f32::from(s.height))
+}
+
+/// The workspace menu (title-bar button): alphabetical, current one checked.
+pub fn workspace_menu_items(shell: &Entity<Shell>, cx: &App) -> Vec<MenuItem> {
+    let s = shell.read(cx);
+    s.workspaces
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let item = MenuItem::new(w.name.clone(), move |_, cx| shell::switch(i, cx)).checked(i == s.active);
+            if i < 9 { item.hint(format!("ctrl alt {}", i + 1)) } else { item }
+        })
+        .collect()
 }
 
 /// Everything a render pass needs, copied out of the deck.
@@ -62,26 +105,89 @@ struct Frame<'a> {
 }
 
 impl WindowView {
-    pub fn new(id: WindowId, deck: Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let observe = vec![
-            cx.observe(&deck, |_, _, cx| cx.notify()),
+    /// The main window: shows the shell's active workspace. Closing it asks to quit.
+    pub fn main(shell: Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let deck = shell.read(cx).active_deck();
+        let mut observe = vec![
             cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify()),
+            cx.observe_in(&shell, window, |this, shell, window, cx| this.follow_shell(&shell, window, cx)),
         ];
-        let focus = cx.focus_handle();
-        let panes_focus = cx.focus_handle();
-        panes_focus.focus(window, cx);
+        let size_shell = shell.downgrade();
+        observe.push(cx.observe_window_bounds(window, move |_, window, cx| {
+            let size = logical_size(window);
+            let _ = size_shell.update(cx, |s, _| s.main_size = Some(size));
+        }));
+        window.on_window_should_close(cx, |_, cx| {
+            cx.defer(shell::request_quit);
+            false
+        });
+        window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
+        Self::build(MAIN_WINDOW, Some(shell.downgrade()), deck, observe, window, cx)
+    }
+
+    /// A detached window of `deck`. Closing it closes its tabs.
+    pub fn detached(id: WindowId, deck: Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut observe = vec![cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify())];
+        let size_deck = deck.downgrade();
+        observe.push(cx.observe_window_bounds(window, move |_, window, cx| {
+            let size = logical_size(window);
+            let _ = size_deck.update(cx, |d, cx| d.record_size(id, size, cx));
+        }));
         let close_deck = deck.clone();
         window.on_window_should_close(cx, move |_, cx| {
             close_deck.update(cx, |d, cx| d.os_window_closed(id, cx));
             true
         });
-        Self { id, deck, focus, panes_focus, settings: None, _observe: observe }
+        window.set_window_title(&format!("devdeck · {} · detached", deck.read(cx).workspace));
+        Self::build(id, None, deck, observe, window, cx)
+    }
+
+    fn build(
+        id: WindowId,
+        shell: Option<WeakEntity<Shell>>,
+        deck: Entity<Deck>,
+        observe: Vec<Subscription>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let deck_sub = cx.observe(&deck, |_, _, cx| cx.notify());
+        let focus = cx.focus_handle();
+        let panes_focus = cx.focus_handle();
+        panes_focus.focus(window, cx);
+        Self { id, shell, deck, focus, panes_focus, settings: None, remembered: HashMap::new(), deck_sub, _observe: observe }
+    }
+
+    fn is_main(&self) -> bool {
+        self.shell.is_some()
+    }
+
+    /// Main window: when the active workspace changed, show its deck and put focus
+    /// back where it was in that workspace.
+    fn follow_shell(&mut self, shell: &Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) {
+        let deck = shell.read(cx).active_deck();
+        if deck != self.deck {
+            if self.panes_focus.contains_focused(window, cx)
+                && let Some(f) = window.focused(cx)
+            {
+                self.remembered.insert(self.deck.entity_id(), f.downgrade());
+            }
+            self.deck_sub = cx.observe(&deck, |_, _, cx| cx.notify());
+            self.deck = deck;
+            window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
+            if !app_settings::is_open(cx) {
+                match self.remembered.get(&self.deck.entity_id()).and_then(WeakFocusHandle::upgrade) {
+                    Some(h) => h.focus(window, cx),
+                    None => self.panes_focus.focus(window, cx),
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Opens or closes the full-window Settings view (main window only), moving focus
     /// into it, and back to the panes when it closes.
     fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.id != MAIN_WINDOW {
+        if !self.is_main() {
             return;
         }
         app_settings::set_open(open, cx);
@@ -171,7 +277,8 @@ impl Render for WindowView {
         stats::count_render();
         let t = theme(cx).clone();
         apply_window_scale(window, &t);
-        let settings_open = self.id == MAIN_WINDOW && app_settings::is_open(cx);
+        let is_main = self.is_main();
+        let settings_open = is_main && app_settings::is_open(cx);
         if settings_open && self.settings.is_none() {
             self.settings = Some(cx.new(SettingsView::new));
         }
@@ -189,13 +296,16 @@ impl Render for WindowView {
             return div().size_full().bg(t.bg).into_any_element();
         };
         let frame = Frame { layout: &layout, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
+        let deck_id = self.deck.entity_id();
+        let workspace = self.deck.read(cx).workspace.clone();
+        let shell = self.shell.as_ref().and_then(WeakEntity::upgrade);
+        let ws_name = shell.as_ref().map_or(workspace, |s| s.read(cx).active_name().to_string());
         let tree = match w.maximized {
             Some(p) => render_pane(&frame, p, None),
             None => render_node(&frame, &w.root, None),
         };
-        let is_main = self.id == MAIN_WINDOW;
         let status = format!(
-            "{} · focused pane {} · {} views · {} renders{}",
+            "{ws_name} · {} · focused pane {} · {} views · {} renders{}",
             if is_main { "main window" } else { "detached window" },
             w.focused.0,
             live,
@@ -204,6 +314,7 @@ impl Render for WindowView {
         );
         let id = self.id;
         let close_deck = self.deck.clone();
+        let menu_shell = shell.clone();
 
         let title_bar = div()
             .id("titlebar")
@@ -224,7 +335,18 @@ impl Render for WindowView {
                 }
             })
             .child(div().text_color(t.hi).child("devdeck"))
-            .child(div().text_color(t.mute).child(if is_main { "M1 prototype" } else { "detached window" }))
+            .when_some(menu_shell, |d, shell| {
+                d.child(
+                    button("workspace", format!("{ws_name} ▾"), &t)
+                        .debug_selector(|| "workspace-button".into())
+                        .tooltip(tip("switch workspace (ctrl alt 1…9)"))
+                        .on_click(move |e, window, cx| {
+                            let items = workspace_menu_items(&shell, cx);
+                            open_menu(e.position(), items, window, cx);
+                        }),
+                )
+            })
+            .when(!is_main, |d| d.child(div().text_color(t.mute).child(format!("{ws_name} · detached window"))))
             .child(div().flex_1())
             .when(is_main, |d| {
                 d.child(
@@ -243,7 +365,11 @@ impl Render for WindowView {
             .child(button("min", "—", &t).on_click(|_, window, _| window.minimize_window()))
             .child(button("max", "□", &t).on_click(|_, window, _| window.zoom_window()))
             .child(button("close", "×", &t).on_click(move |_, _, cx| {
-                close_deck.update(cx, |d, cx| d.close_window(id, cx));
+                if id == MAIN_WINDOW {
+                    shell::request_quit(cx);
+                } else {
+                    close_deck.update(cx, |d, cx| d.close_window(id, cx));
+                }
             }));
 
         let status_bar = div()
@@ -308,7 +434,8 @@ impl Render for WindowView {
                     logs.update(cx, |v, cx| v.toggle_follow(cx));
                 }
             }))
-            .child(tree);
+            // Per-workspace id, so element state never carries over between workspaces.
+            .child(div().id(("ws", deck_id.as_u64())).size_full().min_w_0().min_h_0().flex().child(tree));
         let body = if settings_open {
             match &self.settings {
                 Some(view) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
@@ -339,7 +466,6 @@ impl Render for WindowView {
             .on_action(|_: &DecreaseScale, _, cx| app_settings::decrease(cx))
             .on_action(|_: &ResetScale, _, cx| app_settings::reset(cx))
             .on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx)))
-            .on_action(|_: &Quit, _, cx| cx.quit())
             .child(title_bar)
             .child(body)
             .child(status_bar)
@@ -423,6 +549,7 @@ fn render_node(f: &Frame, node: &Node, parent: Option<Axis>) -> AnyElement {
     };
     let (split_id, axis) = (s.id, s.axis);
     let deck = f.deck.clone();
+    let deck_id = deck.entity_id();
     let mut container = div()
         .id(("split", split_id.0))
         .size_full()
@@ -432,7 +559,7 @@ fn render_node(f: &Frame, node: &Node, parent: Option<Axis>) -> AnyElement {
         .when(axis == Axis::Column, |d| d.flex_col())
         .on_drag_move::<DraggedDivider>(move |e: &DragMoveEvent<DraggedDivider>, _, cx| {
             let d = e.drag(cx).clone();
-            if d.split != split_id {
+            if d.split != split_id || d.deck != deck_id {
                 return;
             }
             let (pos, origin, len) = match d.axis {
@@ -464,14 +591,14 @@ fn render_node(f: &Frame, node: &Node, parent: Option<Axis>) -> AnyElement {
         };
         container = container.child(slot.child(render_node(f, &c.node, Some(axis))));
         if i + 1 < n {
-            container = container.child(divider(split_id, i, axis, f.t));
+            container = container.child(divider(deck_id, split_id, i, axis, f.t));
         }
     }
     container.into_any_element()
 }
 
 /// 5 px grab area with a 1 px line in the middle.
-fn divider(split: SplitId, index: usize, axis: Axis, t: &Theme) -> impl IntoElement {
+fn divider(deck: EntityId, split: SplitId, index: usize, axis: Axis, t: &Theme) -> impl IntoElement {
     let (line, grab, hair) = (t.line, t.divider_grab, t.hairline);
     let base = div()
         .id(eid("divider", split.0, index))
@@ -479,7 +606,7 @@ fn divider(split: SplitId, index: usize, axis: Axis, t: &Theme) -> impl IntoElem
         .flex()
         .justify_center()
         .items_center()
-        .on_drag(DraggedDivider { split, index, axis }, |_, _, _, cx| cx.new(|_| Empty));
+        .on_drag(DraggedDivider { deck, split, index, axis }, |_, _, _, cx| cx.new(|_| Empty));
     match axis {
         Axis::Row => base.w(grab).h_full().cursor_col_resize().child(div().w(hair).h_full().bg(line)),
         Axis::Column => base.h(grab).w_full().cursor_row_resize().child(div().h(hair).w_full().bg(line)),
@@ -499,6 +626,7 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
     let focused = win.is_some_and(|w| w.focused == pane);
     let maximized = win.is_some_and(|w| w.maximized == Some(pane));
     let titles: Vec<SharedString> = p.tabs.iter().map(|r| views::title(r).into()).collect();
+    let deck_id = f.deck.entity_id();
 
     // Collapsed in a row split: a narrow rail of monograms (GPUI can't rotate text).
     if p.collapsed && parent == Some(Axis::Row) {
@@ -543,8 +671,10 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
         .border_color(t.line)
         .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(drop_bg))
         .on_drop(move |tab: &DraggedTab, _, cx| {
-            let tab = tab.clone();
-            apply_on(&strip_deck, cx, |l| l.move_tab(tab.pane, tab.index, Drop::Into(pane)));
+            if tab.deck == deck_id {
+                let tab = tab.clone();
+                apply_on(&strip_deck, cx, |l| l.move_tab(tab.pane, tab.index, Drop::Into(pane)));
+            }
         });
 
     // Grip: drag the whole pane.
@@ -561,7 +691,7 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
             .text_color(t.dim)
             .cursor_grab()
             .tooltip(tip("drag to move this pane"))
-            .on_drag(DraggedPane { pane, title: pane_title }, |d, _, _, cx| {
+            .on_drag(DraggedPane { deck: deck_id, pane, title: pane_title }, |d, _, _, cx| {
                 let label: SharedString = format!("pane: {}", d.title).into();
                 cx.new(|_| DragGhost(label))
             })
@@ -602,7 +732,9 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
                     });
                 })
                 .on_mouse_down(MouseButton::Middle, move |_, _, cx| apply_on(&d_mid, cx, |l| l.close_tab(pane, i).map(|_| ())))
-                .on_drag(DraggedTab { pane, index: i, title: title.clone() }, |d, _, _, cx| cx.new(|_| DragGhost(d.title.clone())))
+                .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| {
+                    cx.new(|_| DragGhost(d.title.clone()))
+                })
                 .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
                 .child(
                     div()
@@ -716,14 +848,19 @@ fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity
     };
     let (bg, accent) = (t.drop_bg, t.accent);
     let (d_tab, d_pane) = (deck.clone(), deck.clone());
+    let deck_id = deck.entity_id();
     zone.drag_over::<DraggedTab>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
         .drag_over::<DraggedPane>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
         .on_drop(move |tab: &DraggedTab, _, cx| {
-            let tab = tab.clone();
-            apply_on(&d_tab, cx, |l| l.move_tab(tab.pane, tab.index, drop));
+            if tab.deck == deck_id {
+                let tab = tab.clone();
+                apply_on(&d_tab, cx, |l| l.move_tab(tab.pane, tab.index, drop));
+            }
         })
         .on_drop(move |dragged: &DraggedPane, _, cx| {
-            let p = dragged.pane;
-            apply_on(&d_pane, cx, |l| l.move_pane(p, drop));
+            if dragged.deck == deck_id {
+                let p = dragged.pane;
+                apply_on(&d_pane, cx, |l| l.move_pane(p, drop));
+            }
         })
 }

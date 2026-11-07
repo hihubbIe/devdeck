@@ -45,7 +45,8 @@ pub struct LogsView {
     longest: usize,
     follow: bool,
     scroll: UniformListScrollHandle,
-    _feed: Task<()>,
+    /// The stream; `None` once it finished or was stopped.
+    feed: Option<Task<()>>,
 }
 
 const LOG_TARGET: usize = 50_000;
@@ -60,8 +61,12 @@ impl LogsView {
                 let done = this
                     .update(cx, |v, cx| {
                         v.push_batch();
+                        let done = v.lines.len() >= LOG_TARGET;
+                        if done {
+                            v.feed = None;
+                        }
                         cx.notify();
-                        v.lines.len() >= LOG_TARGET
+                        done
                     })
                     .unwrap_or(true);
                 if done {
@@ -69,7 +74,7 @@ impl LogsView {
                 }
             }
         });
-        Self { lines: Vec::new(), longest: 0, follow: true, scroll: UniformListScrollHandle::new(), _feed: feed }
+        Self { lines: Vec::new(), longest: 0, follow: true, scroll: UniformListScrollHandle::new(), feed: Some(feed) }
     }
 
     fn push_batch(&mut self) {
@@ -93,6 +98,16 @@ impl LogsView {
         if self.follow {
             self.scroll.scroll_to_bottom();
         }
+    }
+
+    /// Counts as a running process for the quit guard until M2 brings real ones.
+    pub fn is_streaming(&self) -> bool {
+        self.feed.is_some()
+    }
+
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        self.feed = None;
+        cx.notify();
     }
 
     pub fn toggle_follow(&mut self, cx: &mut Context<Self>) {

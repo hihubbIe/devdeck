@@ -142,6 +142,10 @@ pub struct Window {
     pub root: Node,
     pub focused: PaneId,
     pub maximized: Option<PaneId>,
+    /// Last known size in logical pixels (detached windows), restored on reopen.
+    /// Positions are never kept: Wayland doesn't let apps place windows.
+    #[serde(default)]
+    pub size: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,6 +217,7 @@ impl Layout {
                 root: Node::Pane(pane),
                 focused: pane,
                 maximized: None,
+                size: None,
             }],
             panes,
             next_id: 2,
@@ -506,6 +511,12 @@ impl Layout {
 
     // ---------------------------------------------------------------- pane state
 
+    /// Remembers a window's size (logical pixels).
+    pub fn set_window_size(&mut self, window: WindowId, size: (f32, f32)) -> Result<()> {
+        self.window_mut(window)?.size = Some(size);
+        Ok(())
+    }
+
     pub fn focus(&mut self, pane: PaneId) -> Result<()> {
         let window = self.window_of(pane)?;
         self.window_mut(window)?.focused = pane;
@@ -589,7 +600,7 @@ impl Layout {
         let view = self.take_tab(pane, idx)?;
         let np = self.new_pane(vec![view]);
         let wid = WindowId(self.alloc());
-        self.windows.push(Window { id: wid, root: Node::Pane(np), focused: np, maximized: None });
+        self.windows.push(Window { id: wid, root: Node::Pane(np), focused: np, maximized: None, size: None });
         self.remove_pane_if_empty(pane)?;
         self.repair();
         Ok(wid)

@@ -1,11 +1,12 @@
 //! M1 step 1: settings view and UI scale (R9.4), on GPUI's test platform. The last
 //! test uses the real text system to check that text never wraps at a large scale.
 
+use devdeck_app::shell::Shell;
 use devdeck_app::{app_settings, deck::Deck};
 use devdeck_core::layout::MAIN_WINDOW;
 use devdeck_core::settings::SETTINGS_FILE;
 use devdeck_ui::logical;
-use gpui::{AppContext, Entity, Modifiers, TestAppContext, TestDispatcher, VisualTestContext, size};
+use gpui::{Entity, Modifiers, TestAppContext, TestDispatcher, VisualTestContext, size};
 use std::path::PathBuf;
 
 fn config_dir(tag: &str) -> PathBuf {
@@ -17,8 +18,8 @@ fn config_dir(tag: &str) -> PathBuf {
 fn setup(cx: &mut TestAppContext, tag: &str) -> (Entity<Deck>, PathBuf) {
     let dir = config_dir(tag);
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
-    let deck = cx.update(|cx| cx.new(|_| Deck::new(devdeck_app::initial_layout())));
-    cx.update(|cx| deck.update(cx, |d, cx| d.sync(cx)));
+    let shell = cx.update(|cx| Shell::start_single(devdeck_app::initial_layout, cx));
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
     cx.run_until_parked();
     (deck, dir)
 }

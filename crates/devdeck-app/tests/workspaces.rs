@@ -1,0 +1,258 @@
+//! M1 step 3: workspaces, persistence and the quit guard (R2, R8.1, R10.1), on GPUI's
+//! test platform. The demo has `personal` (notes, gallery) and `work` (with the log
+//! stream, which counts as running).
+
+use devdeck_app::deck::{Deck, SAVE_DELAY};
+use devdeck_app::shell::{QuitState, Shell, WorkspaceSpec};
+use devdeck_core::layout::{Layout, ViewRef, WindowId};
+use devdeck_core::state::{AppState, Loaded, StateStore};
+use devdeck_ui::overlay::{layer_count, layer_state};
+use devdeck_ui::{logical, open_menu, toasts};
+use gpui::{AnyWindowHandle, AppContext, Entity, TestAppContext, VisualTestContext, point};
+use std::path::PathBuf;
+
+fn temp(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("devdeck-wstest-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+fn start(cx: &mut TestAppContext, specs: Vec<WorkspaceSpec>, store: Option<StateStore>, tag: &str) -> Entity<Shell> {
+    let config = temp(&format!("{tag}-config"));
+    cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
+    let shell = cx.update(|cx| Shell::start(specs, "work", store, cx));
+    cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+    cx.run_until_parked();
+    shell
+}
+
+fn demo(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
+    start(cx, devdeck_app::demo_workspaces(), None, tag)
+}
+
+fn index(shell: &Entity<Shell>, cx: &TestAppContext, id: &str) -> usize {
+    cx.read(|cx| shell.read(cx).workspaces.iter().position(|w| w.id == id).expect("workspace"))
+}
+
+fn deck(shell: &Entity<Shell>, cx: &TestAppContext, id: &str) -> Entity<Deck> {
+    let i = index(shell, cx, id);
+    cx.read(|cx| shell.read(cx).workspaces[i].deck.clone())
+}
+
+fn switch(shell: &Entity<Shell>, cx: &mut TestAppContext, id: &str) {
+    let i = index(shell, cx, id);
+    cx.update(|cx| shell.update(cx, |s, cx| s.switch(i, cx)));
+    cx.run_until_parked();
+}
+
+fn detach_notes(deck: &Entity<Deck>, cx: &mut TestAppContext) -> WindowId {
+    let w = cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let (p, i) = l.find_view(&ViewRef::new("demo/notes")).expect("notes open");
+                l.detach(p, i)
+            })
+        })
+    });
+    cx.run_until_parked();
+    w.expect("detached")
+}
+
+fn main_window(shell: &Entity<Shell>, cx: &TestAppContext) -> AnyWindowHandle {
+    cx.read(|cx| shell.read(cx).main_window().expect("main window").into())
+}
+
+fn modals(shell: &Entity<Shell>, cx: &mut TestAppContext) -> usize {
+    let main = main_window(shell, cx);
+    cx.update(|cx| layer_state(main, cx).1)
+}
+
+fn quit_state(shell: &Entity<Shell>, cx: &TestAppContext) -> (QuitState, usize) {
+    cx.read(|cx| (shell.read(cx).quit_state, shell.read(cx).quits))
+}
+
+#[gpui::test]
+fn workspaces_are_alphabetical_and_start_on_the_default(cx: &mut TestAppContext) {
+    let shell = demo(cx, "order");
+    let names: Vec<String> = cx.read(|cx| shell.read(cx).workspaces.iter().map(|w| w.name.clone()).collect());
+    assert_eq!(names, ["personal", "work"]);
+    assert_eq!(cx.read(|cx| shell.read(cx).active_name().to_string()), "work");
+    assert_eq!(cx.windows().len(), 1, "one main window for every workspace");
+}
+
+#[gpui::test]
+fn switching_keeps_each_workspace_alive(cx: &mut TestAppContext) {
+    let shell = demo(cx, "alive");
+    let work = deck(&shell, cx, "work");
+    let personal = deck(&shell, cx, "personal");
+    let (work_layout, work_views) = cx.read(|cx| (work.read(cx).layout.clone(), work.read(cx).live_views()));
+    switch(&shell, cx, "personal");
+    assert!(cx.read(|cx| personal.read(cx).is_active() && !work.read(cx).is_active()));
+    assert_eq!(cx.read(|cx| work.read(cx).live_views()), work_views, "hidden workspace keeps its views");
+    assert!(!cx.read(|cx| work.read(cx).running(cx)).is_empty(), "and keeps running");
+    switch(&shell, cx, "work");
+    assert_eq!(cx.read(|cx| work.read(cx).layout.clone()), work_layout);
+    assert_eq!(cx.windows().len(), 1);
+}
+
+#[gpui::test]
+fn detached_windows_follow_their_workspace(cx: &mut TestAppContext) {
+    let shell = demo(cx, "detached");
+    let work = deck(&shell, cx, "work");
+    detach_notes(&work, cx);
+    assert_eq!(cx.windows().len(), 2);
+    switch(&shell, cx, "personal");
+    assert_eq!(cx.windows().len(), 1, "work's detached window closes while hidden");
+    assert_eq!(cx.read(|cx| work.read(cx).layout.windows.len()), 2, "but stays in the model");
+    switch(&shell, cx, "work");
+    assert_eq!(cx.windows().len(), 2, "and comes back");
+    // Quick A → B → A without letting deferred work run in between.
+    let (p, w) = (index(&shell, cx, "personal"), index(&shell, cx, "work"));
+    cx.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.switch(p, cx);
+            s.switch(w, cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 2, "exactly one detached window, not zero or two");
+}
+
+#[gpui::test]
+fn ctrl_alt_n_switches_in_alphabetical_order(cx: &mut TestAppContext) {
+    let shell = demo(cx, "keys");
+    let main = main_window(&shell, cx);
+    cx.simulate_keystrokes(main, "ctrl-alt-1");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| shell.read(cx).active_name().to_string()), "personal");
+    cx.simulate_keystrokes(main, "ctrl-alt-2");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| shell.read(cx).active_name().to_string()), "work");
+    cx.simulate_keystrokes(main, "ctrl-alt-9");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| shell.read(cx).active_name().to_string()), "work", "no ninth workspace: nothing happens");
+}
+
+#[gpui::test]
+fn quit_with_nothing_running_quits_at_once(cx: &mut TestAppContext) {
+    let shell = start(cx, vec![WorkspaceSpec::new("work", "work", devdeck_app::personal_layout)], None, "idle");
+    cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Idle, 1));
+    assert_eq!(modals(&shell, cx), 0, "no guard");
+}
+
+#[gpui::test]
+fn guard_opens_once_and_cancel_keeps_the_app(cx: &mut TestAppContext) {
+    let shell = demo(cx, "cancel");
+    switch(&shell, cx, "personal");
+    cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
+    cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Asking, 0), "work runs in the background, so ask");
+    assert_eq!(modals(&shell, cx), 1, "asking twice shows one guard");
+    let main = main_window(&shell, cx);
+    cx.simulate_keystrokes(main, "escape");
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Idle, 0));
+    assert_eq!(modals(&shell, cx), 0);
+    assert!(!cx.read(|cx| shell.read(cx).running(cx)).is_empty(), "nothing was stopped");
+}
+
+#[gpui::test]
+fn stop_all_and_quit_stops_then_quits(cx: &mut TestAppContext) {
+    let shell = demo(cx, "stop");
+    cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
+    cx.run_until_parked();
+    let main = main_window(&shell, cx);
+    cx.simulate_keystrokes(main, "enter");
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Idle, 1), "enter on the default button stops and quits");
+    assert!(cx.read(|cx| shell.read(cx).running(cx)).is_empty(), "everything stopped first");
+}
+
+#[gpui::test]
+fn every_quit_path_reaches_the_guard(cx: &mut TestAppContext) {
+    let shell = demo(cx, "paths");
+    // ctrl+q from a detached window.
+    let work = deck(&shell, cx, "work");
+    detach_notes(&work, cx);
+    let main = main_window(&shell, cx);
+    let detached = cx.windows().into_iter().find(|w| *w != main).expect("detached window");
+    cx.simulate_keystrokes(detached, "ctrl-q");
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Asking, 0));
+    assert_eq!(modals(&shell, cx), 1, "the guard shows in the main window");
+    cx.simulate_keystrokes(main, "escape");
+    cx.run_until_parked();
+    // The window manager closing the main window.
+    let closed = VisualTestContext::from_window(main, cx).simulate_close();
+    assert!(!closed, "the main window never closes on its own");
+    cx.run_until_parked();
+    assert_eq!(quit_state(&shell, cx), (QuitState::Asking, 0));
+}
+
+#[gpui::test]
+fn layout_is_saved_once_after_a_burst(cx: &mut TestAppContext) {
+    let dir = temp("save");
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "save");
+    let work = deck(&shell, cx, "work");
+    for v in ["demo/a", "demo/b", "demo/c"] {
+        cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| l.open(ViewRef::new(v), l.main().focused).map(|_| ()))));
+    }
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| work.read(cx).saves), 0, "nothing written before the delay");
+    cx.executor().advance_clock(SAVE_DELAY);
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| work.read(cx).saves), 1, "one write for the burst");
+    let saved = StateStore::new(dir.clone()).load_layout("work");
+    assert_eq!(saved, Loaded::Ok(cx.read(|cx| work.read(cx).layout.clone())));
+    // A pending change is written on quit.
+    cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&ViewRef::new("demo/a")))));
+    cx.update(|cx| shell.update(cx, |s, cx| s.flush(cx)));
+    assert_eq!(cx.read(|cx| work.read(cx).saves), 2);
+    let app = StateStore::new(dir).load_app();
+    assert!(matches!(app, Loaded::Ok(AppState { active_workspace: Some(ref w), .. }) if w == "work"));
+}
+
+fn custom_work() -> Layout {
+    let mut l = devdeck_app::initial_layout();
+    l.close_view(&ViewRef::new("demo/long")).unwrap();
+    l
+}
+
+#[gpui::test]
+fn saved_state_is_restored_and_broken_files_fall_back(cx: &mut TestAppContext) {
+    let dir = temp("restore");
+    let store = StateStore::new(dir.clone());
+    store.save_layout("work", &custom_work()).unwrap();
+    store.save_app(&AppState { active_workspace: Some("personal".into()), main_size: None }).unwrap();
+    std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();
+    std::fs::write(dir.join("workspaces/personal/layout.json"), "{oops").unwrap();
+
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(store), "restore");
+    assert_eq!(cx.read(|cx| shell.read(cx).active_name().to_string()), "personal", "active workspace restored");
+    let work = deck(&shell, cx, "work");
+    assert_eq!(cx.read(|cx| work.read(cx).layout.clone()), custom_work(), "saved layout restored");
+    let personal = deck(&shell, cx, "personal");
+    assert_eq!(cx.read(|cx| personal.read(cx).layout.clone()), devdeck_app::personal_layout(), "broken file → default");
+    assert!(dir.join("workspaces/personal/layout.json.bad").exists(), "broken file kept aside");
+    let toasts = cx.update(|cx| toasts(cx).read(cx).queue.items.len());
+    assert_eq!(toasts, 1, "the problem is reported");
+}
+
+#[gpui::test]
+fn overlay_layers_are_freed_with_their_window(cx: &mut TestAppContext) {
+    let shell = demo(cx, "layers");
+    let work = deck(&shell, cx, "work");
+    let id = detach_notes(&work, cx);
+    let main = main_window(&shell, cx);
+    let detached = cx.windows().into_iter().find(|w| *w != main).expect("detached window");
+    let before = cx.read(layer_count);
+    let _ = cx.update_window(detached, |_, window, cx| open_menu(point(logical(10.), logical(10.)), vec![], window, cx));
+    assert_eq!(cx.read(layer_count), before + 1);
+    cx.update(|cx| work.update(cx, |d, cx| d.reattach(id, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 1);
+    assert_eq!(cx.read(layer_count), before, "the closed window's layer is gone");
+}

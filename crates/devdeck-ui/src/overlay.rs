@@ -13,7 +13,7 @@ use crate::components::label;
 use crate::theme::{Theme, theme};
 use gpui::{
     Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global, KeyBinding,
-    Pixels, Point, Render, SharedString, Subscription, Task, WeakFocusHandle, Window, actions, anchored,
+    Pixels, Point, Render, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
     deferred, div, point, prelude::*,
 };
 use std::collections::HashMap;
@@ -271,7 +271,7 @@ pub struct OverlayLayer {
 }
 
 #[derive(Default)]
-struct Layers(HashMap<AnyWindowHandle, Entity<OverlayLayer>>);
+struct Layers(HashMap<WindowId, Entity<OverlayLayer>>);
 impl Global for Layers {}
 
 /// The overlay layer of a window, created on first use.
@@ -279,19 +279,24 @@ pub fn layer(window: AnyWindowHandle, cx: &mut App) -> Entity<OverlayLayer> {
     if !cx.has_global::<Layers>() {
         cx.set_global(Layers::default());
     }
-    if let Some(l) = cx.global::<Layers>().0.get(&window) {
+    if let Some(l) = cx.global::<Layers>().0.get(&window.window_id()) {
         return l.clone();
     }
     let l = cx.new(|_| OverlayLayer { menu: None, modals: Vec::new() });
-    cx.global_mut::<Layers>().0.insert(window, l.clone());
+    cx.global_mut::<Layers>().0.insert(window.window_id(), l.clone());
     l
 }
 
-/// Drops a closed window's layer.
-pub fn forget_layer(window: AnyWindowHandle, cx: &mut App) {
+/// Drops a closed window's layer (call from `on_window_closed`).
+pub fn forget_layer(window: WindowId, cx: &mut App) {
     if cx.has_global::<Layers>() {
         cx.global_mut::<Layers>().0.remove(&window);
     }
+}
+
+/// How many windows have an overlay layer (leak check).
+pub fn layer_count(cx: &App) -> usize {
+    cx.try_global::<Layers>().map_or(0, |l| l.0.len())
 }
 
 /// Opens a context menu at `position` (window coordinates) and moves focus into it.
@@ -341,7 +346,7 @@ pub fn pop_modal(window: &mut Window, cx: &mut App) {
 
 /// Elements to append to a window root: modals (each draws its own frame) and the menu.
 pub fn render_layer(window: &Window, cx: &App) -> Vec<AnyElement> {
-    let Some(l) = cx.try_global::<Layers>().and_then(|g| g.0.get(&window.window_handle())) else { return Vec::new() };
+    let Some(l) = cx.try_global::<Layers>().and_then(|g| g.0.get(&window.window_handle().window_id())) else { return Vec::new() };
     let l = l.read(cx);
     let mut out: Vec<AnyElement> = l.modals.iter().map(|m| m.clone().into_any_element()).collect();
     if let Some(m) = &l.menu {

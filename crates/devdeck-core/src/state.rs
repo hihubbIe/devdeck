@@ -29,6 +29,8 @@ pub fn default_state_dir() -> PathBuf {
 #[serde(default)]
 pub struct AppState {
     pub active_workspace: Option<String>,
+    /// Main window size in logical pixels.
+    pub main_size: Option<(f32, f32)>,
 }
 
 /// Outcome of reading a saved file.
@@ -39,12 +41,37 @@ pub enum Loaded<T> {
     Broken(String),
 }
 
+/// Writes `text` to `path` so a crash never leaves a half-written file: a unique
+/// temporary file is written and synced, renamed over the target, and the folder synced.
 pub fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = path.parent().ok_or("path has no folder")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok::<(), std::io::Error>(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Moves a file that couldn't be read aside (`<name>.bad`) so the next save doesn't
+/// destroy it.
+fn set_aside(path: &Path) {
+    let bad = path.with_extension(format!("{}.bad", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
+    let _ = std::fs::rename(path, bad);
 }
 
 fn read(path: &Path) -> Loaded<String> {
@@ -60,6 +87,7 @@ pub fn safe_id(id: &str) -> String {
     id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
+#[derive(Clone, Debug)]
 pub struct StateStore {
     pub dir: PathBuf,
 }
@@ -78,7 +106,10 @@ impl StateStore {
         match read(&path) {
             Loaded::Ok(t) => match Layout::from_json(&t) {
                 Ok(l) => Loaded::Ok(l),
-                Err(e) => Loaded::Broken(format!("{}: {e}", path.display())),
+                Err(e) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: {e} (kept as layout.json.bad)", path.display()))
+                }
             },
             Loaded::Missing => Loaded::Missing,
             Loaded::Broken(e) => Loaded::Broken(e),
@@ -136,15 +167,19 @@ mod tests {
         assert_eq!(s.load_layout("work"), Loaded::Ok(l));
         std::fs::write(s.dir.join("workspaces/work/layout.json"), "{oops").unwrap();
         assert!(matches!(s.load_layout("work"), Loaded::Broken(_)));
-        assert!(!s.dir.join("workspaces/work/layout.tmp").exists(), "no temp file left behind");
+        assert!(s.dir.join("workspaces/work/layout.json.bad").exists(), "broken file kept aside");
+        assert_eq!(s.load_layout("work"), Loaded::Missing, "and no longer read");
+        let leftovers = std::fs::read_dir(s.dir.join("workspaces/work")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(leftovers, 0, "no temp file left behind");
     }
 
     #[test]
     fn app_state_and_safe_ids() {
         let s = store("app");
         assert_eq!(s.load_app(), Loaded::Missing);
-        s.save_app(&AppState { active_workspace: Some("personal".into()) }).unwrap();
-        assert_eq!(s.load_app(), Loaded::Ok(AppState { active_workspace: Some("personal".into()) }));
+        let state = AppState { active_workspace: Some("personal".into()), main_size: Some((1600., 1000.)) };
+        s.save_app(&state).unwrap();
+        assert_eq!(s.load_app(), Loaded::Ok(state));
         assert_eq!(safe_id("../evil name"), "___evil_name");
     }
 }

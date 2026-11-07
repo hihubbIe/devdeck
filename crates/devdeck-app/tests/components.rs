@@ -1,5 +1,6 @@
 //! M1 step 2: shared components inside the real app shell (GPUI test platform).
 
+use devdeck_app::shell::Shell;
 use devdeck_app::{deck::Deck, gallery::Gallery};
 use devdeck_core::layout::{MAIN_WINDOW, ViewRef};
 use devdeck_ui::overlay::layer_state;
@@ -11,8 +12,8 @@ fn setup(cx: &mut TestAppContext) -> Entity<Deck> {
     let dir = std::env::temp_dir().join(format!("devdeck-comptest-{}-{:?}", std::process::id(), std::thread::current().id()));
     let _ = std::fs::remove_dir_all(&dir);
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
-    let deck = cx.update(|cx| cx.new(|_| Deck::new(devdeck_app::initial_layout())));
-    cx.update(|cx| deck.update(cx, |d, cx| d.sync(cx)));
+    let shell = cx.update(|cx| Shell::start_single(devdeck_app::initial_layout, cx));
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
     cx.run_until_parked();
     // Show the gallery tab.
     cx.update(|cx| {

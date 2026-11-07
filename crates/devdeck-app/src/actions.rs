@@ -2,7 +2,8 @@
 //! the same `Deck::apply` paths. Pane actions only fire while focus is in the pane
 //! area (`Panes` key context), so they never act behind the Settings view.
 
-use gpui::{App, KeyBinding, actions};
+use crate::shell::{self, ConfirmQuit};
+use gpui::{Action, App, KeyBinding, actions};
 
 actions!(
     devdeck,
@@ -36,6 +37,11 @@ actions!(
     ]
 );
 
+/// Shows the workspace at this position (alphabetical, 0-based).
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = devdeck, no_json)]
+pub struct SwitchWorkspace(pub usize);
+
 pub fn bind(cx: &mut App) {
     // Pane keys never fire while typing in an input.
     let panes = Some("Panes && !TextInput");
@@ -67,5 +73,12 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-,", ToggleSettings, None),
         KeyBinding::new("escape", CloseSettings, Some("Settings")),
         KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new("enter", ConfirmQuit, Some("QuitGuard")),
     ]);
+    const WORKSPACE_KEYS: [&str; 9] =
+        ["ctrl-alt-1", "ctrl-alt-2", "ctrl-alt-3", "ctrl-alt-4", "ctrl-alt-5", "ctrl-alt-6", "ctrl-alt-7", "ctrl-alt-8", "ctrl-alt-9"];
+    cx.bind_keys(WORKSPACE_KEYS.iter().enumerate().map(|(i, k)| KeyBinding::new(k, SwitchWorkspace(i), None)));
+    // App level, so they work from any window, detached ones included.
+    cx.on_action(|_: &Quit, cx| shell::request_quit(cx));
+    cx.on_action(|a: &SwitchWorkspace, cx| shell::switch(a.0, cx));
 }

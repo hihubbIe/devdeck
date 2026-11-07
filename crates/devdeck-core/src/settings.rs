@@ -5,6 +5,7 @@
 //! renames it, so a crash never leaves a half-written file.
 
 use serde::{Deserialize, Serialize};
+use crate::state::write_atomic;
 use std::path::{Path, PathBuf};
 
 /// UI scale steps, applied on top of the desktop's own scale factor. Discrete so the
@@ -114,13 +115,6 @@ fn first_line(s: &str) -> String {
     s.lines().find(|l| !l.trim().is_empty()).unwrap_or(s).trim().to_string()
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let dir = path.parent().ok_or("settings path has no folder")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
-}
 
 #[cfg(test)]
 mod tests {
@@ -188,7 +182,7 @@ mod tests {
         let d = tmp_dir("save");
         let mut s = SettingsStore::load(&d);
         s.set_scale(1.49).unwrap();
-        assert!(!d.join("settings.toml.tmp").exists());
+        assert!(std::fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")));
         let back = SettingsStore::load(&d);
         assert_eq!(back.settings.ui_scale, 1.5);
         assert!(back.load_error.is_none());

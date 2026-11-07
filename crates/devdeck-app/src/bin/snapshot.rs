@@ -4,23 +4,27 @@
 //!
 //! `cargo run -p devdeck-app --features snapshot --bin devdeck-snapshot -- <out-dir> [filter]`
 
-use devdeck_app::{app_settings, deck::Deck, gallery::Gallery};
+use devdeck_app::shell::{Shell, WorkspaceSpec};
+use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
 use devdeck_ui::{ToastKind, logical, open_menu, toasts};
-use gpui::{AnyWindowHandle, AppContext, Entity, Focusable, HeadlessAppContext, point};
+use gpui::{AnyWindowHandle, Entity, Focusable, HeadlessAppContext, point};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-type Extra = fn(&mut HeadlessAppContext, AnyWindowHandle, &Entity<Deck>);
+type Extra = fn(&mut HeadlessAppContext, AnyWindowHandle, &Entity<Shell>);
 
 struct State {
     name: &'static str,
+    /// The `work` workspace's layout.
     layout: fn() -> Layout,
     settle: Duration,
     scale: f32,
     settings_open: bool,
     extra: Option<Extra>,
+    /// Adds the `personal` workspace and shows this one.
+    workspaces: Option<&'static str>,
 }
 
 fn gallery_layout() -> Layout {
@@ -31,7 +35,8 @@ fn gallery_layout() -> Layout {
     l
 }
 
-fn gallery_menu_and_toasts(cx: &mut HeadlessAppContext, w: AnyWindowHandle, deck: &Entity<Deck>) {
+fn gallery_menu_and_toasts(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
     let g = cx.update(|cx| deck.read(cx).view(&ViewRef::new("demo/gallery")).unwrap().downcast::<Gallery>().unwrap());
     let _ = cx.update_window(w, |_, window, cx| {
         let filled = g.read(cx).filled.clone();
@@ -48,10 +53,21 @@ fn gallery_menu_and_toasts(cx: &mut HeadlessAppContext, w: AnyWindowHandle, deck
     });
 }
 
-fn gallery_modal(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _deck: &Entity<Deck>) {
+fn gallery_modal(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _shell: &Entity<Shell>) {
     let _ = cx.update_window(w, |_, window, cx| {
         devdeck_app::gallery::open_demo_modal(window, cx);
     });
+}
+
+fn workspace_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let _ = cx.update_window(w, |_, window, cx| {
+        let items = workspace_menu_items(shell, cx);
+        open_menu(point(logical(110.), logical(30.)), items, window, cx);
+    });
+}
+
+fn quit_guard(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
 }
 
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
@@ -105,6 +121,7 @@ fn states() -> Vec<State> {
         scale,
         settings_open,
         extra: None,
+        workspaces: None,
     };
     let x = |name, scale, extra: Extra| State {
         name,
@@ -113,6 +130,16 @@ fn states() -> Vec<State> {
         scale,
         settings_open: false,
         extra: Some(extra),
+        workspaces: None,
+    };
+    let w = |name, active, scale, extra: Option<Extra>| State {
+        name,
+        layout: devdeck_app::initial_layout,
+        settle: Duration::from_millis(300),
+        scale,
+        settings_open: false,
+        extra,
+        workspaces: Some(active),
     };
     vec![
         s("01-initial", devdeck_app::initial_layout, 500, 1.0, false),
@@ -133,6 +160,11 @@ fn states() -> Vec<State> {
         x("30-gallery-menu-toasts", 1.0, gallery_menu_and_toasts),
         x("31-gallery-menu-toasts-150", 1.5, gallery_menu_and_toasts),
         x("32-gallery-modal", 1.0, gallery_modal),
+        w("40-workspace-work", "work", 1.0, None),
+        w("41-workspace-personal", "personal", 1.0, None),
+        w("42-workspace-menu", "work", 1.0, Some(workspace_menu)),
+        w("43-quit-guard", "work", 1.0, Some(quit_guard)),
+        w("44-quit-guard-150", "work", 1.5, Some(quit_guard)),
     ]
 }
 
@@ -154,14 +186,24 @@ fn main() -> Result<(), String> {
                 cx.notify();
             });
         });
-        let deck = cx.update(|cx| cx.new(|_| Deck::new((state.layout)())));
-        cx.update(|cx| deck.update(cx, |d, cx| d.sync(cx)));
+        let mut specs = vec![WorkspaceSpec::new("work", "work", state.layout)];
+        if state.workspaces.is_some() {
+            specs.push(WorkspaceSpec::new("personal", "personal", devdeck_app::personal_layout));
+        }
+        let shell = cx.update(|cx| Shell::start(specs, state.workspaces.unwrap_or("work"), None, cx));
+        cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
         cx.run_until_parked();
         cx.advance_clock(state.settle);
         cx.run_until_parked();
-        let windows = cx.update(|cx| cx.windows());
+        // Main window first (w0), then detached ones.
+        let windows = cx.update(|cx| {
+            let main: AnyWindowHandle = shell.read(cx).main_window().expect("main window").into();
+            let mut all = cx.windows();
+            all.sort_by_key(|w| *w != main);
+            all
+        });
         if let Some(extra) = state.extra {
-            extra(&mut cx, windows[0], &deck);
+            extra(&mut cx, windows[0], &shell);
             cx.run_until_parked();
         }
         for (i, w) in windows.iter().enumerate() {
@@ -176,7 +218,7 @@ fn main() -> Result<(), String> {
             let _ = cx.update_window(w, |_, window, _| window.remove_window());
         }
         cx.run_until_parked();
-        drop(deck);
+        drop(shell);
     }
     let _ = std::fs::remove_dir_all(&config);
     Ok(())

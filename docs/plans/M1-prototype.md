@@ -286,3 +286,19 @@ a burst of changes; stress cycles include workspace switches (leak check).
 11. "Stop all" is asynchronous (stopping state, then quit) so M2's process-group kill
     fits; ctrl+alt+N follows the alphabetical order of workspaces. **Accepted.**
 12. Detached-gone/back checked with GPUI asserts rather than snapshots. **Accepted.**
+
+### Step 3 outcome
+
+Built as assessed. `Shell` (`crates/devdeck-app/src/shell.rs`) owns the workspaces and
+the main window; each `Deck` owns one workspace's layout, views and detached windows.
+The two demo workspaces (`personal`, `work`) are defined in code until M2's config
+(R2.1 partial). The quit guard lists the demo log stream as running; real processes
+come with M2 (R8.1 partial). Layouts save one second after the first change of a
+burst, on the background executor, and on quit.
+
+Checks: 11 new tests in `tests/workspaces.rs` (switching, detached windows across
+switches including a quick A→B→A, ctrl+alt+N, every quit path, Cancel, Stop all,
+debounced save, restore, broken-file fallback, overlay layers freed). Snapshots
+40–44 (work, personal, workspace menu, quit guard at 100 % and 150 %) and 08
+(detached) checked. The stress run now switches workspaces every 25 cycles; it runs
+with the M1 measurements at the end of the milestone, not per step.

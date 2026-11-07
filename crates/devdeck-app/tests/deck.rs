@@ -2,8 +2,9 @@
 //! view instances are released when their tab closes (leak check, R11.4).
 
 use devdeck_app::deck::Deck;
+use devdeck_app::shell::Shell;
 use devdeck_core::layout::{Drop, MAIN_WINDOW, ViewRef};
-use gpui::{AppContext, Entity, TestAppContext};
+use gpui::{Entity, TestAppContext};
 
 /// A fresh config folder per test, so tests never touch the real one.
 fn config_dir(tag: &str) -> std::path::PathBuf {
@@ -15,8 +16,8 @@ fn config_dir(tag: &str) -> std::path::PathBuf {
 fn setup(cx: &mut TestAppContext) -> Entity<Deck> {
     let dir = config_dir("deck");
     cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
-    let deck = cx.update(|cx| cx.new(|_| Deck::new(devdeck_app::initial_layout())));
-    cx.update(|cx| deck.update(cx, |d, cx| d.sync(cx)));
+    let shell = cx.update(|cx| Shell::start_single(devdeck_app::initial_layout, cx));
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
     cx.run_until_parked();
     deck
 }
