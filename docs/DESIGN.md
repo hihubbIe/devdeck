@@ -172,6 +172,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   ⇲ re-attach and × close on detached windows (user decision after the M0 finding).
 - 2026-11-07 Settings as a full-window view; UI scale is the first setting, early in M1
   (user decision).
+- 2026-11-07 The theme is global, like the UI scale, not per workspace (user decision).
 
 ## Open questions
 

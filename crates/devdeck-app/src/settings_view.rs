@@ -2,7 +2,7 @@
 //! open; the title bar stays. Esc or the gear button closes it.
 
 use crate::app_settings::{self, AppSettings};
-use devdeck_core::settings::{DEFAULT_THEME, SCALE_STEPS};
+use devdeck_core::settings::SCALE_STEPS;
 use devdeck_ui::{button, kbd, label, section, theme, toggle_button};
 use gpui::{
     Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Styled,
@@ -35,7 +35,12 @@ fn percent(scale: f32) -> String {
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
-        let store = app_settings::settings(cx).read(cx).store.clone();
+        let all = app_settings::settings(cx).read(cx);
+        let store = all.store.clone();
+        let current_theme = all.current_colors().name.clone();
+        let theme_names: Vec<String> = all.themes.iter().map(|t| t.name.clone()).collect();
+        let theme_problems = all.theme_problems.clone();
+        let themes_dir = all.themes_dir.display().to_string();
         let scale = store.settings.scale();
         let label_w = t.size(160.);
 
@@ -45,6 +50,30 @@ impl Render for SettingsView {
                     .on_click(move |_, _, cx| app_settings::set_scale(step, cx)),
             )
         });
+
+        let theme_row = theme_names.into_iter().enumerate().fold(div().flex().gap_1(), |row, (i, name)| {
+            let on = name == current_theme;
+            row.child(
+                toggle_button(("theme", i), name.clone(), on, &t)
+                    .debug_selector({
+                        let name = name.clone();
+                        move || format!("theme-{name}")
+                    })
+                    .on_click({
+                        let name = name.clone();
+                        move |_, _, cx| app_settings::set_theme(&name, cx)
+                    }),
+            )
+        });
+        let mut theme_notes = div().flex().flex_col().gap_1().mt_1().child(
+            div()
+                .flex()
+                .child(div().w(label_w).flex_none())
+                .child(label(format!("add themes as TOML files in {themes_dir} (copy assets/themes/devdeck-dark.toml)")).text_color(t.mute)),
+        );
+        for p in theme_problems {
+            theme_notes = theme_notes.child(div().flex().child(div().w(label_w).flex_none()).child(label(p).text_color(t.warn)));
+        }
 
         let mut files = div().flex().flex_col().gap_1().child(
             div()
@@ -112,9 +141,9 @@ impl Render for SettingsView {
                     .items_center()
                     .gap_2()
                     .child(div().w(label_w).flex_none().child("Theme"))
-                    .child(toggle_button("theme-dark", DEFAULT_THEME, store.settings.theme == DEFAULT_THEME, &t))
-                    .child(label("more themes come with theme files").text_color(t.mute)),
+                    .child(theme_row),
             )
+            .child(theme_notes)
             .child(section("Files", &t))
             .child(files)
     }

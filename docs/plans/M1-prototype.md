@@ -220,3 +220,40 @@ Out of scope: actions registry and real menus on app elements (step 6).
 10. Test list (outside click, menu inside viewport after resize, modal tab cycle,
     focus restore fallback, toast task stops, caret stays visible). **Accepted.**
 11. Middle-click primary paste. **Skipped for now** (unverified on Wayland).
+
+## Step 3 · Workspaces, persistence, quit guard
+
+Scope:
+- **Shell** (app entity, global): `workspaces: Vec<Workspace { id, name, deck }>`, `active`.
+  Owns the single main OS window. Its root view (`WindowView` for MAIN) holds the Shell
+  and renders the active workspace's main layout; it re-subscribes to the active deck on
+  every switch. Detached windows stay owned by their Deck.
+- **Deck changes**: `Deck::sync` never opens an OS window for MAIN_WINDOW. A Deck has an
+  `active` flag: when it goes inactive it closes its detached OS windows (model kept,
+  last size remembered); when it becomes active again `sync` reopens them, then focus
+  returns to the main window. Views of inactive workspaces stay alive (their data keeps
+  flowing); hidden views don't render.
+- **Switching**: title-bar workspace button (`work ▾`) opens a menu of workspaces
+  (alphabetical, current checked); keys ctrl+alt+1…9 pick by position; the window title
+  shows the workspace. Settings and the quit guard work in any workspace.
+- **Quit guard (R8.1)**: every quit path (ctrl+q, title-bar ×, window manager close)
+  goes through `Shell::request_quit`. If anything is running in any workspace, a modal
+  lists it per workspace with "Stop all and quit" (default) and "Cancel"; otherwise quit
+  at once. In M1 "running" comes from a `Deck::running()` list (the demo log stream
+  counts while streaming); M2 plugs in real processes.
+- **Persistence (R10.1)**: `devdeck-core::state` with the state folder
+  (`DEVDECK_STATE_DIR` > `$XDG_STATE_HOME/devdeck` > `~/.local/state/devdeck`).
+  Per workspace `workspaces/<id>/layout.json`; `app.json` with the active workspace.
+  Saved after changes, debounced by one timer per deck (≈1 s, no timer when idle);
+  restored at start; a broken file falls back to the default layout with a toast.
+- **Demo workspaces**: `work` (current demo layout, cluster demo) and `personal` (notes
+  and gallery only, no cluster) defined in code until M2's config.
+
+States to snapshot: work active; personal active; quit guard modal; work with a detached
+window then switched to personal (detached window gone) and back (window back).
+
+Tests: state dir precedence; layout save/restore round trip and broken-file fallback;
+switching keeps each workspace's layout and views alive; detached windows close/reopen
+on switch; every quit path shows the guard when something runs and quits directly
+otherwise; "Cancel" keeps the app; ctrl+alt+N switches; debounced save writes once after
+a burst of changes; stress cycles include workspace switches (leak check).

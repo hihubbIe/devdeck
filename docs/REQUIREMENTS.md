@@ -16,7 +16,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 2. Workspaces
 
-- [ ] **R2.1** The app holds several workspaces (for example "work" and "personal"). They share nothing: folders, envs, cluster settings, layouts, pins, theme choice, processes, history.
+- [ ] **R2.1** The app holds several workspaces (for example "work" and "personal"). They share nothing: folders, envs, cluster settings, layouts, pins, processes, history. The theme and the UI scale are global (decided 2026-11-07).
 - [ ] **R2.2** Exactly one workspace is displayed at a time. Switching does not stop anything: the others keep running in the background and come back in their exact state.
 - [ ] **R2.3** Envs, cluster access and k9s are optional per workspace. When a workspace has none, the related UI (env selector, Cluster area, deploy actions) does not appear at all.
 

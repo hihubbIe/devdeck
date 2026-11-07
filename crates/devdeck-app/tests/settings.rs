@@ -100,3 +100,29 @@ fn text_never_wraps_at_large_scale() {
         assert!(b.size.height <= line + logical(1.), "{selector} wrapped: height {:?} > line {:?}", b.size.height, line);
     }
 }
+
+#[gpui::test]
+fn theme_picker_switches_globally_and_saves(cx: &mut TestAppContext) {
+    let dir = config_dir("theme");
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(dir.join("themes/paper.toml"), "name = \"paper\"\n[colors]\nbg = \"#fafafa\"\nfg = \"#111111\"\n").unwrap();
+    cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
+    let names: Vec<String> = cx.read(|cx| app_settings::settings(cx).read(cx).themes.iter().map(|t| t.name.clone()).collect());
+    assert_eq!(names, ["devdeck-dark", "paper"]);
+    cx.update(|cx| app_settings::set_theme("paper", cx));
+    assert_eq!(cx.read(|cx| devdeck_ui::theme(cx).name.to_string()), "paper");
+    assert!(saved(&dir).contains("theme = \"paper\""));
+    cx.update(|cx| app_settings::set_theme("does-not-exist", cx));
+    assert_eq!(cx.read(|cx| devdeck_ui::theme(cx).name.to_string()), "paper", "unknown names are ignored");
+}
+
+#[gpui::test]
+fn unknown_saved_theme_falls_back_with_a_message(cx: &mut TestAppContext) {
+    let dir = config_dir("theme-missing");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(SETTINGS_FILE), "theme = \"gone\"\n").unwrap();
+    cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
+    assert_eq!(cx.read(|cx| devdeck_ui::theme(cx).name.to_string()), "devdeck-dark");
+    let problems = cx.read(|cx| app_settings::settings(cx).read(cx).theme_problems.clone());
+    assert!(problems.iter().any(|p| p.contains("gone")), "{problems:?}");
+}
