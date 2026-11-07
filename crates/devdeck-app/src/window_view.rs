@@ -492,6 +492,9 @@ impl Render for WindowView {
         stats::count_render();
         let t = theme(cx).clone();
         apply_window_scale(window, &t);
+        // Terminals answer colour and size queries with the theme even before a run view
+        // painted one (a run started in the background).
+        devdeck_ui::terminal::sync_look(&t, devdeck_ui::terminal::cell_size(window, &t));
         let is_main = self.is_main();
         let settings_open = is_main && app_settings::is_open(cx);
         if settings_open && self.settings.is_none() {

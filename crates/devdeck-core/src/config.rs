@@ -20,9 +20,10 @@
 //!   ports = [5720]
 //!   tier = "primary"                  # or "secondary", "hidden"
 //!   ```
-//! - `settings.toml`, `[machine]` table, per machine (never shared):
+//! - `machine.toml`, per machine (never shared), written only by the user: devdeck
+//!   rewrites `settings.toml` itself, which would drop comments and anything it can't
+//!   read.
 //!   ```toml
-//!   [machine]
 //!   node_dirs = ["~/.nvm/versions/node"]  # where `.nvmrc` versions are looked up
 //!   path = ["~/go/bin"]                   # added in front of the login shell's PATH
 //!   ```
@@ -34,11 +35,13 @@
 
 use crate::apps::{App, Command, EnvApply, Tier, name_of};
 use crate::catalog::Env;
-use crate::settings::SETTINGS_FILE;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use toml::Spanned;
+
+/// The machine file, inside the config folder.
+pub const MACHINE_FILE: &str = "machine.toml";
 
 /// The folder holding workspace files, inside the config folder.
 pub const WORKSPACES_DIR: &str = "workspaces";
@@ -100,7 +103,7 @@ pub fn load_workspaces(config_dir: &Path) -> (Vec<WorkspaceConfig>, Vec<ConfigEr
     load_workspaces_with(config_dir, home().as_deref())
 }
 
-/// The `[machine]` table of `settings.toml` (defaults when missing).
+/// `machine.toml` (defaults when missing).
 pub fn load_machine(config_dir: &Path) -> (MachineConfig, Vec<ConfigError>) {
     load_machine_with(config_dir, home().as_deref())
 }
@@ -177,6 +180,8 @@ fn apply_app(mut app: App, o: &AppOverride, warnings: &mut Vec<String>) -> Optio
         })
         .collect();
     app.commands.extend(new);
+    // A primary command added or promoted makes a library something to run.
+    app.library &= !app.commands.iter().any(|c| c.tier == Tier::Primary);
     Some(app)
 }
 
@@ -271,15 +276,14 @@ fn parse_workspace(id: &str, text: &str, home: Option<&Path>) -> Result<Workspac
 }
 
 fn load_machine_with(config_dir: &Path, home: Option<&Path>) -> (MachineConfig, Vec<ConfigError>) {
-    let path = config_dir.join(SETTINGS_FILE);
+    let path = config_dir.join(MACHINE_FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (MachineConfig::default(), Vec::new()),
         Err(e) => return (MachineConfig::default(), vec![ConfigError { file: path, line: None, message: e.to_string() }]),
     };
-    match toml::from_str::<RawSettings>(&text) {
-        Ok(raw) => {
-            let m = raw.machine.unwrap_or_default();
+    match toml::from_str::<RawMachine>(&text) {
+        Ok(m) => {
             let expand = |v: &[String]| v.iter().map(|p| expand_home(p, home)).collect();
             (MachineConfig { node_dirs: expand(&m.node_dirs), path: expand(&m.path) }, Vec::new())
         }
@@ -355,12 +359,6 @@ enum RawTier {
     Primary,
     Secondary,
     Hidden,
-}
-
-/// `settings.toml`: only `[machine]` is read here; the other keys belong to `settings`.
-#[derive(Deserialize)]
-struct RawSettings {
-    machine: Option<RawMachine>,
 }
 
 #[derive(Default, Deserialize)]
@@ -591,14 +589,14 @@ env = { file = "config/local.yml" }
     fn machine(name: &str, text: Option<&str>) -> (MachineConfig, Vec<ConfigError>) {
         let d = tmp_dir(name);
         if let Some(text) = text {
-            std::fs::write(d.join(SETTINGS_FILE), text).unwrap();
+            std::fs::write(d.join(MACHINE_FILE), text).unwrap();
         }
         load_machine_with(&d, Some(Path::new(HOME)))
     }
 
     #[test]
-    fn the_machine_table_is_read_and_expanded() {
-        let text = "ui_scale = 1.25\ntheme = \"x\"\n\n[machine]\nnode_dirs = [\"~/.nvm/versions/node\"]\npath = [\"~/go/bin\", \"/opt/bin\"]\n";
+    fn the_machine_file_is_read_and_expanded() {
+        let text = "# this machine\nnode_dirs = [\"~/.nvm/versions/node\"]\npath = [\"~/go/bin\", \"/opt/bin\"]\n";
         let (m, e) = machine("machine", Some(text));
         assert!(e.is_empty(), "{e:?}");
         assert_eq!(m.node_dirs, [PathBuf::from("/home/test/.nvm/versions/node")]);
@@ -606,30 +604,35 @@ env = { file = "config/local.yml" }
     }
 
     #[test]
-    fn no_machine_table_gives_defaults() {
+    fn no_machine_file_gives_defaults() {
         assert_eq!(machine("machine-nofile", None), (MachineConfig::default(), vec![]));
-        assert_eq!(machine("machine-notable", Some("ui_scale = 1.1\n")), (MachineConfig::default(), vec![]));
-        assert_eq!(machine("machine-partial", Some("[machine]\npath = [\"/x\"]\n")).0.path, [PathBuf::from("/x")]);
-    }
-
-    #[test]
-    fn other_settings_are_not_this_modules_business() {
-        let (m, e) = machine("machine-others", Some("ui_scale = \"big\"\nfuture = 1\n[machine]\npath = [\"/x\"]\n"));
-        assert!(e.is_empty(), "{e:?}");
-        assert_eq!(m.path, [PathBuf::from("/x")]);
+        assert_eq!(machine("machine-empty", Some("")), (MachineConfig::default(), vec![]));
+        assert_eq!(machine("machine-partial", Some("path = [\"/x\"]\n")).0.path, [PathBuf::from("/x")]);
     }
 
     #[test]
     fn machine_problems_have_their_line() {
-        let (m, e) = machine("machine-unknown", Some("ui_scale = 1.0\n[machine]\npath = []\nnode_dir = []\n"));
+        let (m, e) = machine("machine-unknown", Some("# typo below\npath = []\nnode_dir = []\n"));
         assert_eq!(m, MachineConfig::default());
         let (file, line, message) = only_error(&e);
-        assert_eq!((file.as_str(), line), (SETTINGS_FILE, Some(4)));
+        assert_eq!((file.as_str(), line), (MACHINE_FILE, Some(3)));
         assert!(message.contains("node_dir"), "{message}");
 
-        let (_, e) = machine("machine-syntax", Some("[machine]\npath = [\n"));
+        let (_, e) = machine("machine-syntax", Some("path = [\n"));
         assert_eq!(e.len(), 1);
         assert!(e[0].line.is_some());
+    }
+
+    #[test]
+    fn a_primary_command_makes_a_library_runnable() {
+        let mut lib = app("lib", vec![cmd("npm:build")]);
+        lib.library = true;
+        let promote = CommandOverride { tier: Some(Tier::Primary), ..Default::default() };
+        let o = AppOverride { commands: BTreeMap::from([("npm:build".to_string(), promote)]), ..Default::default() };
+        let (apps, _) = apply_overrides(vec![lib.clone()], &BTreeMap::from([("lib".to_string(), o)]));
+        assert!(!apps[0].library);
+        let (apps, _) = apply_overrides(vec![lib], &BTreeMap::new());
+        assert!(apps[0].library, "unchanged without an override");
     }
 
     fn cmd(id: &str) -> Command {

@@ -49,7 +49,9 @@ fn is_main(path: &Path) -> bool {
     name.ends_with(".go") && !name.ends_with("_test.go") && package_of(path).as_deref() == Some("main")
 }
 
-/// The package a Go file declares, read up to its `package` clause.
+/// The package a Go file declares, read up to its `package` clause; `None` for a file
+/// that builds never include (`//go:build ignore`, the convention of generators and
+/// scripts kept next to a library).
 fn package_of(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut in_comment = false;
@@ -70,6 +72,10 @@ fn package_of(path: &Path) -> Option<String> {
             } else {
                 break;
             }
+        }
+        let constraint = rest.strip_prefix("//go:build").or_else(|| rest.strip_prefix("// +build"));
+        if constraint.is_some_and(|c| c.split(|ch: char| !ch.is_alphanumeric() && ch != '_').any(|w| w == "ignore")) {
+            return None;
         }
         if rest.is_empty() || rest.starts_with("//") {
             continue;

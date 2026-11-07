@@ -55,7 +55,7 @@ Requirements: R1.4, R1.5, R4.4 (terminal exception), R6.1–R6.9, R8.1, R8.2, R9
      bare `go run main.go`); skips `node_modules`; fixture trees.
    - C environment: the login shell's environment captured once; PATH lookup; `.nvmrc`
      searched upward with nvm aliases; pnpm availability per Node version; reasons.
-   - D processes: `alacritty_terminal`'s `tty` (own session and process group); stop sends ^C,
+   - D processes: a pseudo-terminal opened with rustix (own session and process group, exact environment; alacritty's `tty` passes devdeck's own environment on); stop sends ^C,
      then SIGTERM, then SIGKILL, with longer waits for compose; descendants that left
      the group are killed too; output drained before the exit is reported; process
      groups recorded so leftovers can be killed at the next start; SIGTERM, SIGHUP and
@@ -92,6 +92,34 @@ Review of the step 1 diff (subagent) and assessment:
 - The catalog lacks the toolbox, port memory, problems and watch folders; the real
   driver merges the run's environment. **Step 3** (lead).
 - Two views on one run resize it to the last one measured. **Builder F**, low.
+
+## Step 2 outcome (2026-11-07)
+
+Six builders, merged (`bb2298f`) plus the terminal display. Terminal drawing CPU 20.4 % →
+~11 % (`docs/perf/M2.md`). Departures from the plan: processes use a pseudo-terminal
+opened with rustix (alacritty's `tty` passes devdeck's environment on); machine paths
+live in `machine.toml`, a file only the user writes (devdeck rewrites `settings.toml`).
+Review of the combined step (subagent) and assessment:
+- **Fixed**: launch.json variables in a fixed order (serde_json's order changes with the
+  build's features); `**` repeats made globbing combinatorial (security review); group
+  signals only while the group is ours (pid reuse); a dropped process is cleaned up off
+  the UI thread, scanning before killing; `GroupLog::live` for signal-time kills; the
+  login shell's output kept when a background job holds it open; Node folders default to
+  nvm's; a comment-only `.nvmrc` doesn't stop the search; `//go:build ignore` files
+  aren't mains; overrides recompute the library flag; keys after a run ended are the
+  run view's again; terminal colour/size answers follow the theme before any run view
+  paints; a hidden view stops sizing a run; a restart resets scrolling; a timing test
+  made robust.
+- **Step 3**: quit waits for the stop sequence (`StopKind::total`) before exiting, then
+  `kill_all(GroupLog::live())`; SIGTERM/SIGHUP/SIGINT through signal-hook's thread; one
+  devdeck at a time (another instance's runs would look like leftovers); the toolbox
+  loads off the UI thread; a run that listened on nothing must not erase remembered
+  ports; a broken port memory file is set aside silently.
+- **Step 5**: descendants that left the group and lost their parent before a stop
+  (subreaper or terminal-holder scan); groups whose leader ended but members run, after
+  a crash; measure discovery on the real folders.
+- **Accepted**: a port held on `::1` counts as a conflict for `127.0.0.1`; quitting from
+  a focused terminal goes through the palette or the window button.
 
 ## States to check
 

@@ -15,10 +15,12 @@ use crate::apps::{App, Command};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long the login shell may take to print its environment.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long output may still come once the shell has exited.
+const AFTER_EXIT: Duration = Duration::from_millis(300);
 
 /// Printed by the shell right before its environment; what rc files print comes before
 /// it. The command prints it in two halves, so a shell echoing its command can't fake it.
@@ -58,8 +60,13 @@ impl Toolbox {
         let mut vars = parse_env(&out).ok_or_else(|| format!("login shell {shell}: printed no environment"))?;
         prepend_path(&mut vars, &machine.path);
         let home = var(&vars, "HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(PathBuf::from));
-        let aliases = home.map(|h| h.join(".nvm/alias")).filter(|a| a.is_dir());
-        Ok(Toolbox { vars, node: node_installs(&machine.node_dirs), aliases })
+        let aliases = home.as_ref().map(|h| h.join(".nvm/alias")).filter(|a| a.is_dir());
+        // Without configured folders, nvm's own.
+        let dirs = match machine.node_dirs.is_empty() {
+            true => home.map(|h| vec![h.join(".nvm/versions/node")]).unwrap_or_default(),
+            false => machine.node_dirs.clone(),
+        };
+        Ok(Toolbox { vars, node: node_installs(&dirs), aliases })
     }
 
     /// The Node install for an app, or why there is none (`.nvmrc wants node 20, which
@@ -142,8 +149,10 @@ pub fn which(name: &str, path: &[PathBuf]) -> Option<PathBuf> {
 pub fn nvmrc(dir: &Path, stop: &Path) -> Option<String> {
     let mut at = Some(dir);
     while let Some(d) = at {
-        if let Ok(text) = std::fs::read_to_string(d.join(".nvmrc")) {
-            let v = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))?;
+        // A file with only comments or blank lines asks for nothing: keep looking up.
+        if let Ok(text) = std::fs::read_to_string(d.join(".nvmrc"))
+            && let Some(v) = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))
+        {
             return Some(v.to_string());
         }
         if d == stop {
@@ -163,8 +172,10 @@ fn shell_command(shell: &str) -> std::process::Command {
 }
 
 /// The output of `cmd`, run in its own session: an interactive shell would otherwise
-/// take over the terminal devdeck was started from. After `timeout`, it and what it
-/// started are killed.
+/// take over the terminal devdeck was started from. Reading stops at the end of the
+/// output, or shortly after the shell exited (a job its rc files started in the
+/// background may keep the output open), or after `timeout`; then what it started is
+/// killed. What was read is kept: the caller decides whether it's complete.
 fn capture(mut cmd: std::process::Command, timeout: Duration) -> Result<Vec<u8>, String> {
     use std::os::unix::process::CommandExt;
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -174,25 +185,39 @@ fn capture(mut cmd: std::process::Command, timeout: Duration) -> Result<Vec<u8>,
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let mut stdout = child.stdout.take().expect("stdout is piped");
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let (tx, rx) = std::sync::mpsc::channel();
-    // Read on a thread so the wait can time out; it ends at EOF (the read ends when the
-    // shell and what it started have exited or been killed).
+    // Read on a thread so the wait can stop early; it ends at the end of the output (when
+    // the shell and what it started have exited or been killed).
+    let sink = out.clone();
     std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = tx.send(stdout.read_to_end(&mut out).map(|_| out));
+        let mut buf = [0u8; 8192];
+        while let Ok(n @ 1..) = stdout.read(&mut buf) {
+            sink.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&buf[..n]);
+        }
+        let _ = tx.send(());
     });
-    match rx.recv_timeout(timeout) {
-        Ok(out) => {
-            let _ = child.wait();
-            out.map_err(|e| e.to_string())
+    let start = Instant::now();
+    let mut exited: Option<Instant> = None;
+    let ended = loop {
+        if rx.recv_timeout(Duration::from_millis(50)).is_ok() {
+            break true;
         }
-        Err(_) => {
-            let group = rustix::process::Pid::from_child(&child);
-            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-            let _ = child.wait();
-            Err(format!("no answer within {} s", timeout.as_secs_f32()))
+        if exited.is_none() && child.try_wait().ok().flatten().is_some() {
+            exited = Some(Instant::now());
         }
+        if exited.is_some_and(|t| t.elapsed() >= AFTER_EXIT) || start.elapsed() >= timeout {
+            break false;
+        }
+    };
+    let group = rustix::process::Pid::from_child(&child);
+    let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+    let _ = child.wait();
+    let out = std::mem::take(&mut *out.lock().unwrap_or_else(|e| e.into_inner()));
+    if !ended && exited.is_none() && out.is_empty() {
+        return Err(format!("no answer within {} s", timeout.as_secs_f32()));
     }
+    Ok(out)
 }
 
 /// The variables `env -0` printed after the marker, without the shell's own; `None`
@@ -279,6 +304,8 @@ mod tests {
         std::fs::write(root.join("front-end/.nvmrc"), "# node\n 20 \n").unwrap();
         assert_eq!(nvmrc(&app, &root).as_deref(), Some("20"));
         assert_eq!(nvmrc(&app, &root.join("front-end/apps")), None, "stops at the workspace folder");
+        std::fs::write(app.join(".nvmrc"), "# only a comment\n\n").unwrap();
+        assert_eq!(nvmrc(&app, &root).as_deref(), Some("20"), "an .nvmrc asking for nothing doesn't stop the search");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -492,5 +519,14 @@ mod tests {
         let start = std::time::Instant::now();
         assert_eq!(capture(sh, Duration::from_millis(200)), Err("no answer within 0.2 s".into()));
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn output_is_kept_when_a_background_job_holds_it_open() {
+        let mut sh = std::process::Command::new("/bin/sh");
+        sh.args(["-c", "printf done; sleep 10 &"]);
+        let start = std::time::Instant::now();
+        assert_eq!(capture(sh, Duration::from_secs(5)), Ok(b"done".to_vec()));
+        assert!(start.elapsed() < Duration::from_secs(2), "doesn't wait for the job: {:?}", start.elapsed());
     }
 }

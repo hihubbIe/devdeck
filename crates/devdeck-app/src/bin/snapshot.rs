@@ -9,6 +9,7 @@ use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
 use devdeck_app::views::app_view::AppView;
+use devdeck_app::views::run_view::RunView;
 use devdeck_app::views::service_view::ServiceView;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
@@ -197,6 +198,16 @@ fn run_streaming(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entit
     open_view(cx, shell, ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() });
     cx.advance_clock(Duration::from_secs(9));
     cx.run_until_parked();
+}
+
+/// The terminal focused (its cursor shows) with a selection over three rows.
+fn run_terminal(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    run_streaming(cx, w, shell);
+    let addr = ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() };
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<RunView>().unwrap());
+    cx.update_window(w, |_, window, cx| v.update(cx, |v, cx| v.focus_terminal(window, cx))).unwrap();
+    cx.update(|cx| v.update(cx, |v, cx| v.select((2, 4), (4, 30), cx)));
 }
 
 fn run_exited(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -591,6 +602,7 @@ fn states() -> Vec<State> {
         w("73-run-exited-0", "work", 1.0, Some(run_exited)),
         w("74-run-crashed-toast", "work", 1.0, Some(run_crashed)),
         w("75-run-not-started", "work", 1.0, Some(run_not_started)),
+        w("76-run-terminal-focused", "work", 1.0, Some(run_terminal)),
         w("80-svc-ready", "work", 1.0, Some(svc_ready)),
         w("81-svc-rolling", "work", 1.0, Some(svc_rolling)),
         w("82-svc-failed-undo", "work", 1.0, Some(svc_failed)),

@@ -2,14 +2,19 @@
 //! default keys. Key bindings are generated from it, and everything that names an
 //! action or its key (menus, palette, cheat sheet) reads it here.
 //! Actions themselves are GPUI actions declared next to the code that handles them.
+//!
+//! In a focused terminal, keys go to the process (M2 decision): every binding whose key a
+//! terminal has bytes for is off inside `Terminal` ([`terminal_takes`]), so devdeck keeps
+//! only `alt+…`, `ctrl+shift+…` and keys a process can't receive there.
 
 use crate::actions::*;
 use crate::shell::ConfirmQuit;
 use crate::sidebar as sb;
 use crate::views::{app_view as av, logs_view as lv, matrix_view as mv, run_view as rv, service_view as sv};
 use devdeck_ui::overlay as ov;
+use devdeck_ui::terminal as term;
 use devdeck_ui::text_input as ti;
-use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate};
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, Keystroke};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
@@ -65,7 +70,7 @@ macro_rules! spec {
 static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
     vec![
         // App
-        spec!("app.palette", "command palette", "App", DECK, ["ctrl-k"], Palette),
+        spec!("app.palette", "command palette", "App", DECK, ["ctrl-k", "ctrl-shift-p"], Palette),
         spec!("app.cheat_sheet", "keys", "App", DECK, ["ctrl-/"], CheatSheet),
         spec!("app.cheat_sheet_q", "keys", "App", Some("Deck && !TextInput && !Modal && !Menu"), ["?"], CheatSheet),
         spec!("app.settings", "settings", "App", DECK, ["ctrl-,"], ToggleSettings),
@@ -116,7 +121,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("pane.close_tab", "close tab", "Panes", PANES, ["ctrl-w"], CloseTab),
         spec!("pane.split_right", "split right", "Panes", PANES, ["ctrl-\\"], SplitRight),
         spec!("pane.split_down", "split down", "Panes", PANES, ["ctrl-alt-\\"], SplitDown),
-        spec!("pane.collapse", "collapse", "Panes", PANES, ["ctrl-shift-c"], ToggleCollapse),
+        spec!("pane.collapse", "collapse", "Panes", PANES, ["ctrl-shift-h"], ToggleCollapse),
         spec!("pane.maximize", "maximize", "Panes", PANES, ["ctrl-shift-m"], ToggleMaximize),
         spec!("pane.detach", "detach", "Panes", PANES, ["ctrl-shift-d"], DetachTab),
         spec!("pane.send_tab", "send to…", "Panes", PANES, ["ctrl-shift-s"], SendTab),
@@ -135,9 +140,14 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("app_view.output", "output", "App view", Some("AppView && !TextInput"), ["o"], av::OpenOutput),
         spec!("app_view.hidden", "hidden commands", "App view", Some("AppView && !TextInput"), ["h"], av::ToggleHidden),
         // Run view
-        spec!("run.run", "run", "Run output", Some("RunView && !TextInput"), ["enter"], rv::RunAgain),
-        spec!("run.stop", "stop", "Run output", Some("RunView && !TextInput"), ["s"], rv::Stop),
-        spec!("run.restart", "restart", "Run output", Some("RunView && !TextInput"), ["r"], rv::Restart),
+        spec!("run.run", "run", "Run output", Some("RunView && !TextInput"), ["enter", "ctrl-shift-enter"], rv::RunAgain),
+        spec!("run.stop", "stop", "Run output", Some("RunView && !TextInput"), ["s", "ctrl-shift-x"], rv::Stop),
+        spec!("run.restart", "restart", "Run output", Some("RunView && !TextInput"), ["r", "ctrl-shift-r"], rv::Restart),
+        spec!("run.terminal", "type into the terminal", "Run output", Some("RunView && !TextInput"), ["i"], rv::FocusTerminal),
+        // Terminal
+        spec!("term.copy", "copy", "Terminal", Some("Terminal"), ["ctrl-shift-c"], term::Copy),
+        spec!("term.paste", "paste", "Terminal", Some("Terminal"), ["ctrl-shift-v"], term::Paste),
+        spec!("term.leave", "leave the terminal", "Terminal", Some("Terminal"), ["ctrl-shift-escape"], rv::LeaveTerminal),
         // Service
         spec!("svc.save", "save tag", "Service", Some("ServiceView"), ["ctrl-s"], sv::SaveTag),
         spec!("svc.undo", "undo rollout", "Service", Some("ServiceView && !TextInput"), ["u"], sv::Undo),
@@ -218,11 +228,31 @@ pub fn of(action: &dyn Action) -> Option<&'static ActionSpec> {
     all().iter().find(|s| (s.build)().partial_eq(action))
 }
 
+/// True when a focused terminal sends `key` (a binding's key, `ctrl-k`) to its process.
+pub fn terminal_takes(key: &'static str) -> bool {
+    Keystroke::parse(key).is_ok_and(|k| term::takes(&k))
+}
+
+/// Where `key` of `spec` applies: its context, outside terminals when a terminal takes it.
+fn context_of(spec: &ActionSpec, key: &'static str) -> Option<String> {
+    let in_terminals = spec.context.is_some_and(|c| c.contains("Terminal"));
+    match (spec.context, terminal_takes(key) && !in_terminals) {
+        (c, false) => c.map(String::from),
+        (Some(c), true) => Some(format!("({c}) && !Terminal")),
+        (None, true) => Some("!Terminal".into()),
+    }
+}
+
 thread_local! {
-    /// Every entry's context, parsed once (GPUI predicates aren't thread-safe).
-    static CONTEXTS: Vec<Option<Rc<KeyBindingContextPredicate>>> = all()
+    /// Every key's context, parsed once (GPUI predicates aren't thread-safe).
+    static CONTEXTS: Vec<Vec<Option<Rc<KeyBindingContextPredicate>>>> = all()
         .iter()
-        .map(|s| s.context.map(|c| Rc::new(KeyBindingContextPredicate::parse(c).unwrap_or_else(|e| panic!("{}: bad context {c}: {e}", s.id)))))
+        .map(|s| {
+            s.keys
+                .iter()
+                .map(|k| context_of(s, k).map(|c| Rc::new(KeyBindingContextPredicate::parse(&c).unwrap_or_else(|e| panic!("{}: bad context {c}: {e}", s.id)))))
+                .collect()
+        })
         .collect();
 }
 
@@ -230,9 +260,9 @@ thread_local! {
 pub fn bind(cx: &mut App) {
     let mut bindings = Vec::new();
     let contexts = CONTEXTS.with(|c| c.clone());
-    for (spec, predicate) in all().iter().zip(contexts) {
-        for key in spec.keys {
-            let b = KeyBinding::load(key, (spec.build)(), predicate.clone(), false, None, cx).unwrap_or_else(|e| panic!("{}: bad key {key}: {e:?}", spec.id));
+    for (spec, predicates) in all().iter().zip(contexts) {
+        for (key, predicate) in spec.keys.iter().zip(predicates) {
+            let b = KeyBinding::load(key, (spec.build)(), predicate, false, None, cx).unwrap_or_else(|e| panic!("{}: bad key {key}: {e:?}", spec.id));
             bindings.push(b);
         }
     }

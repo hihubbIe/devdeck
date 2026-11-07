@@ -66,7 +66,8 @@ pub struct Found {
     /// Shown to the user (a broken `package.json`, a duplicate id…).
     pub problems: Vec<String>,
     /// Folders to watch (non-recursively) so new projects and changed manifests are
-    /// noticed: the workspace folders, each project, each monorepo package folder.
+    /// noticed: the workspace folders, each project, each monorepo package folder, and
+    /// the folders globs, `.vscode` and Go's `cmd` read. Sorted, no repeats.
     pub watch: Vec<PathBuf>,
 }
 

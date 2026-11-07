@@ -177,6 +177,8 @@ tasks:
         .file("api/cmd/shared/util.go", "package shared\n")
         .file("api/Makefile", ".PHONY: run\nrun:\n\tgo run ./cmd/api -p 1\n");
     t.file("golib/go.mod", "module golib\n").file("golib/lib.go", "// Package golib.\npackage golib\n");
+    // A generator kept next to the library: excluded from builds, not a main.
+    t.file("golib/gen.go", "//go:build ignore\n\npackage main\n\nfunc main() {}\n");
     let found = t.scan();
     assert!(found.problems.is_empty(), "{:?}", found.problems);
 

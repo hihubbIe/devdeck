@@ -121,11 +121,14 @@ fn args(v: Option<&Value>, root: &str) -> Option<Vec<String>> {
     }
 }
 
-/// `VAR=value` words for the `env` object.
+/// `VAR=value` words for the `env` object, by name: a JSON object's order depends on
+/// serde_json's features, which other crates of the build may turn on.
 fn env(v: Option<&Value>, root: &str) -> Option<Vec<String>> {
     let Some(v) = v else { return Some(Vec::new()) };
     let mut words = Vec::new();
-    for (k, v) in v.as_object()? {
+    let mut vars: Vec<(&String, &Value)> = v.as_object()?.iter().collect();
+    vars.sort_by_key(|(k, _)| *k);
+    for (k, v) in vars {
         if k.is_empty() || k.starts_with(|c: char| c.is_ascii_digit()) || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return None;
         }

@@ -121,8 +121,11 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 ### Processes
 
-- Each run is a child in a pseudo-terminal (`alacritty_terminal`'s `tty`), in its own
-  session and process group.
+- Each run is a child in a pseudo-terminal opened with rustix (the mechanism
+  `alacritty_terminal`'s `tty` uses, without its drawbacks: it passes devdeck's own
+  environment on, ignores a missing folder and blocks when dropped), started as
+  `/bin/sh -c <line>` with exactly the run's environment, in its own session and process
+  group. One thread per run reads output, reaps the child (pidfd) and takes input.
 - A driver reports output bytes and the exit; the runner owns one terminal per run
   (`core::terminal` over alacritty_terminal, 2 000 lines of history), so output is kept
   while no view shows it. The run view draws only visible rows, wrapping at the pane
@@ -147,7 +150,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 | UI | GPUI (Zed) via `gpui-pre =0.3.11` + `gpui-pre-platform` (wayland, x11) | GPU text rendering built for an editor, idle at zero CPU, multi-window | crates.io `gpui` is stale (0.2.2, Oct 2025); gpui-pre is a published Zed snapshot, the one gpui-component pins |
 | widgets | own components; may borrow from gpui-component | full control of the look | gpui-component has docks, inputs, menus |
 | terminal grid | alacritty_terminal | same as Zed's terminal | own view on top |
-| pty | alacritty_terminal's `tty` | own session per child, real exit status with the signal | portable-pty dropped (M2): no signal number, SIGHUP to one pid only |
+| pty | rustix (`pty`, `termios`) | own session per child, exact environment, real exit status with the signal | portable-pty dropped (M2): no signal number, SIGHUP to one pid only; alacritty's `tty`: inherited environment |
 | YAML | serde-saphyr 2 | safe Rust, maintained | serde_yaml archived, serde_yml unsound |
 | JSONC | jsonc-parser 0.34 | VS Code's leniency, serde | launch.json |
 | fuzzy | nucleo | Helix's matcher, very fast | |
@@ -195,6 +198,35 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   of a maximized window behave as a resize border. Each edge has its own hitbox, so the
   cursor follows the pointer without a redraw. The window size is remembered only while
   no side is held, so a maximized or snapped size never becomes the size to reopen with.
+- 2026-11-07 In a focused terminal a key goes to the process when it has terminal bytes
+  (text, ⏎, ⌫, Tab, Esc, arrows, Home/End, PgUp/PgDn, Ins/Del, F1–F12, ctrl+letter and
+  ctrl+`[\]^_/@`); `alt+…`, `ctrl+shift+…` and keys without bytes (ctrl+tab, ctrl+digit,
+  ctrl+`=`/`-`/`,`, menu) stay devdeck's. One rule, derived from the encoder
+  (`core::terminal::key_bytes`): every binding whose key a terminal takes is off inside
+  `Terminal` (`registry::terminal_takes`), with no per-binding list. So in a terminal
+  ctrl+k, ctrl+w, ctrl+q, `?` and the run view's ⏎/s/r reach the process.
+- 2026-11-07 Devdeck keys from a terminal: ctrl+shift+⏎ run, ctrl+shift+x stop and
+  ctrl+shift+r restart (second keys of the run actions, valid in and out of the
+  terminal); ctrl+shift+c / ctrl+shift+v copy and paste (Linux terminal habit);
+  ctrl+shift+esc leaves the terminal; the palette gets ctrl+shift+p as a second key, so
+  every action stays reachable from a terminal. Collapse pane moves from ctrl+shift+c
+  to ctrl+shift+h to free copy.
+- 2026-11-07 A run view's pane focuses the run view, so its single keys work; a click on
+  the terminal or `i` gives the keys to the process. The cursor shows only while the run
+  runs and its terminal has the keys (and the program hasn't hidden it).
+- 2026-11-07 A terminal is drawn by one canvas that shapes and paints the visible rows
+  (no element per row), and streaming output redraws at most every 33 ms except within
+  half a second of typing (echo shows at once). Together: 20.4 % → 10.9 % CPU at
+  3 × 2 000 lines/s, one shown (`scripts/measure.py terminal`).
+- 2026-11-07 The view keeps its scroll position and selection in rows counted from the
+  first row the run wrote (`Terminal::dropped`), so both stay on their text while old
+  rows fall off the 2 000-line history; a restart or a resize (rows rewrap) clears the
+  selection. The wheel scrolls the history, or sends cursor keys on a full-screen
+  program's screen when it asks for that (alternate scroll).
+- 2026-11-07 Colour and size queries are answered with the theme and the cell size, one
+  look for every terminal (`core::terminal::set_look`, set by the view): the theme and
+  the UI scale are global, and a restarted run's fresh terminal answers right away.
+- 2026-11-07 When several views show one run, the one focused last sizes its terminal.
 
 ## Open questions
 
@@ -222,5 +254,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 Runs follow the real exit: a stop asks the driver and the run is Stopped
   when the process exits (no failure toast); late events of an earlier start are
   ignored. Each start gets a fresh terminal.
+- 2026-11-07 Machine paths (Node folders, PATH additions) live in `machine.toml`, written
+  only by the user; devdeck rewrites `settings.toml` itself, which would drop comments and
+  anything it can't parse.
 - Running section in the Apps sidebar: replaced by the row indicator and a filter.
   Revisit if it feels slower in use.

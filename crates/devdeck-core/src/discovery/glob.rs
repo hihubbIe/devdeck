@@ -3,7 +3,7 @@
 //! and `node_modules` are never entered.
 
 use super::Cx;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,12 +21,16 @@ pub(super) struct Matches {
 
 /// The folders below `root` that `patterns` match; `!pattern` excludes.
 pub(super) fn expand(root: &Path, patterns: &[String], cx: &mut Cx) -> Matches {
-    let mut walk = Walk { found: BTreeSet::new(), listed: Vec::new(), ancestors: Vec::new() };
+    let mut walk = Walk { found: BTreeSet::new(), listed: Vec::new(), ancestors: Vec::new(), seen: HashSet::new() };
     let mut excluded = Vec::new();
     for pattern in patterns {
         match pattern.strip_prefix('!') {
             Some(p) => excluded.push(segments(p)),
-            None => walk.walk(root, "", &segments(pattern), 0, cx),
+            None => {
+                // The memo is per pattern: its key is the rest of this pattern.
+                walk.seen.clear();
+                walk.walk(root, "", &segments(pattern), 0, cx)
+            }
         }
     }
     let dirs = walk
@@ -40,8 +44,12 @@ pub(super) fn expand(root: &Path, patterns: &[String], cx: &mut Cx) -> Matches {
     Matches { dirs, listed: walk.listed }
 }
 
+/// A pattern's segments; repeated `**` are one (`**/**` means `**`, and repeats would
+/// make walking and matching combinatorial).
 fn segments(pattern: &str) -> Vec<&str> {
-    pattern.split('/').filter(|s| !s.is_empty() && *s != ".").collect()
+    let mut segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    segs.dedup_by(|a, b| *a == "**" && *b == "**");
+    segs
 }
 
 struct Walk {
@@ -49,10 +57,16 @@ struct Walk {
     listed: Vec<PathBuf>,
     /// Real paths of the folders `**` is inside, to stop at symlink loops.
     ancestors: Vec<PathBuf>,
+    /// Folders already walked with the same rest of a pattern: several `**` can reach a
+    /// folder in many ways, and each needs walking once.
+    seen: HashSet<(PathBuf, usize)>,
 }
 
 impl Walk {
     fn walk(&mut self, dir: &Path, rel: &str, segs: &[&str], depth: usize, cx: &mut Cx) {
+        if !self.seen.insert((dir.to_path_buf(), segs.len())) {
+            return;
+        }
         let Some((seg, rest)) = segs.split_first() else {
             if !rel.is_empty() {
                 self.found.insert(rel.to_string());
@@ -150,6 +164,16 @@ mod tests {
         assert!(segment_matches("a?c", "abc"));
         assert!(segment_matches("*-*", "a-b-c"));
         assert!(!segment_matches("abc", "abcd"));
+    }
+
+    #[test]
+    fn repeated_double_stars_are_one() {
+        assert_eq!(segments("**/**/a/**/**/**"), ["**", "a", "**"]);
+        let many = ["**"; 40].join("/") + "/x";
+        let segs = segments(&many);
+        assert_eq!(segs, ["**", "x"]);
+        let path: Vec<&str> = (0..12).map(|_| "d").collect();
+        assert!(!path_matches(&["**", "a", "**", "b", "**", "c"], &path), "fails fast, no blow-up");
     }
 
     #[test]

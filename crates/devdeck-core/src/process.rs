@@ -198,9 +198,19 @@ impl Process {
 }
 
 impl Drop for Process {
+    /// Kills everything on a thread: finding the processes that left the group reads all
+    /// of `/proc` (not for the caller, the UI), and must come before the kill, which
+    /// would orphan them out of reach.
     fn drop(&mut self) {
-        self.tree.collect();
-        self.tree.signal_all(Signal::KILL);
+        let tree = self.tree.clone();
+        let name = format!("drop {}", tree.pid);
+        let finish = move || {
+            tree.collect();
+            tree.signal_all(Signal::KILL);
+        };
+        if std::thread::Builder::new().name(name).spawn(finish.clone()).is_err() {
+            finish();
+        }
     }
 }
 
@@ -350,7 +360,7 @@ impl Tree {
     /// ^C, then SIGTERM, then SIGKILL, each after its wait; ends once nothing is left.
     fn stop(&self, waits: (Duration, Duration)) {
         self.collect();
-        signal_group(self.pid, Signal::INT);
+        self.signal_group(Signal::INT);
         if self.gone_within(waits.0) {
             return;
         }
@@ -384,8 +394,21 @@ impl Tree {
         }
     }
 
+    /// The group with our leader's id is still ours. The kernel doesn't reuse an id while
+    /// a group of that id has members, so it can only belong to someone else once a new
+    /// process holds the leader's pid: one with another start time.
+    fn group_is_ours(&self) -> bool {
+        stat(self.pid).is_none_or(|s| s.start == self.start)
+    }
+
+    fn signal_group(&self, signal: Signal) {
+        if self.group_is_ours() {
+            signal_group(self.pid, signal);
+        }
+    }
+
     fn signal_all(&self, signal: Signal) {
-        signal_group(self.pid, signal);
+        self.signal_group(signal);
         let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         for (pid, start) in seen.iter() {
             if alive(*pid, *start) {
@@ -395,7 +418,7 @@ impl Tree {
     }
 
     fn gone(&self) -> bool {
-        let group = Pid::from_raw(self.pid as i32).is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok());
+        let group = self.group_is_ours() && Pid::from_raw(self.pid as i32).is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok());
         !group && self.seen.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|(pid, start)| !alive(*pid, *start))
     }
 
@@ -475,6 +498,12 @@ impl GroupLog {
     pub fn leftovers(&self) -> Vec<u32> {
         let me = std::process::id();
         self.read().into_iter().filter(|(pid, start)| alive(*pid, *start) && procfs::parent_of(*pid) != Some(me)).map(|(pid, _)| pid).collect()
+    }
+
+    /// Every recorded group still running, ours included: what to kill when devdeck
+    /// itself is told to quit (a signal-handling thread can't reach the runner).
+    pub fn live(&self) -> Vec<u32> {
+        self.read().into_iter().filter(|(pid, start)| alive(*pid, *start)).map(|(pid, _)| pid).collect()
     }
 
     /// `pid start` lines; anything else is skipped.
@@ -646,11 +675,9 @@ mod tests {
         let (p, rx) = spawn("echo ready; sleep 30");
         let mut out = String::new();
         read(&rx, &mut out, Some("ready"));
-        let at = Instant::now();
         p.stop();
-        let exit = read(&rx, &mut out, None).expect("exits");
-        assert!(at.elapsed() < StopKind::Quick.waits().0, "{:?}", at.elapsed());
-        assert_ne!(exit, Exit::Signal(9));
+        // Ended by the ^C itself, not by the SIGTERM or SIGKILL that would follow.
+        assert_eq!(read(&rx, &mut out, None), Some(Exit::Signal(2)));
     }
 
     #[test]
