@@ -55,6 +55,9 @@ pub struct AppState {
     pub main_size: Option<(f32, f32)>,
 }
 
+/// Views' own states by view ref (each view decides what it keeps).
+pub type ViewStates = std::collections::BTreeMap<String, serde_json::Value>;
+
 /// Outcome of reading a saved file.
 #[derive(Debug, PartialEq)]
 pub enum Loaded<T> {
@@ -192,6 +195,31 @@ impl StateStore {
         write_atomic(&self.book_path(workspace), &book.to_json())
     }
 
+    fn views_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join("workspaces").join(safe_id(workspace)).join("views.json")
+    }
+
+    /// What each view kept of itself (scroll, filters, a run that was running), by view
+    /// ref: views come back as they were when the workspace reopens.
+    pub fn load_views(&self, workspace: &str) -> Loaded<ViewStates> {
+        let path = self.views_path(workspace);
+        match read(&path) {
+            Loaded::Ok(t) => match serde_json::from_str(&t) {
+                Ok(v) => Loaded::Ok(v),
+                Err(e) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: {e} (kept as views.json.bad)", path.display()))
+                }
+            },
+            Loaded::Missing => Loaded::Missing,
+            Loaded::Broken(e) => Loaded::Broken(e),
+        }
+    }
+
+    pub fn save_views(&self, workspace: &str, views: &ViewStates) -> Result<(), String> {
+        write_atomic(&self.views_path(workspace), &serde_json::to_string_pretty(views).map_err(|e| e.to_string())?)
+    }
+
     pub fn load_app(&self) -> Loaded<AppState> {
         let path = self.dir.join("app.json");
         match read(&path) {
@@ -291,5 +319,17 @@ mod tests {
         s.save_app(&state).unwrap();
         assert_eq!(s.load_app(), Loaded::Ok(state));
         assert_eq!(safe_id("../evil name"), "___evil_name");
+    }
+
+    #[test]
+    fn view_states_round_trip_and_broken() {
+        let s = store("views");
+        assert_eq!(s.load_views("work"), Loaded::Missing);
+        let views: ViewStates = [("run/web/pnpm%3Adev".to_string(), serde_json::json!({"follow": false, "running": true}))].into();
+        s.save_views("work", &views).unwrap();
+        assert_eq!(s.load_views("work"), Loaded::Ok(views));
+        std::fs::write(s.views_path("work"), "{ broken").unwrap();
+        assert!(matches!(s.load_views("work"), Loaded::Broken(_)));
+        assert_eq!(s.load_views("work"), Loaded::Missing, "set aside");
     }
 }

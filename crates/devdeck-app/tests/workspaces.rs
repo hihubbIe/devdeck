@@ -5,6 +5,9 @@
 use devdeck_app::deck::{Deck, SAVE_DELAY};
 use devdeck_app::fake_driver::STOP_DELAY;
 use devdeck_app::shell::{QuitState, Shell, WorkspaceSpec};
+use devdeck_app::views::app_view::AppView;
+use devdeck_app::views::run_view::RunView;
+use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Layout, ViewRef, WindowId};
 use devdeck_core::state::{AppState, Loaded, StateStore};
 use devdeck_ui::overlay::{layer_count, layer_state};
@@ -255,6 +258,66 @@ fn saved_state_is_restored_and_broken_files_fall_back(cx: &mut TestAppContext) {
     assert!(dir.join("workspaces/personal/layout.json.bad").exists(), "broken file kept aside");
     let toasts = cx.update(|cx| toasts(cx).read(cx).queue.items.len());
     assert_eq!(toasts, 1, "the problem is reported");
+}
+
+/// The work layout with eventservice's server output and its app view open.
+fn with_run_and_app() -> Layout {
+    let mut l = devdeck_app::initial_layout();
+    let p = l.main().focused;
+    for addr in [ViewAddr::App { app: "eventservice".into() }, ViewAddr::Run { app: "eventservice".into(), cmd: "go:run".into() }] {
+        l.open(addr.to_ref(), p).unwrap();
+    }
+    l
+}
+
+fn run_ref() -> ViewRef {
+    ViewAddr::Run { app: "eventservice".into(), cmd: "go:run".into() }.to_ref()
+}
+
+#[gpui::test]
+fn quitting_saves_what_the_views_keep_and_what_ran(cx: &mut TestAppContext) {
+    let dir = temp(cx, "views-save");
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "views-save");
+    let work = deck(&shell, cx, "work");
+    cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| { *l = with_run_and_app(); Ok(()) })));
+    cx.run_until_parked();
+    let run = cx.read(|cx| work.read(cx).view(&run_ref()).unwrap().downcast::<RunView>().unwrap());
+    let app = cx.read(|cx| work.read(cx).view(&ViewAddr::App { app: "eventservice".into() }.to_ref()).unwrap().downcast::<AppView>().unwrap());
+    let runner = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).runner.clone());
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&devdeck_app::runner::RunKey::new("eventservice", "go:run"), None, cx))).unwrap();
+    cx.update(|cx| run.update(cx, |v, cx| v.toggle_follow(cx)));
+    cx.update(|cx| app.update(cx, |v, _| v.show_hidden = true));
+    // Quitting stops the runs first, then writes everything.
+    cx.update(|cx| runner.update(cx, |r, cx| r.stop_all(cx)));
+    cx.update(|cx| shell.update(cx, |s, cx| s.flush(cx)));
+    let Loaded::Ok(views) = StateStore::new(dir).load_views("work") else { panic!("views saved") };
+    assert_eq!(views[run_ref().as_str()], serde_json::json!({"follow": false, "running": true}), "running when devdeck quit");
+    assert_eq!(views[ViewAddr::App { app: "eventservice".into() }.to_ref().as_str()]["show_hidden"], true);
+}
+
+#[gpui::test]
+fn reopening_brings_views_back_and_restarts_what_ran(cx: &mut TestAppContext) {
+    let dir = temp(cx, "views-restore");
+    let store = StateStore::new(dir.clone());
+    store.save_layout("work", &with_run_and_app()).unwrap();
+    let views: devdeck_core::state::ViewStates = [
+        (run_ref().as_str().to_string(), serde_json::json!({"follow": false, "running": true})),
+        (ViewAddr::App { app: "eventservice".into() }.to_ref().as_str().to_string(), serde_json::json!({"selected": "go:build", "show_hidden": true})),
+    ]
+    .into();
+    store.save_views("work", &views).unwrap();
+    store.save_app(&AppState { active_workspace: Some("work".into()), main_size: None }).unwrap();
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(store), "views-restore");
+    let work = deck(&shell, cx, "work");
+    let run = cx.read(|cx| work.read(cx).view(&run_ref()).unwrap().downcast::<RunView>().unwrap());
+    assert!(!cx.read(|cx| run.read(cx).follow), "follow off, as saved");
+    let app = cx.read(|cx| work.read(cx).view(&ViewAddr::App { app: "eventservice".into() }.to_ref()).unwrap().downcast::<AppView>().unwrap());
+    assert_eq!(cx.read(|cx| (app.read(cx).selected.clone(), app.read(cx).show_hidden)), (Some("go:build".into()), true));
+    let state = cx.read(|cx| {
+        let w = shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap();
+        w.services.read(cx).runner.read(cx).state(&devdeck_app::runner::RunKey::new("eventservice", "go:run"))
+    });
+    assert_eq!(state, Some(devdeck_core::runs::RunState::Running), "it ran when devdeck quit: it starts again");
 }
 
 #[gpui::test]

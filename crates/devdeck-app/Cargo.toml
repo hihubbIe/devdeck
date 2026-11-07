@@ -24,6 +24,7 @@ snapshot = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
 [dependencies]
 devdeck-core.workspace = true
 devdeck-ui.workspace = true
+serde_json.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 async-channel.workspace = true

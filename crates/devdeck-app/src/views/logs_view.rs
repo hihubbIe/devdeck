@@ -195,6 +195,34 @@ impl ServiceLogsView {
     }
 }
 
+/// The level shown, the find text, follow and pause.
+impl super::KeepsState for ServiceLogsView {
+    fn save(&self, cx: &App) -> serde_json::Value {
+        let level = match self.min_level {
+            MinLevel::Error => "error",
+            MinLevel::Warn => "warn",
+            MinLevel::Info => "info",
+            MinLevel::All => "all",
+        };
+        serde_json::json!({ "level": level, "find": self.find.read(cx).text(), "follow": self.follow, "paused": self.paused })
+    }
+
+    fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
+        self.min_level = match state["level"].as_str() {
+            Some("error") => MinLevel::Error,
+            Some("warn") => MinLevel::Warn,
+            Some("info") => MinLevel::Info,
+            _ => MinLevel::All,
+        };
+        self.follow = state["follow"].as_bool().unwrap_or(true);
+        self.paused = state["paused"].as_bool().unwrap_or(false);
+        if let Some(text) = state["find"].as_str().filter(|t| !t.is_empty()) {
+            self.find.update(cx, |f, cx| f.set_text(text, cx));
+        }
+        cx.notify();
+    }
+}
+
 impl Focusable for ServiceLogsView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()

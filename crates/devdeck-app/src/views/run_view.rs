@@ -57,6 +57,8 @@ pub struct RunView {
     drawn: Option<Instant>,
     pending: Option<gpui::Task<()>>,
     typed: Option<Instant>,
+    /// Restored as running: start the run once it can.
+    restoring: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -66,7 +68,10 @@ impl RunView {
         let key = RunKey::new(&app, &cmd);
         let me = cx.entity_id();
         let subs = vec![
-            cx.observe(&runner, |_, _, cx| cx.notify()),
+            cx.observe(&runner, |this, _, cx| {
+                this.start_if_restoring(cx);
+                cx.notify();
+            }),
             cx.subscribe(&runner, |this, _, e: &RunnerEvent, cx| {
                 if let RunnerEvent::Output { key } = e
                     && *key == this.key
@@ -97,6 +102,7 @@ impl RunView {
             drawn: None,
             pending: None,
             typed: None,
+            restoring: false,
             _subs: subs,
         }
     }
@@ -133,6 +139,23 @@ impl RunView {
             && s.0.get(&self.key) == Some(&me)
         {
             cx.global_mut::<Sizers>().0.remove(&self.key);
+        }
+    }
+
+    /// A run restored as running starts again as soon as it can (its tools may still be
+    /// being checked); if it can't run any more, it stays not started.
+    fn start_if_restoring(&mut self, cx: &mut Context<Self>) {
+        if !self.restoring {
+            return;
+        }
+        let refusal = self.ctx.services.read(cx).runner.read(cx).refusal(&self.key);
+        match refusal.as_deref() {
+            Some("checking tools…") => {}
+            Some(_) => self.restoring = false,
+            None => {
+                self.restoring = false;
+                self.act("run", cx);
+            }
         }
     }
 
@@ -246,6 +269,20 @@ impl RunView {
         }
         self.follow = self.scrollback.scroll(self.follow, lines, rows, dropped, g.shown);
         cx.notify();
+    }
+}
+
+/// Follow, and whether the run was running: it starts again in its tab on reopen.
+impl super::KeepsState for RunView {
+    fn save(&self, cx: &App) -> serde_json::Value {
+        let running = self.ctx.services.read(cx).runner.read(cx).was_running(&self.key);
+        serde_json::json!({ "follow": self.follow, "running": running })
+    }
+
+    fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
+        self.follow = state["follow"].as_bool().unwrap_or(true);
+        self.restoring = state["running"].as_bool().unwrap_or(false);
+        self.start_if_restoring(cx);
     }
 }
 

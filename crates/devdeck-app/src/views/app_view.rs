@@ -121,6 +121,19 @@ impl AppView {
     }
 }
 
+/// The selected command and whether hidden commands are shown.
+impl super::KeepsState for AppView {
+    fn save(&self, _: &App) -> serde_json::Value {
+        serde_json::json!({ "selected": self.selected, "show_hidden": self.show_hidden })
+    }
+
+    fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
+        self.selected = state["selected"].as_str().map(String::from);
+        self.show_hidden = state["show_hidden"].as_bool().unwrap_or(false);
+        cx.notify();
+    }
+}
+
 impl Focusable for AppView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()

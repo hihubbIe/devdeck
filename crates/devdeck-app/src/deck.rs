@@ -30,6 +30,10 @@ pub struct Deck {
     views: HashMap<ViewRef, AnyView>,
     /// Focus handles of views that take keys.
     focus: HashMap<ViewRef, FocusHandle>,
+    /// How views that keep state are read for saving.
+    savers: HashMap<ViewRef, views::Saver>,
+    /// States saved last time, handed to each view when it's built (then dropped).
+    restored: devdeck_core::state::ViewStates,
     /// The workspace's services, handed to every view (`None` in bare decks: demo views only).
     services: Option<Entity<crate::services::Services>>,
     /// Detached windows only. `None` while the OS window is being opened (deferred).
@@ -78,6 +82,8 @@ impl Deck {
             active: true,
             views: HashMap::new(),
             focus: HashMap::new(),
+            savers: HashMap::new(),
+            restored: Default::default(),
             services: None,
             os_windows: HashMap::new(),
             released: Vec::new(),
@@ -283,8 +289,8 @@ impl Deck {
         // Both files at once, so they never disagree about which tree is current.
         if self.store.is_some() {
             self.save_task = None;
-            if let Some((store, ws, layout)) = self.take_save() {
-                let result = store.save_layout(&ws, &layout);
+            if let Some((store, ws, layout, views)) = self.take_save(cx) {
+                let result = store.save_layout(&ws, &layout).and(store.save_views(&ws, &views));
                 self.saved(result, cx);
             }
             self.save_book(cx);
@@ -386,6 +392,7 @@ impl Deck {
         self.released.retain(|(weak, _)| weak.upgrade().is_some());
         for r in closed {
             self.focus.remove(&r);
+            self.savers.remove(&r);
             if let Some(v) = self.views.remove(&r) {
                 self.released.push((v.downgrade(), self.generation));
             }
@@ -394,9 +401,13 @@ impl Deck {
             if !self.views.contains_key(&r) {
                 let deck = cx.weak_entity();
                 let ctx = self.services.clone().map(|services| ViewCx { services, deck, view: r.clone() });
-                let built = views::build(&r, ctx.as_ref(), cx);
+                let saved = self.restored.remove(r.as_str());
+                let built = views::build(&r, ctx.as_ref(), saved.as_ref(), cx);
                 if let Some(f) = built.focus {
                     self.focus.insert(r.clone(), f);
+                }
+                if let Some(s) = built.save {
+                    self.savers.insert(r.clone(), s);
                 }
                 self.views.insert(r, built.view);
             }
@@ -460,8 +471,8 @@ impl Deck {
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_DELAY).await;
-            let Ok(Some((store, ws, layout))) = this.update(cx, |d, _| d.take_save()) else { return };
-            let result = cx.background_executor().spawn(async move { store.save_layout(&ws, &layout) }).await;
+            let Ok(Some((store, ws, layout, views))) = this.update(cx, |d, cx| d.take_save(cx)) else { return };
+            let result = cx.background_executor().spawn(async move { store.save_layout(&ws, &layout).and(store.save_views(&ws, &views)) }).await;
             let _ = this.update(cx, |d, cx| {
                 d.save_task = None;
                 d.saved(result, cx);
@@ -472,11 +483,22 @@ impl Deck {
         }));
     }
 
-    fn take_save(&mut self) -> Option<(StateStore, String, Layout)> {
+    fn take_save(&mut self, cx: &App) -> Option<(StateStore, String, Layout, devdeck_core::state::ViewStates)> {
         let store = self.store.clone()?;
         self.dirty = false;
         self.saves += 1;
-        Some((store, self.workspace.clone(), self.layout.clone()))
+        Some((store, self.workspace.clone(), self.layout.clone(), self.view_states(cx)))
+    }
+
+    /// What the open views keep of themselves, by view ref.
+    pub fn view_states(&self, cx: &App) -> devdeck_core::state::ViewStates {
+        self.savers.iter().filter_map(|(r, save)| Some((r.as_str().to_string(), save(cx)?))).collect()
+    }
+
+    /// The views' states saved last time (applied as each view is built).
+    pub fn with_view_states(mut self, states: devdeck_core::state::ViewStates) -> Self {
+        self.restored = states;
+        self
     }
 
     /// A failing save is reported once, until a save works again.
@@ -492,15 +514,14 @@ impl Deck {
         }
     }
 
-    /// Writes a pending change now (quit).
+    /// Writes everything now (quit): the layout when it changed, the views' states always
+    /// (they change without the layout: scrolling, a run starting).
     pub fn flush(&mut self, cx: &mut Context<Self>) {
-        if !self.dirty {
-            return;
-        }
         self.save_task = None;
-        if let Some((store, ws, layout)) = self.take_save() {
-            let result = store.save_layout(&ws, &layout);
-            self.saved(result, cx);
+        let dirty = self.dirty;
+        if let Some((store, ws, layout, views)) = self.take_save(cx) {
+            let result = if dirty { store.save_layout(&ws, &layout) } else { Ok(()) };
+            self.saved(result.and(store.save_views(&ws, &views)), cx);
         }
     }
 }

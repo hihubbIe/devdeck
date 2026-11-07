@@ -144,7 +144,17 @@ impl Shell {
                     }
                     _ => LayoutBook::default(),
                 };
-                let deck = cx.new(|_| Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_services(deck_services).with_book(book));
+                let views = match store.as_ref().map(|s| s.load_views(&spec.id)) {
+                    Some(Loaded::Ok(v)) => v,
+                    Some(Loaded::Broken(e)) => {
+                        problems.push(e);
+                        Default::default()
+                    }
+                    _ => Default::default(),
+                };
+                let deck = cx.new(|_| {
+                    Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_services(deck_services).with_book(book).with_view_states(views)
+                });
                 let (ws, sidebar_deck, sidebar_store) = (spec.id.clone(), deck.clone(), store.clone());
                 let sidebar_services = services.clone();
                 let sidebar = cx.new(|cx| Sidebar::new(ws, sidebar_services, sidebar_deck, sidebar_store, sidebar_state, cx));

@@ -105,13 +105,16 @@ pub struct Runner {
     catalog: Rc<Catalog>,
     runs: BTreeMap<RunKey, Run>,
     driver: Rc<dyn RunDriver>,
+    /// What [`Runner::stop_all`] stopped: it was running when devdeck quit, so its view
+    /// starts it again when the workspace reopens.
+    stopped_to_quit: std::collections::BTreeSet<RunKey>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default() }
     }
 
     /// A new catalog (tools found, apps rediscovered). Runs of commands that disappeared
@@ -272,14 +275,21 @@ impl Runner {
         }
     }
 
+    /// Stops everything to quit, remembering what ran.
     pub fn stop_all(&mut self, cx: &mut Context<Self>) {
         let keys: Vec<RunKey> = self.runs.iter().filter(|(_, r)| r.state == RunState::Running).map(|(k, _)| k.clone()).collect();
+        self.stopped_to_quit.extend(keys.iter().cloned());
         for k in keys {
             self.stop(&k, cx);
         }
         for r in self.runs.values_mut() {
             r.restart_after_stop = false;
         }
+    }
+
+    /// Running, or stopped only because devdeck quits: what a run view saves as "running".
+    pub fn was_running(&self, key: &RunKey) -> bool {
+        self.state(key).is_some_and(RunState::is_running) || self.stopped_to_quit.contains(key)
     }
 
     /// The process ids of the runs that have one (port scans, quitting).
