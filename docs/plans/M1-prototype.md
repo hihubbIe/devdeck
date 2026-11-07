@@ -584,3 +584,46 @@ Esc cancels; shift+F10 opens the focused element's menu; hint bar lists the focu
 view's keys; cheat sheet filter.
 
 Out of scope: user-configurable keymaps (later), palette recents (open question).
+
+### Step 6 review and assessment
+
+1. Availability: handlers that don't apply aren't on the focus path at all. Sidebar,
+   env, settings and Send to handlers attach only in the main window, and not while
+   Settings is open. Palette items that can't run say why (missing tool…). **Accepted.**
+2. Hint bar: built by walking the registry (not `available_actions`); an entry shows
+   when its action is available and a binding matches the current context; the key text
+   comes from the highest-precedence binding (skips shadowed keys). When the result
+   changes after a frame (a new modal), the window re-renders once. **Accepted.**
+3. A text input's Enter and Esc are the `text_input` actions (Submit, Cancel) in the
+   registry, so they do show. **Rejected as stated** (they are actions).
+4. The app registry also binds the `devdeck-ui` actions; `devdeck_ui::bind_keys` goes
+   away so there is one source. Ids are unique strings (`sidebar.next`, `app_view.next`),
+   several keys per entry are supported, workspace keys keep generic labels (names
+   show in the palette). **Accepted.**
+5. Key conflicts are tested against real context stacks (panes › app view, sidebar ›
+   text input, modal), plus unique ids. **Accepted.**
+6. Global keys don't fire under a modal or menu: app-wide entries use
+   `!Modal && !Menu`, `?` also `!TextInput`. **Accepted.**
+7. Send to: the pick lives in the Deck (badges in every window of the workspace, a list
+   modal in the window it started from); clicking a badge in another window completes
+   it; the pick cancels when its source goes away, a window closes, or the workspace
+   switches. Numbering in core from the layout (main window reading order, then
+   detached windows); keys 1–9, the list covers the rest. Not offered while Settings is
+   open. **Accepted.**
+8. The source pane is listed disabled ("already here"); "new window" from a single-pane
+   detached window is disabled ("already alone"); layout errors (last pane of the main
+   window) show their reason. Badges: on the rail of a collapsed pane, only visible
+   panes while one is maximized (the list has all). Keys: ctrl+shift+s tab,
+   ctrl+alt+shift+s pane, plus a pane-strip button. **Accepted.**
+9. The palette lives in the main window (ctrl+k from a detached window brings the main
+   window forward); it closes and restores focus before running its item, then
+   dispatches. **Accepted.**
+10. shift+F10 opens the menu of the focused thing at a computed spot (selected row,
+    active tab of the focused pane); nothing inside text inputs; the Menu key is bound
+    too but only shift+F10 is tested (headless can't prove the Menu key on Wayland).
+    **Accepted.**
+11. Palette empty state: this session's recent picks first, then actions, as DESIGN's
+    open question answers; layouts join in step 7; title bar gets `search ctrl k` and
+    `?`; detached windows drop the bottom bar (R3.8, nothing else). **Accepted.**
+12. Step 6 tests go in one binary (`tests/actions.rs`); fuzzy, pane numbering and
+    conflict checks are pure. **Accepted.**
