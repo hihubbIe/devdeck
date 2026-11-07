@@ -9,3 +9,7 @@ publish.workspace = true
 devdeck-core.workspace = true
 gpui.workspace = true
 unicode-segmentation = "1"
+
+[dev-dependencies]
+# Components are tested on their own, in a host window (tests/common).
+gpui = { workspace = true, features = ["test-support"] }

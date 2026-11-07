@@ -38,11 +38,13 @@ snapshots take about 3 s.
 
 - **While building:** `cargo check -p <crate>` and the test file of the area being changed
   (`cargo test -p devdeck-app --test deck`).
-- **Before the commit:** clippy and the whole suite once (about 10 s), and the snapshots of
-  the states the step adds or touches (the snapshot tool takes a name filter:
-  `-- <out-dir> 01-,20-`).
-- **End of the milestone only:** every snapshot, release builds, measurements, stress and
-  leak runs.
+- **Before the commit:** `scripts/test_changed.py`: clippy and the tests of the crates
+  the change touches and of the crates built on them (editing `devdeck-ui` tests it and
+  the app; editing only the app tests the app; `devdeck-core` or the Cargo files test
+  everything). And the snapshots of the states the step adds or touches (the snapshot
+  tool takes a name filter: `-- <out-dir> 01-,20-`).
+- **End of the milestone only:** the whole suite, every snapshot, release builds,
+  measurements, stress and leak runs.
 - **Reviews:** the plan is reviewed before any code, by a reviewer who reads the GPUI source
   where the behaviour depends on it; then one review of the diff. Reviewers run in the
   same turn as the build, so one approval covers the step: build, review, fixing what the
@@ -53,6 +55,14 @@ snapshots take about 3 s.
   checkout (a worktree would need its own cold GPUI build), never two on the same file.
   Builders run `cargo check` and their own tests; the lead runs the combined build, the
   review and the commit.
+
+## Components are tested on their own
+
+`devdeck-ui` is the component library every view draws with (R9.3). Each component has
+tests in `crates/devdeck-ui/tests/`, in a host window (`tests/common`) with nothing of the
+app: every interaction by mouse (click, hover, drag, wheel) and by keyboard, disabled
+states, focus. A new component or a change to one comes with its tests. The app's own
+tests cover only how components fit in it (menus over panes, modals blocking app keys).
 
 ## Tests leave nothing behind
 

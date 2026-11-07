@@ -14,6 +14,7 @@ impl Render for Tip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx);
         div()
+            .debug_selector(|| "tooltip".into())
             .px_2()
             .py_1()
             .bg(t.raised)

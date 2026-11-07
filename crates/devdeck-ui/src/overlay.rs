@@ -13,7 +13,7 @@ use crate::components::label;
 use crate::theme::{Theme, theme};
 use gpui::{
     Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global,
-    Pixels, Point, Render, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
+    Pixels, Point, Render, ScrollHandle, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
     deferred, div, point, prelude::*,
 };
 use std::collections::HashMap;
@@ -91,19 +91,33 @@ pub struct Menu {
     focus: FocusHandle,
     restore: Option<WeakFocusHandle>,
     window: AnyWindowHandle,
+    /// The list's scroll, so the row the keys select stays in view.
+    scroll: ScrollHandle,
     _blur: Option<Subscription>,
 }
 
 impl Menu {
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Removes the menu. Focus goes back to what had it on open, unless it already moved
+    /// elsewhere (`give_back_focus` false), which then keeps it.
+    fn close(&mut self, give_back_focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         self._blur = None;
-        if let Some(h) = self.restore.as_ref().and_then(WeakFocusHandle::upgrade) {
+        if give_back_focus && let Some(h) = self.restore.as_ref().and_then(WeakFocusHandle::upgrade) {
             window.focus(&h, cx);
         }
         layer(self.window, cx).update(cx, |l, cx| {
             l.menu = None;
             cx.notify();
         });
+    }
+
+    /// Selects the next selectable row in `dir` and scrolls it into view (each item is one
+    /// child of the list, so its index is the child's).
+    fn step(&mut self, dir: isize, cx: &mut Context<Self>) {
+        self.selected = step_selection(&self.items, self.selected, dir);
+        if let Some(i) = self.selected {
+            self.scroll.scroll_to_item(i);
+        }
+        cx.notify();
     }
 
     fn run(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -113,7 +127,7 @@ impl Menu {
             cx.notify();
             return;
         }
-        self.close(window, cx);
+        self.close(true, window, cx);
         if let Some(run) = item.run {
             run(window, cx);
         }
@@ -129,6 +143,7 @@ impl Render for Menu {
             .id("menu")
             .key_context("Menu")
             .track_focus(&self.focus)
+            .track_scroll(&self.scroll)
             .min_w(t.size(220.))
             .max_w(t.size(420.))
             .max_h(max_h)
@@ -144,20 +159,14 @@ impl Render for Menu {
             // The backdrop under the list closes the menu on mouse down: it must not get the
             // clicks meant for rows, or the menu closes before a row's click completes.
             .occlude()
-            .on_action(cx.listener(|this, _: &MenuDown, _, cx| {
-                this.selected = step_selection(&this.items, this.selected, 1);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &MenuUp, _, cx| {
-                this.selected = step_selection(&this.items, this.selected, -1);
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &MenuDown, _, cx| this.step(1, cx)))
+            .on_action(cx.listener(|this, _: &MenuUp, _, cx| this.step(-1, cx)))
             .on_action(cx.listener(|this, _: &MenuConfirm, window, cx| {
                 if let Some(i) = this.selected {
                     this.run(i, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &MenuClose, window, cx| this.close(window, cx)));
+            .on_action(cx.listener(|this, _: &MenuClose, window, cx| this.close(true, window, cx)));
         for (i, item) in self.items.iter().enumerate() {
             if item.separator {
                 list = list.child(div().my_1().h(t.hairline).bg(t.line));
@@ -192,7 +201,7 @@ impl Render for Menu {
             .w(viewport.width)
             .h(viewport.height)
             .occlude()
-            .on_any_mouse_down(cx.listener(|this, _, window, cx| this.close(window, cx)));
+            .on_any_mouse_down(cx.listener(|this, _, window, cx| this.close(true, window, cx)));
         div()
             .child(deferred(anchored().position(point(Pixels::ZERO, Pixels::ZERO)).child(backdrop)).with_priority(PRIORITY_MENU - 1))
             .child(deferred(anchored().position(self.position).snap_to_window_with_margin(t.size(4.)).child(list)).with_priority(PRIORITY_MENU))
@@ -210,8 +219,10 @@ impl ModalFocus {
         if self.0.is_empty() {
             return;
         }
-        let current = self.0.iter().position(|h| h.contains_focused(window, cx)).map_or(-1, |i| i as isize);
-        let next = (current + dir).rem_euclid(self.0.len() as isize) as usize;
+        let n = self.0.len() as isize;
+        // From outside the controls, forward starts at the first and backward at the last.
+        let current = self.0.iter().position(|h| h.contains_focused(window, cx)).map_or(if dir > 0 { -1 } else { n }, |i| i as isize);
+        let next = (current + dir).rem_euclid(n) as usize;
         window.focus(&self.0[next], cx);
     }
 }
@@ -291,6 +302,12 @@ pub fn layer_count(cx: &App) -> usize {
 /// Opens a context menu at `position` (window coordinates) and moves focus into it.
 pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
+    // A menu already open closes first, so focus goes back to what had it before both
+    // rather than to the replaced menu.
+    let overlays = layer(handle, cx);
+    if let Some(open) = overlays.read(cx).menu.clone() {
+        open.update(cx, |m, cx| m.close(true, window, cx));
+    }
     let restore = window.focused(cx).map(|f| f.downgrade());
     let selected = step_selection(&items, None, 1);
     let menu = cx.new(|cx| Menu {
@@ -300,6 +317,7 @@ pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Win
         focus: cx.focus_handle(),
         restore,
         window: handle,
+        scroll: ScrollHandle::new(),
         _blur: None,
     });
     let focus = menu.read(cx).focus.clone();
@@ -308,7 +326,8 @@ pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Win
     // bubbles on; this keeps it in the menu.
     window.prevent_default();
     menu.update(cx, |m, cx| {
-        m._blur = Some(cx.on_blur(&focus, window, |this, window, cx| this.close(window, cx)));
+        // Focus moved elsewhere on purpose (a pane, a modal): close and leave it there.
+        m._blur = Some(cx.on_blur(&focus, window, |this, window, cx| this.close(false, window, cx)));
     });
     layer(handle, cx).update(cx, |l, cx| {
         l.menu = Some(menu);
