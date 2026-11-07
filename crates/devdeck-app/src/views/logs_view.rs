@@ -77,7 +77,7 @@ impl ServiceLogsView {
         ];
         subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
         cluster.update(cx, |c, cx| {
-            c.deployments(&env, cx);
+            c.want(&env, cx);
         });
         Self {
             env,
@@ -275,7 +275,8 @@ impl Render for ServiceLogsView {
             .child(toggle_button("follow", "follow", self.follow, &t).tooltip(tip("follow")).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))));
 
         let body = if pods == 0 {
-            div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label("no pods")).into_any_element()
+            let why = self.cluster.read(cx).pods_read().err().map_or_else(|| "no pods".to_string(), |why| format!("pods: {why}"));
+            div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label(why)).into_any_element()
         } else {
             let (ok, warn, err, mute, fg, hit, current_bg, accent) = (t.ok, t.warn, t.err, t.mute, t.fg, t.drop_bg, t.selection, t.accent);
             let row_h = t.line_height;

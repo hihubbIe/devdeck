@@ -144,7 +144,7 @@ fn send_to_by_number_new_window_pane_and_cancel(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let find = |cx: &TestAppContext, v: &str| cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new(v)).map(|(p, _)| p));
-    let deployments = find(cx, "demo/deployments").unwrap();
+    let deployments = find(cx, "matrix").unwrap();
     // Focused pane: logs (number 1). Send its active tab to pane 2 (deployments).
     cx.simulate_keystrokes(main, "ctrl-shift-s");
     cx.run_until_parked();

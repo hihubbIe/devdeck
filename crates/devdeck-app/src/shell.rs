@@ -397,7 +397,7 @@ impl Shell {
 pub fn report_problems(shell: &Entity<Shell>, cx: &mut App) {
     let machine = crate::environment::environment(cx).read(cx).problems().len();
     let s = shell.read(cx);
-    let count = machine + s.workspaces.iter().map(|w| w.services.read(cx).problems.len()).sum::<usize>();
+    let count = machine + s.workspaces.iter().map(|w| w.services.read(cx).all_problems(cx).len()).sum::<usize>();
     if count == 0 {
         return;
     }

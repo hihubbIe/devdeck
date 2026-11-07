@@ -1,0 +1,151 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "annotations": {
+      "deployment.kubernetes.io/revision": "42",
+      "meta.helm.sh/release-name": "entityservice",
+      "meta.helm.sh/release-namespace": "dev35"
+    },
+    "creationTimestamp": "2025-03-12T09:41:27Z",
+    "generation": 14,
+    "labels": {
+      "app": "entityservice",
+      "app.kubernetes.io/managed-by": "Helm"
+    },
+    "name": "entityservice",
+    "namespace": "dev35",
+    "resourceVersion": "918273645",
+    "uid": "6c1e0f7a-3b2d-4e5f-8a9b-0c1d2e3f4a5b"
+  },
+  "spec": {
+    "progressDeadlineSeconds": 600,
+    "replicas": 2,
+    "revisionHistoryLimit": 10,
+    "selector": { "matchLabels": { "app": "entityservice" } },
+    "strategy": {
+      "rollingUpdate": { "maxSurge": "25%", "maxUnavailable": "25%" },
+      "type": "RollingUpdate"
+    },
+    "template": {
+      "metadata": {
+        "annotations": { "prometheus.io/port": "9090", "prometheus.io/scrape": "true" },
+        "labels": { "app": "entityservice" }
+      },
+      "spec": {
+        "containers": [
+          {
+            "args": ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"],
+            "image": "envoyproxy/envoy:v1.31.2",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "envoy",
+            "ports": [
+              { "containerPort": 8080, "name": "http", "protocol": "TCP" },
+              { "containerPort": 9901, "name": "admin", "protocol": "TCP" }
+            ],
+            "resources": {
+              "limits": { "memory": "256Mi" },
+              "requests": { "cpu": "100m", "memory": "128Mi" }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [{ "mountPath": "/etc/envoy", "name": "envoy-config" }]
+          },
+          {
+            "env": [
+              { "name": "JAVA_OPTS", "value": "-Xmx768m" },
+              {
+                "name": "SHARED_REGION",
+                "valueFrom": { "configMapKeyRef": { "key": "region", "name": "shared-env" } }
+              },
+              {
+                "name": "LOG_LEVEL",
+                "valueFrom": { "configMapKeyRef": { "key": "log-level", "name": "entityservice-config" } }
+              },
+              {
+                "name": "FLAGS",
+                "valueFrom": { "configMapKeyRef": { "key": "flags", "name": "feature-flags", "optional": true } }
+              },
+              {
+                "name": "DB_PASSWORD",
+                "valueFrom": { "secretKeyRef": { "key": "password", "name": "entityservice-db" } }
+              },
+              {
+                "name": "POD_NAME",
+                "valueFrom": { "fieldRef": { "apiVersion": "v1", "fieldPath": "metadata.name" } }
+              }
+            ],
+            "envFrom": [
+              { "configMapRef": { "name": "entityservice-config" } },
+              { "secretRef": { "name": "entityservice-secrets" } }
+            ],
+            "image": "europe-west1-docker.pkg.dev/project/registry06/entityservice:lan-160",
+            "imagePullPolicy": "Always",
+            "livenessProbe": {
+              "failureThreshold": 3,
+              "httpGet": { "path": "/health", "port": 5800, "scheme": "HTTP" },
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "timeoutSeconds": 1
+            },
+            "name": "entityservice",
+            "ports": [
+              { "containerPort": 5800, "name": "http", "protocol": "TCP" },
+              { "containerPort": 9090, "name": "metrics", "protocol": "TCP" }
+            ],
+            "resources": {
+              "limits": { "cpu": "1", "memory": "1Gi" },
+              "requests": { "cpu": "250m", "memory": "512Mi" }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File"
+          },
+          {
+            "image": "europe-west1-docker.pkg.dev/project/registry06/graphql-gateway:2.3.0",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "graphql-gateway",
+            "ports": [{ "containerPort": 4000, "name": "graphql", "protocol": "TCP" }],
+            "resources": {
+              "limits": { "cpu": "500m", "memory": "512Mi" },
+              "requests": { "cpu": "100m", "memory": "256Mi" }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File"
+          }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {},
+        "serviceAccountName": "entityservice",
+        "terminationGracePeriodSeconds": 30,
+        "volumes": [{ "configMap": { "defaultMode": 420, "name": "envoy-config" }, "name": "envoy-config" }]
+      }
+    }
+  },
+  "status": {
+    "availableReplicas": 2,
+    "conditions": [
+      {
+        "lastTransitionTime": "2025-03-12T09:42:03Z",
+        "lastUpdateTime": "2025-03-12T09:42:03Z",
+        "message": "Deployment has minimum availability.",
+        "reason": "MinimumReplicasAvailable",
+        "status": "True",
+        "type": "Available"
+      },
+      {
+        "lastTransitionTime": "2025-03-12T09:41:27Z",
+        "lastUpdateTime": "2026-10-30T14:02:11Z",
+        "message": "ReplicaSet \"entityservice-7d9c8b6f5\" has successfully progressed.",
+        "reason": "NewReplicaSetAvailable",
+        "status": "True",
+        "type": "Progressing"
+      }
+    ],
+    "observedGeneration": 14,
+    "readyReplicas": 2,
+    "replicas": 2,
+    "updatedReplicas": 2
+  }
+}

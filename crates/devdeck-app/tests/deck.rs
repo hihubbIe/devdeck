@@ -183,11 +183,11 @@ fn the_deck_announces_each_visibility_change_once(cx: &mut TestAppContext) {
     apply(&deck, cx, |l| l.toggle_collapse(logs_pane));
     assert_eq!(take(&log, "demo/long"), [false, true]);
     // Another pane maximized hides this one, restoring shows it.
-    let (dep, _) = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/deployments")).unwrap());
+    let (dep, _) = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("matrix")).unwrap());
     apply(&deck, cx, |l| l.toggle_maximize(dep));
     apply(&deck, cx, |l| l.toggle_maximize(dep));
     assert_eq!(take(&log, "demo/long"), [false, true]);
-    assert!(take(&log, "demo/deployments").is_empty(), "the maximized pane stays shown");
+    assert!(take(&log, "matrix").is_empty(), "the maximized pane stays shown");
     assert_eq!(take(&log, "demo/notes"), [false, true], "the other panes too");
     // Sent to another pane, active there: the same instance, still shown, no event.
     let notes = ViewRef::new("demo/notes");
@@ -213,26 +213,26 @@ fn the_deck_announces_each_visibility_change_once(cx: &mut TestAppContext) {
     log.borrow_mut().clear();
     // Covered by Settings, then shown again: one event each way per view.
     cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(true, cx)));
-    assert_eq!(take(&log, "demo/deployments"), [false]);
+    assert_eq!(take(&log, "matrix"), [false]);
     cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(true, cx)));
-    assert!(take(&log, "demo/deployments").is_empty(), "no event without a change");
+    assert!(take(&log, "matrix").is_empty(), "no event without a change");
     cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(false, cx)));
-    assert_eq!(take(&log, "demo/deployments"), [true]);
+    assert_eq!(take(&log, "matrix"), [true]);
     // The workspace hidden.
     cx.update(|cx| deck.update(cx, |d, cx| d.set_active(false, cx)));
-    assert_eq!(take(&log, "demo/deployments"), [false]);
+    assert_eq!(take(&log, "matrix"), [false]);
     cx.update(|cx| deck.update(cx, |d, cx| d.set_active(true, cx)));
-    assert_eq!(take(&log, "demo/deployments"), [true]);
+    assert_eq!(take(&log, "matrix"), [true]);
     // Closed.
-    apply(&deck, cx, |l| l.close_view(&ViewRef::new("demo/deployments")));
-    assert_eq!(take(&log, "demo/deployments"), [false]);
+    apply(&deck, cx, |l| l.close_view(&ViewRef::new("matrix")));
+    assert_eq!(take(&log, "matrix"), [false]);
 }
 
 #[gpui::test]
 fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut TestAppContext) {
     let deck = setup(cx);
     let main = cx.windows()[0];
-    let deployments = ViewRef::new("demo/deployments");
+    let deployments = ViewRef::new("matrix");
     cx.simulate_keystrokes(main, "ctrl-,");
     cx.run_until_parked();
     assert!(!cx.read(|cx| deck.read(cx).is_visible(&deployments)), "Settings cover the panes");
@@ -247,7 +247,7 @@ fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut Tes
     cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx))).unwrap();
     cx.run_until_parked();
     assert_eq!(take(&log, "demo/notes"), [true], "the other layout's tab comes on screen");
-    assert!(take(&log, "demo/deployments").is_empty(), "the kept view never left the screen");
+    assert!(take(&log, "matrix").is_empty(), "the kept view never left the screen");
 }
 
 #[gpui::test]

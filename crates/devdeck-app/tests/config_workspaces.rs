@@ -43,7 +43,7 @@ fn a_config_workspace_lists_the_apps_of_its_folders(cx: &mut TestAppContext) {
     assert_eq!(apps, ["web"]);
     let cmds: Vec<String> = cx.read(|cx| s.read(cx).catalog.app("web").unwrap().commands.iter().map(|c| c.id.clone()).collect());
     assert_eq!(cmds, ["pnpm:build", "pnpm:dev", "pnpm:install"]);
-    assert!(cx.read(|cx| s.read(cx).cluster.is_none()), "no cluster until M3");
+    assert!(cx.read(|cx| s.read(cx).cluster.is_none()), "no [cluster], no cluster");
 }
 
 #[gpui::test]

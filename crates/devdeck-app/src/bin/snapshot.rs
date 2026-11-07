@@ -5,6 +5,7 @@
 //! `cargo run -p devdeck-app --features snapshot --bin devdeck-snapshot -- <out-dir> [filter]`
 //! where `filter` is a comma-separated list of name fragments (`50-,51-`).
 
+use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate};
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
@@ -342,7 +343,7 @@ fn deploy(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, env: &str, name: &
     let c = work_cluster(cx, shell);
     cx.update(|cx| {
         c.update(cx, |c, cx| {
-            c.deployments(env, cx);
+            c.want(env, cx);
         })
     });
     cx.advance_clock(Duration::from_millis(400));
@@ -401,6 +402,57 @@ fn svc_forbidden_narrow(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell:
     service(cx, shell, "lab", "tadawebapi", false);
 }
 
+/// dev35's first deployment running more than one container (the demo's proxy).
+fn multi_container(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> String {
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| c.update(cx, |c, cx| c.want("dev35", cx)));
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.update(|cx| c.read(cx).names().into_iter().find(|n| c.read(cx).deployment("dev35", n).is_some_and(|d| d.others() > 0)).map(str::to_string)).expect("a deployment with a proxy")
+}
+
+/// M3: dev35's connection lost after a list: the list stays, the problem shows, in the
+/// sidebar and the service view (several containers).
+fn svc_lost_connection(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let name = multi_container(cx, shell);
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    service(cx, shell, "dev35", &name, false);
+    let c = work_cluster(cx, shell);
+    let problem = EnvUpdate::Problem(Some("can't reach km011gcp (dev35): connection refused".into()));
+    cx.update(|cx| c.update(cx, |c, cx| c.apply("dev35", problem, cx)));
+}
+
+/// Reads deployments only, as the kube driver of M3 step 1.
+struct DeploymentsOnly;
+
+impl ClusterDriver for DeploymentsOnly {
+    fn watch(&self, _env: &str, _cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
+        None
+    }
+    fn namespace(&self, env: &str) -> String {
+        env.into()
+    }
+    fn writes(&self) -> Result<(), String> {
+        Err(devdeck_app::kube_cluster::NO_DEPLOYS.into())
+    }
+    fn pods(&self) -> Result<(), String> {
+        Err(devdeck_app::kube_cluster::NOT_YET.into())
+    }
+    fn metrics(&self, _env: &str) -> Result<(), String> {
+        Err(devdeck_app::kube_cluster::NOT_YET.into())
+    }
+}
+
+/// M3 step 1: a service on the kube driver: containers, no pods or metrics yet, save
+/// disabled with its reason.
+fn svc_deployments_only(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let name = multi_container(cx, shell);
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| c.update(cx, |c, cx| c.set_driver(c.envs.clone(), std::rc::Rc::new(DeploymentsOnly), cx)));
+    service(cx, shell, "dev35", &name, true);
+}
+
 fn maximize_focused(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) {
     let deck = cx.update(|cx| shell.read(cx).active_deck());
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.toggle_maximize(l.main().focused))));
@@ -429,14 +481,14 @@ fn pod(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) 
     let c = work_cluster(cx, shell);
     cx.update(|cx| {
         c.update(cx, |c, cx| {
-            c.deployments("dev35", cx);
+            c.want("dev35", cx);
         })
     });
     cx.advance_clock(Duration::from_millis(400));
     cx.run_until_parked();
     let name = cx.update(|cx| {
         let c = c.read(cx);
-        c.spec.services.iter().flat_map(|s| c.pods("dev35", s).to_vec()).find(|p| !p.ready).map(|p| p.name).unwrap_or_default()
+        c.names().into_iter().flat_map(|s| c.pods("dev35", s).to_vec()).find(|p| !p.ready).map(|p| p.name).unwrap_or_default()
     });
     open_view(cx, shell, ViewAddr::Pod { env: "dev35".into(), pod: name });
 }
@@ -616,7 +668,7 @@ fn collapsed_row() -> Layout {
 
 fn maximized() -> Layout {
     let mut l = devdeck_app::initial_layout();
-    let p = pane_of(&l, "demo/deployments");
+    let p = pane_of(&l, "matrix");
     l.toggle_maximize(p).unwrap();
     l
 }
@@ -739,6 +791,8 @@ fn states() -> Vec<State> {
         w("90-logs-filter-find", "work", 1.0, Some(logs_find)),
         w("91-pod-crashloop", "work", 1.0, Some(pod)),
         w("92-matrix-highlight", "work", 1.0, Some(matrix)),
+        w("94-svc-lost-connection", "work", 1.0, Some(svc_lost_connection)),
+        w("95-svc-deployments-only", "work", 1.0, Some(svc_deployments_only)),
         w("93-port", "work", 1.0, Some(port)),
         w("A0-cheat-sheet", "work", 1.0, Some(cheat_sheet)),
         w("A1-cheat-sheet-filtered", "work", 1.0, Some(cheat_sheet_filtered)),

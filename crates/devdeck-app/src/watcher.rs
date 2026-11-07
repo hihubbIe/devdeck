@@ -16,6 +16,10 @@
 //!   When it starts watching folders that were already there (an install's
 //!   `node_modules/.bin`), what changed in them before is unseen: that workspace is
 //!   rescanned once more.
+//! - A workspace's kubeconfigs folder (`[cluster]`) is watched on its own route: a change
+//!   there reloads that cluster's kubeconfigs (envs whose target changed reconnect), not
+//!   the apps. A folder missing at start is tried again whenever the watched folders are
+//!   looked at again (after any rescan); starting to watch it reloads too.
 //! - The watcher's thread hands paths to the UI thread over a channel; nothing blocks it.
 
 use crate::services::{Rescanned, Services};
@@ -108,10 +112,17 @@ struct Watching {
 /// it started watching a folder.
 fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>, cx: &mut App) -> bool {
     let mut wanted: BTreeSet<PathBuf> = [config_dir.to_path_buf(), config_dir.join(WORKSPACES_DIR)].into();
+    let mut kubeconfigs: Vec<(PathBuf, Entity<Services>)> = Vec::new();
     for w in &shell.read(cx).workspaces {
-        wanted.extend(w.services.read(cx).watch.iter().cloned());
+        let s = w.services.read(cx);
+        wanted.extend(s.watch.iter().cloned());
+        if let Some(k) = s.kubeconfigs() {
+            wanted.insert(k.to_path_buf());
+            kubeconfigs.push((k.to_path_buf(), w.services.clone()));
+        }
     }
     let (mut failed, mut started) = (None, false);
+    let mut reload = Vec::new();
     {
         let w = &mut *watching.borrow_mut();
         for gone in w.watched.difference(&wanted).cloned().collect::<Vec<_>>() {
@@ -124,6 +135,7 @@ fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>
                 Ok(()) => {
                     w.watched.insert(new.clone());
                     started = true;
+                    reload.extend(kubeconfigs.iter().filter(|(k, _)| k == new).map(|(_, s)| s.clone()));
                 }
                 Err(e) if new.exists() && !w.warned => {
                     w.warned = true;
@@ -136,7 +148,27 @@ fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>
     if let Some(text) = failed {
         toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
     }
+    for s in reload {
+        reload_cluster(&s, cx);
+    }
     started
+}
+
+fn reload_cluster(s: &Entity<Services>, cx: &mut App) {
+    if let Some(c) = s.read(cx).cluster.clone() {
+        c.update(cx, |c, cx| c.reload(cx));
+    }
+}
+
+/// Reloads the clusters whose kubeconfigs folder `paths` touch.
+fn reload_kubeconfigs(shell: &Entity<Shell>, paths: &[PathBuf], cx: &mut App) {
+    let workspaces: Vec<_> = shell.read(cx).workspaces.iter().map(|w| w.services.clone()).collect();
+    for s in workspaces {
+        let touched = s.read(cx).kubeconfigs().is_some_and(|k| paths.iter().any(|p| p == k || p.parent() == Some(k)));
+        if touched {
+            reload_cluster(&s, cx);
+        }
+    }
 }
 
 /// Rescans what `paths` concern. `files`: the workspace files there were.
@@ -144,6 +176,7 @@ fn changed(shell: &Entity<Shell>, config_dir: &Path, files: &RefCell<BTreeSet<St
     let workspaces_dir = config_dir.join(WORKSPACES_DIR);
     let machine_changed = paths.iter().any(|p| *p == config_dir.join(MACHINE_FILE));
     let workspaces_changed = paths.iter().any(|p| p.parent() == Some(workspaces_dir.as_path()));
+    reload_kubeconfigs(shell, paths, cx);
     if !machine_changed && !workspaces_changed {
         return rescan_concerned(shell, paths, cx);
     }

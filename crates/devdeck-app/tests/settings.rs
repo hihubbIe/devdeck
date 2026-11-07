@@ -95,7 +95,7 @@ fn text_never_wraps_at_large_scale() {
     let mut vcx = VisualTestContext::from_window(main, &cx);
     vcx.run_until_parked();
     let line = vcx.read(|cx| devdeck_ui::theme(cx).line_height);
-    for selector in ["kube-message", "tab-title"] {
+    for selector in ["matrix-heading", "tab-title"] {
         let b = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} rendered"));
         assert!(b.size.height <= line + logical(1.), "{selector} wrapped: height {:?} > line {:?}", b.size.height, line);
     }

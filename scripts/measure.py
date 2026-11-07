@@ -5,8 +5,6 @@ Usage: scripts/measure.py <scenario> [options]
 
 Scenarios
   idle      start, 20 s streaming a 50k-line log, then 10 s idle (Wayland or X11)
-  kube      like idle, with the read-only cluster feed on (needs DEVDECK_KUBECONFIG,
-            DEVDECK_KUBE_CONTEXT, DEVDECK_KUBE_NAMESPACE in the environment)
   latency   X11 only: sends real key presses with xdotool and reads GPUI's
             input-to-frame histogram (needs the `profile` build)
   terminal  a run's terminal under load: the demo's three servers write 2 000 lines/s
@@ -488,7 +486,7 @@ def scenario_heapdiff(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak", "heapdiff", "terminal", "real", "leftovers"])
+    ap.add_argument("scenario", choices=["idle", "latency", "leak", "heapdiff", "terminal", "real", "leftovers"])
     ap.add_argument("--x11", action="store_true")
     ap.add_argument("--bin", default="target/release/devdeck")
     ap.add_argument("--cycles", type=int, default=1000)
@@ -501,8 +499,6 @@ def main():
     report("session", "x11" if args.x11 else os.environ.get("XDG_SESSION_TYPE", "?"))
     if args.scenario == "idle":
         scenario_idle(args)
-    elif args.scenario == "kube":
-        scenario_idle(args, label="kube")
     elif args.scenario == "latency":
         scenario_latency(args)
     elif args.scenario == "terminal":

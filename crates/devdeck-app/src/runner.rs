@@ -192,7 +192,7 @@ impl Runner {
             let app = self.catalog.apps.iter().find(|a| a.dir == dir).cloned().unwrap_or_else(|| App {
                 id: String::new(),
                 name: dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned()),
-                folder: shown(dir),
+                folder: devdeck_core::config::shown(dir),
                 dir: dir.to_path_buf(),
                 kind: "shell".into(),
                 library: false,
@@ -618,17 +618,6 @@ impl Runner {
     }
 }
 
-/// `dir` as shown: `~` for the home folder.
-fn shown(dir: &std::path::Path) -> String {
-    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        Some(home) if dir.starts_with(&home) && home.parent().is_some() => match dir.strip_prefix(&home) {
-            Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
-            Ok(rest) => format!("~/{}", rest.display()),
-            Err(_) => dir.display().to_string(),
-        },
-        _ => dir.display().to_string(),
-    }
-}
 
 /// A line devdeck writes into a run's terminal: dim, on a line of its own.
 fn note(terminal: &mut Terminal, text: &str) {

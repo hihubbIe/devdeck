@@ -1,0 +1,23 @@
+[package]
+name = "devdeck-kube"
+description = "devdeck's cluster access (kube-rs): kubeconfigs, deployment watches. No UI."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+devdeck-core.workspace = true
+async-channel.workspace = true
+futures-lite.workspace = true
+tokio.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+
+[dev-dependencies]
+# The mock API the driver's tests run against, on paused time.
+tokio = { workspace = true, features = ["macros", "test-util"] }
+tower = { version = "=0.5.3", features = ["util"] }
+http = "=1.5.0"
+http-body-util = { version = "=0.1.5", features = ["channel"] }
+bytes = "=1.12.1"
+serde_json.workspace = true

@@ -116,7 +116,7 @@ impl Stress {
         if let Some(c) = cluster {
             cx.update(|cx| {
                 c.update(cx, |c, cx| {
-                    c.deployments("dev35", cx);
+                    c.want("dev35", cx);
                 })
             });
             cx.background_executor().timer(crate::cluster::LOAD_DELAY * 2).await;

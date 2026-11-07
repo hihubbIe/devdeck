@@ -7,9 +7,10 @@ pub mod cheat_sheet;
 pub mod cluster;
 pub mod deck;
 pub mod environment;
+pub mod fake_cluster;
 pub mod fake_driver;
 pub mod gallery;
-pub mod kube_feed;
+pub mod kube_cluster;
 pub mod layouts;
 pub mod lifecycle;
 pub mod palette;
@@ -35,15 +36,15 @@ use shell::WorkspaceSpec;
 use std::borrow::Cow;
 
 /// The spike's starting arrangement: logs and a long-titled tab on the left,
-/// deployments over notes on the right.
+/// the branch matrix over notes on the right.
 pub fn initial_layout() -> Layout {
     let mut l = Layout::new();
     let a = l.main().focused;
-    for v in ["demo/logs", "demo/long", "demo/deployments", "demo/notes", "demo/gallery"] {
+    for v in ["demo/logs", "demo/long", "matrix", "demo/notes", "demo/gallery"] {
         l.open(ViewRef::new(v), a).expect("open demo view");
     }
     l.move_tab(a, 2, Drop::Edge(a, Edge::Right)).expect("split right");
-    let b = l.find_view(&ViewRef::new("demo/deployments")).expect("deployments open").0;
+    let b = l.find_view(&ViewRef::new("matrix")).expect("matrix open").0;
     l.move_tab(a, 2, Drop::Edge(b, Edge::Bottom)).expect("split down");
     l.activate(a, 0).expect("logs active");
     l

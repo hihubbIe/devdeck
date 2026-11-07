@@ -20,12 +20,117 @@ impl<T> Remote<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A container's requests and limits; each may be unset (millicores, MiB).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Resources {
-    pub cpu_request_m: u32,
-    pub cpu_limit_m: u32,
-    pub mem_request_mi: u32,
-    pub mem_limit_mi: u32,
+    pub cpu_request_m: Option<u32>,
+    pub cpu_limit_m: Option<u32>,
+    pub mem_request_mi: Option<u32>,
+    pub mem_limit_mi: Option<u32>,
+}
+
+/// A Kubernetes CPU quantity in millicores: `500m`, `1`, `1.5`, `2k`.
+pub fn cpu_millis(q: &str) -> Option<u32> {
+    let q = q.trim();
+    if let Some(m) = q.strip_suffix('m') {
+        return m.parse::<f64>().ok().map(|v| v.round() as u32);
+    }
+    if let Some(u) = q.strip_suffix('u') {
+        return u.parse::<f64>().ok().map(|v| (v / 1000.).ceil() as u32);
+    }
+    if let Some(n) = q.strip_suffix('n') {
+        return n.parse::<f64>().ok().map(|v| (v / 1_000_000.).ceil() as u32);
+    }
+    let (num, mult) = match q.strip_suffix('k') {
+        Some(k) => (k, 1000.),
+        None => (q, 1.),
+    };
+    num.parse::<f64>().ok().map(|v| (v * mult * 1000.).round() as u32)
+}
+
+/// A Kubernetes memory quantity in MiB: `512Mi`, `1Gi`, `500M`, `1e9`, `134217728`.
+pub fn mem_mib(q: &str) -> Option<u32> {
+    let q = q.trim();
+    const UNITS: [(&str, f64); 12] = [
+        ("Ki", 1024.),
+        ("Mi", 1024. * 1024.),
+        ("Gi", 1024. * 1024. * 1024.),
+        ("Ti", 1024. * 1024. * 1024. * 1024.),
+        ("Pi", 1024. * 1024. * 1024. * 1024. * 1024.),
+        ("Ei", 1024. * 1024. * 1024. * 1024. * 1024. * 1024.),
+        ("k", 1e3),
+        ("M", 1e6),
+        ("G", 1e9),
+        ("T", 1e12),
+        ("P", 1e15),
+        ("E", 1e18),
+    ];
+    let (num, mult) = UNITS.iter().find_map(|(u, m)| q.strip_suffix(u).map(|n| (n, *m))).unwrap_or((q, 1.));
+    num.parse::<f64>().ok().map(|v| (v * mult / (1024. * 1024.)).round() as u32)
+}
+
+/// A container image: `repo[:tag][@digest]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    /// Registry and path: `europe-west1-docker.pkg.dev/project/registry06/graphservice`.
+    pub repo: String,
+    /// `None` only for an image pinned by digest without a tag; no tag otherwise means
+    /// `latest`.
+    pub tag: Option<String>,
+    pub digest: Option<String>,
+}
+
+impl Image {
+    pub fn parse(image: &str) -> Image {
+        let (rest, digest) = match image.split_once('@') {
+            Some((r, d)) => (r, Some(d.to_string())),
+            None => (image, None),
+        };
+        // A `:` is a tag's only when no `/` follows it (`host:5000/img` has a port).
+        let (repo, tag) = match rest.rsplit_once(':') {
+            Some((r, t)) if !t.contains('/') => (r, Some(t.to_string())),
+            _ => (rest, None),
+        };
+        let tag = if tag.is_none() && digest.is_none() { Some("latest".to_string()) } else { tag };
+        Image { repo: repo.to_string(), tag, digest }
+    }
+
+    /// The last path segment of the repo (`graphservice`).
+    pub fn short_name(&self) -> &str {
+        self.repo.rsplit('/').next().unwrap_or(&self.repo)
+    }
+
+    /// What lists show: the tag, else the start of the digest.
+    pub fn label(&self) -> String {
+        match (&self.tag, &self.digest) {
+            (Some(t), _) => t.clone(),
+            (None, Some(d)) => format!("@{}", &d[..d.len().min(19)]),
+            (None, None) => "latest".into(),
+        }
+    }
+}
+
+impl std::fmt::Display for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.repo)?;
+        if let Some(t) = &self.tag {
+            write!(f, ":{t}")?;
+        }
+        if let Some(d) = &self.digest {
+            write!(f, "@{d}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Container {
+    pub name: String,
+    pub image: Image,
+    pub ports: Vec<u16>,
+    pub resources: Resources,
+    /// Config maps it reads its environment from.
+    pub config_maps: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,20 +164,63 @@ pub struct Pod {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Deployment {
     pub name: String,
-    pub container: String,
-    pub repo: String,
-    pub tag: String,
+    /// At least one.
+    pub containers: Vec<Container>,
     pub replicas: u32,
     pub ready: u32,
-    pub since_s: u64,
-    pub resources: Resources,
-    pub ports: Vec<u16>,
-    pub configmap: Option<String>,
+    /// Replicas on the current version.
+    pub updated: u32,
+    pub progress: Progress,
+    /// When the current version finished rolling out (epoch seconds), else when the
+    /// deployment was created; `None` unless [`Progress::Settled`].
+    pub since: Option<u64>,
+}
+
+/// Where a deployment's rollout stands, as the cluster says.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Progress {
+    /// The current version runs.
+    #[default]
+    Settled,
+    Rolling,
+    /// Rollouts are paused (`kubectl rollout pause`).
+    Paused,
+    /// The rollout went past its deadline (`ProgressDeadlineExceeded`).
+    Stuck,
+}
+
+impl Progress {
+    /// What lists say next to the tag, when it isn't settled.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Progress::Settled => None,
+            Progress::Rolling => Some("rolling out"),
+            Progress::Paused => Some("paused"),
+            Progress::Stuck => Some("rollout stuck"),
+        }
+    }
 }
 
 impl Deployment {
-    pub fn image(&self) -> String {
-        format!("{}:{}", self.repo, self.tag)
+    /// The container that names the deployment's version: the one named like it, else
+    /// the first.
+    pub fn main(&self) -> &Container {
+        self.containers.iter().find(|c| c.name == self.name).unwrap_or(&self.containers[0])
+    }
+
+    pub fn main_mut(&mut self) -> &mut Container {
+        let i = self.containers.iter().position(|c| c.name == self.name).unwrap_or(0);
+        &mut self.containers[i]
+    }
+
+    /// The main container's tag as lists show it.
+    pub fn tag(&self) -> String {
+        self.main().image.label()
+    }
+
+    /// The other containers, for a "+n" next to the tag.
+    pub fn others(&self) -> usize {
+        self.containers.len().saturating_sub(1)
     }
 }
 
@@ -87,7 +235,8 @@ pub struct DeployRecord {
 
 /// The exact command a tag change runs (R7.3 states it before confirming).
 pub fn set_image_command(namespace: &str, d: &Deployment, tag: &str) -> String {
-    format!("kubectl -n {namespace} set image deployment/{} {}={}:{tag}", d.name, d.container, d.repo)
+    let c = d.main();
+    format!("kubectl -n {namespace} set image deployment/{} {}={}:{tag}", d.name, c.name, c.image.repo)
 }
 
 /// Whether a write may go ahead on `env`.
@@ -166,19 +315,56 @@ pub fn walk(value: u32, seed: &mut u64, lo: u32, hi: u32) -> u32 {
 mod tests {
     use super::*;
 
+    fn container(name: &str, image: &str) -> Container {
+        Container { name: name.into(), image: Image::parse(image), ports: vec![5800], resources: Resources::default(), config_maps: Vec::new() }
+    }
+
     fn dep() -> Deployment {
         Deployment {
             name: "entityservice".into(),
-            container: "app".into(),
-            repo: "registry/entityservice".into(),
-            tag: "1.84.2".into(),
+            containers: vec![container("app", "registry/entityservice:1.84.2")],
             replicas: 2,
             ready: 2,
-            since_s: 60,
-            resources: Resources { cpu_request_m: 100, cpu_limit_m: 500, mem_request_mi: 128, mem_limit_mi: 512 },
-            ports: vec![5800],
-            configmap: None,
+            updated: 2,
+            progress: Progress::Settled,
+            since: Some(60),
         }
+    }
+
+    #[test]
+    fn images_split_into_repo_tag_and_digest() {
+        let i = Image::parse("europe-west1-docker.pkg.dev/p/registry06/graphservice:lan-000-slim");
+        assert_eq!((i.repo.as_str(), i.tag.as_deref(), i.short_name()), ("europe-west1-docker.pkg.dev/p/registry06/graphservice", Some("lan-000-slim"), "graphservice"));
+        let i = Image::parse("localhost:5000/team/app");
+        assert_eq!((i.repo.as_str(), i.tag.as_deref()), ("localhost:5000/team/app", Some("latest")), "a port isn't a tag; no tag is latest");
+        let i = Image::parse("localhost:5000/app:v2@sha256:abc");
+        assert_eq!((i.repo.as_str(), i.tag.as_deref(), i.digest.as_deref()), ("localhost:5000/app", Some("v2"), Some("sha256:abc")));
+        let i = Image::parse("registry/app@sha256:0123456789abcdef0123");
+        assert_eq!((i.tag.as_deref(), i.label().as_str()), (None, "@sha256:0123456789ab"), "pinned by digest only: no tag");
+        assert_eq!(i.to_string(), "registry/app@sha256:0123456789abcdef0123");
+        assert_eq!(Image::parse("nginx").to_string(), "nginx:latest");
+    }
+
+    #[test]
+    fn the_main_container_is_named_like_the_deployment_else_the_first() {
+        let mut d = dep();
+        d.containers = vec![container("envoy", "envoy:v1"), container("entityservice", "r/entityservice:main"), container("gw", "gw:v1")];
+        assert_eq!((d.main().name.as_str(), d.tag(), d.others()), ("entityservice", "main".into(), 2));
+        d.containers.remove(1);
+        assert_eq!(d.tag(), "v1");
+        d.main_mut().image.tag = Some("v2".into());
+        assert_eq!(d.containers[0].image.tag.as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn quantities() {
+        for (q, m) in [("500m", 500), ("1", 1000), ("1.5", 1500), ("250000u", 250), ("2k", 2_000_000)] {
+            assert_eq!(cpu_millis(q), Some(m), "{q}");
+        }
+        for (q, mi) in [("512Mi", 512), ("1Gi", 1024), ("500M", 477), ("134217728", 128), ("1e9", 954)] {
+            assert_eq!(mem_mib(q), Some(mi), "{q}");
+        }
+        assert_eq!((cpu_millis("lots"), mem_mib("")), (None, None));
     }
 
     #[test]

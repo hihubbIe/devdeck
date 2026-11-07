@@ -159,3 +159,25 @@ fn folders_watched_for_the_first_time_are_scanned_again(cx: &mut TestAppContext)
     });
     assert_eq!(from_install, [] as [&str; 0], "vite is installed");
 }
+
+/// M3 step 1: `[cluster]` added by a config edit brings the cluster; a kubeconfig added
+/// to its folder (a `git pull`) reaches the env that lacked its context. The server is a
+/// local port nothing listens on: no cluster is contacted.
+#[gpui::test]
+fn a_cluster_added_in_the_config_follows_its_kubeconfigs_folder(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let kubeconfigs = cx.update(|cx| devdeck_app::test_dir("kubeconfigs", cx));
+    let file = s.config.join(WORKSPACES_DIR).join("work.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let cluster = format!("envs = [\"hades\"]\n{text}\n[cluster]\nkubeconfigs = {:?}\n[cluster.contexts]\nhades = \"hades00-hecate\"\n", kubeconfigs.display().to_string());
+    std::fs::write(&file, cluster).unwrap();
+    let services = cx.read(|cx| s.shell.read(cx).workspaces[0].services.clone());
+    until(cx, "a cluster", |cx| cx.read(|cx| services.read(cx).cluster.is_some()));
+    let c = cx.read(|cx| services.read(cx).cluster.clone().unwrap());
+    cx.update(|cx| c.update(cx, |c, cx| c.want("hades", cx)));
+    let problem = |cx: &TestAppContext| cx.read(|cx| c.read(cx).problem("hades").map(str::to_string).unwrap_or_default());
+    until(cx, "no context yet", |cx| problem(cx).starts_with("no context hades00-hecate"));
+    let config = "apiVersion: v1\nkind: Config\nclusters:\n- name: km009gcp\n  cluster:\n    server: https://127.0.0.1:1\nusers:\n- name: u\n  user:\n    token: fake\ncontexts:\n- name: hades00-hecate\n  context:\n    cluster: km009gcp\n    user: u\n    namespace: hecate\n";
+    write(&kubeconfigs.join("hades00-hecate"), config);
+    until(cx, "the context found and tried", |cx| problem(cx).starts_with("can't reach km009gcp (hades)"));
+}

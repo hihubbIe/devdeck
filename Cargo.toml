@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/devdeck-core", "crates/devdeck-ui", "crates/devdeck-app"]
+members = ["crates/devdeck-core", "crates/devdeck-ui", "crates/devdeck-kube", "crates/devdeck-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 devdeck-core = { path = "crates/devdeck-core" }
 devdeck-ui = { path = "crates/devdeck-ui" }
+devdeck-kube = { path = "crates/devdeck-kube" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
@@ -19,7 +20,8 @@ gpui = { package = "gpui-pre", version = "=0.3.11" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11"] }
 async-channel = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
-kube = "=5.0.0"
+# `runtime`: the watcher behind the cluster driver (M3).
+kube = { version = "=5.0.0", features = ["runtime"] }
 # Terminal emulation and pseudo-terminals for runs (what Zed uses). See docs/plans/M2-runner.md.
 alacritty_terminal = "=0.26.0"
 futures-lite = "2"

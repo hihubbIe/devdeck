@@ -53,7 +53,7 @@ impl ServiceView {
         ];
         subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
         cluster.update(cx, |c, cx| {
-            c.deployments(&env, cx);
+            c.want(&env, cx);
         });
         let mut this = Self { env, name, ctx, cluster, focus: cx.focus_handle(), tag, shown_tag: None, unlocked: false, sampling: None, window: None, _subs: subs };
         this.cluster_changed(cx);
@@ -71,7 +71,7 @@ impl ServiceView {
 
     /// Keeps the editor on the deployed tag unless the user changed it.
     fn cluster_changed(&mut self, cx: &mut Context<Self>) {
-        let current = self.deployment(cx).map(|d| d.tag.clone());
+        let current = self.deployment(cx).map(|d| d.tag());
         if current != self.shown_tag {
             let dirty = self.dirty(cx);
             self.shown_tag = current.clone();
@@ -99,6 +99,9 @@ impl ServiceView {
     /// Why Save can't go ahead now, if it can't.
     pub fn save_blocked(&self, cx: &App) -> Option<String> {
         let c = self.cluster.read(cx);
+        if let Err(why) = c.writes() {
+            return Some(why);
+        }
         if c.deployment(&self.env, &self.name).is_none() {
             return Some("not deployed here".into());
         }
@@ -116,7 +119,8 @@ impl ServiceView {
 
     /// ctrl+s: on a locked protected env asks to unlock first; otherwise confirms.
     pub fn save(&mut self, cx: &mut Context<Self>) {
-        if self.protected(cx) && !self.unlocked && self.dirty(cx) {
+        let writable = self.cluster.read(cx).writes().is_ok();
+        if writable && self.protected(cx) && !self.unlocked && self.dirty(cx) {
             self.request_unlock(cx);
             return;
         }
@@ -182,6 +186,10 @@ impl ServiceView {
     }
 
     fn open_logs(&mut self, cx: &mut Context<Self>) {
+        if let Err(why) = self.cluster.read(cx).pods_read() {
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, format!("Logs: {why}."), vec![], cx));
+            return;
+        }
         self.ctx.open(ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() }, cx);
     }
 
@@ -238,11 +246,17 @@ fn fmt_age(s: u64) -> String {
     }
 }
 
-/// A usage bar against request (tick) and limit (full width).
-fn bar(used: u32, request: u32, limit: u32, t: &Theme) -> impl IntoElement {
-    let limit = limit.max(1) as f32;
-    let fill = (used as f32 / limit).min(1.0);
-    let color: Hsla = if used > request { t.warn } else { t.ok };
+/// `512Mi`, or "none" when unset.
+fn quantity(v: Option<u32>, unit: &str) -> String {
+    v.map_or_else(|| "none".into(), |v| format!("{v}{unit}"))
+}
+
+/// A usage bar against request (tick) and limit (full width); without a limit the bar
+/// spans the request, else what's used.
+fn bar(used: u32, request: Option<u32>, limit: Option<u32>, t: &Theme) -> impl IntoElement {
+    let full = limit.or(request).unwrap_or(used).max(1) as f32;
+    let fill = (used as f32 / full).min(1.0);
+    let color: Hsla = if request.is_some_and(|r| used > r) { t.warn } else { t.ok };
     div()
         .relative()
         .w(t.size(220.))
@@ -250,7 +264,7 @@ fn bar(used: u32, request: u32, limit: u32, t: &Theme) -> impl IntoElement {
         .rounded(t.radius_s)
         .bg(t.line)
         .child(div().absolute().left_0().top_0().h_full().w(relative(fill)).rounded(t.radius_s).bg(color))
-        .child(div().absolute().top_0().h_full().w(t.hairline).left(relative((request as f32 / limit).min(1.0))).bg(t.fg))
+        .when_some(request, |d, r| d.child(div().absolute().top_0().h_full().w(t.hairline).left(relative((r as f32 / full).min(1.0))).bg(t.fg)))
 }
 
 fn phase_text(p: &Pod) -> (String, bool) {
@@ -330,13 +344,22 @@ impl Render for ServiceView {
                 h.child(div().flex_none().text_color(if self.unlocked { t.warn } else { t.mute }).child(if self.unlocked { "unlocked" } else { "locked" }))
             })
             .child(div().flex_none().flex().items_center().gap_1().text_color(status_color).child(status_mark).child(status))
-            .child(label(format!("{} · since {}", d.tag, fmt_age(d.since_s))).text_color(t.mute).flex_1());
+            .child(
+                label(match (d.progress.label(), d.since) {
+                    (Some(state), _) => format!("{} · {state}", d.tag()),
+                    (None, Some(since)) => format!("{} · since {}", d.tag(), fmt_age(c.now_s().saturating_sub(since))),
+                    (None, None) => d.tag(),
+                })
+                .text_color(t.mute)
+                .flex_1(),
+            );
 
         let action = |id: &'static str, text: &'static str, why: Option<String>| {
             let enabled = why.is_none();
             button(id, text, &t).when(!enabled, |b| b.text_color(t.dim)).tooltip(tip(why.unwrap_or_else(|| text.to_string())))
         };
-        let later = || Some("comes with the real cluster (M3)".to_string());
+        let later = || Some("comes in a later step of M3".to_string());
+        let pods_read = c.pods_read();
         let actions = div()
             .flex_none()
             .px_3()
@@ -346,7 +369,7 @@ impl Render for ServiceView {
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(action("logs", "logs", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
+            .child(action("logs", "logs", pods_read.clone().err().map(|why| format!("logs: {why}"))).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
             .child(action("restart", "restart", later()))
             .child(action("scale", "replicas", later()))
             .child(action("port-forward", "port-forward", later()))
@@ -390,7 +413,9 @@ impl Render for ServiceView {
                     .tooltip(tip(blocked.clone().unwrap_or_else(|| "confirm and deploy".into())))
                     .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
             )
-            .child(label(d.repo.clone()).text_color(t.dim).flex_1());
+            .child(label(d.main().image.repo.clone()).text_color(t.dim).flex_1());
+        // A list kept over a lost connection: what's wrong, above it.
+        let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pb_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
 
         let rollout_line = rollout.map(|r| {
             let (mark, text, color, undo) = match &r {
@@ -411,11 +436,13 @@ impl Render for ServiceView {
                 })
         });
 
-        let res = d.resources;
+        let res = d.main().resources;
         let (cpu, mem) = pods.iter().filter(|p| p.ready).fold((0u32, 0u32), |(c, m), p| (c + p.usage.cpu_m, m + p.usage.mem_mi));
         let n = d.replicas.max(1);
-        let metrics_el = match metrics {
-            Err(e) => icon_text(Icon::Warning, t.warn, e, &t),
+        let times = |v: Option<u32>| v.map(|v| v * n);
+        let metrics_el = match pods_read.clone().and(metrics) {
+            Err(e) if pods_read.is_err() => label(format!("metrics: {e}")).text_color(t.dim).into_any_element(),
+            Err(e) => icon_text(Icon::Warning, t.warn, e, &t).into_any_element(),
             Ok(()) => div()
                 .flex()
                 .flex_col()
@@ -426,8 +453,8 @@ impl Render for ServiceView {
                         .items_center()
                         .gap_3()
                         .child(div().w(t.size(40.)).text_color(t.mute).child("cpu"))
-                        .child(bar(cpu, res.cpu_request_m * n, res.cpu_limit_m * n, &t))
-                        .child(label(format!("{cpu}m · request {}m · limit {}m", res.cpu_request_m * n, res.cpu_limit_m * n)).text_color(t.mute)),
+                        .child(bar(cpu, times(res.cpu_request_m), times(res.cpu_limit_m), &t))
+                        .child(label(format!("{cpu}m · request {} · limit {}", quantity(times(res.cpu_request_m), "m"), quantity(times(res.cpu_limit_m), "m"))).text_color(t.mute)),
                 )
                 .child(
                     div()
@@ -435,9 +462,10 @@ impl Render for ServiceView {
                         .items_center()
                         .gap_3()
                         .child(div().w(t.size(40.)).text_color(t.mute).child("mem"))
-                        .child(bar(mem, res.mem_request_mi * n, res.mem_limit_mi * n, &t))
-                        .child(label(format!("{mem}Mi · request {}Mi · limit {}Mi", res.mem_request_mi * n, res.mem_limit_mi * n)).text_color(t.mute)),
-                ),
+                        .child(bar(mem, times(res.mem_request_mi), times(res.mem_limit_mi), &t))
+                        .child(label(format!("{mem}Mi · request {} · limit {}", quantity(times(res.mem_request_mi), "Mi"), quantity(times(res.mem_limit_mi), "Mi"))).text_color(t.mute)),
+                )
+                .into_any_element(),
         };
 
         let col = |w: f32, text: String, color: Hsla| div().flex_none().w(t.size(w)).truncate().text_color(color).child(text);
@@ -458,7 +486,9 @@ impl Render for ServiceView {
                 .child(col(100., "tag".into(), t.dim))
                 .child(div().flex_1().min_w_0().truncate().child("node · last termination")),
         );
-        if pods.is_empty() {
+        if let Err(why) = &pods_read {
+            pod_rows = pod_rows.child(label(format!("pods: {why}")).text_color(t.dim));
+        } else if pods.is_empty() {
             pod_rows = pod_rows.child(label("no pods").text_color(t.dim));
         }
         for (i, p) in pods.iter().enumerate() {
@@ -505,13 +535,34 @@ impl Render for ServiceView {
             );
         }
 
-        let container = div()
-            .flex()
-            .flex_col()
-            .child(label(format!("container {} · image {}", d.container, d.image())).text_color(t.fg))
-            .child(label(format!("ports {}", d.ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))).text_color(t.mute))
-            .child(label(format!("request {}m / {}Mi · limit {}m / {}Mi", res.cpu_request_m, res.mem_request_mi, res.cpu_limit_m, res.mem_limit_mi)).text_color(t.mute))
-            .child(label(format!("configmap {}", d.configmap.clone().unwrap_or_else(|| "none".into()))).text_color(t.mute));
+        let mut containers = div().flex().flex_col().gap_1();
+        for k in &d.containers {
+            let r = k.resources;
+            let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+            let ports: Vec<String> = k.ports.iter().map(u16::to_string).collect();
+            containers = containers.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .debug_selector({
+                        let id = format!("container-{}", k.name);
+                        move || id.clone()
+                    })
+                    .child(label(format!("container {} · image {}", k.name, k.image)).text_color(t.fg))
+                    .child(label(format!("ports {}", list(&ports))).text_color(t.mute))
+                    .child(
+                        label(format!(
+                            "request {} / {} · limit {} / {}",
+                            quantity(r.cpu_request_m, "m"),
+                            quantity(r.mem_request_mi, "Mi"),
+                            quantity(r.cpu_limit_m, "m"),
+                            quantity(r.mem_limit_mi, "Mi")
+                        ))
+                        .text_color(t.mute),
+                    )
+                    .child(label(format!("configmaps {}", list(&k.config_maps))).text_color(t.mute)),
+            );
+        }
 
         let mut hist = div().flex().flex_col();
         if history.is_empty() {
@@ -537,13 +588,13 @@ impl Render for ServiceView {
             .child(section("Pods", &t))
             // Wider than a narrow pane: scrolls sideways instead of clipping (R3.9).
             .child(div().id("pods-scroll").w_full().overflow_x_scroll().child(pod_rows.min_w(t.size(1100.))))
-            .child(section("Container", &t))
-            .child(container)
+            .child(section(if d.containers.len() > 1 { "Containers" } else { "Container" }, &t))
+            .child(containers)
             .child(section("Deploy history", &t))
             .child(hist);
 
         self.window = Some(window.window_handle());
-        root.child(header).child(actions).child(editor).children(rollout_line).child(body)
+        root.child(header).child(actions).child(editor).children(problem_line).children(rollout_line).child(body)
     }
 }
 

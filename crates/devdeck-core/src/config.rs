@@ -9,6 +9,11 @@
 //!   protected = ["dls"]               # writes need an unlock (R7.6)
 //!   default_env = "dev35"
 //!
+//!   [cluster]                         # optional: no Cluster area without it (R2.3)
+//!   kubeconfigs = "~/kubeconfigs"     # every kubeconfig in this folder is read
+//!   [cluster.contexts]                # only where an env isn't named like its context
+//!   dls = "hades00-mnemosyne"
+//!
 //!   [apps.entityservice]              # key: the app id (its folder, relative)
 //!   name = "entity"                   # display name; the id never changes
 //!   hidden = false
@@ -55,8 +60,26 @@ pub struct WorkspaceConfig {
     /// Alphabetical.
     pub envs: Vec<Env>,
     pub default_env: Option<String>,
+    /// `None`: no Cluster area (R2.3).
+    pub cluster: Option<ClusterConfig>,
     /// By app id.
     pub apps: BTreeMap<String, AppOverride>,
+}
+
+/// Where a workspace's envs live: each env is a context of a kubeconfig in `kubeconfigs`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClusterConfig {
+    /// Expanded (no `~`).
+    pub kubeconfigs: PathBuf,
+    /// The context of an env not named like its context, by env.
+    pub contexts: BTreeMap<String, String>,
+}
+
+impl ClusterConfig {
+    /// The kubeconfig context of `env`: its entry in `contexts`, else its own name.
+    pub fn context<'a>(&'a self, env: &'a str) -> &'a str {
+        self.contexts.get(env).map_or(env, String::as_str)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -203,6 +226,16 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
 }
 
+/// `path` as shown: `~` for the home folder (the reverse of `~` in config files).
+pub fn shown(path: &Path) -> String {
+    if let Some(home) = home().filter(|h| h.parent().is_some())
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
+    }
+    path.display().to_string()
+}
+
 /// `~` and `~/…` with the home folder; anything else (and everything without a home)
 /// unchanged. `~user` isn't supported.
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
@@ -269,7 +302,13 @@ fn parse_workspace(id: &str, text: &str, home: Option<&Path>) -> Result<Workspac
     let unknown = |env: &Spanned<String>, key: &str| {
         (!names.contains(env.get_ref().as_str())).then(|| (Some(line_of(text, env.span().start)), format!("{key}: \"{}\" is not one of envs", env.get_ref())))
     };
-    let problems: Vec<Problem> = raw.protected.iter().filter_map(|e| unknown(e, "protected")).chain(raw.default_env.iter().filter_map(|e| unknown(e, "default_env"))).collect();
+    let mut problems: Vec<Problem> = raw.protected.iter().filter_map(|e| unknown(e, "protected")).chain(raw.default_env.iter().filter_map(|e| unknown(e, "default_env"))).collect();
+    if let Some(c) = &raw.cluster {
+        if names.is_empty() {
+            problems.push((Some(line_of(text, c.span().start)), "cluster: the workspace has no envs".into()));
+        }
+        problems.extend(c.get_ref().contexts.keys().filter_map(|e| unknown(e, "cluster.contexts")));
+    }
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -280,6 +319,10 @@ fn parse_workspace(id: &str, text: &str, home: Option<&Path>) -> Result<Workspac
         folders: raw.folders.iter().map(|f| expand_home(f, home)).collect(),
         envs: names.iter().map(|n| Env { name: n.to_string(), protected: protected.contains(n) }).collect(),
         default_env: raw.default_env.map(Spanned::into_inner),
+        cluster: raw.cluster.map(Spanned::into_inner).map(|c| ClusterConfig {
+            kubeconfigs: expand_home(&c.kubeconfigs, home),
+            contexts: c.contexts.into_iter().map(|(env, context)| (env.into_inner(), context)).collect(),
+        }),
         apps: raw.apps.into_iter().map(|(id, app)| (id, app.into())).collect(),
     })
 }
@@ -325,8 +368,17 @@ struct RawWorkspace {
     #[serde(default)]
     protected: Vec<Spanned<String>>,
     default_env: Option<Spanned<String>>,
+    cluster: Option<Spanned<RawCluster>>,
     #[serde(default)]
     apps: BTreeMap<String, RawApp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCluster {
+    kubeconfigs: String,
+    #[serde(default)]
+    contexts: BTreeMap<Spanned<String>, String>,
 }
 
 #[derive(Deserialize)]
@@ -568,6 +620,33 @@ env = { file = "config/local.yml" }
         let (_, w, e) = workspaces("no-envs", &[("w.toml", "default_env = \"dev35\"\n")]);
         assert!(w.is_empty());
         assert_eq!(only_error(&e).1, Some(1));
+    }
+
+    #[test]
+    fn a_cluster_names_its_kubeconfigs_folder_and_the_contexts_of_envs() {
+        let text = "envs = [\"dev35\", \"hades\"]\n[cluster]\nkubeconfigs = \"~/kc\"\n[cluster.contexts]\nhades = \"hades00-hecate\"\n";
+        let (_d, w, e) = workspaces("cluster", &[("w.toml", text)]);
+        assert!(e.is_empty(), "{e:?}");
+        let c = w[0].cluster.clone().expect("cluster");
+        assert_eq!(c.kubeconfigs, Path::new(HOME).join("kc"));
+        assert_eq!((c.context("hades"), c.context("dev35")), ("hades00-hecate", "dev35"), "an env without an entry is its own context");
+
+        let (_d, w, _) = workspaces("none", &[("w.toml", "envs = [\"dev35\"]\n")]);
+        assert_eq!(w[0].cluster, None, "no [cluster], no Cluster area (R2.3)");
+
+        let text = "envs = [\"dev35\"]\n[cluster]\nkubeconfigs = \"/kc\"\n[cluster.contexts]\nprod = \"p\"\n";
+        let (_d, w, e) = workspaces("unknown", &[("w.toml", text)]);
+        assert!(w.is_empty());
+        let (_, line, message) = only_error(&e);
+        assert_eq!((line, message.as_str()), (Some(5), "cluster.contexts: \"prod\" is not one of envs"));
+
+        let (_d, w, e) = workspaces("no-envs", &[("w.toml", "[cluster]\nkubeconfigs = \"/kc\"\n")]);
+        assert!(w.is_empty());
+        let (_, line, message) = only_error(&e);
+        assert_eq!((line, message.as_str()), (Some(1), "cluster: the workspace has no envs"));
+
+        let (_d, _, e) = workspaces("typo", &[("w.toml", "envs = [\"a\"]\n[cluster]\nkubeconfig = \"/kc\"\n")]);
+        assert!(only_error(&e).2.contains("unknown field `kubeconfig`"), "{e:?}");
     }
 
     #[test]

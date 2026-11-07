@@ -220,7 +220,7 @@ fn pane_neighbours_ignore_the_sidebar_width(cx: &mut TestAppContext) {
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let focused = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout().main().focused);
     let logs = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/logs")).unwrap().0);
-    let right = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("demo/deployments")).unwrap().0);
+    let right = cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("matrix")).unwrap().0);
     for visible in [true, false] {
         let s = sidebar(&shell, cx);
         cx.update(|cx| s.update(cx, |s, cx| s.set_visible(visible, cx)));

@@ -109,7 +109,7 @@ fn matrix_highlights_a_tag_and_follows_rollouts(cx: &mut TestAppContext) {
     let m = open(&shell, cx, ViewAddr::Matrix).downcast::<MatrixView>().unwrap();
     // dev31 is the first column, visible even in a narrow pane.
     let tag = cx.read(|cx| m.read(cx).cell("dev31", "entityservice", cx)).expect("deployed");
-    let missing = cx.read(|cx| c.read(cx).spec.services.iter().find(|s| devdeck_core::demo::deployment("dls", s).is_none()).cloned()).unwrap();
+    let missing = devdeck_core::demo::catalog("work").cluster.unwrap().services.into_iter().find(|s| devdeck_core::demo::deployment("dls", s).is_none()).unwrap();
     assert_eq!(cx.read(|cx| m.read(cx).cell("dls", &missing, cx)), None, "empty cell");
     let mut vcx = VisualTestContext::from_window(main, cx);
     let cell = vcx.debug_bounds("cell-dev31-entityservice").expect("cell drawn");

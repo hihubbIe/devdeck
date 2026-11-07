@@ -3,11 +3,11 @@
 
 use crate::apps::{App, Command, EnvApply, Tier, Tools};
 pub use crate::catalog::{Catalog, ClusterSpec, Env, PortSpec};
-use crate::cluster::{Deployment, Pod, PodPhase, Resources, Usage};
+use crate::cluster::{Container, Deployment, Image, Pod, PodPhase, Progress, Resources, Usage};
 
-/// FNV-1a: stable across runs and platforms.
+/// FNV-1a of `s` (see [`crate::fnv1a`]).
 pub fn hash(s: &str) -> u64 {
-    s.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+    crate::fnv1a(s.as_bytes())
 }
 
 pub fn catalog(workspace: &str) -> Catalog {
@@ -155,19 +155,25 @@ pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
     };
     let replicas = 1 + (h % 3) as u32;
     let ready = if h.is_multiple_of(11) { replicas - 1 } else { replicas };
-    Some(Deployment {
+    let resources = Resources { cpu_request_m: Some(100), cpu_limit_m: Some(500), mem_request_mi: Some(128), mem_limit_mi: Some(512) };
+    let mut containers = vec![Container {
         name: name.into(),
-        container: "app".into(),
-        repo: format!("europe-west1-docker.pkg.dev/registry/{name}"),
-        tag,
-        replicas,
-        ready,
-        since_s: 3600 * (1 + h % 70),
-        resources: Resources { cpu_request_m: 100, cpu_limit_m: 500, mem_request_mi: 128, mem_limit_mi: 512 },
+        image: Image::parse(&format!("europe-west1-docker.pkg.dev/registry/{name}:{tag}")),
         ports: vec![80],
-        configmap: Some(format!("{name}-config")),
-    })
+        resources,
+        config_maps: vec![format!("{name}-config")],
+    }];
+    // Some run a proxy next to them, as on the real cluster.
+    if h.is_multiple_of(4) {
+        let image = Image::parse("europe-west1-docker.pkg.dev/registry/envoy:v1.39.1");
+        containers.push(Container { name: "envoy".into(), image, ports: vec![9901], resources: Resources::default(), config_maps: Vec::new() });
+    }
+    Some(Deployment { name: name.into(), containers, replicas, ready, updated: replicas, progress: Progress::Settled, since: Some(NOW_S - 3600 * (1 + h % 70)) })
 }
+
+/// The demo's clock (epoch seconds): ages and history are computed against it, so
+/// snapshots don't change from one run to the next.
+pub const NOW_S: u64 = 1_762_500_000;
 
 /// The pods of a deployment: one per replica; the last one waits when not all are ready.
 pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
@@ -181,9 +187,9 @@ pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
                 ready: healthy,
                 restarts: if healthy { (h % 3) as u32 } else { 7 + (h % 5) as u32 },
                 last_termination: (!healthy).then(|| "Error (exit 2): panic: missing TADA_DB_URL".to_string()),
-                age_s: d.since_s,
+                age_s: NOW_S.saturating_sub(d.since.unwrap_or(NOW_S)),
                 node: format!("gke-{env}-pool-{}", h % 4),
-                tag: d.tag.clone(),
+                tag: d.tag(),
                 usage: Usage { cpu_m: 40 + (h % 120) as u32, mem_mi: 90 + (h % 200) as u32 },
             }
         })

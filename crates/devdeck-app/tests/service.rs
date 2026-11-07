@@ -79,12 +79,12 @@ fn tag_edit_confirm_rollout_ready(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)).as_deref(), Some("a rollout is in progress"));
     advance(cx, ROLLOUT_STEP * before.replicas);
     let after = cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().clone());
-    assert_eq!(after.tag, "lan-160");
+    assert_eq!(after.tag(), "lan-160");
     assert!(!cx.read(|cx| view.read(cx).dirty(cx)), "the editor now shows the deployed tag");
     let history = cx.read(|cx| c.read(cx).history("dev35", "entityservice").to_vec());
-    assert_eq!((history.len(), history[0].from.as_str(), history[0].outcome.as_str()), (1, before.tag.as_str(), "ready"));
+    assert_eq!((history.len(), history[0].from.as_str(), history[0].outcome.as_str()), (1, before.tag().as_str(), "ready"));
     let suggestions = cx.read(|cx| c.read(cx).tag_suggestions("dev35", "entityservice"));
-    assert!(suggestions.iter().any(|(t, why)| *t == before.tag && why == "previous"), "the previous tag is suggested");
+    assert!(suggestions.iter().any(|(t, why)| *t == before.tag() && why == "previous"), "the previous tag is suggested");
     // Typing u in the editor writes a u; it doesn't undo.
     cx.simulate_keystrokes(main, "t");
     cx.simulate_input(main, "u");
@@ -97,14 +97,14 @@ fn broken_tag_fails_and_undo_restores(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     let c = cluster(&shell, cx);
     let view = open_service(&shell, cx, "dev35", "graphservice");
-    let tag = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag.clone());
+    let tag = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag());
     type_tag(main, cx, "lan-broken");
     cx.simulate_keystrokes(main, "ctrl-s enter");
     advance(cx, ROLLOUT_STEP);
     let Some(Rollout::Failed { reason, .. }) = cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").cloned()) else { panic!("failed") };
     assert!(reason.starts_with("ImagePullBackOff"));
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().any(|p| p.tag == "lan-broken" && !p.ready)), "a pod stuck pulling");
-    assert_eq!(cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag.clone()), tag, "still on the old tag");
+    assert_eq!(cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag()), tag, "still on the old tag");
     // Esc leaves the editor (and reverts it), then u undoes.
     cx.simulate_keystrokes(main, "escape u");
     cx.run_until_parked();
@@ -203,9 +203,8 @@ fn unreachable_missing_and_forbidden_states(cx: &mut TestAppContext) {
     let shell = start(cx, "states");
     let c = cluster(&shell, cx);
     let _ = open_service(&shell, cx, "dev36", "entityservice");
-    let err = cx.read(|cx| c.read(cx).peek("dev36"));
-    assert!(matches!(err, devdeck_core::cluster::Remote::Error(_)), "dev36 is unreachable");
-    let missing = cx.read(|cx| c.read(cx).spec.services.iter().find(|s| devdeck_core::demo::deployment("dls", s).is_none()).cloned()).unwrap();
+    assert!(cx.read(|cx| matches!(c.read(cx).peek("dev36"), devdeck_core::cluster::Remote::Error(_))), "dev36 is unreachable");
+    let missing = devdeck_core::demo::catalog("work").cluster.unwrap().services.into_iter().find(|s| devdeck_core::demo::deployment("dls", s).is_none()).unwrap();
     let _ = open_service(&shell, cx, "dls", &missing);
     assert!(cx.read(|cx| c.read(cx).deployment("dls", &missing).is_none()));
     assert!(cx.read(|cx| c.read(cx).metrics_allowed("lab")).is_err());

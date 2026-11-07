@@ -21,7 +21,7 @@ impl PodView {
     pub fn new(env: String, pod: String, ctx: ViewCx, cluster: Entity<Cluster>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&cluster, |_, _, cx| cx.notify());
         cluster.update(cx, |c, cx| {
-            c.deployments(&env, cx);
+            c.want(&env, cx);
         });
         Self { env, pod, ctx, cluster, _observe: observe }
     }
@@ -31,6 +31,9 @@ impl Render for PodView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let c = self.cluster.read(cx);
+        if let Err(why) = c.pods_read() {
+            return div().size_full().flex().items_center().justify_center().text_color(t.mute).child(label(format!("pods: {why}"))).into_any_element();
+        }
         let Some((service, p)) = c.find_pod(&self.env, &self.pod).map(|(s, p)| (s.to_string(), p.clone())) else {
             return div()
                 .size_full()

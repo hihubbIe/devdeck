@@ -65,7 +65,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R6.12** Terminal tabs: the user's shell in a folder (the focused tab's app folder, else the workspace's first folder), on the run tab's terminal; `ctrl+shift+t` opens one. Closing its tab, or the detached window holding it, ends the shell; switching layouts doesn't. Every shell of a workspace is listed in the sidebar's Terminals view (`ctrl+5`): its folder, what runs in it, where it shows (here, another layout, nowhere); open or end it there. Quitting asks while a shell runs something (decided 2026-11-07).
 - [~] **R6.13** Opening something somewhere: "Open terminal here" on a tab, a pane and an app row opens a shell in that folder at its default place (this pane; the focused one for an app row); resting on it 300 ms, or →, shows every place ("Send to…"'s panes and a new window) to pick another. The Terminals list's "Open" offers the same places. Any later "open …" item works this way (decided 2026-11-07).
 - [~] **R6.11** A command takes arguments without becoming another command: in its run tab, recent arguments (per workspace, app and command), none, or new ones typed; choosing them starts or restarts the run. Each toolchain adds them its way (npm and `cargo run` after `--`). Restart and reopen keep them (decided 2026-11-07).
-- [ ] **R6.10** No git and no editor features (no branch, no ahead/behind, no "open in editor").
+- [ ] **R6.10** Git read only: a service's repository, its branches and where each is deployed (image tags are branch names). No checkout, commit or editor features (changed 2026-11-07, user decision, M3).
 
 ## 7. Cluster (optional per workspace)
 

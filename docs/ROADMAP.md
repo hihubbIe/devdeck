@@ -26,7 +26,7 @@ data provider. Steps (each planned, reviewed, built, checked, tested, committed)
 What to try: [plans/M1-manual-test.md](plans/M1-manual-test.md). Numbers:
 [perf/M1.md](perf/M1.md).
 
-## M2 · Real local runner
+## M2 · Real local runner — done 2026-11-07, manual test passed
 Config loading, discovery, tool detection, pseudo-terminal runs, env bindings, ports,
 quit guard on real processes, a plain shell terminal tab. Plan:
 [plans/M2-runner.md](plans/M2-runner.md).
@@ -42,8 +42,15 @@ to drive devdeck (open a tab, start a server, show logs filtered), detection of 
 devdeck terminal through an environment variable. To be assessed.
 
 ## M3 · Real cluster
-kube-rs data, service inspector, deploys with journal and undo, logs, exec,
-port-forward, metrics, protected envs, k9s launch.
+kube-rs data, service inspector, git read only, deploys with journal and undo, logs,
+exec, port-forward, metrics, protected envs, k9s launch. Plan:
+[plans/M3-cluster.md](plans/M3-cluster.md). Steps, one at a time:
+1. Config and real deployments, read only — done 2026-11-07.
+2. Service inspector on real data (pods, metrics).
+3. Git, read only.
+4. Logs, shell, port-forward, k9s.
+5. Writes.
+6. Close.
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,

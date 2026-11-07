@@ -25,7 +25,7 @@ impl ProblemsView {
 impl Render for ProblemsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
-        let mut problems = self.ctx.services.read(cx).problems.clone();
+        let mut problems = self.ctx.services.read(cx).all_problems(cx);
         problems.extend(crate::environment::environment(cx).read(cx).problems());
         let body = if problems.is_empty() {
             div().text_color(t.mute).child(label("No problems."))

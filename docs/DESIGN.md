@@ -68,7 +68,8 @@ Cargo workspace:
 crates/
   devdeck-core      no UI. Config, workspaces, discovery, process runner, tool detection,
                     actions registry, layout model (pure data), fuzzy search. Fully unit tested.
-  devdeck-kube      cluster access (kube-rs), deploy journal. Optional at runtime.
+  devdeck-kube      cluster access (kube-rs): kubeconfigs folder, targets, deployment
+                    watches on one tokio runtime started on first use. No UI.
   devdeck-ui        shared components + theme. The only place that styles anything.
   devdeck-views     one module per view type (app, run output, logs, service, pod,
                     text, matrix, ports…), each registered in a view registry.
@@ -167,9 +168,29 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 ### Cluster
 
-- kube-rs on a background tokio runtime; results reach the UI over channels.
-- Watches deployments and pods per visible env; metrics are sampled only for views
-  that are visible.
+- A workspace's `[cluster]` names a folder of kubeconfigs (a git repository of them);
+  every kubeconfig at its top is read. Each env is one context (its own name, or the one
+  `[cluster.contexts]` gives); the namespace comes from the context. Files that don't
+  parse are workspace problems; a context in two files is one only for an env using it.
+- The `Cluster` entity holds what views read; a `ClusterDriver` feeds it, as `Runner`
+  and `RunDriver`: the fake (demo, tests, snapshots) or kube-rs (`kube_cluster.rs` over
+  `devdeck-kube`).
+- kube-rs on one tokio runtime (started on the first watch, so a workspace without a
+  cluster pays nothing); results reach the UI over channels. One client per kubeconfig
+  file, cluster and user; connect timeout 5 s.
+- An env is watched (kube-runtime's watcher on deployments) from the first time a view
+  asks for it until the workspace's cluster changes or goes. A relist replaces the list;
+  an update is sent only when the converted deployments changed (status noise renders
+  nothing). After an error the watcher is dropped and a new one lists again after a
+  backoff (1 s doubling to 30 s): kube-runtime's own retry resumes silently, so a
+  problem would never clear. A lost connection keeps the last list with the problem.
+- The kubeconfigs folder is watched on its own route: a change reloads it, and only envs
+  whose target changed (another context, a changed file such as a rotated token)
+  reconnect. A config change goes to the same cluster and driver: envs change in place,
+  a removed `[cluster]` empties the cluster (views keep it) until it comes back.
+- Each watch lasts 60 s on the server, so a connection that died silently shows as a
+  problem within about a minute. A paused or stuck rollout is said as such.
+- Metrics are sampled only for views that are visible (pods and metrics: M3 step 2).
 - The user's RBAC cannot read ReplicaSets or events, so deploy history is kept by
   devdeck in its state folder, and failure reasons come from pod container states.
 - Writes: patch the container image, rollout restart, scale. Protected envs need an
@@ -303,5 +324,15 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 Machine paths (Node folders, PATH additions) live in `machine.toml`, written
   only by the user; devdeck rewrites `settings.toml` itself, which would drop comments and
   anything it can't parse.
+- 2026-11-07 (user, M3) Cluster envs are watched from first use until the workspace's
+  cluster changes, not only while visible: an idle watch costs no CPU and lists show at
+  once on return. Can be revisited.
+- 2026-11-07 (user, M3) Git comes back read only (R6.10): image tags are branch names, so
+  a service's repository and branches matter to deploys. Worktrees and a git page stay
+  with the later ideas.
+- 2026-11-07 A deployment has a list of containers; its main one (named like it, else the
+  first) gives the tag lists and the matrix show, "+n" for the others. "Running since"
+  is when the current version finished rolling out (the Progressing condition at
+  NewReplicaSetAvailable); a scale also moves it, a known limit until pods (step 2).
 - Running section in the Apps sidebar: replaced by the row indicator and a filter.
   Revisit if it feels slower in use.

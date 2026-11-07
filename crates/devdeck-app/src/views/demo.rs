@@ -1,8 +1,7 @@
-//! Demo views from the M0 spike (logs stream, cluster feed, notes, gallery). Not part
-//! of the product; kept to exercise the pane engine and for the manual test.
+//! Demo views from the M0 spike (logs stream, notes, gallery). Not part of the product;
+//! kept to exercise the pane engine and for the manual test.
 
-use crate::kube_feed::{self, KubeState};
-use devdeck_ui::{Icon, dot, icon_text, label, theme};
+use devdeck_ui::{dot, theme};
 use devdeck_core::layout::ViewRef;
 use gpui::{
     AnyView, App, AppContext, Context, FocusHandle, Focusable, IntoElement, ListHorizontalSizingBehavior, ParentElement, Render, SharedString,
@@ -16,8 +15,6 @@ pub fn build(r: &ViewRef, ctx: Option<&super::ViewCx>, cx: &mut App) -> super::B
     if s == "demo/logs" {
         let v = cx.new(|cx| LogsView::new(ctx, cx));
         super::focusable(v, cx)
-    } else if s == "demo/deployments" {
-        plain(cx.new(DeploymentsView::new).into())
     } else if s == "demo/gallery" {
         plain(cx.new(crate::gallery::Gallery::new).into())
     } else {
@@ -30,7 +27,6 @@ pub fn build(r: &ViewRef, ctx: Option<&super::ViewCx>, cx: &mut App) -> super::B
 pub fn title(r: &ViewRef) -> String {
     match r.as_str() {
         "demo/logs" => "dev35 › entityservice · logs".into(),
-        "demo/deployments" => "dev35 › deployments".into(),
         "demo/notes" => "notes".into(),
         "demo/gallery" => "components".into(),
         "demo/long" => "a tab whose title is far too long to ever fit in a tab strip".into(),
@@ -242,75 +238,3 @@ impl Render for TextView {
             .children(lines.into_iter().map(|l| div().whitespace_nowrap().child(l)))
     }
 }
-
-// ------------------------------------------------------------------ deployments
-
-/// Read-only deployment list fed by a tokio thread over a channel. Proves the
-/// background runtime doesn't keep the UI awake (R1.3, R7.8).
-pub struct DeploymentsView {
-    state: KubeState,
-    _feed: Option<Task<()>>,
-}
-
-impl DeploymentsView {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let Some(rx) = kube_feed::start() else {
-            return Self { state: KubeState::NotConfigured, _feed: None };
-        };
-        let feed = cx.spawn(async move |this, cx| {
-            while let Ok(state) = rx.recv().await {
-                if this.update(cx, |v, cx| {
-                    v.state = state;
-                    cx.notify();
-                })
-                .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        Self { state: KubeState::Loading, _feed: Some(feed) }
-    }
-}
-
-impl Render for DeploymentsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme(cx);
-        let body = div().size_full().p_3().flex().flex_col().text_color(t.fg);
-        match &self.state {
-            KubeState::NotConfigured => body.text_color(t.mute).child(
-                label("Cluster not configured. Set DEVDECK_KUBECONFIG, DEVDECK_KUBE_CONTEXT and DEVDECK_KUBE_NAMESPACE.")
-                    .debug_selector(|| "kube-message".into()),
-            ),
-            KubeState::Loading => body.child(icon_text(Icon::Busy, t.mute, "loading deployments…", t)),
-            KubeState::Error(e) => body.child(icon_text(Icon::Error, t.err, e.clone(), t)),
-            KubeState::Ready(rows) => {
-                let (name_w, ready_w, row_h) = (t.size(300.), t.size(80.), t.row_h);
-                body
-                .child(
-                    div()
-                        .flex()
-                        .text_color(t.mute)
-                        .child(div().w(name_w).flex_none().child("deployment"))
-                        .child(div().w(ready_w).flex_none().child("ready"))
-                        .child(div().child("image tag")),
-                )
-                .children(rows.iter().map(|r| {
-                    div()
-                        .flex()
-                        .h(row_h)
-                        .child(div().w(name_w).flex_none().truncate().child(r.name.clone()))
-                        .child(
-                            div()
-                                .w(ready_w)
-                                .flex_none()
-                                .text_color(if r.ready == r.desired { t.ok } else { t.err })
-                                .child(format!("{}/{}", r.ready, r.desired)),
-                        )
-                        .child(div().truncate().text_color(t.mute).child(r.tag.clone()))
-                }))
-            }
-        }
-    }
-}
-

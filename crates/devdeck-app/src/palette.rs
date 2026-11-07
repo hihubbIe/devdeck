@@ -144,8 +144,10 @@ impl Palette {
             }
         }
         if let (Some(cluster), Some(env)) = (services.cluster.as_ref(), services.env.as_ref()) {
-            for d in cluster.read(cx).peek(env).ready().cloned().unwrap_or_default() {
-                out.push(Entry { running: false, label: d.name.clone(), detail: format!("service on {env} · {}", d.tag), item: Item::Service(d.name), disabled: None });
+            if let Some(deps) = cluster.read(cx).peek(env).ready() {
+                for d in deps.values() {
+                    out.push(Entry { running: false, label: d.name.clone(), detail: format!("service on {env} · {}", d.tag()), item: Item::Service(d.name.clone()), disabled: None });
+                }
             }
             for e in &services.catalog.envs {
                 out.push(Entry {

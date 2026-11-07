@@ -21,7 +21,7 @@ use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, Result as LayoutResult, ViewRef};
 use devdeck_core::list::{self, Kids, ListItem, Row, Section};
 use devdeck_core::state::{SidebarState, StateStore};
-use devdeck_ui::{DragGhost, Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, dot, icon, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
+use devdeck_ui::{DragGhost, Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, dot, icon, icon_text, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, Focusable, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
@@ -172,6 +172,8 @@ impl Sidebar {
             cx.observe(&deck, |_, _, cx| cx.notify()),
             cx.observe(&services, |this, _, cx| {
                 this.drop_hidden_selection(cx);
+                // The cluster may have come back, or the env changed under the list.
+                this.load_list(cx);
                 cx.notify();
             }),
             cx.subscribe(&filter, |this, _, e: &InputEvent, cx| match e {
@@ -210,7 +212,7 @@ impl Sidebar {
         let s = self.services.read(cx);
         if let (Some(cluster), Some(env)) = (s.cluster.clone(), s.env.clone()) {
             cluster.update(cx, |c, cx| {
-                c.deployments(&env, cx);
+                c.want(&env, cx);
             });
         }
     }
@@ -232,6 +234,17 @@ impl Sidebar {
     pub fn env(&self, cx: &App) -> Option<Env> {
         let name = self.services.read(cx).env.clone()?;
         self.envs(cx).into_iter().find(|e| e.name == name)
+    }
+
+    /// What's wrong with the cluster list's env while its last list stays shown (a lost
+    /// connection).
+    pub fn kept_problem(&self, cx: &App) -> Option<String> {
+        if self.activity() != Activity::Cluster {
+            return None;
+        }
+        let s = self.services.read(cx);
+        let (c, env) = (s.cluster.as_ref()?.read(cx), s.env.as_deref()?);
+        matches!(c.peek(env), Remote::Ready(_)).then(|| c.problem(env).map(str::to_string)).flatten()
     }
 
     /// Why the list is empty when it is for a reason (loading, unreachable env).
@@ -275,10 +288,18 @@ impl Sidebar {
                     c.peek(env)
                         .ready()
                         .map(|deps| {
-                            deps.iter()
+                            deps.values()
                                 .map(|d| {
                                     let rolling = c.rollout(env, &d.name).is_some_and(|r| matches!(r, devdeck_core::cluster::Rollout::Progressing { .. }));
-                                    ListItem::new(d.name.clone(), d.name.clone()).detail(d.tag.clone()).busy(rolling).running(d.ready == d.replicas)
+                                    let mut tag = if d.others() > 0 { format!("{} +{}", d.tag(), d.others()) } else { d.tag() };
+                                    // A rollout seen on the cluster can last (a stuck one forever): said, not spun.
+                                    if let Some(state) = d.progress.label() {
+                                        tag.push_str(&format!(" · {state}"));
+                                    }
+                                    // The other containers, on hover.
+                                    let others: Vec<String> = d.containers.iter().filter(|x| x.name != d.main().name).map(|x| format!("{}: {}", x.name, x.image.label())).collect();
+                                    let hint = (!others.is_empty()).then(|| format!("{} {} · also {}", d.name, d.tag(), others.join(", ")));
+                                    ListItem::new(d.name.clone(), d.name.clone()).detail(tag).busy(rolling).running(d.ready == d.replicas).hint(hint)
                                 })
                                 .collect()
                         })
@@ -809,6 +830,9 @@ impl Render for Sidebar {
             }))
             .on_action(cx.listener(|this, _: &SidebarEscape, window, cx| this.escape(window, cx)))
             .child(header)
+            .when_some(self.kept_problem(cx), |d, p| {
+                d.child(div().flex_none().px_3().pb_1().debug_selector(|| "sidebar-problem".into()).child(icon_text(Icon::Warning, t.warn, p, &t)))
+            })
             .child(div().flex_none().px_2().pb_1().debug_selector(|| "sidebar-filter".into()).child(self.filter.clone()))
             .child(
                 div()
@@ -924,7 +948,7 @@ fn render_row(
             let context_only = !list::keeps(item, &look.filter, look.running_only);
             let text_color = if context_only { t.dim } else if item.warning.is_some() || item.dim { t.mute } else { t.fg };
             let el = tree(&key, depth, kids, rows[i].open_path(items).map(String::from))
-                .tooltip(tip(label_text.clone()))
+                .tooltip(tip(item.hint.clone().map_or_else(|| label_text.clone(), SharedString::from)))
                 .on_mouse_down(MouseButton::Left, move |e, window, cx| {
                     let double = e.click_count == 2;
                     m_click.update(cx, |s, cx| {

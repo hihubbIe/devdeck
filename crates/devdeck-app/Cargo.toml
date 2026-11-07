@@ -32,9 +32,7 @@ gpui.workspace = true
 gpui_platform.workspace = true
 async-channel.workspace = true
 futures-lite.workspace = true
-tokio.workspace = true
-kube.workspace = true
-k8s-openapi.workspace = true
+devdeck-kube.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
 [dev-dependencies]

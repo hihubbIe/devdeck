@@ -26,11 +26,18 @@ pub struct ListItem {
     pub path: Option<String>,
     /// Drawn de-emphasized (a library, R6.2).
     pub dim: bool,
+    /// Shown on hover instead of the label (what the detail leaves out).
+    pub hint: Option<String>,
 }
 
 impl ListItem {
     pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, busy: false, warning: None, path: None, dim: false }
+        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, busy: false, warning: None, path: None, dim: false, hint: None }
+    }
+
+    pub fn hint(mut self, h: Option<String>) -> Self {
+        self.hint = h;
+        self
     }
 
     pub fn path(mut self, p: impl Into<String>) -> Self {

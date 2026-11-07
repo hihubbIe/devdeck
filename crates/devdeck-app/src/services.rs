@@ -7,8 +7,14 @@
 //! (the runner swaps too; runs of an app that disappeared keep running). A rescan reads
 //! the folders off the UI thread, and swaps only what changed. The first scan, at start,
 //! is on the UI thread: the views restored with the window need their apps.
+//!
+//! A config workspace with `[cluster]` has a cluster read with kube-rs; a changed config
+//! changes it in place (open views keep it), and its kubeconfigs folder is watched on its
+//! own route ([`Services::kubeconfigs`]).
 
 use crate::cluster::{Cluster, new_cluster};
+use crate::fake_cluster::FakeCluster;
+use crate::kube_cluster::KubeCluster;
 use crate::environment::Environment;
 use crate::port_scan::{PortHolder, Ports};
 use crate::runner::{RunKey, Runner, fake_runner};
@@ -16,7 +22,7 @@ use devdeck_core::catalog::Catalog;
 use devdeck_core::config::{WorkspaceConfig, apply_overrides};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 pub struct Services {
@@ -25,7 +31,11 @@ pub struct Services {
     /// The workspace env (title bar `env ▾`), `None` without envs.
     pub env: Option<String>,
     pub runner: Entity<Runner>,
+    /// `None` without `[cluster]` (no Cluster activity, R2.3).
     pub cluster: Option<Entity<Cluster>>,
+    /// A config workspace's cluster and its driver, kept while `[cluster]` is gone: the
+    /// one cluster of the workspace, which views keep, refilled when it comes back.
+    kube: Option<(Entity<Cluster>, Rc<KubeCluster>)>,
     /// The config it comes from; `None` for the demo.
     pub config: Option<WorkspaceConfig>,
     /// What discovery and the config overrides reported, shown on request.
@@ -70,7 +80,8 @@ impl Services {
         let catalog = Rc::new(devdeck_core::demo::catalog(workspace));
         let env = catalog.pick_env(env);
         let runner = fake_runner(workspace, catalog.clone(), env.clone(), cx);
-        let cluster = catalog.cluster.clone().map(|spec| new_cluster(spec, catalog.envs.clone(), cx));
+        let clock = Some(devdeck_core::demo::NOW_S);
+        let cluster = catalog.cluster.clone().map(|spec| new_cluster(catalog.envs.clone(), Rc::new(FakeCluster { spec }), clock, cx));
         let ports = Ports::new(workspace, runner.clone(), None, cx);
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
@@ -79,12 +90,12 @@ impl Services {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
             let unusable = unusable(&catalog);
-            Services { workspace: workspace.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
+            Services { workspace: workspace.into(), catalog, env, runner, cluster, kube: None, config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
         })
     }
 
-    /// A workspace from its config: its apps found in its folders, real runs, no cluster
-    /// (M3). Tools come from `environment` and follow it.
+    /// A workspace from its config: its apps found in its folders, real runs, its cluster
+    /// when it has one. Tools come from `environment` and follow it.
     /// `state_dir` holds what runs leave behind (started process groups, ports seen,
     /// arguments used);
     /// `None` keeps nothing (tests).
@@ -104,16 +115,24 @@ impl Services {
             }
         });
         let ports = Ports::new(&config.id, runner.clone(), state_dir, cx);
+        let kube = config.cluster.clone().map(|c| {
+            let driver = Rc::new(KubeCluster::new(c));
+            (new_cluster(config.envs.clone(), driver.clone(), None, cx), driver)
+        });
+        let cluster = kube.as_ref().map(|(c, _)| c.clone());
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
             cx.observe(&ports, |_, _, cx| cx.notify()).detach();
+            if let Some(c) = &cluster {
+                cx.observe(c, |_, _, cx| cx.notify()).detach();
+            }
             cx.observe(&environment, |this: &mut Services, e, cx| {
                 let tools = e.read(cx).tools();
                 this.set_catalog(Catalog { tools, ..(*this.catalog).clone() }, cx);
             })
             .detach();
             let unusable = unusable(&catalog);
-            Services { workspace: config.id.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch, ports, scan: None, unusable }
+            Services { workspace: config.id.clone(), catalog, env, runner, cluster, kube, config: Some(config), problems, watch, ports, scan: None, unusable }
         })
     }
 
@@ -121,6 +140,7 @@ impl Services {
     /// the background. Emits [`Rescanned`] once done.
     pub fn rescan(&mut self, config: Option<WorkspaceConfig>, cx: &mut Context<Self>) {
         if let Some(c) = config {
+            self.set_cluster(&c, cx);
             self.config = Some(c);
         }
         let Some(config) = self.config.clone() else { return };
@@ -142,6 +162,57 @@ impl Services {
         }
         self.set_catalog(catalog, cx);
         cx.emit(Rescanned);
+    }
+
+    /// The cluster follows a changed config, in place: envs change without touching the
+    /// others' watches, a changed `[cluster]` reconnects only the envs whose target changed,
+    /// and a removed one empties the cluster (no Cluster activity; views keep it, and it
+    /// fills again when `[cluster]` comes back).
+    fn set_cluster(&mut self, config: &WorkspaceConfig, cx: &mut Context<Self>) {
+        let old = self.config.as_ref();
+        let Some(k) = config.cluster.clone() else {
+            if let Some(c) = self.cluster.take() {
+                c.update(cx, |c, cx| c.clear(cx));
+                cx.notify();
+            }
+            return;
+        };
+        let back = self.cluster.is_none();
+        match &self.kube {
+            Some((c, driver)) => {
+                let c = c.clone();
+                if back || old.is_none_or(|o| o.envs != config.envs) {
+                    c.update(cx, |c, cx| c.set_envs(config.envs.clone(), cx));
+                }
+                if back || old.is_none_or(|o| o.cluster.as_ref() != Some(&k)) {
+                    driver.set_config(k);
+                    c.update(cx, |c, cx| c.reload(cx));
+                }
+                self.cluster = Some(c);
+            }
+            None => {
+                let driver = Rc::new(KubeCluster::new(k));
+                let c = new_cluster(config.envs.clone(), driver.clone(), None, cx);
+                cx.observe(&c, |_, _, cx| cx.notify()).detach();
+                self.kube = Some((c.clone(), driver));
+                self.cluster = Some(c);
+            }
+        }
+        cx.notify();
+    }
+
+    /// The folder of the cluster's kubeconfigs, watched for changes.
+    pub fn kubeconfigs(&self) -> Option<&Path> {
+        self.config.as_ref()?.cluster.as_ref().map(|c| c.kubeconfigs.as_path())
+    }
+
+    /// What discovery, the overrides and the cluster's kubeconfigs reported.
+    pub fn all_problems(&self, cx: &App) -> Vec<String> {
+        let mut out = self.problems.clone();
+        if let Some(c) = &self.cluster {
+            out.extend(c.read(cx).problems.iter().cloned());
+        }
+        out
     }
 
     /// Swaps the catalog in, for the views and the runner, when it changed.
