@@ -104,7 +104,8 @@ impl Image {
     pub fn label(&self) -> String {
         match (&self.tag, &self.digest) {
             (Some(t), _) => t.clone(),
-            (None, Some(d)) => format!("@{}", &d[..d.len().min(19)]),
+            // By characters: the digest comes from the cluster, a byte cut could split one.
+            (None, Some(d)) => format!("@{}", d.chars().take(19).collect::<String>()),
             (None, None) => "latest".into(),
         }
     }
@@ -422,6 +423,8 @@ mod tests {
         assert_eq!((i.tag.as_deref(), i.label().as_str()), (None, "@sha256:0123456789ab"), "pinned by digest only: no tag");
         assert_eq!(i.to_string(), "registry/app@sha256:0123456789abcdef0123");
         assert_eq!(Image::parse("nginx").to_string(), "nginx:latest");
+        let odd = Image::parse("registry/app@sha256:0123456789aé-and-more");
+        assert_eq!(odd.label(), "@sha256:0123456789aé", "cut by characters, never inside one");
     }
 
     #[test]
