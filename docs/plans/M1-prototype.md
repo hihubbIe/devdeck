@@ -536,3 +536,51 @@ Found while checking:
 Checks:
 - New tests: 7 in `tests/runs.rs`, 6 in `tests/service.rs`, 5 in `tests/cluster_views.rs`, plus core tests for apps, runs, the cluster and view addresses. All use short fake-clock spans.
 - Snapshots 70–75 (app and run views), 80–89 (inspector states) and 90–93 (logs, pod, matrix, port) checked.
+
+## Step 6 · Actions everywhere
+
+Covers R5.1 (one registry), R5.2 (context menus), R5.3 (palette), R5.4 (hint bar,
+cheat sheet), R3.11 (Send to…), R5.5 (reasons shown in menus and the palette).
+
+Scope:
+- **Registry** (`app/src/registry.rs`): `ActionSpec { id, label, group, keys, context,
+  build }` for every action (layout, scale, settings, quit, workspaces, sidebar, views).
+  Key bindings are generated from it; the per-module `bind_keys` functions go away.
+  Labels and keys shown anywhere (menus, palette, cheat sheet, hint bar, tooltips that
+  name a key) come from it.
+- **Hint bar** (replaces the status bar): the actions available where focus is
+  (GPUI `available_actions` on the focused path), most specific context first, as
+  `key label` pairs, truncating; right side: workspace · env. Debug counters move to
+  `DEVDECK_STATS` output only.
+- **Cheat sheet** (`?` outside text inputs, `ctrl+/` anywhere): modal listing every
+  registry action by group with its keys, a filter input, Esc closes.
+- **Palette** (`ctrl+k`): modal at the top with an input and a virtualized result list.
+  Sources: apps (open), app commands (run, with `@env` for one run), deployments of the
+  current env (open service), envs (switch), workspaces (switch), views (matrix,
+  settings), actions (available ones, with key). Fuzzy subsequence scoring in core
+  (`fuzzy`: consecutive and word-start bonuses), ties alphabetical. Empty query lists
+  actions then workspaces, alphabetical. Tab on an app drills into its commands;
+  ↑↓, ⏎ runs, Esc closes (from a drill-down: back first). Disabled results show why.
+- **Context menus** on every interactive element: tabs (close, close others, detach,
+  send to…, maximize, collapse), pane strip (split right/down, collapse, maximize, send
+  pane to…, close pane), sidebar rows (open, pin, send to…), app command rows (run,
+  stop, restart, output), pod rows (open pod, logs), matrix cells (open, highlight),
+  activity icons (show, hide sidebar), section headers (collapse/expand where it
+  applies), workspace and env buttons (their menus). shift+F10 and the Menu key open
+  the menu of the focused element (selected row, active tab).
+- **Send to…** (tab or pane; menu, `ctrl+shift+s`): every pane of every window of the
+  workspace gets a number badge (reading order, main window first) and a modal lists
+  them as "n · window · active tab", plus "new window". Pick by number key, by clicking
+  the list, or by clicking a pane's badge; Esc cancels. Sending a pane moves all its tabs.
+
+States to snapshot: hint bar in panes / sidebar / app view / service view; cheat sheet
+filtered; palette empty, with matches, drilled into an app, with `@35`; tab menu; pane
+menu; row menu; Send to with badges in main and detached windows.
+
+Tests: registry has unique ids and keys per context, every bound key maps to a
+registry entry; fuzzy scoring order; palette sources and drill-down/back; `@env` run
+uses that env once; Send to by number, by click, to a new window, pane with all tabs,
+Esc cancels; shift+F10 opens the focused element's menu; hint bar lists the focused
+view's keys; cheat sheet filter.
+
+Out of scope: user-configurable keymaps (later), palette recents (open question).
