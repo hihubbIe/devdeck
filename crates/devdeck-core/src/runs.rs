@@ -1,5 +1,5 @@
-//! Runs of app commands (R6.7): state, exit status and output lines. M1 feeds them
-//! from a fake runner; M2 from real processes in a pseudo-terminal.
+//! Runs of app commands (R6.7): state and exit status, and output lines for views that
+//! show lines (logs). A run's own output is a terminal (`terminal`).
 
 use std::collections::VecDeque;
 
@@ -10,8 +10,21 @@ pub enum RunState {
     Stopping,
     /// Ended on its own with this exit code.
     Exited(i32),
-    /// Stopped by the user.
+    /// Ended on its own, killed by this signal (not ours).
+    Killed(i32),
+    /// Couldn't start (the reason is kept with the run).
+    NotStarted,
+    /// Stopped by the user, whatever its exit status.
     Stopped,
+}
+
+/// How a process ended, as a driver reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exit {
+    Code(i32),
+    Signal(i32),
+    /// It never started: the reason.
+    SpawnFailed(String),
 }
 
 impl RunState {
@@ -20,10 +33,13 @@ impl RunState {
         matches!(self, RunState::Running | RunState::Stopping)
     }
 
-    /// The exit code of a failed run.
+    /// The exit code of a failed run, shell style: 128 + signal for a killed one, 127
+    /// for one that couldn't start.
     pub fn failed(self) -> Option<i32> {
         match self {
             RunState::Exited(code) if code != 0 => Some(code),
+            RunState::Killed(signal) => Some(128 + signal),
+            RunState::NotStarted => Some(127),
             _ => None,
         }
     }
@@ -122,6 +138,8 @@ mod tests {
         assert_eq!(RunState::Exited(1).failed(), Some(1));
         assert_eq!(RunState::Exited(0).failed(), None);
         assert_eq!(RunState::Stopped.failed(), None);
+        assert_eq!(RunState::Killed(9).failed(), Some(137));
+        assert_eq!(RunState::NotStarted.failed(), Some(127));
         assert!(RunState::Running.is_running());
     }
 }

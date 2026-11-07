@@ -121,9 +121,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 ### Processes
 
-- Each run is a child in a pseudo-terminal (portable-pty), in its own process group.
-- Output is parsed by alacritty_terminal into a grid with scrollback; the run view
-  draws only visible rows.
+- Each run is a child in a pseudo-terminal (`alacritty_terminal`'s `tty`), in its own
+  session and process group.
+- A driver reports output bytes and the exit; the runner owns one terminal per run
+  (`core::terminal` over alacritty_terminal, 2 000 lines of history), so output is kept
+  while no view shows it. The run view draws only visible rows, wrapping at the pane
+  width; the terminal is resized to the pane.
 - Quit asks when anything runs (R8.1) and kills the groups.
 - Env applied through the app's declared binding (variable, argument, file rewrite).
 
@@ -144,11 +147,13 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 | UI | GPUI (Zed) via `gpui-pre =0.3.11` + `gpui-pre-platform` (wayland, x11) | GPU text rendering built for an editor, idle at zero CPU, multi-window | crates.io `gpui` is stale (0.2.2, Oct 2025); gpui-pre is a published Zed snapshot, the one gpui-component pins |
 | widgets | own components; may borrow from gpui-component | full control of the look | gpui-component has docks, inputs, menus |
 | terminal grid | alacritty_terminal | same as Zed's terminal | own view on top |
-| pty | portable-pty | cross-platform, used widely | |
+| pty | alacritty_terminal's `tty` | own session per child, real exit status with the signal | portable-pty dropped (M2): no signal number, SIGHUP to one pid only |
+| YAML | serde-saphyr 2 | safe Rust, maintained | serde_yaml archived, serde_yml unsound |
+| JSONC | jsonc-parser 0.34 | VS Code's leniency, serde | launch.json |
 | fuzzy | nucleo | Helix's matcher, very fast | |
 | kubernetes | kube + k8s-openapi | native watch, exec, port-forward, logs | needs tokio |
 | config | serde + toml | | |
-| file watching | notify | discover new folders | |
+| file watching | notify 8.2 + notify-debouncer-full | discover new folders | non-recursive watches; drop access events |
 
 ## Settings and scaling
 
@@ -211,5 +216,11 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   place a view opts into wrapping (R4.4), so the deployed tag is never cut off.
 - Should the palette's empty state show recent actions (ranking by use), given lists
   are alphabetical? Current answer: yes, the palette is a search tool, not a list.
+- 2026-11-07 Envs belong to the workspace (catalog), not the cluster: runs use them
+  without a cluster. App ids are the folder relative to the workspace folder; command ids
+  are `source:name` (`task:run`), and the UI shows the name.
+- 2026-11-07 Runs follow the real exit: a stop asks the driver and the run is Stopped
+  when the process exits (no failure toast); late events of an earlier start are
+  ignored. Each start gets a fresh terminal.
 - Running section in the Apps sidebar: replaced by the row indicator and a filter.
   Revisit if it feels slower in use.

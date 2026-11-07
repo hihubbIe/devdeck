@@ -2,40 +2,8 @@
 //! provide later. Deterministic, so snapshots and tests are stable.
 
 use crate::apps::{App, Command, EnvApply, Tier, Tools};
-pub use crate::cluster::Env;
+pub use crate::catalog::{Catalog, ClusterSpec, Env, PortSpec};
 use crate::cluster::{Deployment, Pod, PodPhase, Resources, Usage};
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ClusterSpec {
-    /// Alphabetical.
-    pub envs: Vec<Env>,
-    pub default_env: String,
-    pub services: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct PortSpec {
-    pub port: u16,
-    pub holder: String,
-    pub command: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Catalog {
-    pub apps: Vec<App>,
-    pub tools: Tools,
-    /// `None`: the workspace has no cluster, so no Cluster activity (R2.3).
-    pub cluster: Option<ClusterSpec>,
-    pub ports: Vec<PortSpec>,
-    /// Commands that run as soon as the workspace starts (the demo's "already running").
-    pub autostart: Vec<(String, String)>,
-}
-
-impl Catalog {
-    pub fn app(&self, id: &str) -> Option<&App> {
-        self.apps.iter().find(|a| a.id == id)
-    }
-}
 
 /// FNV-1a: stable across runs and platforms.
 pub fn hash(s: &str) -> u64 {
@@ -46,46 +14,53 @@ pub fn catalog(workspace: &str) -> Catalog {
     match workspace {
         "work" => work(),
         "personal" => personal(),
-        _ => Catalog { apps: Vec::new(), tools: Tools::default(), cluster: None, ports: Vec::new(), autostart: Vec::new() },
+        _ => Catalog::default(),
     }
 }
 
+/// `id` is `source:name` (`go:run`), as discovery makes them.
 fn command(id: &str, line: &str, tools: &[&str], ports: &[u16]) -> Command {
-    Command { id: id.into(), line: line.into(), tier: Tier::of(id), tools: tools.iter().map(|t| t.to_string()).collect(), ports: ports.to_vec() }
+    let name = id.split_once(':').map_or(id, |(_, n)| n);
+    Command { id: id.into(), line: line.into(), tier: Tier::of(name, &[]), tools: tools.iter().map(|t| t.to_string()).collect(), ports: ports.to_vec() }
+}
+
+fn app(id: &str, folder: String, kind: &str, commands: Vec<Command>, env: EnvApply) -> App {
+    App {
+        id: id.into(),
+        name: id.into(),
+        dir: folder.clone().into(),
+        folder,
+        kind: kind.into(),
+        library: false,
+        node: None,
+        commands,
+        env,
+        urls: Vec::new(),
+    }
 }
 
 fn go_app(name: &str, port: u16) -> App {
-    App {
-        id: name.into(),
-        name: name.into(),
-        folder: format!("~/Documents/repos/{name}"),
-        kind: "go".into(),
-        commands: vec![
-            command("run", "go run ./cmd/server", &["go"], &[port]),
-            command("build", "go build ./...", &["go"], &[]),
-            command("test", "go test ./...", &["go"], &[]),
-            command("lint", "golangci-lint run", &["golangci-lint"], &[]),
-        ],
-        env: EnvApply::Variable("TADA_ENV".into()),
-    }
+    let commands = vec![
+        command("go:run", "go run ./cmd/server", &["go"], &[port]),
+        command("go:build", "go build ./...", &["go"], &[]),
+        command("go:test", "go test ./...", &["go"], &[]),
+        command("go:lint", "golangci-lint run", &["golangci-lint"], &[]),
+    ];
+    app(name, format!("~/Documents/repos/{name}"), "go", commands, EnvApply::Variable("TADA_ENV".into()))
 }
 
 fn pnpm_app(name: &str, port: u16) -> App {
     let short = name.rsplit('/').next().unwrap_or(name);
-    App {
-        id: name.into(),
-        name: name.into(),
-        folder: format!("~/Documents/repos/front-end/apps/{short}"),
-        kind: "pnpm".into(),
-        commands: vec![
-            command("start:dev", "pnpm run start:dev", &["pnpm", "node"], &[port]),
-            command("build", "pnpm run build", &["pnpm", "node"], &[]),
-            command("test", "pnpm run test", &["pnpm", "node"], &[]),
-            command("lint", "pnpm run lint", &["pnpm", "node"], &[]),
-            command("prepare", "pnpm run prepare", &["pnpm", "node"], &[]),
-        ],
-        env: EnvApply::FileRewrite(".env.local".into()),
-    }
+    let commands = vec![
+        command("pnpm:start:dev", "pnpm run start:dev", &["pnpm", "node"], &[port]),
+        command("pnpm:build", "pnpm run build", &["pnpm", "node"], &[]),
+        command("pnpm:test", "pnpm run test", &["pnpm", "node"], &[]),
+        command("pnpm:lint", "pnpm run lint", &["pnpm", "node"], &[]),
+        command("pnpm:prepare", "pnpm run prepare", &["pnpm", "node"], &[]),
+    ];
+    let mut a = app(name, format!("~/Documents/repos/front-end/apps/{short}"), "pnpm", commands, EnvApply::FileRewrite(".env.local".into()));
+    a.node = Some("22".into());
+    a
 }
 
 fn work() -> Catalog {
@@ -114,14 +89,13 @@ fn work() -> Catalog {
             .enumerate()
             .map(|(i, n)| pnpm_app(n, 3000 + i as u16)),
     );
-    apps.push(App {
-        id: "remotedesktopapp".into(),
-        name: "remotedesktopapp".into(),
-        folder: "~/Documents/repos/remotedesktopapp".into(),
-        kind: "docker".into(),
-        commands: vec![command("up", "docker compose up", &["docker"], &[6080]), command("down", "docker compose down", &["docker"], &[])],
-        env: EnvApply::Argument("--profile".into()),
-    });
+    apps.push(app(
+        "remotedesktopapp",
+        "~/Documents/repos/remotedesktopapp".into(),
+        "docker",
+        vec![command("compose:up", "docker compose up", &["docker"], &[6080]), command("compose:down", "docker compose down", &["docker"], &[])],
+        EnvApply::Argument("--profile {env}".into()),
+    ));
     let services: Vec<String> = go.iter().take(15).map(|s| s.to_string()).collect();
     let mut envs: Vec<Env> = (31..=36).map(|n| Env { name: format!("dev{n}"), protected: false }).collect();
     envs.extend(["dls", "hades", "lab"].map(|n| Env { name: n.into(), protected: true }));
@@ -130,45 +104,41 @@ fn work() -> Catalog {
     Catalog {
         apps,
         tools: Tools::new(&["go", "pnpm", "node", "kubectl"]),
-        cluster: Some(ClusterSpec { envs, default_env: "dev35".into(), services }),
+        envs,
+        default_env: Some("dev35".into()),
+        cluster: Some(ClusterSpec { services }),
         ports,
-        autostart: vec![("entityservice".into(), "run".into()), ("front-end/mastertadaapp".into(), "start:dev".into())],
+        autostart: vec![("entityservice".into(), "go:run".into()), ("front-end/mastertadaapp".into(), "pnpm:start:dev".into())],
     }
 }
 
 fn personal() -> Catalog {
     let apps = vec![
-        App {
-            id: "blog".into(),
-            name: "blog".into(),
-            folder: "~/Documents/private_repos/blog".into(),
-            kind: "pnpm".into(),
-            commands: vec![command("dev", "pnpm run dev", &["pnpm", "node"], &[4321]), command("build", "pnpm run build", &["pnpm", "node"], &[])],
-            env: EnvApply::None,
-        },
-        App {
-            id: "devdeck".into(),
-            name: "devdeck".into(),
-            folder: "~/Documents/private_repos/devdeck".into(),
-            kind: "cargo".into(),
-            commands: vec![command("run", "cargo run", &["cargo"], &[]), command("test", "cargo test", &["cargo"], &[]), command("build", "cargo build --release", &["cargo"], &[])],
-            env: EnvApply::None,
-        },
-        App {
-            id: "dotfiles-sync".into(),
-            name: "dotfiles-sync".into(),
-            folder: "~/Documents/private_repos/dotfiles".into(),
-            kind: "make".into(),
-            commands: vec![command("sync", "make sync", &["make"], &[])],
-            env: EnvApply::None,
-        },
+        app(
+            "blog",
+            "~/Documents/private_repos/blog".into(),
+            "pnpm",
+            vec![command("pnpm:dev", "pnpm run dev", &["pnpm", "node"], &[4321]), command("pnpm:build", "pnpm run build", &["pnpm", "node"], &[])],
+            EnvApply::None,
+        ),
+        app(
+            "devdeck",
+            "~/Documents/private_repos/devdeck".into(),
+            "cargo",
+            vec![
+                command("cargo:run", "cargo run", &["cargo"], &[]),
+                command("cargo:test", "cargo test", &["cargo"], &[]),
+                command("cargo:build", "cargo build --release", &["cargo"], &[]),
+            ],
+            EnvApply::None,
+        ),
+        app("dotfiles-sync", "~/Documents/private_repos/dotfiles".into(), "make", vec![command("make:sync", "make sync", &["make"], &[])], EnvApply::None),
     ];
     Catalog {
         apps,
         tools: Tools::new(&["pnpm", "node", "cargo", "make"]),
-        cluster: None,
-        ports: Vec::new(),
-        autostart: vec![("blog".into(), "dev".into())],
+        autostart: vec![("blog".into(), "pnpm:dev".into())],
+        ..Catalog::default()
     }
 }
 
@@ -228,12 +198,12 @@ mod tests {
     fn work_has_a_cluster_and_personal_does_not() {
         let w = catalog("work");
         let c = w.cluster.as_ref().expect("cluster");
-        assert!(c.envs.iter().any(|e| e.name == c.default_env));
-        assert!(c.envs.windows(2).all(|p| p[0].name < p[1].name), "envs alphabetical");
+        assert!(w.default_env.as_deref().is_some_and(|d| w.env(d).is_some()));
+        assert!(w.envs.windows(2).all(|p| p[0].name < p[1].name), "envs alphabetical");
         assert_eq!(deployment("dev35", "entityservice"), deployment("dev35", "entityservice"), "deterministic");
         assert!(c.services.iter().any(|s| deployment("dls", s).is_none()), "some services aren't on dls");
         assert!(catalog("personal").cluster.is_none());
-        assert_eq!(w.tools.missing_for(w.app("remotedesktopapp").unwrap()), ["docker"]);
+        assert_eq!(w.tools.missing_for(w.app("remotedesktopapp").unwrap()), ["docker not found"]);
     }
 
     #[test]

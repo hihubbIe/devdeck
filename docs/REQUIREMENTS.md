@@ -39,7 +39,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R4.1** Every list is sorted alphabetically.
 - [x] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
 - [~] **R4.3** No "mine" grouping and no recency-ordered sections. Running state is shown as an indicator on the row, with a "running only" filter.
-- [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover.
+- [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover. Terminals (run output, shell tabs) wrap at the pane width and never scroll horizontally (decided 2026-11-07).
 - [~] **R4.5** Status markers and glyphs never shrink or move to another line; the label truncates instead.
 
 ## 5. Interaction
@@ -52,12 +52,12 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 6. Local apps
 
-- [ ] **R6.1** Apps are discovered automatically from the workspace's folders: `package.json` scripts, pnpm/npm workspaces (monorepo packages), Taskfile tasks, Makefile targets, docker compose files, `.vscode/launch.json`. New folders appear without configuration.
+- [ ] **R6.1** Apps are discovered automatically from the workspace's folders: `package.json` scripts, pnpm/npm workspaces (monorepo packages), Taskfile tasks, Makefile targets, docker compose files, `.vscode/launch.json`, Go modules with a main package, Cargo projects. New folders appear without configuration.
 - [ ] **R6.2** Runnable apps and libraries are told apart; libraries stay listed but de-emphasized.
 - [~] **R6.3** Commands have tiers: primary (start, dev, serve…), secondary (build, test, codegen…), hidden (lint, format, prepare, pre/post hooks…). Hidden ones stay reachable.
 - [ ] **R6.4** Overrides (names, commands, env binding, ports, URLs, hidden apps) live only in the central config, never in the project folders.
 - [~] **R6.5** Each command declares the tools it needs. When one is missing, the app and its commands show as disabled with a warning sign and the missing thing named ("go not found", ".nvmrc wants node 20, which isn't installed").
-- [~] **R6.6** Env for a run: a workspace-wide default plus a per-app override. How the env is applied is generic and declared: environment variable, command argument, rewrite of a gitignored file, or none. The UI says how it is applied.
+- [~] **R6.6** Env for a run: a workspace-wide default plus a per-app override. How the env is applied is generic and declared: command argument (preferred: nothing written to disk; a `{env}` placeholder in the command line), environment variable, rewrite of a gitignored file, or none. Bindings are added per app as needed. The UI says how it is applied.
 - [~] **R6.7** Commands run in a pseudo-terminal: colors, progress output and exit codes are real. Several run at once. Stop, restart, run again, exit status, crash notification.
 - [ ] **R6.8** Node version per project from `.nvmrc`, resolved against configured node installations.
 - [~] **R6.9** Listening ports are detected per run. Port conflicts are reported before starting, with an option to stop the holder.

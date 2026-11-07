@@ -6,6 +6,7 @@ pub mod app_settings;
 pub mod cheat_sheet;
 pub mod cluster;
 pub mod deck;
+pub mod fake_driver;
 pub mod gallery;
 pub mod kube_feed;
 pub mod layouts;

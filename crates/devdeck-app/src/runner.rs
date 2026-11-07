@@ -1,25 +1,22 @@
-//! The runs of one workspace (R6.7): start, stop, restart, state, output. The work
-//! itself is done by a [`RunDriver`]: M1 uses [`FakeDriver`] (scripted output on
-//! timers); M2 plugs in real processes behind the same trait, and views don't change.
+//! The runs of one workspace (R6.7): start, stop, restart, state, output. A
+//! [`RunDriver`] does the work: [`FakeDriver`](crate::fake_driver::FakeDriver) for the
+//! demo, real processes in a pseudo-terminal otherwise. A driver reports output bytes
+//! and the exit; the runner keeps one terminal per run, so output is kept whether or not
+//! a view shows it, and the state follows the real exit.
 
-use devdeck_core::apps::{Command, Tools};
-use devdeck_core::demo::Catalog;
-use devdeck_core::runs::{Output, RunState};
-use gpui::{AppContext, Context, EventEmitter, Task};
+use devdeck_core::apps::{App, Command, Tools};
+use devdeck_core::catalog::Catalog;
+use devdeck_core::runs::{Exit, RunState};
+use devdeck_core::terminal::{TermSize, Terminal};
+use gpui::{Context, EventEmitter, Task};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::time::Duration;
 
-/// Gap between scripted lines.
-pub const LINE_GAP: Duration = Duration::from_millis(200);
-/// A server writes one line this often once started.
-pub const SERVER_TICK: Duration = Duration::from_secs(2);
-/// The demo's crashing server dies this long after starting.
-pub const CRASH_AFTER: Duration = Duration::from_secs(3);
-/// How long a stop takes.
-pub const STOP_DELAY: Duration = Duration::from_millis(300);
-/// Lines kept per run (scrollback).
-pub const OUTPUT_CAP: usize = 5000;
+/// Lines of history kept per run, on top of the screen. A full terminal costs about
+/// 2.4 KB per line at 120 columns (docs/perf/M2.md): 2 000 lines is about 5 MB a run.
+pub const SCROLLBACK: usize = 2000;
+/// The terminal size of a run no view has measured yet.
+pub const DEFAULT_SIZE: TermSize = TermSize { cols: 120, rows: 30 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RunKey {
@@ -31,33 +28,72 @@ impl RunKey {
     pub fn new(app: &str, cmd: &str) -> Self {
         Self { app: app.into(), cmd: cmd.into() }
     }
+}
 
-    pub fn title(&self) -> String {
-        format!("{} · {}", self.app, self.cmd)
-    }
+/// One start of a run key. Drivers tag what they report with it, so a late event of an
+/// earlier start is ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunId {
+    pub key: RunKey,
+    pub n: u32,
+}
+
+/// What a driver needs to start a run. The real driver builds the process's whole
+/// environment from it: the toolbox's variables, the PATH for `app` (its Node first),
+/// `vars`, `TERM` and `COLORTERM`.
+#[derive(Clone, Debug)]
+pub struct Launch {
+    pub id: RunId,
+    /// Its `dir` is where the command runs.
+    pub app: App,
+    pub cmd: Command,
+    /// The command line with the env applied.
+    pub line: String,
+    /// The env binding's variables.
+    pub vars: Vec<(String, String)>,
+    pub env: Option<String>,
+    pub size: TermSize,
+}
+
+/// A started run, as the runner drives it. Dropping it ends the run.
+pub trait RunControl {
+    /// Input for the process (keys, terminal replies).
+    fn write(&self, bytes: &[u8]);
+    fn resize(&self, size: TermSize);
+    /// Asks the process to stop; its exit comes back through [`Runner::exited`].
+    fn stop(&self);
+}
+
+pub struct Started {
+    pub control: Box<dyn RunControl>,
+    /// The driver's work for this run; dropped with the run.
+    pub task: Task<()>,
+}
+
+/// Starts runs. The driver reports with [`Runner::output`] and [`Runner::exited`].
+pub trait RunDriver {
+    fn spawn(&self, launch: Launch, cx: &mut Context<Runner>) -> Result<Started, String>;
 }
 
 pub struct Run {
     pub state: RunState,
-    pub output: Output,
+    pub terminal: Terminal,
     pub env: Option<String>,
+    /// How many times it started.
     pub runs: u32,
-    task: Option<Task<()>>,
+    /// Why it couldn't start, when it couldn't.
+    pub error: Option<String>,
+    control: Option<Box<dyn RunControl>>,
+    _task: Option<Task<()>>,
     restart_after_stop: bool,
 }
 
 pub enum RunnerEvent {
-    /// A run ended on its own with a non-zero code.
+    /// A run ended on its own and failed (exit code, signal, or it couldn't start).
     Failed { key: RunKey, code: i32 },
-    /// New output for a run. Lines are events, not notifications, so only views
+    /// New output for a run. Output is an event, not a notification, so only views
     /// showing that run redraw; state changes notify.
     Output { key: RunKey },
-}
-
-/// Starts the work of a run. The driver reports back through [`Runner::line`] and
-/// [`Runner::exited`]; dropping the returned task stops it.
-pub trait RunDriver {
-    fn spawn(&self, key: RunKey, cmd: &Command, env: Option<String>, cx: &mut Context<Runner>) -> Task<()>;
 }
 
 pub struct Runner {
@@ -92,7 +128,15 @@ impl Runner {
 
     /// What runs, as titles, alphabetical (quit guard).
     pub fn running(&self) -> Vec<String> {
-        self.runs.iter().filter(|(_, r)| r.state.is_running()).map(|(k, _)| k.title()).collect()
+        self.runs.iter().filter(|(_, r)| r.state.is_running()).map(|(k, _)| self.title(k)).collect()
+    }
+
+    /// `app · command`, with the app's display name.
+    pub fn title(&self, key: &RunKey) -> String {
+        match self.catalog.app(&key.app) {
+            Some(app) => format!("{} · {}", app.name, devdeck_core::apps::name_of(&key.cmd)),
+            None => format!("{} · {}", key.app, devdeck_core::apps::name_of(&key.cmd)),
+        }
     }
 
     /// Running keys with the ports their command listens on.
@@ -101,91 +145,111 @@ impl Runner {
             .iter()
             .filter(|(_, r)| r.state == RunState::Running)
             .flat_map(|(k, _)| {
-                let ports = self.catalog.app(&k.app).and_then(|a| a.command(&k.cmd)).map(|c| c.ports.clone()).unwrap_or_default();
+                let ports = self.command(k).map(|(_, c)| c.ports.clone()).unwrap_or_default();
                 ports.into_iter().map(move |p| (k.clone(), p))
             })
             .collect()
     }
 
-    /// Why `key` can't start now, if it can't.
-    pub fn refusal(&self, key: &RunKey) -> Option<String> {
-        let Some(cmd) = self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)) else {
-            return Some(format!("{} has no command {}", key.app, key.cmd));
-        };
-        if let Some(missing) = self.catalog.tools.missing(cmd) {
-            return Some(missing);
-        }
-        (self.state(key) == Some(RunState::Running)).then(|| "already running".to_string())
+    fn command(&self, key: &RunKey) -> Option<(&App, &Command)> {
+        let app = self.catalog.app(&key.app)?;
+        Some((app, app.command(&key.cmd)?))
     }
 
-    /// Starts a command with the workspace env. Starting while it stops restarts it once
-    /// the stop is done.
+    /// Why `key` can't run at all, if it can't (no such command, a missing tool).
+    fn blocked(&self, key: &RunKey) -> Option<String> {
+        let Some((app, cmd)) = self.command(key) else {
+            return Some(format!("{} has no command {}", key.app, devdeck_core::apps::name_of(&key.cmd)));
+        };
+        self.catalog.tools.missing(app, cmd)
+    }
+
+    /// Why `key` can't start now, if it can't.
+    pub fn refusal(&self, key: &RunKey) -> Option<String> {
+        self.blocked(key).or_else(|| (self.state(key) == Some(RunState::Running)).then(|| "already running".to_string()))
+    }
+
+    /// Starts a command with `env`. Starting while it stops restarts it once stopped.
     pub fn start(&mut self, key: &RunKey, env: Option<String>, cx: &mut Context<Self>) -> Result<(), String> {
-        if self.state(key) == Some(RunState::Stopping) {
-            if let Some(r) = self.runs.get_mut(key) {
-                r.restart_after_stop = true;
-            }
-            return Ok(());
-        }
         if let Some(why) = self.refusal(key) {
             return Err(why);
         }
-        let cmd = self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)).cloned().expect("checked");
-        let run = self.runs.entry(key.clone()).or_insert_with(|| Run {
-            state: RunState::Stopped,
-            output: Output::new(OUTPUT_CAP),
-            env: None,
-            runs: 0,
-            task: None,
-            restart_after_stop: false,
-        });
+        if let Some(r) = self.runs.get_mut(key)
+            && r.state == RunState::Stopping
+        {
+            r.restart_after_stop = true;
+            r.env = env;
+            return Ok(());
+        }
+        let (app, cmd) = self.command(key).map(|(a, c)| (a.clone(), c.clone())).expect("checked");
+        // Each start gets a fresh terminal, at the size its view last asked for.
+        let size = self.runs.get(key).map_or(DEFAULT_SIZE, |r| r.terminal.size());
+        let terminal = Terminal::new(size, SCROLLBACK);
+        let run = match self.runs.get_mut(key) {
+            Some(run) => {
+                run.terminal = terminal;
+                run
+            }
+            None => self.runs.entry(key.clone()).or_insert(Run {
+                state: RunState::Stopped,
+                terminal,
+                env: None,
+                runs: 0,
+                error: None,
+                control: None,
+                _task: None,
+                restart_after_stop: false,
+            }),
+        };
         run.runs += 1;
         run.state = RunState::Running;
         run.env = env.clone();
+        run.error = None;
         run.restart_after_stop = false;
-        let header = format!("── run {} · {}{} ──", run.runs, cmd.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
-        run.output.push(header);
-        let task = self.driver.spawn(key.clone(), &cmd, env, cx);
-        if let Some(r) = self.runs.get_mut(key) {
-            r.task = Some(task);
+        let applied = app.env.apply(&cmd.line, env.as_deref());
+        let header = format!("── run {} · {}{} ──", run.runs, applied.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
+        note(&mut run.terminal, &header);
+        let id = RunId { key: key.clone(), n: run.runs };
+        let launch = Launch { id: id.clone(), app, cmd, line: applied.line, vars: applied.vars, env, size };
+        let driver = self.driver.clone();
+        match driver.spawn(launch, cx) {
+            Ok(started) => {
+                if let Some(r) = self.runs.get_mut(key) {
+                    r.control = Some(started.control);
+                    r._task = Some(started.task);
+                }
+            }
+            Err(why) => self.exited(&id, Exit::SpawnFailed(why), cx),
         }
         cx.notify();
         Ok(())
     }
 
-    /// Asks a run to stop; it reports Stopped after [`STOP_DELAY`].
+    /// Asks a run to stop; it is Stopped once the process exits. Stopping a run that
+    /// is already stopping cancels a pending restart.
     pub fn stop(&mut self, key: &RunKey, cx: &mut Context<Self>) {
         let Some(run) = self.runs.get_mut(key) else { return };
+        if run.state == RunState::Stopping {
+            run.restart_after_stop = false;
+            cx.notify();
+            return;
+        }
         if run.state != RunState::Running {
             return;
         }
         run.state = RunState::Stopping;
-        run.task = None;
-        let key = key.clone();
-        run.task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(STOP_DELAY).await;
-            let _ = this.update(cx, |r, cx| {
-                let mut again = None;
-                if let Some(run) = r.runs.get_mut(&key) {
-                    run.state = RunState::Stopped;
-                    run.task = None;
-                    run.output.push("^C stopped");
-                    if run.restart_after_stop {
-                        again = Some(run.env.clone());
-                    }
-                }
-                if let Some(env) = again {
-                    let _ = r.start(&key, env, cx);
-                }
-                cx.notify();
-            });
-        }));
+        if let Some(c) = &run.control {
+            c.stop();
+        }
         cx.notify();
     }
 
     pub fn restart(&mut self, key: &RunKey, env: Option<String>, cx: &mut Context<Self>) -> Result<(), String> {
         match self.state(key) {
             Some(RunState::Running) => {
+                if let Some(why) = self.blocked(key) {
+                    return Err(why);
+                }
                 self.stop(key, cx);
                 if let Some(r) = self.runs.get_mut(key) {
                     r.restart_after_stop = true;
@@ -201,126 +265,95 @@ impl Runner {
         let keys: Vec<RunKey> = self.runs.iter().filter(|(_, r)| r.state == RunState::Running).map(|(k, _)| k.clone()).collect();
         for k in keys {
             self.stop(&k, cx);
-            if let Some(r) = self.runs.get_mut(&k) {
-                r.restart_after_stop = false;
-            }
+        }
+        for r in self.runs.values_mut() {
+            r.restart_after_stop = false;
         }
     }
 
-    /// Driver: one line of output.
-    pub fn line(&mut self, key: &RunKey, text: impl Into<String>, cx: &mut Context<Self>) {
-        if let Some(r) = self.runs.get_mut(key)
-            && r.state == RunState::Running
-        {
-            r.output.push(text);
-            cx.emit(RunnerEvent::Output { key: key.clone() });
+    /// Input typed into a run's terminal.
+    pub fn write(&mut self, key: &RunKey, bytes: &[u8]) {
+        if let Some(c) = self.runs.get(key).and_then(|r| r.control.as_ref()) {
+            c.write(bytes);
         }
     }
 
-    /// Driver: the run ended on its own.
-    pub fn exited(&mut self, key: &RunKey, code: i32, cx: &mut Context<Self>) {
-        let Some(r) = self.runs.get_mut(key) else { return };
-        if r.state != RunState::Running {
+    /// The size a view shows a run's terminal at.
+    pub fn resize(&mut self, key: &RunKey, size: TermSize, cx: &mut Context<Self>) {
+        let Some(run) = self.runs.get_mut(key) else { return };
+        if run.terminal.size() == size {
             return;
         }
-        r.state = RunState::Exited(code);
-        r.task = None;
-        r.output.push(format!("exited with code {code}"));
-        if code != 0 {
-            cx.emit(RunnerEvent::Failed { key: key.clone(), code });
+        run.terminal.resize(size);
+        if let Some(c) = &run.control {
+            c.resize(size);
+        }
+        cx.emit(RunnerEvent::Output { key: key.clone() });
+    }
+
+    /// Driver: output of a run.
+    pub fn output(&mut self, id: &RunId, bytes: &[u8], cx: &mut Context<Self>) {
+        let Some(run) = self.runs.get_mut(&id.key) else { return };
+        if run.runs != id.n || !run.state.is_running() {
+            return;
+        }
+        run.terminal.feed(bytes);
+        let replies = run.terminal.take_replies();
+        if !replies.is_empty()
+            && let Some(c) = &run.control
+        {
+            c.write(&replies);
+        }
+        cx.emit(RunnerEvent::Output { key: id.key.clone() });
+    }
+
+    /// Driver: the run ended (or never started).
+    pub fn exited(&mut self, id: &RunId, exit: Exit, cx: &mut Context<Self>) {
+        let Some(run) = self.runs.get_mut(&id.key) else { return };
+        if run.runs != id.n || !run.state.is_running() {
+            return;
+        }
+        run.control = None;
+        run._task = None;
+        let (state, text) = match (run.state, exit) {
+            (RunState::Stopping, _) => (RunState::Stopped, "stopped".to_string()),
+            (_, Exit::Code(code)) => (RunState::Exited(code), format!("exited with code {code}")),
+            (_, Exit::Signal(signal)) => (RunState::Killed(signal), format!("killed by signal {signal}")),
+            (_, Exit::SpawnFailed(why)) => {
+                let text = format!("couldn't start: {why}");
+                run.error = Some(why);
+                (RunState::NotStarted, text)
+            }
+        };
+        run.state = state;
+        note(&mut run.terminal, &text);
+        let again = run.restart_after_stop.then(|| run.env.clone());
+        run.restart_after_stop = false;
+        if let Some(code) = state.failed() {
+            cx.emit(RunnerEvent::Failed { key: id.key.clone(), code });
+        }
+        cx.emit(RunnerEvent::Output { key: id.key.clone() });
+        if let Some(env) = again
+            && let Err(why) = self.start(&id.key, env, cx)
+            && let Some(run) = self.runs.get_mut(&id.key)
+        {
+            note(&mut run.terminal, &format!("couldn't restart: {why}"));
         }
         cx.notify();
     }
 }
 
-/// Scripted output for the demo: servers keep writing, builds and tests finish, the
-/// boardservice server crashes, pagerendererservice's tests fail.
-pub struct FakeDriver;
-
-impl FakeDriver {
-    fn script(key: &RunKey, cmd: &Command, env: Option<&str>) -> (Vec<String>, Option<i32>) {
-        let env = env.unwrap_or("-");
-        let port = cmd.ports.first().copied().unwrap_or(0);
-        let server = cmd.tier == devdeck_core::apps::Tier::Primary;
-        let lines: Vec<String> = match (cmd.id.as_str(), server) {
-            ("run", true) if cmd.line.starts_with("go") => vec![
-                "go: downloading modules".into(),
-                format!("INF config loaded env={env}"),
-                "INF connected to mongodb".into(),
-                format!("INF listening on :{port}"),
-            ],
-            (_, true) if cmd.line.starts_with("pnpm") => vec![
-                format!("> {}", cmd.line),
-                "  VITE v5.4.2  ready in 812 ms".into(),
-                format!("  ➜  Local:   http://localhost:{port}/"),
-            ],
-            (_, true) => vec![format!("$ {}", cmd.line), "Compiling…".into(), "Finished in 4.1s".into()],
-            ("test", _) if key.app == "pagerendererservice" => vec![
-                "=== RUN   TestRender".into(),
-                "--- FAIL: TestRender (0.21s)".into(),
-                "    render_test.go:42: error: expected 3 blocks, got 2".into(),
-                "FAIL".into(),
-            ],
-            ("test", _) => vec!["=== RUN   TestAll".into(), "ok   ./internal/... 0.41s".into(), "ok   ./pkg/... 0.18s".into(), "PASS".into()],
-            ("build", _) => vec![format!("$ {}", cmd.line), "WARN 2 deprecated packages".into(), "built in 3.2s".into()],
-            _ => vec![format!("$ {}", cmd.line), "done".into()],
-        };
-        let exit = if server {
-            None
-        } else if key.app == "pagerendererservice" && cmd.id == "test" {
-            Some(1)
-        } else {
-            Some(0)
-        };
-        (lines, exit)
-    }
-}
-
-impl RunDriver for FakeDriver {
-    fn spawn(&self, key: RunKey, cmd: &Command, env: Option<String>, cx: &mut Context<Runner>) -> Task<()> {
-        let (lines, exit) = Self::script(&key, cmd, env.as_deref());
-        let crashes = key.app == "boardservice" && exit.is_none();
-        cx.spawn(async move |this, cx| {
-            for l in lines {
-                cx.background_executor().timer(LINE_GAP).await;
-                if this.update(cx, |r, cx| r.line(&key, l, cx)).is_err() {
-                    return;
-                }
-            }
-            if let Some(code) = exit {
-                let _ = this.update(cx, |r, cx| r.exited(&key, code, cx));
-                return;
-            }
-            if crashes {
-                cx.background_executor().timer(CRASH_AFTER).await;
-                let _ = this.update(cx, |r, cx| {
-                    r.line(&key, "ERR panic: rabbitmq: channel closed", cx);
-                    r.exited(&key, 2, cx);
-                });
-                return;
-            }
-            let mut n = 0u64;
-            loop {
-                cx.background_executor().timer(SERVER_TICK).await;
-                n += 1;
-                let text = match n % 4 {
-                    0 => "WRN slow query entities.find 812ms".to_string(),
-                    1 => format!("INF GET /v1/entities/{n} 200 12ms"),
-                    2 => "DBG cache hit".to_string(),
-                    _ => "INF POST /v1/entities 201 31ms".to_string(),
-                };
-                if this.update(cx, |r, cx| r.line(&key, text, cx)).is_err() {
-                    return;
-                }
-            }
-        })
-    }
+/// A line devdeck writes into a run's terminal: dim, on a line of its own.
+fn note(terminal: &mut Terminal, text: &str) {
+    let newline = if terminal.at_line_start() { "" } else { "\r\n" };
+    terminal.feed(format!("{newline}\x1b[2m{text}\x1b[0m\r\n").as_bytes());
 }
 
 /// A runner with the fake driver, starting the catalog's autostart commands.
 pub fn fake_runner(workspace: &str, catalog: Rc<Catalog>, env: Option<String>, cx: &mut gpui::App) -> gpui::Entity<Runner> {
+    use gpui::AppContext;
     let auto = catalog.autostart.clone();
-    let runner = cx.new(|_| Runner::new(workspace.into(), catalog, Rc::new(FakeDriver)));
+    let runner = cx.new(|_| Runner::new(workspace.into(), catalog, Rc::new(crate::fake_driver::FakeDriver)));
     runner.update(cx, |r, cx| {
         for (app, cmd) in auto {
             let _ = r.start(&RunKey::new(&app, &cmd), env.clone(), cx);

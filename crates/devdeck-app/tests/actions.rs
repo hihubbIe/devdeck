@@ -111,7 +111,7 @@ fn the_palette_finds_drills_runs_on_an_env_and_dispatches_actions(cx: &mut TestA
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 0, "running closes the palette");
     let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
-    let run = cx.read(|cx| services.read(cx).runner.read(cx).run(&RunKey::new("eventservice", "run")).map(|r| (r.state, r.env.clone())));
+    let run = cx.read(|cx| services.read(cx).runner.read(cx).run(&RunKey::new("eventservice", "go:run")).map(|r| (r.state, r.env.clone())));
     assert_eq!(run, Some((RunState::Running, Some("dev33".into()))), "@33 picks dev33 for this run");
     assert_eq!(cx.read(|cx| services.read(cx).env.clone()).as_deref(), Some("dev35"), "only for this run");
     // Esc leaves a drill-down first.

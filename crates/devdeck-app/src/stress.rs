@@ -35,7 +35,7 @@ const SERVICE: usize = 2;
 fn views(n: u64) -> Vec<ViewRef> {
     vec![
         ViewAddr::App { app: "entityservice".into() }.to_ref(),
-        ViewAddr::Run { app: "eventservice".into(), cmd: "build".into() }.to_ref(),
+        ViewAddr::Run { app: "eventservice".into(), cmd: "go:build".into() }.to_ref(),
         ViewAddr::Svc { env: "dev35".into(), name: "graphservice".into() }.to_ref(),
         ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() }.to_ref(),
         ViewAddr::Matrix.to_ref(),
@@ -183,7 +183,7 @@ impl Stress {
 
     async fn run_once(&self, cx: &mut AsyncApp) {
         let runner = cx.update(|cx| self.shell.read(cx).workspaces[self.home].services.read(cx).runner.clone());
-        let key = RunKey::new("eventservice", "build");
+        let key = RunKey::new("eventservice", "go:build");
         let _ = cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx)));
         self.frame(cx).await;
         cx.update(|cx| runner.update(cx, |r, cx| r.stop(&key, cx)));

@@ -32,12 +32,9 @@ impl Services {
     /// when the catalog has one, the fake cluster.
     pub fn demo(workspace: &str, name: &str, env: Option<String>, cx: &mut App) -> Entity<Services> {
         let catalog = Rc::new(devdeck_core::demo::catalog(workspace));
-        let env = catalog.cluster.as_ref().map(|c| match env {
-            Some(e) if c.envs.iter().any(|x| x.name == e) => e,
-            _ => c.default_env.clone(),
-        });
+        let env = catalog.pick_env(env);
         let runner = fake_runner(workspace, catalog.clone(), env.clone(), cx);
-        let cluster = catalog.cluster.clone().map(|spec| new_cluster(spec, cx));
+        let cluster = catalog.cluster.clone().map(|spec| new_cluster(spec, catalog.envs.clone(), cx));
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
             if let Some(c) = &cluster {
@@ -48,7 +45,7 @@ impl Services {
     }
 
     pub fn set_env(&mut self, env: &str, cx: &mut Context<Self>) {
-        let known = self.catalog.cluster.as_ref().is_some_and(|c| c.envs.iter().any(|e| e.name == env));
+        let known = self.catalog.env(env).is_some();
         if known && self.env.as_deref() != Some(env) {
             self.env = Some(env.into());
             cx.notify();
@@ -57,7 +54,7 @@ impl Services {
 
     pub fn protected_env(&self) -> bool {
         let env = self.env.as_deref();
-        self.catalog.cluster.as_ref().is_some_and(|c| c.envs.iter().any(|e| Some(e.name.as_str()) == env && e.protected))
+        env.and_then(|e| self.catalog.env(e)).is_some_and(|e| e.protected)
     }
 
     /// Ports in use, alphabetical by number.
@@ -71,7 +68,7 @@ impl Services {
         let runner = self.runner.read(cx);
         for (key, port) in runner.running_ports() {
             let line = self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)).map(|c| c.line.clone()).unwrap_or_default();
-            out.push(PortInfo { port, holder: key.title(), command: line, run: Some(key) });
+            out.push(PortInfo { port, holder: runner.title(&key), command: line, run: Some(key) });
         }
         out.sort_by_key(|p| p.port);
         out

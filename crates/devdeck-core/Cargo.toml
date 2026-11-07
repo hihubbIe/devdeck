@@ -9,6 +9,14 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+alacritty_terminal.workspace = true
+async-channel.workspace = true
+notify.workspace = true
+notify-debouncer-full.workspace = true
+serde-saphyr.workspace = true
+jsonc-parser.workspace = true
+rustix.workspace = true
+signal-hook.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

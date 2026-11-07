@@ -2,7 +2,8 @@
 //! on GPUI's test platform with the fake clock. `work` autostarts entityservice and
 //! mastertadaapp; `personal` autostarts blog.
 
-use devdeck_app::runner::{CRASH_AFTER, LINE_GAP, RunKey, STOP_DELAY};
+use devdeck_app::fake_driver::{CRASH_AFTER, LINE_GAP, STOP_DELAY};
+use devdeck_app::runner::RunKey;
 use devdeck_app::shell::Shell;
 use devdeck_app::views::run_view::RunView;
 use devdeck_core::layout::{Layout, ViewRef};
@@ -71,15 +72,15 @@ fn app_view_keys_run_a_command_to_its_exit_code(cx: &mut TestAppContext) {
     // The new tab's view has the keys; ↓ ↓ ↓ = run, build, test (tier order, then A–Z).
     cx.simulate_keystrokes(main, "down down down enter");
     cx.run_until_parked();
-    assert_eq!(state(&shell, cx, "work", "pagerendererservice", "test"), Some(RunState::Running));
+    assert_eq!(state(&shell, cx, "work", "pagerendererservice", "go:test"), Some(RunState::Running));
     advance(cx, LINE_GAP * 5);
-    assert_eq!(state(&shell, cx, "work", "pagerendererservice", "test"), Some(RunState::Exited(1)));
+    assert_eq!(state(&shell, cx, "work", "pagerendererservice", "go:test"), Some(RunState::Exited(1)));
     assert!(toast_texts(cx).iter().any(|t| t == "work · pagerendererservice · test exited 1"), "a failure is announced");
     // o opens the output next to it.
     cx.simulate_keystrokes(main, "o");
     cx.run_until_parked();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let run = ViewAddr::Run { app: "pagerendererservice".into(), cmd: "test".into() }.to_ref();
+    let run = ViewAddr::Run { app: "pagerendererservice".into(), cmd: "go:test".into() }.to_ref();
     assert!(cx.read(|cx| deck.read(cx).layout().find_view(&run).is_some()));
 }
 
@@ -88,14 +89,14 @@ fn stop_takes_time_and_a_restart_waits_for_it(cx: &mut TestAppContext) {
     let shell = start(cx, "stop");
     let i = ws(&shell, cx, "work");
     let runner = cx.read(|cx| shell.read(cx).workspaces[i].services.read(cx).runner.clone());
-    let key = RunKey::new("entityservice", "run");
-    assert_eq!(state(&shell, cx, "work", "entityservice", "run"), Some(RunState::Running), "autostarted");
+    let key = RunKey::new("entityservice", "go:run");
+    assert_eq!(state(&shell, cx, "work", "entityservice", "go:run"), Some(RunState::Running), "autostarted");
     cx.update(|cx| runner.update(cx, |r, cx| r.stop(&key, cx)));
-    assert_eq!(state(&shell, cx, "work", "entityservice", "run"), Some(RunState::Stopping));
+    assert_eq!(state(&shell, cx, "work", "entityservice", "go:run"), Some(RunState::Stopping));
     assert!(cx.read(|cx| shell.read(cx).running(cx)).iter().any(|(_, r)| r.iter().any(|t| t == "entityservice · run")), "stopping still counts");
     cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, Some("dev35".into()), cx))).unwrap();
     advance(cx, STOP_DELAY);
-    assert_eq!(state(&shell, cx, "work", "entityservice", "run"), Some(RunState::Running), "started again once stopped");
+    assert_eq!(state(&shell, cx, "work", "entityservice", "go:run"), Some(RunState::Running), "started again once stopped");
     let runs = cx.read(|cx| runner.read(cx).run(&key).unwrap().runs);
     assert_eq!(runs, 2);
 }
@@ -108,11 +109,11 @@ fn missing_tools_refuse_with_the_reason(cx: &mut TestAppContext) {
         let w = &shell.read(cx).workspaces[i];
         (w.services.read(cx).runner.clone(), w.sidebar.clone())
     });
-    let err = cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("remotedesktopapp", "up"), None, cx)));
+    let err = cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("remotedesktopapp", "compose:up"), None, cx)));
     assert_eq!(err, Err("docker not found".into()));
     let item = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "remotedesktopapp").unwrap());
     assert_eq!(item.warning.as_deref(), Some("docker not found"), "the sidebar row says why");
-    let lint = cx.read(|cx| runner.read(cx).refusal(&RunKey::new("entityservice", "lint")));
+    let lint = cx.read(|cx| runner.read(cx).refusal(&RunKey::new("entityservice", "go:lint")));
     assert_eq!(lint.as_deref(), Some("golangci-lint not found"));
     let go = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "entityservice").unwrap());
     assert!(go.warning.is_none(), "a missing tool for a hidden command doesn't disable the app");
@@ -136,7 +137,7 @@ fn sidebar_and_quit_guard_follow_the_runner(cx: &mut TestAppContext) {
     });
     let running_row = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "entityservice").unwrap().running);
     assert!(running_row(cx));
-    cx.update(|cx| runner.update(cx, |r, cx| r.stop(&RunKey::new("entityservice", "run"), cx)));
+    cx.update(|cx| runner.update(cx, |r, cx| r.stop(&RunKey::new("entityservice", "go:run"), cx)));
     advance(cx, STOP_DELAY);
     assert!(!running_row(cx), "the indicator follows the run");
 }
@@ -149,10 +150,10 @@ fn a_crash_in_a_hidden_workspace_names_it_and_leads_there(cx: &mut TestAppContex
     cx.update(|cx| shell.update(cx, |s, cx| s.switch(personal, cx)));
     cx.run_until_parked();
     let runner = cx.read(|cx| shell.read(cx).workspaces[work].services.read(cx).runner.clone());
-    cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("boardservice", "run"), None, cx))).unwrap();
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("boardservice", "go:run"), None, cx))).unwrap();
     advance(cx, LINE_GAP * 4);
     advance(cx, CRASH_AFTER);
-    assert_eq!(state(&shell, cx, "work", "boardservice", "run"), Some(RunState::Exited(2)));
+    assert_eq!(state(&shell, cx, "work", "boardservice", "go:run"), Some(RunState::Exited(2)));
     let action = cx.update(|cx| {
         toasts(cx)
             .read(cx)
@@ -167,14 +168,14 @@ fn a_crash_in_a_hidden_workspace_names_it_and_leads_there(cx: &mut TestAppContex
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| shell.read(cx).active), work, "View output shows the workspace");
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let run = ViewAddr::Run { app: "boardservice".into(), cmd: "run".into() }.to_ref();
+    let run = ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref();
     assert!(cx.read(|cx| deck.read(cx).layout().find_view(&run).is_some()), "and opens the run");
 }
 
 fn restored() -> Layout {
     let mut l = Layout::new();
     let p = l.main().focused;
-    l.open(ViewAddr::Run { app: "eventservice".into(), cmd: "build".into() }.to_ref(), p).unwrap();
+    l.open(ViewAddr::Run { app: "eventservice".into(), cmd: "go:build".into() }.to_ref(), p).unwrap();
     l.open(ViewRef::new("deploy/dev35/old-ref"), p).unwrap();
     l.activate(p, 0).unwrap();
     l
@@ -185,15 +186,15 @@ fn restored_run_tabs_offer_to_run_and_unknown_refs_say_so(cx: &mut TestAppContex
     let shell = start_with(cx, "restored", restored);
     let main = main_window(&shell, cx);
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let run = ViewAddr::Run { app: "eventservice".into(), cmd: "build".into() }.to_ref();
+    let run = ViewAddr::Run { app: "eventservice".into(), cmd: "go:build".into() }.to_ref();
     let view = cx.read(|cx| deck.read(cx).view(&run).unwrap());
     assert!(view.downcast::<RunView>().is_ok(), "a run view, idle");
-    assert_eq!(state(&shell, cx, "work", "eventservice", "build"), None);
+    assert_eq!(state(&shell, cx, "work", "eventservice", "go:build"), None);
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(state(&shell, cx, "work", "eventservice", "build"), Some(RunState::Running), "⏎ runs it");
+    assert_eq!(state(&shell, cx, "work", "eventservice", "go:build"), Some(RunState::Running), "⏎ runs it");
     advance(cx, LINE_GAP * 4);
-    assert_eq!(state(&shell, cx, "work", "eventservice", "build"), Some(RunState::Exited(0)));
+    assert_eq!(state(&shell, cx, "work", "eventservice", "go:build"), Some(RunState::Exited(0)));
     let old = cx.read(|cx| deck.read(cx).view(&ViewRef::new("deploy/dev35/old-ref")));
     assert!(old.is_some(), "an unknown ref still gets a (message) view instead of breaking the layout");
 }
@@ -202,7 +203,7 @@ fn restored_run_tabs_offer_to_run_and_unknown_refs_say_so(cx: &mut TestAppContex
 fn closed_run_and_app_views_are_released(cx: &mut TestAppContext) {
     let shell = start(cx, "leak");
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let refs = [ViewAddr::App { app: "entityservice".into() }.to_ref(), ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() }.to_ref()];
+    let refs = [ViewAddr::App { app: "entityservice".into() }.to_ref(), ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() }.to_ref()];
     for r in &refs {
         cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(r.clone(), l.main().focused).map(|_| ()))));
         cx.run_until_parked();
@@ -223,13 +224,132 @@ fn closed_run_and_app_views_are_released(cx: &mut TestAppContext) {
 fn follow_keys_reach_the_view_after_any_way_back_to_the_panes(cx: &mut TestAppContext) {
     let shell = start(cx, "follow");
     let main = main_window(&shell, cx);
-    open(&shell, cx, ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() });
+    open(&shell, cx, ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() });
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    let r = ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() }.to_ref();
+    let r = ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() }.to_ref();
     let view = cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<RunView>().unwrap());
     assert!(cx.read(|cx| view.read(cx).follow));
     // Into the sidebar and back with Esc: the run view has the keys again.
     cx.simulate_keystrokes(main, "ctrl-1 escape alt-f");
     cx.run_until_parked();
     assert!(!cx.read(|cx| view.read(cx).follow), "alt+f toggled follow");
+}
+
+fn runner_of(shell: &Entity<Shell>, cx: &TestAppContext) -> Entity<devdeck_app::runner::Runner> {
+    let i = ws(shell, cx, "work");
+    cx.read(|cx| shell.read(cx).workspaces[i].services.read(cx).runner.clone())
+}
+
+fn lines(runner: &Entity<devdeck_app::runner::Runner>, key: &RunKey, cx: &TestAppContext) -> Vec<String> {
+    cx.read(|cx| runner.read(cx).run(key).map(|r| r.terminal.lines()).unwrap_or_default())
+}
+
+#[gpui::test]
+fn a_stop_ends_stopped_and_is_not_a_failure(cx: &mut TestAppContext) {
+    let shell = start(cx, "stopped");
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("entityservice", "go:run");
+    cx.update(|cx| runner.update(cx, |r, cx| r.stop(&key, cx)));
+    advance(cx, STOP_DELAY);
+    assert_eq!(state(&shell, cx, "work", "entityservice", "go:run"), Some(RunState::Stopped));
+    assert!(toast_texts(cx).is_empty(), "the process's exit status after our stop isn't a crash");
+    let out = lines(&runner, &key, cx);
+    assert_eq!(out[out.len() - 3..], ["^C", "stopped", ""], "the empty row is the cursor's");
+}
+
+#[gpui::test]
+fn output_is_kept_without_a_view_and_wraps_at_the_terminal_width(cx: &mut TestAppContext) {
+    let shell = start(cx, "wrap");
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("entityservice", "go:run");
+    advance(cx, LINE_GAP * 5);
+    let out = lines(&runner, &key, cx);
+    assert!(out.iter().any(|l| l.starts_with("INF listening on :")), "kept while no view shows it: {out:?}");
+    cx.update(|cx| runner.update(cx, |r, cx| r.resize(&key, devdeck_core::terminal::TermSize { cols: 12, rows: 10 }, cx)));
+    let out = lines(&runner, &key, cx);
+    assert!(out.iter().all(|l| l.chars().count() <= 12), "{out:?}");
+    assert!(out.windows(2).any(|w| w[0] == "INF listenin" && w[1] == "g on :5720"), "rewrapped at the column: {out:?}");
+}
+
+/// A driver the test drives by hand: it records launches and does nothing else.
+struct Manual(std::rc::Rc<std::cell::RefCell<Vec<devdeck_app::runner::RunId>>>, Option<String>);
+
+struct Idle;
+
+impl devdeck_app::runner::RunControl for Idle {
+    fn write(&self, _: &[u8]) {}
+    fn resize(&self, _: devdeck_core::terminal::TermSize) {}
+    fn stop(&self) {}
+}
+
+impl devdeck_app::runner::RunDriver for Manual {
+    fn spawn(&self, launch: devdeck_app::runner::Launch, _: &mut gpui::Context<devdeck_app::runner::Runner>) -> Result<devdeck_app::runner::Started, String> {
+        if let Some(why) = &self.1 {
+            return Err(why.clone());
+        }
+        self.0.borrow_mut().push(launch.id);
+        Ok(devdeck_app::runner::Started { control: Box::new(Idle), task: gpui::Task::ready(()) })
+    }
+}
+
+fn manual_runner(cx: &mut TestAppContext, fail: Option<&str>) -> (Entity<devdeck_app::runner::Runner>, std::rc::Rc<std::cell::RefCell<Vec<devdeck_app::runner::RunId>>>) {
+    let launches = std::rc::Rc::default();
+    let driver = std::rc::Rc::new(Manual(std::rc::Rc::clone(&launches), fail.map(String::from)));
+    let catalog = std::rc::Rc::new(devdeck_core::demo::catalog("work"));
+    (cx.new(|_| devdeck_app::runner::Runner::new("work".into(), catalog, driver)), launches)
+}
+
+#[gpui::test]
+fn a_run_that_cannot_start_says_why(cx: &mut TestAppContext) {
+    let (runner, _) = manual_runner(cx, Some("folder gone"));
+    let failures = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = failures.clone();
+    cx.update(|cx| {
+        cx.subscribe(&runner, move |_, e: &devdeck_app::runner::RunnerEvent, _| {
+            if let devdeck_app::runner::RunnerEvent::Failed { code: 127, .. } = e {
+                seen.set(seen.get() + 1);
+            }
+        })
+        .detach()
+    });
+    let key = RunKey::new("eventservice", "go:build");
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    let (s, why) = cx.read(|cx| runner.read(cx).run(&key).map(|r| (r.state, r.error.clone())).unwrap());
+    assert_eq!((s, why.as_deref()), (RunState::NotStarted, Some("folder gone")));
+    assert_eq!(failures.get(), 1);
+    assert!(lines(&runner, &key, cx).iter().any(|l| l == "couldn't start: folder gone"));
+}
+
+#[gpui::test]
+fn late_events_of_an_earlier_start_are_ignored(cx: &mut TestAppContext) {
+    use devdeck_core::runs::Exit;
+    let (runner, launches) = manual_runner(cx, None);
+    let key = RunKey::new("eventservice", "go:run");
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    let first = launches.borrow()[0].clone();
+    cx.update(|cx| runner.update(cx, |r, cx| r.restart(&key, None, cx))).unwrap();
+    assert_eq!(cx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Stopping), "waits for the exit");
+    cx.update(|cx| runner.update(cx, |r, cx| r.exited(&first, Exit::Code(130), cx)));
+    assert_eq!(cx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Running), "restarted once the first exited");
+    assert_eq!(launches.borrow().len(), 2);
+    cx.update(|cx| runner.update(cx, |r, cx| {
+        r.output(&first, b"stale\r\n", cx);
+        r.exited(&first, Exit::Code(1), cx);
+    }));
+    assert_eq!(cx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Running));
+    assert!(!lines(&runner, &key, cx).iter().any(|l| l == "stale"));
+}
+
+#[gpui::test]
+fn stop_after_restart_cancels_the_restart(cx: &mut TestAppContext) {
+    use devdeck_core::runs::Exit;
+    let (runner, launches) = manual_runner(cx, None);
+    let key = RunKey::new("eventservice", "go:run");
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    let first = launches.borrow()[0].clone();
+    cx.update(|cx| runner.update(cx, |r, cx| r.restart(&key, None, cx))).unwrap();
+    cx.update(|cx| runner.update(cx, |r, cx| r.stop(&key, cx)));
+    cx.update(|cx| runner.update(cx, |r, cx| r.exited(&first, Exit::Code(130), cx)));
+    assert_eq!(cx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Stopped));
+    assert_eq!(launches.borrow().len(), 1, "not started again");
 }

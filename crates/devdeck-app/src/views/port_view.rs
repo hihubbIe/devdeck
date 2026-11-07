@@ -44,8 +44,8 @@ impl Render for PortView {
             button("stop-holder", "stop holder", &t)
                 .debug_selector(|| "stop-holder".into())
                 .when(run.is_none(), |b| b.text_color(t.dim).tooltip(tip("not started by devdeck: stop it where it runs")))
-                .when_some(run, move |b, key| {
-                    b.tooltip(tip(format!("stop {}", key.title()))).on_click(move |_, _, cx| {
+                .when_some(run.zip(Some(info.holder.clone())), move |b, (key, title)| {
+                    b.tooltip(tip(format!("stop {title}"))).on_click(move |_, _, cx| {
                         let runner = ctx.services.read(cx).runner.clone();
                         runner.update(cx, |r, cx| r.stop(&key, cx));
                     })

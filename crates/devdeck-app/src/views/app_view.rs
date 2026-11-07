@@ -68,7 +68,8 @@ impl AppView {
         };
         let key = self.key(cmd);
         if let Err(why) = runner.update(cx, |r, cx| r.start(&key, env, cx)) {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("{}: {why}", key.title()), vec![], cx));
+            let text = format!("{}: {why}", runner.read(cx).title(&key));
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
         }
     }
 
@@ -85,7 +86,8 @@ impl AppView {
         };
         let key = self.key(cmd);
         if let Err(why) = runner.update(cx, |r, cx| r.restart(&key, env, cx)) {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("{}: {why}", key.title()), vec![], cx));
+            let text = format!("{}: {why}", runner.read(cx).title(&key));
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
         }
     }
 
@@ -183,7 +185,7 @@ impl Render for AppView {
                     .child(label(app.folder.clone()).text_color(t.dim).min_w_0()),
             )
             .child(env_line)
-            .children(missing.iter().map(|m| label(format!("⚠ {m} not found")).text_color(t.warn)));
+            .children(missing.iter().map(|m| label(format!("⚠ {m}")).text_color(t.warn)));
 
         let mut body = div().id("app-commands").flex_1().min_h_0().overflow_y_scroll().px_3().pb_2().flex().flex_col();
         for tier in Tier::ALL {
@@ -208,14 +210,14 @@ impl Render for AppView {
                 let key = RunKey::new(&app.id, &c.id);
                 let state = runner.state(&key);
                 let (glyph, color) = run_glyph(state, &t);
-                let refusal = tools.missing(c);
+                let refusal = tools.missing(&app, c);
                 let running = state.is_some_and(|s| s.is_running());
                 let selected = self.selected.as_deref() == Some(c.id.as_str());
                 let n = tier as usize * 100 + i;
                 let (r1, r2, r3, r4, r5) = (c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone());
-                let row_label: SharedString = c.id.clone().into();
+                let row_label: SharedString = c.name().to_string().into();
                 let can_run = refusal.is_none() && state != Some(devdeck_core::runs::RunState::Running);
-                let run_tip = refusal.clone().map_or_else(|| format!("run {}", c.id), |r| format!("can't run: {r}"));
+                let run_tip = refusal.clone().map_or_else(|| format!("run {}", c.name()), |r| format!("can't run: {r}"));
                 body = body.child(
                     div()
                         .id(("cmd", n))

@@ -149,7 +149,7 @@ fn cluster_env(ctx: &ViewCx, env: &str, cx: &App) -> Result<Entity<crate::cluste
 pub fn title(r: &ViewRef) -> String {
     match ViewAddr::parse(r) {
         ViewAddr::App { app } => app,
-        ViewAddr::Run { app, cmd } => format!("{app} · {cmd}"),
+        ViewAddr::Run { app, cmd } => format!("{app} · {}", devdeck_core::apps::name_of(&cmd)),
         ViewAddr::Svc { env, name } => format!("{env} › {name}"),
         ViewAddr::Logs { env, name } => format!("{env} › {name} · logs"),
         ViewAddr::Pod { env, pod } => format!("{env} › {pod}"),
@@ -165,7 +165,7 @@ pub fn run_glyph(state: Option<RunState>, t: &Theme) -> (String, Hsla) {
         Some(RunState::Running) => ("●".into(), t.ok),
         Some(RunState::Stopping) => ("◌".into(), t.warn),
         Some(RunState::Exited(0)) => ("○".into(), t.mute),
-        Some(RunState::Exited(code)) => (format!("✖ {code}"), t.err),
+        Some(s @ (RunState::Exited(_) | RunState::Killed(_) | RunState::NotStarted)) => (format!("✖ {}", s.failed().unwrap_or(1)), t.err),
         Some(RunState::Stopped) | None => ("○".into(), t.dim),
     }
 }

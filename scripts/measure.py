@@ -9,6 +9,9 @@ Scenarios
             DEVDECK_KUBE_CONTEXT, DEVDECK_KUBE_NAMESPACE in the environment)
   latency   X11 only: sends real key presses with xdotool and reads GPUI's
             input-to-frame histogram (needs the `profile` build)
+  terminal  a run's terminal under load: the demo's three servers write 2 000 lines/s
+            each, one shown in a run view; CPU, and memory against the same start at
+            the normal rate (the difference is three full terminals of history)
   leak      runs DEVDECK_STRESS cycles (default 1000) and prints memory every 250; the
             verdict compares 500-1000 (keep going only if that is flat)
   heapdiff  heaptrack on a 10- and a 30-cycle run (teardown skipped), prints what grows
@@ -121,6 +124,28 @@ def scenario_idle(args, env_extra=None, label="idle"):
         p.wait(10)
 
 
+def scenario_terminal(args):
+    view = {"DEVDECK_OPEN": "run/entityservice/go:run"}
+    base = start(args, view)
+    try:
+        time.sleep(8)
+        _, _, uss0 = mem(base.pid)
+        report("terminal.normal_rate_uss_kb", uss0)
+    finally:
+        base.terminate()
+        base.wait(10)
+    p = start(args, {**view, "DEVDECK_FAKE_RATE": "2000"})
+    try:
+        time.sleep(8)
+        report("terminal.cpu_at_2000_lines_s_x3_pct", f"{cpu_between(p.pid, 15):.2f}")
+        rss, pss, uss = mem(p.pid)
+        report("terminal.full_history_kb", f"rss={rss} pss={pss} uss={uss}")
+        report("terminal.history_cost_uss_kb", uss - uss0)
+    finally:
+        p.terminate()
+        p.wait(10)
+
+
 def scenario_latency(args):
     if not args.x11:
         sys.exit("latency needs --x11 (xdotool can only type into X11 windows)")
@@ -222,7 +247,7 @@ def scenario_heapdiff(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak", "heapdiff"])
+    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak", "heapdiff", "terminal"])
     ap.add_argument("--x11", action="store_true")
     ap.add_argument("--bin", default="target/release/devdeck")
     ap.add_argument("--cycles", type=int, default=1000)
@@ -239,6 +264,8 @@ def main():
         scenario_idle(args, label="kube")
     elif args.scenario == "latency":
         scenario_latency(args)
+    elif args.scenario == "terminal":
+        scenario_terminal(args)
     elif args.scenario == "heapdiff":
         if args.bin == "target/release/devdeck":
             args.bin = "target/profiling/release/devdeck"

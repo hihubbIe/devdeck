@@ -1,17 +1,19 @@
 //! Run output (`run/<app>/<cmd>`, R6.7): toolbar with the command, env, state and
-//! actions, then the output, colored by level, never wrapping (plain lines until M2's
-//! terminal grid). A run that never started (restored layout) offers to start it.
+//! actions, then the run's terminal, wrapping at the pane width (R4.4 exception) and
+//! sized to the pane. A run that never started (restored layout) offers to start it.
 //! Keys (`RunView`): ⏎ run, s stop, r restart; alt+f follow.
 
 use super::{ViewCx, run_glyph};
 use crate::runner::{RunKey, RunnerEvent};
-use devdeck_core::runs::{Level, RunState};
-use devdeck_ui::{ToastKind, label, theme, tip, toasts, toggle_button};
+use devdeck_core::runs::RunState;
+use devdeck_core::terminal::TermSize;
+use devdeck_ui::{ToastKind, label, terminal, theme, tip, toasts, toggle_button};
 use gpui::{
-    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*,
-    uniform_list,
+    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
+    Styled, Subscription, UniformListScrollHandle, Window, actions, canvas, div, prelude::*, uniform_list,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 
 actions!(run_view, [RunAgain, Stop, Restart]);
 
@@ -21,7 +23,8 @@ pub struct RunView {
     focus: FocusHandle,
     pub follow: bool,
     scroll: UniformListScrollHandle,
-    seen: usize,
+    /// The terminal size this view last asked for.
+    size: Rc<Cell<Option<TermSize>>>,
     _subs: Vec<Subscription>,
 }
 
@@ -39,17 +42,13 @@ impl RunView {
                 }
             }),
         ];
-        Self { key, ctx, focus: cx.focus_handle(), follow: true, scroll: UniformListScrollHandle::new(), seen: 0, _subs: subs }
+        Self { key, ctx, focus: cx.focus_handle(), follow: true, scroll: UniformListScrollHandle::new(), size: Rc::default(), _subs: subs }
     }
 
-    /// Re-renders only when this run changed, and keeps the end in view while following.
+    /// Re-renders when this run changed, and keeps the end in view while following.
     fn changed(&mut self, cx: &mut Context<Self>) {
-        let n = self.ctx.services.read(cx).runner.read(cx).run(&self.key).map_or(0, |r| r.output.lines.len() + r.output.dropped);
-        if n != self.seen {
-            self.seen = n;
-            if self.follow {
-                self.scroll.scroll_to_bottom();
-            }
+        if self.follow {
+            self.scroll.scroll_to_bottom();
         }
         cx.notify();
     }
@@ -77,7 +76,8 @@ impl RunView {
             }
         });
         if let Err(why) = result {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("{}: {why}", key.title()), vec![], cx));
+            let text = format!("{}: {why}", runner.read(cx).title(&key));
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
         }
     }
 }
@@ -105,10 +105,11 @@ impl Render for RunView {
             Some(RunState::Stopping) => "stopping…".into(),
             Some(RunState::Stopped) => "stopped".into(),
             Some(RunState::Exited(code)) => format!("exited {code}"),
+            Some(RunState::Killed(signal)) => format!("killed by signal {signal}"),
+            Some(RunState::NotStarted) => "couldn't start".into(),
         };
         let running = state == Some(RunState::Running);
-        let count = run.map_or(0, |r| r.output.lines.len());
-        let longest = run.map_or(0, |r| r.output.longest());
+        let count = run.map_or(0, |r| r.terminal.rows());
         let follow = self.follow;
 
         let button = |id: &'static str, glyph: &'static str, enabled: bool, tooltip: String| {
@@ -136,7 +137,7 @@ impl Render for RunView {
             .border_b_1()
             .border_color(t.line_soft)
             .child(div().flex_none().text_color(color).child(glyph))
-            .child(div().flex_none().text_color(t.hi).child(self.key.title()))
+            .child(div().flex_none().text_color(t.hi).child(runner.title(&self.key)))
             .when_some(env, |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
             .child(label(line).flex_1().min_w_0().text_color(t.dim))
             .child(div().flex_none().text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute }).child(state_text))
@@ -166,37 +167,39 @@ impl Render for RunView {
                 .child(label(refusal.map_or("Not started. ▶ runs it.".to_string(), |r| format!("Can't run: {r}."))))
                 .into_any_element()
         } else {
-            let (ok, warn, err, mute, fg) = (t.ok, t.warn, t.err, t.mute, t.fg);
-            let row_h = t.line_height;
-            uniform_list(
+            let (row_h, pad) = (t.line_height, t.size(12.));
+            let list = uniform_list(
                 "run-lines",
                 count,
                 cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                    let t = theme(cx).clone();
                     let services = this.ctx.services.read(cx);
                     let runner = services.runner.read(cx);
                     let Some(run) = runner.run(&this.key) else { return Vec::new() };
-                    range
-                        .filter_map(|i| run.output.lines.get(i))
-                        .map(|l| {
-                            let color = match l.level {
-                                Level::Error => err,
-                                Level::Warn => warn,
-                                Level::Debug => mute,
-                                Level::Info => ok,
-                                Level::Plain => fg,
-                            };
-                            let text: SharedString = l.text.clone().into();
-                            div().h(row_h).px_3().whitespace_nowrap().text_color(color).child(text)
-                        })
-                        .collect()
+                    range.map(|i| div().h(row_h).px(pad).whitespace_nowrap().child(terminal::row_text(&run.terminal.row(i), &t))).collect()
                 }),
             )
             .track_scroll(&self.scroll)
-            .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-            .with_width_from_item(Some(longest))
-            .flex_1()
-            .min_h_0()
-            .into_any_element()
+            .size_full();
+            // Measures the area and sizes the run's terminal to it: lines wrap at the pane
+            // width, and a full-screen program gets the pane's rows.
+            let (runner, key, asked) = (services.runner.clone(), self.key.clone(), self.size.clone());
+            let measure = canvas(
+                move |bounds, window, cx| {
+                    let t = theme(cx);
+                    let mut area = bounds.size;
+                    area.width -= pad * 2.;
+                    let size = terminal::fit(area, terminal::cell_size(window, t));
+                    if asked.get() != Some(size) {
+                        asked.set(Some(size));
+                        cx.defer(move |cx| runner.update(cx, |r, cx| r.resize(&key, size, cx)));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_full();
+            div().flex_1().min_h_0().relative().child(list).child(measure).into_any_element()
         };
 
         div()

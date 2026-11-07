@@ -194,7 +194,7 @@ impl Sidebar {
     }
 
     pub fn envs(&self, cx: &App) -> Vec<Env> {
-        self.services.read(cx).catalog.cluster.as_ref().map_or(Vec::new(), |c| c.envs.clone())
+        self.services.read(cx).catalog.envs.clone()
     }
 
     pub fn env(&self, cx: &App) -> Option<Env> {

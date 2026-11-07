@@ -28,7 +28,18 @@ What to try: [plans/M1-manual-test.md](plans/M1-manual-test.md). Numbers:
 
 ## M2 · Real local runner
 Config loading, discovery, tool detection, pseudo-terminal runs, env bindings, ports,
-quit guard on real processes.
+quit guard on real processes, a plain shell terminal tab. Plan:
+[plans/M2-runner.md](plans/M2-runner.md).
+1. Foundations: run engine on driver events, a terminal per run, data model, interfaces.
+2. Builders in parallel: config, discovery, environment, processes, ports, terminal element.
+3. Wiring: real workspaces from config.
+4. Terminal tab.
+5. Close: the user's config, states, measurements, manual test.
+
+## Later · From the user's ideas
+A file explorer, text files in tabs (basic syntax highlighting, save), tools for Claude
+to drive devdeck (open a tab, start a server, show logs filtered), detection of a
+devdeck terminal through an environment variable. To be assessed.
 
 ## M3 · Real cluster
 kube-rs data, service inspector, deploys with journal and undo, logs, exec,

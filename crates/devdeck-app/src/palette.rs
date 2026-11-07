@@ -96,7 +96,7 @@ impl Palette {
         let envs: Vec<String> = {
             let s = self.shell.read(cx);
             let services = s.workspaces[s.active].services.read(cx);
-            services.catalog.cluster.as_ref().map(|c| c.envs.iter().map(|e| e.name.clone()).collect()).unwrap_or_default()
+            services.catalog.envs.iter().map(|e| e.name.clone()).collect()
         };
         // `@35` → dev35: an exact name, else the one env ending with it.
         let env = env.and_then(|e| envs.iter().find(|n| **n == e).or_else(|| envs.iter().find(|n| n.ends_with(&e))).cloned());
@@ -116,7 +116,7 @@ impl Palette {
             let key = RunKey::new(app, &cmd.id);
             let running = runner.state(&key).is_some_and(|s| s.is_running());
             Entry {
-                label: format!("{app} › {}", cmd.id),
+                label: format!("{app} › {}", cmd.name()),
                 detail: format!("{}{}{}", if running { "● " } else { "" }, cmd.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default()),
                 item: Item::Command { app: app.into(), cmd: cmd.id.clone() },
                 disabled: runner.refusal(&key),
@@ -143,7 +143,7 @@ impl Palette {
             for d in cluster.read(cx).peek(env).ready().cloned().unwrap_or_default() {
                 out.push(Entry { label: d.name.clone(), detail: format!("service on {env} · {}", d.tag), item: Item::Service(d.name), disabled: None });
             }
-            for e in services.catalog.cluster.iter().flat_map(|c| c.envs.iter()) {
+            for e in &services.catalog.envs {
                 out.push(Entry {
                     label: format!("@{}", e.name),
                     detail: format!("switch env{}", if e.protected { " · protected" } else { "" }),
@@ -303,7 +303,8 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
             };
             let key = RunKey::new(&app, &cmd);
             if let Err(why) = runner.update(cx, |r, cx| r.start(&key, env, cx)) {
-                toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("{}: {why}", key.title()), vec![], cx));
+                let text = format!("{}: {why}", runner.read(cx).title(&key));
+                toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
             }
         }
     }

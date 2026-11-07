@@ -2,14 +2,22 @@
 //! can be unit tested without a GPU.
 
 pub mod apps;
+pub mod catalog;
 pub mod cluster;
+pub mod config;
 pub mod demo;
+pub mod discovery;
+pub mod environment;
 pub mod fuzzy;
 pub mod layout;
 pub mod layout_book;
 pub mod list;
+pub mod ports;
+pub mod process;
+pub mod procfs;
 pub mod runs;
 pub mod settings;
 pub mod state;
+pub mod terminal;
 pub mod theme_file;
 pub mod view_addr;

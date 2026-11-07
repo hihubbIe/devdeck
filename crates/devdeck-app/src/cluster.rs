@@ -32,6 +32,8 @@ type Key = (String, String);
 
 pub struct Cluster {
     pub spec: ClusterSpec,
+    /// The workspace's envs, alphabetical.
+    pub envs: Vec<Env>,
     deployments: BTreeMap<String, Remote<BTreeMap<String, Deployment>>>,
     pods: BTreeMap<Key, Vec<Pod>>,
     rollouts: BTreeMap<Key, RolloutSim>,
@@ -48,9 +50,10 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn new(spec: ClusterSpec) -> Self {
+    pub fn new(spec: ClusterSpec, envs: Vec<Env>) -> Self {
         Self {
             spec,
+            envs,
             deployments: BTreeMap::new(),
             pods: BTreeMap::new(),
             rollouts: BTreeMap::new(),
@@ -66,7 +69,7 @@ impl Cluster {
     }
 
     pub fn env(&self, name: &str) -> Option<&Env> {
-        self.spec.envs.iter().find(|e| e.name == name)
+        self.envs.iter().find(|e| e.name == name)
     }
 
     /// The deployments of an env, starting a load the first time.
@@ -329,6 +332,6 @@ impl Cluster {
     }
 }
 
-pub fn new_cluster(spec: ClusterSpec, cx: &mut gpui::App) -> gpui::Entity<Cluster> {
-    cx.new(|_| Cluster::new(spec))
+pub fn new_cluster(spec: ClusterSpec, envs: Vec<Env>, cx: &mut gpui::App) -> gpui::Entity<Cluster> {
+    cx.new(|_| Cluster::new(spec, envs))
 }

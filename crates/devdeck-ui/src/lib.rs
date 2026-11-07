@@ -4,6 +4,7 @@
 
 pub mod components;
 pub mod overlay;
+pub mod terminal;
 pub mod text_buffer;
 pub mod text_input;
 pub mod theme;

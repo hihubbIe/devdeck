@@ -329,7 +329,7 @@ impl Shell {
 fn watch_failures(index: usize, w: &Workspace, cx: &mut App) {
     let runner = w.services.read(cx).runner.clone();
     let (name, deck) = (w.name.clone(), w.deck.downgrade());
-    cx.subscribe(&runner, move |_, event: &RunnerEvent, cx| {
+    cx.subscribe(&runner, move |runner, event: &RunnerEvent, cx| {
         let RunnerEvent::Failed { key, code } = event else { return };
         let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
         let deck = deck.clone();
@@ -337,7 +337,7 @@ fn watch_failures(index: usize, w: &Workspace, cx: &mut App) {
             switch(index, cx);
             crate::views::open_in(&deck, addr.clone(), cx);
         });
-        let text = format!("{name} · {} exited {code}", key.title());
+        let text = format!("{name} · {} exited {code}", runner.read(cx).title(key));
         toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![("View output".into(), view)], cx));
     })
     .detach();

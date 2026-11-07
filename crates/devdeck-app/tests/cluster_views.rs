@@ -2,7 +2,7 @@
 //! rollouts (R7.5, R7.7, R6.9, R4.3). Fake clock only.
 
 use devdeck_app::cluster::{Cluster, LOAD_DELAY, ROLLOUT_STEP};
-use devdeck_app::runner::STOP_DELAY;
+use devdeck_app::fake_driver::STOP_DELAY;
 use devdeck_app::shell::Shell;
 use devdeck_app::sidebar::Activity;
 use devdeck_app::views::logs_view::{LOGS_TICK, MinLevel, ServiceLogsView};

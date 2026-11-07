@@ -3,7 +3,7 @@
 //! stream, which counts as running).
 
 use devdeck_app::deck::{Deck, SAVE_DELAY};
-use devdeck_app::runner::STOP_DELAY;
+use devdeck_app::fake_driver::STOP_DELAY;
 use devdeck_app::shell::{QuitState, Shell, WorkspaceSpec};
 use devdeck_core::layout::{Layout, ViewRef, WindowId};
 use devdeck_core::state::{AppState, Loaded, StateStore};

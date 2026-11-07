@@ -175,15 +175,15 @@ fn run_cmd(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, app: &str, cmd: &
 }
 
 fn app_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    run_cmd(cx, shell, "pagerendererservice", "test", 1200);
-    run_cmd(cx, shell, "pagerendererservice", "run", 1000);
+    run_cmd(cx, shell, "pagerendererservice", "go:test", 1200);
+    run_cmd(cx, shell, "pagerendererservice", "go:run", 1000);
     open_view(cx, shell, ViewAddr::App { app: "pagerendererservice".into() });
     let deck = cx.update(|cx| shell.read(cx).active_deck());
     let v = cx.update(|cx| deck.read(cx).view(&ViewAddr::App { app: "pagerendererservice".into() }.to_ref()).unwrap().downcast::<AppView>().unwrap());
     cx.update(|cx| {
         v.update(cx, |v, cx| {
             v.show_hidden = true;
-            v.selected = Some("build".into());
+            v.selected = Some("go:build".into());
             cx.notify();
         })
     });
@@ -194,23 +194,23 @@ fn app_missing_tool(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &En
 }
 
 fn run_streaming(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    open_view(cx, shell, ViewAddr::Run { app: "entityservice".into(), cmd: "run".into() });
+    open_view(cx, shell, ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() });
     cx.advance_clock(Duration::from_secs(9));
     cx.run_until_parked();
 }
 
 fn run_exited(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    run_cmd(cx, shell, "eventservice", "build", 1000);
-    open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "build".into() });
+    run_cmd(cx, shell, "eventservice", "go:build", 1000);
+    open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "go:build".into() });
 }
 
 fn run_crashed(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    run_cmd(cx, shell, "boardservice", "run", 4200);
-    open_view(cx, shell, ViewAddr::Run { app: "boardservice".into(), cmd: "run".into() });
+    run_cmd(cx, shell, "boardservice", "go:run", 4200);
+    open_view(cx, shell, ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() });
 }
 
 fn run_not_started(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "test".into() });
+    open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "go:test".into() });
 }
 
 fn work_cluster(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<devdeck_app::cluster::Cluster> {

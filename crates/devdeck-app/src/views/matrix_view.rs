@@ -27,7 +27,7 @@ impl MatrixView {
     pub fn new(ctx: ViewCx, cluster: Entity<Cluster>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&cluster, |_, _, cx| cx.notify());
         cluster.update(cx, |c, cx| {
-            let envs: Vec<String> = c.spec.envs.iter().map(|e| e.name.clone()).collect();
+            let envs: Vec<String> = c.envs.iter().map(|e| e.name.clone()).collect();
             for e in envs {
                 c.deployments(&e, cx);
             }
@@ -51,7 +51,7 @@ impl Render for MatrixView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let c = self.cluster.read(cx);
-        let envs = c.spec.envs.clone();
+        let envs = c.envs.clone();
         let mut services = c.spec.services.clone();
         services.sort();
         let (name_w, cell_w) = (t.size(220.), t.size(96.));

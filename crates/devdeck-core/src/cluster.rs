@@ -1,12 +1,7 @@
 //! Cluster domain (R7): envs, deployments, pods, metrics, rollouts and devdeck's own
 //! deploy history. M1 drives it from a fake cluster; M3 from kube-rs.
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Env {
-    pub name: String,
-    /// Writes need an explicit unlock (R7.6).
-    pub protected: bool,
-}
+pub use crate::catalog::Env;
 
 /// Something fetched from elsewhere.
 #[derive(Clone, Debug, PartialEq)]

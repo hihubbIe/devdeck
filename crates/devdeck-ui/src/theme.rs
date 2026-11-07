@@ -34,6 +34,8 @@ pub struct Theme {
     pub selection: Hsla,
     pub caret: Hsla,
     pub scrollbar: Hsla,
+    /// Terminal colors 0–15 (black … bright white), from the theme's `[ansi]` table.
+    pub ansi: [Hsla; 16],
     // type
     pub font: SharedString,
     pub text: Pixels,
@@ -99,6 +101,7 @@ impl Theme {
             selection: c("selection"),
             caret: c("caret"),
             scrollbar: c("scrollbar"),
+            ansi: std::array::from_fn(|i| rgba(colors.ansi(devdeck_core::theme_file::ANSI_TOKENS[i])).into()),
             font: "JetBrains Mono NL".into(),
             text: s(13.),
             text_small: s(11.),

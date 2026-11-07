@@ -1,5 +1,7 @@
 //! devdeck: the M1 prototype on fake data. Measures itself on request
 //! (`DEVDECK_STATS`, `DEVDECK_STRESS`, `DEVDECK_LATENCY`; see docs/WORKFLOW.md).
+//! `DEVDECK_OPEN=<view>` opens a view at start (`run/entityservice/go:run`), and
+//! `DEVDECK_FAKE_RATE` makes the demo's servers write that many lines per second.
 
 use devdeck_app::shell::{Shell, try_shell};
 use devdeck_app::stats;
@@ -25,9 +27,14 @@ fn main() {
         })
         .detach();
 
-        let store = StateStore::new(default_state_dir());
+        // The demo keeps its own state, apart from the real workspaces' layouts and pins.
+        let store = StateStore::new(default_state_dir().join("demo"));
         let shell = Shell::start(devdeck_app::demo_workspaces(), "work", Some(store), cx);
         cx.activate(true);
+        if let Ok(view) = std::env::var("DEVDECK_OPEN") {
+            let deck = shell.read(cx).active_deck().downgrade();
+            devdeck_app::views::open_in(&deck, devdeck_core::view_addr::ViewAddr::parse(&devdeck_core::layout::ViewRef::new(view)), cx);
+        }
 
         if let Some(secs) = env_u64("DEVDECK_STATS") {
             spawn_stats_printer(shell.clone(), Duration::from_secs(secs.max(1)), cx);
