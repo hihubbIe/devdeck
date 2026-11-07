@@ -281,6 +281,25 @@ impl Layout {
         self.panes.values().flat_map(|p| p.tabs.iter().cloned()).collect()
     }
 
+    /// The split directly containing `pane`, with the pane's index and the split axis.
+    pub fn parent_of(&self, pane: PaneId) -> Option<(SplitId, usize, Axis)> {
+        fn walk(node: &Node, pane: PaneId) -> Option<(SplitId, usize, Axis)> {
+            let Node::Split(s) = node else { return None };
+            if let Some(i) = s.children.iter().position(|c| matches!(c.node, Node::Pane(p) if p == pane)) {
+                return Some((s.id, i, s.axis));
+            }
+            s.children.iter().find_map(|c| walk(&c.node, pane))
+        }
+        self.windows.iter().find_map(|w| walk(&w.root, pane))
+    }
+
+    /// Grows (positive `delta`) or shrinks the pane along its parent split.
+    pub fn grow(&mut self, pane: PaneId, delta: f32) -> Result<()> {
+        let Some((split, idx, _)) = self.parent_of(pane) else { return Ok(()) };
+        let n = self.split(split)?.children.len();
+        if idx + 1 < n { self.resize(split, idx, delta) } else { self.resize(split, idx - 1, -delta) }
+    }
+
     pub fn is_detached(&self, window: WindowId) -> bool {
         window != MAIN_WINDOW
     }

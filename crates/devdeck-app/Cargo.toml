@@ -1,5 +1,6 @@
 [package]
 name = "devdeck-app"
+description = "devdeck desktop app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -8,5 +9,27 @@ publish.workspace = true
 name = "devdeck"
 path = "src/main.rs"
 
+# Renders layout states to PNG files offscreen for visual checks (docs/WORKFLOW.md).
+[[bin]]
+name = "devdeck-snapshot"
+path = "src/bin/snapshot.rs"
+required-features = ["snapshot"]
+
+[features]
+# Builds GPUI with its profiler so input-to-present latency can be reported
+# (DEVDECK_LATENCY=1). Memory is measured without it.
+profile = ["gpui/profiler"]
+snapshot = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+
 [dependencies]
 devdeck-core.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+async-channel.workspace = true
+tokio.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

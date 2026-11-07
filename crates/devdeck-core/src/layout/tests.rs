@@ -242,6 +242,22 @@ fn resize_moves_boundary_and_respects_minimum() {
 }
 
 #[test]
+fn parent_of_and_grow() {
+    let (mut l, p) = with_tabs(&["a", "b"]);
+    assert_eq!(l.parent_of(p), None);
+    l.grow(p, 0.1).unwrap(); // no parent: no-op
+    l.move_tab(p, 1, Drop::Edge(p, Edge::Right)).unwrap();
+    let (q, _) = l.find_view(&v("b")).unwrap();
+    let (sid, idx, axis) = l.parent_of(q).unwrap();
+    assert_eq!((idx, axis), (1, Axis::Row));
+    l.grow(q, 0.1).unwrap();
+    assert!((l.split(sid).unwrap().children[1].weight - 0.6).abs() < 1e-5, "last child grows leftwards");
+    l.grow(p, 0.2).unwrap();
+    assert!((l.split(sid).unwrap().children[0].weight - 0.6).abs() < 1e-5);
+    ok(&l);
+}
+
+#[test]
 fn collapse_rules() {
     let (mut l, p) = with_tabs(&["a", "b"]);
     assert_eq!(l.toggle_collapse(p), Err(LayoutError::LastExpandedPane));
