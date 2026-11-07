@@ -315,6 +315,9 @@ pub fn open_menu(position: Point<Pixels>, items: Vec<MenuItem>, window: &mut Win
     });
     let focus = menu.read(cx).focus.clone();
     window.focus(&focus, cx);
+    // Opened from a mouse down, a focusable ancestor would take focus back as the event
+    // bubbles on; this keeps it in the menu.
+    window.prevent_default();
     menu.update(cx, |m, cx| {
         m._blur = Some(cx.on_blur(&focus, window, |this, window, cx| this.close(window, cx)));
     });

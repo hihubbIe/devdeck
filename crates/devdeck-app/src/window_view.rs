@@ -11,6 +11,7 @@ use crate::stats;
 use crate::app_settings;
 use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
+use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views::{self, LogsView};
 use devdeck_ui::{DragGhost, Empty, MenuItem, Theme, apply_window_scale, button, icon_button, label, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, WindowId};
@@ -60,7 +61,11 @@ pub struct WindowView {
     settings: Option<Entity<SettingsView>>,
     /// Main window: where focus was in each workspace, restored on switching back.
     remembered: HashMap<EntityId, WeakFocusHandle>,
+    /// Where focus was when Settings opened.
+    before_settings: Option<WeakFocusHandle>,
     deck_sub: Subscription,
+    /// Main window: the active workspace's sidebar.
+    sidebar: Option<(Entity<Sidebar>, Subscription)>,
     _observe: Vec<Subscription>,
 }
 
@@ -122,7 +127,10 @@ impl WindowView {
             false
         });
         window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
-        Self::build(MAIN_WINDOW, Some(shell.downgrade()), deck, observe, window, cx)
+        let sidebar = shell.read(cx).active_sidebar();
+        let mut this = Self::build(MAIN_WINDOW, Some(shell.downgrade()), deck, observe, window, cx);
+        this.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
+        this
     }
 
     /// A detached window of `deck`. Closing it closes its tabs.
@@ -154,7 +162,19 @@ impl WindowView {
         let focus = cx.focus_handle();
         let panes_focus = cx.focus_handle();
         panes_focus.focus(window, cx);
-        Self { id, shell, deck, focus, panes_focus, settings: None, remembered: HashMap::new(), deck_sub, _observe: observe }
+        Self {
+            id,
+            shell,
+            deck,
+            focus,
+            panes_focus,
+            settings: None,
+            remembered: HashMap::new(),
+            before_settings: None,
+            deck_sub,
+            sidebar: None,
+            _observe: observe,
+        }
     }
 
     fn is_main(&self) -> bool {
@@ -166,13 +186,15 @@ impl WindowView {
     fn follow_shell(&mut self, shell: &Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) {
         let deck = shell.read(cx).active_deck();
         if deck != self.deck {
-            if self.panes_focus.contains_focused(window, cx)
+            if !app_settings::is_open(cx)
                 && let Some(f) = window.focused(cx)
             {
                 self.remembered.insert(self.deck.entity_id(), f.downgrade());
             }
             self.deck_sub = cx.observe(&deck, |_, _, cx| cx.notify());
             self.deck = deck;
+            let sidebar = shell.read(cx).active_sidebar();
+            self.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
             window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
             if !app_settings::is_open(cx) {
                 match self.remembered.get(&self.deck.entity_id()).and_then(WeakFocusHandle::upgrade) {
@@ -185,19 +207,68 @@ impl WindowView {
     }
 
     /// Opens or closes the full-window Settings view (main window only), moving focus
-    /// into it, and back to the panes when it closes.
+    /// into it, and back to where it was when it closes.
     fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_main() {
+        if !self.is_main() || open == app_settings::is_open(cx) {
             return;
         }
         app_settings::set_open(open, cx);
         if open {
+            self.before_settings = window.focused(cx).map(|f| f.downgrade());
             let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
             view.read(cx).focus_handle(cx).focus(window, cx);
         } else {
-            self.panes_focus.focus(window, cx);
+            match self.before_settings.take().and_then(|h| h.upgrade()) {
+                Some(h) => h.focus(window, cx),
+                None => self.panes_focus.focus(window, cx),
+            }
         }
         cx.notify();
+    }
+
+    fn active_sidebar(&self) -> Option<Entity<Sidebar>> {
+        self.sidebar.as_ref().map(|(s, _)| s.clone())
+    }
+
+    /// Shows an activity and focuses its list (ctrl+1/2/3, activity bar).
+    fn show_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sidebar) = self.active_sidebar() else { return };
+        if app_settings::is_open(cx) {
+            return;
+        }
+        if sidebar.update(cx, |s, cx| s.show(activity, cx)) {
+            sidebar.read(cx).list_focus.clone().focus(window, cx);
+        }
+    }
+
+    /// Shows or hides the sidebar; hiding it while it has focus sends focus to the panes.
+    fn set_sidebar_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sidebar) = self.active_sidebar() else { return };
+        if app_settings::is_open(cx) {
+            return;
+        }
+        let had_focus = Self::sidebar_has_focus(&sidebar, window, cx);
+        sidebar.update(cx, |s, cx| s.set_visible(visible, cx));
+        if visible {
+            sidebar.read(cx).list_focus.clone().focus(window, cx);
+        } else if had_focus {
+            self.panes_focus.focus(window, cx);
+        }
+    }
+
+    fn sidebar_has_focus(sidebar: &Entity<Sidebar>, window: &Window, cx: &App) -> bool {
+        let s = sidebar.read(cx);
+        s.list_focus.is_focused(window) || s.filter.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    fn open_env_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sidebar) = self.active_sidebar() else { return };
+        if sidebar.read(cx).envs().is_empty() || app_settings::is_open(cx) {
+            return;
+        }
+        let t = theme(cx);
+        let at = point(t.size(190.), t.title_h);
+        open_menu(at, Sidebar::env_menu(&sidebar, cx), window, cx);
     }
 
     fn apply(&self, cx: &mut App, op: impl FnOnce(&mut Layout) -> devdeck_core::layout::Result<()>) {
@@ -210,15 +281,23 @@ impl WindowView {
         self.deck.read(cx).layout.window(self.id).ok().map(|w| w.focused)
     }
 
-    fn body_size(window: &Window, t: &Theme) -> (f32, f32) {
+    /// The pane area's size: the window body minus the activity bar and sidebar.
+    fn body_size(&self, window: &Window, t: &Theme, cx: &App) -> (f32, f32) {
         let s = window.viewport_size();
-        (f32::from(s.width), f32::from(s.height - t.title_h - t.status_h))
+        let mut w = s.width;
+        if let Some(sidebar) = self.active_sidebar() {
+            w -= t.activity_w;
+            if sidebar.read(cx).state.visible {
+                w -= t.sidebar_w;
+            }
+        }
+        (f32::from(w), f32::from(s.height - t.title_h - t.status_h))
     }
 
     fn focus_dir(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.focused_pane(cx) else { return };
         let t = theme(cx);
-        let (size, strip) = (Self::body_size(window, t), f32::from(t.tab_h));
+        let (size, strip) = (self.body_size(window, t, cx), f32::from(t.tab_h));
         self.apply(cx, |l| {
             if let Some(n) = l.neighbor(p, dir, size, strip)? {
                 l.focus(n)?;
@@ -230,7 +309,7 @@ impl WindowView {
     fn move_tab_dir(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.focused_pane(cx) else { return };
         let t = theme(cx);
-        let (size, strip) = (Self::body_size(window, t), f32::from(t.tab_h));
+        let (size, strip) = (self.body_size(window, t, cx), f32::from(t.tab_h));
         self.apply(cx, |l| {
             if l.pane(p)?.tabs.is_empty() {
                 return Ok(());
@@ -315,6 +394,8 @@ impl Render for WindowView {
         let id = self.id;
         let close_deck = self.deck.clone();
         let menu_shell = shell.clone();
+        let sidebar = self.active_sidebar();
+        let env = sidebar.as_ref().and_then(|s| s.read(cx).env().cloned());
 
         let title_bar = div()
             .id("titlebar")
@@ -343,6 +424,21 @@ impl Render for WindowView {
                         .on_click(move |e, window, cx| {
                             let items = workspace_menu_items(&shell, cx);
                             open_menu(e.position(), items, window, cx);
+                        }),
+                )
+            })
+            .when_some(env, |d, env| {
+                let sidebar = sidebar.clone();
+                let text = if env.protected { format!("⊘ @{} ▾", env.name) } else { format!("@{} ▾", env.name) };
+                d.child(
+                    button("env", text, &t)
+                        .text_color(if env.protected { t.err } else { t.env })
+                        .debug_selector(|| "env-button".into())
+                        .tooltip(tip("env for runs and the cluster list (ctrl e)"))
+                        .on_click(move |e, window, cx| {
+                            if let Some(s) = &sidebar {
+                                open_menu(e.position(), Sidebar::env_menu(s, cx), window, cx);
+                            }
                         }),
                 )
             })
@@ -436,13 +532,23 @@ impl Render for WindowView {
             }))
             // Per-workspace id, so element state never carries over between workspaces.
             .child(div().id(("ws", deck_id.as_u64())).size_full().min_w_0().min_h_0().flex().child(tree));
-        let body = if settings_open {
-            match &self.settings {
-                Some(view) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
+        let body = match (&self.settings, settings_open) {
+            (Some(view), true) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
+            _ => match self.active_sidebar() {
+                Some(sidebar) => {
+                    let visible = sidebar.read(cx).state.visible;
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .flex()
+                        .child(activity_bar(&sidebar, &t, cx))
+                        .when(visible, |d| d.child(sidebar.clone()))
+                        .child(panes)
+                        .into_any_element()
+                }
                 None => panes.into_any_element(),
-            }
-        } else {
-            panes.into_any_element()
+            },
         };
 
         let root = div()
@@ -466,6 +572,16 @@ impl Render for WindowView {
             .on_action(|_: &DecreaseScale, _, cx| app_settings::decrease(cx))
             .on_action(|_: &ResetScale, _, cx| app_settings::reset(cx))
             .on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx)))
+            .on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))
+            .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
+            .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {
+                let visible = this.active_sidebar().is_some_and(|s| s.read(cx).state.visible);
+                this.set_sidebar_visible(!visible, w, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenEnvMenu, w, cx| this.open_env_menu(w, cx)))
+            // Esc with an empty filter: back to the panes.
+            .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.panes_focus.focus(w, cx)))
             .child(title_bar)
             .child(body)
             .child(status_bar)
@@ -493,6 +609,43 @@ impl Render for WindowView {
             }
         }
     }
+}
+
+/// The activity bar: one button per activity the workspace offers. Clicking the shown
+/// activity hides the sidebar; clicking another shows it.
+fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowView>) -> impl IntoElement {
+    let s = sidebar.read(cx);
+    let (current, visible) = (s.activity(), s.state.visible);
+    let mut bar = div().flex_none().w(t.activity_w).h_full().flex().flex_col().items_center().pt_1().gap_1().bg(t.bar).border_r_1().border_color(t.line);
+    for a in s.activities() {
+        let on = visible && a == current;
+        let hover = t.hover;
+        bar = bar.child(
+            div()
+                .id(("activity", a as u64))
+                .debug_selector(move || format!("activity-{}", a.id()))
+                .w(t.activity_w)
+                .h(t.activity_w)
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(t.size(18.))
+                .text_color(if on { t.hi } else { t.mute })
+                .when(on, |d| d.border_l_2().border_color(t.accent))
+                .hover(move |s| s.bg(hover))
+                .cursor_pointer()
+                .tooltip(tip(format!("{} ({})", a.title(), a.key_hint())))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if on {
+                        this.set_sidebar_visible(false, window, cx);
+                    } else {
+                        this.show_activity(a, window, cx);
+                    }
+                }))
+                .child(a.glyph()),
+        );
+    }
+    bar
 }
 
 /// Sets resize cursors along the window border (client-side decorations; GNOME on
@@ -849,8 +1002,16 @@ fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity
     let (bg, accent) = (t.drop_bg, t.accent);
     let (d_tab, d_pane) = (deck.clone(), deck.clone());
     let deck_id = deck.entity_id();
+    let d_item = deck.clone();
     zone.drag_over::<DraggedTab>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
         .drag_over::<DraggedPane>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
+        .drag_over::<DraggedListItem>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
+        .on_drop(move |item: &DraggedListItem, _, cx| {
+            if item.deck == deck_id {
+                let view = item.view.clone();
+                apply_on(&d_item, cx, |l| sidebar::open_at(l, view, drop));
+            }
+        })
         .on_drop(move |tab: &DraggedTab, _, cx| {
             if tab.deck == deck_id {
                 let tab = tab.clone();

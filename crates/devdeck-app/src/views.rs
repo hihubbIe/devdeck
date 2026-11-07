@@ -32,7 +32,17 @@ pub fn title(r: &ViewRef) -> String {
         "demo/notes" => "notes".into(),
         "demo/gallery" => "components".into(),
         "demo/long" => "a tab whose title is far too long to ever fit in a tab strip".into(),
-        other => other.rsplit('/').next().unwrap_or(other).to_string(),
+        other => {
+            if let Some(app) = other.strip_prefix("app/") {
+                app.to_string()
+            } else if let Some(rest) = other.strip_prefix("deploy/") {
+                rest.replacen('/', " › ", 1)
+            } else if let Some(port) = other.strip_prefix("port/") {
+                format!(":{port}")
+            } else {
+                other.rsplit('/').next().unwrap_or(other).to_string()
+            }
+        }
     }
 }
 

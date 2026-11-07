@@ -34,6 +34,11 @@ actions!(
         ToggleSettings,
         CloseSettings,
         Quit,
+        ShowApps,
+        ShowCluster,
+        ShowPorts,
+        ToggleSidebar,
+        OpenEnvMenu,
     ]
 );
 
@@ -74,6 +79,11 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("escape", CloseSettings, Some("Settings")),
         KeyBinding::new("ctrl-q", Quit, None),
         KeyBinding::new("enter", ConfirmQuit, Some("QuitGuard")),
+        KeyBinding::new("ctrl-1", ShowApps, None),
+        KeyBinding::new("ctrl-2", ShowCluster, None),
+        KeyBinding::new("ctrl-3", ShowPorts, None),
+        KeyBinding::new("ctrl-b", ToggleSidebar, None),
+        KeyBinding::new("ctrl-e", OpenEnvMenu, None),
     ]);
     const WORKSPACE_KEYS: [&str; 9] =
         ["ctrl-alt-1", "ctrl-alt-2", "ctrl-alt-3", "ctrl-alt-4", "ctrl-alt-5", "ctrl-alt-6", "ctrl-alt-7", "ctrl-alt-8", "ctrl-alt-9"];

@@ -6,9 +6,10 @@
 //! asks first when something is running (R8.1).
 
 use crate::deck::Deck;
+use crate::sidebar::Sidebar;
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::Layout;
-use devdeck_core::state::{AppState, Loaded, StateStore};
+use devdeck_core::state::{AppState, Loaded, SidebarState, StateStore};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, push_modal, theme, toasts};
 use gpui::{
@@ -37,6 +38,7 @@ pub struct Workspace {
     pub id: String,
     pub name: String,
     pub deck: Entity<Deck>,
+    pub sidebar: Entity<Sidebar>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -108,9 +110,20 @@ impl Shell {
                     }
                     _ => (spec.layout)(),
                 };
-                let store = store.clone();
-                let deck = cx.new(|_| Deck::new(layout).in_workspace(spec.id.clone(), store, i == active));
-                Workspace { id: spec.id, name: spec.name, deck }
+                let sidebar_state = match store.as_ref().map(|s| s.load_sidebar(&spec.id)) {
+                    Some(Loaded::Ok(s)) => s,
+                    Some(Loaded::Broken(e)) => {
+                        problems.push(e);
+                        SidebarState::default()
+                    }
+                    _ => SidebarState::default(),
+                };
+                let deck_store = store.clone();
+                let deck = cx.new(|_| Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active));
+                let catalog = devdeck_core::demo::catalog(&spec.id);
+                let (ws, sidebar_deck, sidebar_store) = (spec.id.clone(), deck.clone(), store.clone());
+                let sidebar = cx.new(|cx| Sidebar::new(ws, catalog, sidebar_deck, sidebar_store, sidebar_state, cx));
+                Workspace { id: spec.id, name: spec.name, deck, sidebar }
             })
             .collect();
         let decks: Vec<Entity<Deck>> = workspaces.iter().map(|w| w.deck.clone()).collect();
@@ -153,6 +166,10 @@ impl Shell {
 
     pub fn active_deck(&self) -> Entity<Deck> {
         self.workspaces[self.active].deck.clone()
+    }
+
+    pub fn active_sidebar(&self) -> Entity<Sidebar> {
+        self.workspaces[self.active].sidebar.clone()
     }
 
     pub fn active_name(&self) -> &str {

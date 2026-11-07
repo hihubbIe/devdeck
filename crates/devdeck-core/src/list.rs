@@ -172,6 +172,14 @@ mod tests {
     }
 
     #[test]
+    fn pins_of_unknown_keys_are_not_shown() {
+        let it = items();
+        let pins = BTreeSet::from(["gone".to_string()]);
+        let r = rows(&it, &pins, "", false);
+        assert_eq!(r[1], Row::Empty(Section::Pinned));
+    }
+
+    #[test]
     fn pin_toggles() {
         let mut pins = BTreeSet::new();
         assert!(toggle_pin(&mut pins, "a"));

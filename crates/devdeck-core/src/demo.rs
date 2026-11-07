@@ -31,7 +31,7 @@ impl Cluster {
                     1 => "main".to_string(),
                     _ => format!("1.{}.{}", 60 + h % 30, h % 9),
                 };
-                ListItem::new(s.clone(), s.clone()).detail(tag).running(h % 11 != 0)
+                ListItem::new(s.clone(), s.clone()).detail(tag).running(!h.is_multiple_of(11))
             })
             .collect()
     }

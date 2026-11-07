@@ -173,6 +173,13 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 Settings as a full-window view; UI scale is the first setting, early in M1
   (user decision).
 - 2026-11-07 The theme is global, like the UI scale, not per workspace (user decision).
+- 2026-11-07 A list row dragged onto a pane opens its item there (into the pane or at an
+  edge). GPUI shows the pane drop zones for any drag, so rows use them instead of
+  hiding them.
+- 2026-11-07 Deployment pins are per service name and shared by every env; pins of
+  items that no longer exist stay in the state file and are not shown.
+- 2026-11-07 Context menus open with `window.prevent_default()`, otherwise GPUI hands
+  focus back to the focusable ancestor of the clicked element as the mouse down bubbles.
 
 ## Open questions
 

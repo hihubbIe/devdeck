@@ -18,7 +18,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R2.1** The app holds several workspaces (for example "work" and "personal"). They share nothing: folders, envs, cluster settings, layouts, pins, processes, history. The theme and the UI scale are global (decided 2026-11-07).
 - [x] **R2.2** Exactly one workspace is displayed at a time. Switching does not stop anything: the others keep running in the background and come back in their exact state.
-- [ ] **R2.3** Envs, cluster access and k9s are optional per workspace. When a workspace has none, the related UI (env selector, Cluster area, deploy actions) does not appear at all.
+- [~] **R2.3** Envs, cluster access and k9s are optional per workspace. When a workspace has none, the related UI (env selector, Cluster area, deploy actions) does not appear at all.
 
 ## 3. Layout engine (panes, tabs, windows)
 
@@ -36,16 +36,16 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 4. Lists and text
 
-- [ ] **R4.1** Every list is sorted alphabetically.
-- [ ] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
-- [ ] **R4.3** No "mine" grouping and no recency-ordered sections. Running state is shown as an indicator on the row, with a "running only" filter.
+- [~] **R4.1** Every list is sorted alphabetically.
+- [x] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
+- [~] **R4.3** No "mine" grouping and no recency-ordered sections. Running state is shown as an indicator on the row, with a "running only" filter.
 - [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover.
 - [~] **R4.5** Status markers and glyphs never shrink or move to another line; the label truncates instead.
 
 ## 5. Interaction
 
 - [~] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts.
-- [ ] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
+- [~] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
 - [ ] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
 - [ ] **R5.4** k9s-inspired single-key shortcuts, a context-sensitive hint bar, and a searchable cheat sheet (`?`).
 - [ ] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).

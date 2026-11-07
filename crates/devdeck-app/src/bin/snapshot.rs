@@ -3,8 +3,10 @@
 //! (docs/WORKFLOW.md). Settings are isolated in a temporary config folder.
 //!
 //! `cargo run -p devdeck-app --features snapshot --bin devdeck-snapshot -- <out-dir> [filter]`
+//! where `filter` is a comma-separated list of name fragments (`50-,51-`).
 
 use devdeck_app::shell::{Shell, WorkspaceSpec};
+use devdeck_app::sidebar::{Activity, Sidebar};
 use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
 use devdeck_ui::{ToastKind, logical, open_menu, toasts};
@@ -68,6 +70,84 @@ fn workspace_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entit
 
 fn quit_guard(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     cx.update(|cx| shell.update(cx, |s, cx| s.request_quit(cx)));
+}
+
+fn sidebar(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<Sidebar> {
+    cx.update(|cx| shell.read(cx).active_sidebar())
+}
+
+/// Pins two apps and selects one, with the list focused.
+fn apps_pinned(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.toggle_pin("entityservice", cx);
+            s.toggle_pin("proxyapi", cx);
+            s.move_selection(1, cx);
+            s.move_selection(1, cx);
+            s.move_selection(1, cx);
+        })
+    });
+    let _ = cx.update_window(w, |_, window, cx| s.read(cx).list_focus.clone().focus(window, cx));
+}
+
+fn filter(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>, text: &str) {
+    let s = sidebar(cx, shell);
+    let input = cx.update(|cx| s.read(cx).filter.clone());
+    cx.update(|cx| input.update(cx, |i, cx| i.set_text(text, cx)));
+    let _ = cx.update_window(w, |_, window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
+}
+
+fn filter_matches(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    apps_pinned(cx, w, shell);
+    filter(cx, w, shell, "serv");
+}
+
+fn filter_none(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    filter(cx, w, shell, "zzz");
+}
+
+fn running_only(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.toggle_running_only(cx)));
+}
+
+fn cluster_env_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    let _ = cx.update_window(w, |_, window, cx| {
+        let items = Sidebar::env_menu(&s, cx);
+        open_menu(point(logical(190.), logical(34.)), items, window, cx);
+    });
+}
+
+fn cluster_protected(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.show(Activity::Cluster, cx);
+            s.set_env("hades", cx);
+        })
+    });
+}
+
+fn sidebar_hidden(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.set_visible(false, cx)));
+}
+
+fn row_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    apps_pinned(cx, w, shell);
+    let s = sidebar(cx, shell);
+    let _ = cx.update_window(w, |_, window, cx| {
+        let items = Sidebar::item_menu(&s, "boardservice", false);
+        open_menu(point(logical(160.), logical(200.)), items, window, cx);
+    });
+}
+
+fn ports(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Ports, cx)));
 }
 
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
@@ -165,6 +245,17 @@ fn states() -> Vec<State> {
         w("42-workspace-menu", "work", 1.0, Some(workspace_menu)),
         w("43-quit-guard", "work", 1.0, Some(quit_guard)),
         w("44-quit-guard-150", "work", 1.5, Some(quit_guard)),
+        w("50-apps-pinned-selected", "work", 1.0, Some(apps_pinned)),
+        w("51-filter-matches", "work", 1.0, Some(filter_matches)),
+        w("52-filter-no-match", "work", 1.0, Some(filter_none)),
+        w("53-running-only", "work", 1.0, Some(running_only)),
+        w("54-cluster-env-menu", "work", 1.0, Some(cluster_env_menu)),
+        w("55-cluster-protected-env", "work", 1.0, Some(cluster_protected)),
+        w("56-personal-no-cluster", "personal", 1.0, None),
+        w("57-sidebar-hidden", "work", 1.0, Some(sidebar_hidden)),
+        w("58-apps-150", "work", 1.5, Some(apps_pinned)),
+        w("59-row-menu", "work", 1.0, Some(row_menu)),
+        w("60-ports", "work", 1.0, Some(ports)),
     ]
 }
 
@@ -177,7 +268,7 @@ fn main() -> Result<(), String> {
     let text = gpui_platform::current_platform(true).text_system();
     let mut cx = HeadlessAppContext::with_platform(text, Arc::new(()), gpui_platform::current_headless_renderer);
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
-    for state in states().into_iter().filter(|s| filter.as_ref().is_none_or(|f| s.name.contains(f.as_str()))) {
+    for state in states().into_iter().filter(|s| filter.as_ref().is_none_or(|f| f.split(',').any(|part| s.name.contains(part)))) {
         cx.update(|cx| {
             app_settings::set_scale(state.scale, cx);
             app_settings::set_open(state.settings_open, cx);

@@ -392,3 +392,19 @@ Out of scope: real discovery and views (step 5, M2), palette (step 6), resizable
     duplicated; focus stays in the sidebar. Activity bar gets its own `activity_w`
     token. 150 % snapshot added. Sidebars live as long as their workspace, so no churn
     to leak-test. **Accepted.**
+
+### Step 4 outcome
+
+Built as assessed. `crates/devdeck-core/src/list.rs` (rows, filter, selection steps,
+pins), `demo.rs` (fake catalog), `state.rs` (`sidebar.json`), and
+`crates/devdeck-app/src/sidebar.rs` (activity bar choice, list, keys, menus, drag).
+Lists are alphabetical with Pinned and All everywhere a sidebar list exists (R4.1
+partial until every list in later steps follows it); running state is fake until M2.
+
+Found while checking: a context menu opened from a mouse down lost focus to the list
+container (GPUI focus-on-mouse-down), so its keys did nothing; fixed once in
+`open_menu`. Section counts now follow the filter.
+
+Checks: 10 tests in `tests/sidebar.rs` plus 3 core unit tests; snapshots 50–60 (pins
+and selection, filter with and without matches, running only, env menu, protected env,
+personal without cluster, sidebar hidden, 150 %, row menu, ports) and 01, 20 again.

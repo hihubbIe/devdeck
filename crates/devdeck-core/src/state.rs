@@ -3,7 +3,7 @@
 //! `$XDG_STATE_HOME/devdeck`, else `~/.local/state/devdeck`.
 //!
 //! Layout: `app.json` (active workspace), `workspaces/<id>/layout.json` and
-//! `workspaces/<id>/pins.json` (pinned keys per list). Every write
+//! `workspaces/<id>/sidebar.json` (activity, env, pins). Every write
 //! is atomic (temporary file + rename). Reads never fail the app: a missing file means
 //! "nothing saved", a broken one is reported and ignored.
 
@@ -27,8 +27,25 @@ pub fn default_state_dir() -> PathBuf {
     state_dir(|k| std::env::var(k).ok())
 }
 
-/// Pinned keys per list id (`apps`, `deployments`, `ports`).
+/// Pinned keys per list id (`apps`, `deployments`, `ports`). Keys missing from the
+/// catalog are kept, just not shown.
 pub type Pins = BTreeMap<String, BTreeSet<String>>;
+
+/// What the sidebar of one workspace remembers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarState {
+    pub activity: String,
+    pub visible: bool,
+    pub env: Option<String>,
+    pub pins: Pins,
+}
+
+impl Default for SidebarState {
+    fn default() -> Self {
+        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new() }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -125,18 +142,18 @@ impl StateStore {
         write_atomic(&self.layout_path(workspace), &layout.to_json())
     }
 
-    fn pins_path(&self, workspace: &str) -> PathBuf {
-        self.dir.join("workspaces").join(safe_id(workspace)).join("pins.json")
+    fn sidebar_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join("workspaces").join(safe_id(workspace)).join("sidebar.json")
     }
 
-    pub fn load_pins(&self, workspace: &str) -> Loaded<Pins> {
-        let path = self.pins_path(workspace);
+    pub fn load_sidebar(&self, workspace: &str) -> Loaded<SidebarState> {
+        let path = self.sidebar_path(workspace);
         match read(&path) {
             Loaded::Ok(t) => match serde_json::from_str(&t) {
                 Ok(p) => Loaded::Ok(p),
                 Err(e) => {
                     set_aside(&path);
-                    Loaded::Broken(format!("{}: {e} (kept as pins.json.bad)", path.display()))
+                    Loaded::Broken(format!("{}: {e} (kept as sidebar.json.bad)", path.display()))
                 }
             },
             Loaded::Missing => Loaded::Missing,
@@ -144,8 +161,8 @@ impl StateStore {
         }
     }
 
-    pub fn save_pins(&self, workspace: &str, pins: &Pins) -> Result<(), String> {
-        write_atomic(&self.pins_path(workspace), &serde_json::to_string_pretty(pins).map_err(|e| e.to_string())?)
+    pub fn save_sidebar(&self, workspace: &str, state: &SidebarState) -> Result<(), String> {
+        write_atomic(&self.sidebar_path(workspace), &serde_json::to_string_pretty(state).map_err(|e| e.to_string())?)
     }
 
     pub fn load_app(&self) -> Loaded<AppState> {
@@ -202,15 +219,16 @@ mod tests {
     }
 
     #[test]
-    fn pins_round_trip_and_broken() {
-        let s = store("pins");
-        assert_eq!(s.load_pins("work"), Loaded::Missing);
+    fn sidebar_round_trip_and_broken() {
+        let s = store("sidebar");
+        assert_eq!(s.load_sidebar("work"), Loaded::Missing);
         let pins: Pins = BTreeMap::from([("apps".to_string(), BTreeSet::from(["entityservice".to_string()]))]);
-        s.save_pins("work", &pins).unwrap();
-        assert_eq!(s.load_pins("work"), Loaded::Ok(pins));
-        std::fs::write(s.dir.join("workspaces/work/pins.json"), "[").unwrap();
-        assert!(matches!(s.load_pins("work"), Loaded::Broken(_)));
-        assert!(s.dir.join("workspaces/work/pins.json.bad").exists());
+        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins };
+        s.save_sidebar("work", &state).unwrap();
+        assert_eq!(s.load_sidebar("work"), Loaded::Ok(state));
+        std::fs::write(s.dir.join("workspaces/work/sidebar.json"), "[").unwrap();
+        assert!(matches!(s.load_sidebar("work"), Loaded::Broken(_)));
+        assert!(s.dir.join("workspaces/work/sidebar.json.bad").exists());
     }
 
     #[test]
