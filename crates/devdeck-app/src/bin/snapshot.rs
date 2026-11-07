@@ -639,6 +639,14 @@ fn detached() -> Layout {
     l
 }
 
+/// What devdeck shows with no workspace configured (main.rs opens it then).
+fn welcome() -> Layout {
+    let mut l = Layout::new();
+    let p = l.main().focused;
+    l.open(ViewRef::new("welcome"), p).expect("open the welcome view");
+    l
+}
+
 fn states() -> Vec<State> {
     let s = |name, layout, settle_ms, scale, settings_open| State {
         name,
@@ -676,6 +684,7 @@ fn states() -> Vec<State> {
         s("06-narrow-panes-long-titles", narrow, 500, 1.0, false),
         s("07-empty", Layout::new, 100, 1.0, false),
         s("08-detached", detached, 500, 1.0, false),
+        s("09-no-config-welcome", welcome, 100, 1.0, false),
         s("10-scale-80", devdeck_app::initial_layout, 500, 0.8, false),
         s("11-scale-125", devdeck_app::initial_layout, 500, 1.25, false),
         s("12-scale-150", devdeck_app::initial_layout, 500, 1.5, false),

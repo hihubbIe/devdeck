@@ -12,6 +12,12 @@ Scenarios
   terminal  a run's terminal under load: the demo's three servers write 2 000 lines/s
             each, one shown in a run view; CPU, and memory against the same start at
             the normal rate (the difference is three full terminals of history)
+  real      the terminal scenario with a real process instead of the demo: a configured
+            workspace whose project's `make run` (python) writes 2 000 coloured lines/s,
+            started at launch and shown in a run view; one run, not three
+  leftovers R8.2 with a real run whose recipe starts a child that leaves the process
+            group (`setsid`) and an ordinary one: what SIGTERM and kill -9 to devdeck
+            leave running, and what the next devdeck finds in its group log
   leak      runs DEVDECK_STRESS cycles (default 1000) and prints memory every 250; the
             verdict compares 500-1000 (keep going only if that is flat)
   heapdiff  heaptrack on a 10- and a 30-cycle run (teardown skipped), prints what grows
@@ -26,7 +32,9 @@ Options
 """
 
 import argparse
+import json
 import os
+import signal
 import shutil
 import tempfile
 import re
@@ -71,17 +79,81 @@ def isolated_env(env):
 TEMP_DIRS = []
 
 
-def start(args, env_extra=None):
-    env = isolated_env(dict(os.environ))
+def start(args, env_extra=None, fill=None, env=None):
+    """Starts devdeck: the demo (its fake servers and views), unless `fill` writes a real
+    workspace into the fresh config and state folders, or `env` (from an earlier real
+    start) reuses them."""
+    real = fill is not None or env is not None
+    if env is None:
+        env = isolated_env(dict(os.environ))
+        if fill:
+            fill(env["DEVDECK_CONFIG_DIR"], env["DEVDECK_STATE_DIR"])
     env.pop("ZED_HEADLESS", None)
     if args.x11:
         env.pop("WAYLAND_DISPLAY", None)
     env["DEVDECK_STATS"] = "10"  # rare: reading smaps_rollup itself costs CPU
     env.update(env_extra or {})
     log = open(args.log, "w")
-    # The scenarios measure the demo (its fake servers and views).
-    p = subprocess.Popen([args.bin, "--demo"], env=env, stdout=log, stderr=subprocess.STDOUT)
+    p = subprocess.Popen([args.bin] + ([] if real else ["--demo"]), env=env, stdout=log, stderr=subprocess.STDOUT)
+    p.env = env
     return p
+
+
+# Writes `rate` coloured lines per second, like a dev server's log, and how many it
+# wrote so far to `out` once a second (the run's own pace: devdeck may hold it back).
+STREAM = r"""
+import os, sys, time
+rate, out = float(sys.argv[1]), sys.argv[2]
+n, t0, last = 0, time.monotonic(), 0.0
+while True:
+    now = time.monotonic()
+    while n < int((now - t0) * rate):
+        c = 31 + n % 6
+        sys.stdout.write(f"\x1b[2m{now - t0:9.3f}\x1b[0m \x1b[{c}mINFO\x1b[0m GET /api/items/{n % 977} \x1b[1m200\x1b[0m in {n % 53} ms, request {n}\n")
+        n += 1
+    sys.stdout.flush()
+    if now - last >= 1:
+        with open(out + ".tmp", "w") as f:
+            f.write(f"{now} {n}\n")
+        os.replace(out + ".tmp", out)
+        last = now
+    time.sleep(0.01)
+"""
+
+REAL_RUN = "run/stream/make:run"
+
+
+def real_workspace(rate, recipe="python3 stream.py {rate} {out}"):
+    """A `fill` for `start`: one workspace, `measure`, whose folder holds one project,
+    `stream`, whose `make run` runs `recipe`. Its run view was open with the run
+    running, so the run starts again when devdeck opens it (`DEVDECK_OPEN`). Returns
+    the fill and the file the stream counts its lines in (outside the watched folders)."""
+    work = tempfile.mkdtemp(prefix="devdeck-measure-")
+    TEMP_DIRS.append(work)
+    out = os.path.join(work, "lines")
+
+    def fill(config, state):
+        proj = os.path.join(work, "projects", "stream")
+        os.makedirs(proj)
+        os.makedirs(os.path.join(config, "workspaces"))
+        with open(os.path.join(config, "workspaces", "measure.toml"), "w") as f:
+            f.write(f'name = "measure"\nfolders = ["{os.path.dirname(proj)}"]\n')
+        with open(os.path.join(proj, "Makefile"), "w") as f:
+            f.write(f"run:\n\t@{recipe.format(rate=rate, out=out)}\n")
+        with open(os.path.join(proj, "stream.py"), "w") as f:
+            f.write(STREAM)
+        views = os.path.join(state, "workspaces", "measure")
+        os.makedirs(views)
+        with open(os.path.join(views, "views.json"), "w") as f:
+            json.dump({REAL_RUN: {"follow": True, "running": True, "args": ""}}, f)
+
+    return fill, out
+
+
+def lines_written(out):
+    with open(out) as f:
+        t, n = f.read().split()
+    return float(t), int(n)
 
 
 def cpu_between(pid, seconds):
@@ -145,6 +217,134 @@ def scenario_terminal(args):
     finally:
         p.terminate()
         p.wait(10)
+
+
+def scenario_real(args):
+    """`terminal` with a real process (one run, not the demo's three): devdeck's CPU and
+    memory, and the pace the stream kept (devdeck holds back a run it can't follow)."""
+    view = {"DEVDECK_OPEN": REAL_RUN}
+    fill, _ = real_workspace(0.5)  # the demo's normal rate: a line every 2 s
+    base = start(args, view, fill=fill)
+    try:
+        time.sleep(8)
+        _, _, uss0 = mem(base.pid)
+        report("real.normal_rate_uss_kb", uss0)
+    finally:
+        base.terminate()
+        base.wait(10)
+    fill, out = real_workspace(2000)
+    p = start(args, view, fill=fill)
+    try:
+        time.sleep(8)
+        t0, n0 = lines_written(out)
+        report("real.cpu_at_2000_lines_s_pct", f"{cpu_between(p.pid, 15):.2f}")
+        t1, n1 = lines_written(out)
+        report("real.lines_per_s_written", f"{(n1 - n0) / (t1 - t0):.0f}")
+        rss, pss, uss = mem(p.pid)
+        report("real.full_history_kb", f"rss={rss} pss={pss} uss={uss}")
+        report("real.history_cost_uss_kb", uss - uss0)
+    finally:
+        p.terminate()
+        p.wait(10)
+    time.sleep(1)
+    report("real.left_running_after_sigterm", len(marked([out])))
+
+
+def marked(marks):
+    """pid -> command line of the live processes whose command line holds one of
+    `marks`."""
+    found = {}
+    for d in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{d}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode().strip()
+            with open(f"/proc/{d}/stat") as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+        except OSError:
+            continue
+        if state not in "ZX" and any(m in cmd for m in marks):
+            found[int(d)] = cmd
+    return found
+
+
+def session_of(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        return int(f.read().rsplit(")", 1)[1].split()[3])
+
+
+def group_log(state):
+    """The state folder's group log: `pid start` lines, each with whether that process
+    still runs (same start time), as `GroupLog::leftovers` decides."""
+    try:
+        text = open(os.path.join(state, "processes")).read()
+    except OSError:
+        return "no file"
+    rows = []
+    for line in text.split("\n"):
+        if line.strip():
+            pid, start_ = line.split()
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    fields = f.read().rsplit(")", 1)[1].split()
+                alive = fields[19] == start_ and fields[0] not in "ZX"
+            except OSError:
+                alive = False
+            rows.append(f"{pid}({'running' if alive else 'ended'})")
+    return " ".join(rows) or "empty"
+
+
+def scenario_leftovers(args):
+    """R8.2. The run's recipe starts `sleep 30101` in its own session (it leaves the
+    process group) and `sleep 30102` in the group, then streams. Three devdecks on the
+    same folders: one gets SIGTERM, one kill -9, and the next one starts (the run was
+    running, so it starts again) and gets SIGTERM. Kills whatever is left at the end."""
+    fill, out = real_workspace(20, "setsid sleep 30101 & sleep 30102 & python3 stream.py {rate} {out}")
+    marks = ["sleep 30101", "sleep 30102", out]
+    view = {"DEVDECK_OPEN": REAL_RUN}
+
+    def show(label):
+        procs = marked(marks)
+        report(f"{label}.processes", "; ".join(f"{pid} sid={session_of(pid)} {cmd}" for pid, cmd in sorted(procs.items())) or "none")
+        report(f"{label}.group_log", group_log(state))
+        return procs
+
+    p = start(args, view, fill=fill)
+    env, state = p.env, p.env["DEVDECK_STATE_DIR"]
+    try:
+        time.sleep(6)
+        show("sigterm.before")
+        t = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        p.wait(10)
+        report("sigterm.exit_s", f"{time.monotonic() - t:.2f}")
+        time.sleep(1)
+        show("sigterm.after")
+
+        p = start(args, view, env=env)
+        time.sleep(6)
+        show("kill9.before")
+        p.kill()
+        p.wait(10)
+        time.sleep(2)
+        left = show("kill9.after")
+
+        p = start(args, view, env=env)
+        time.sleep(6)
+        report("next_start.kill9_survivors_alive", sum(1 for pid in left if pid in marked(marks)))
+        show("next_start")
+        p.send_signal(signal.SIGTERM)
+        p.wait(10)
+        time.sleep(1)
+        report("next_start_sigterm.kill9_survivors_alive", sum(1 for pid in left if pid in marked(marks)))
+        show("next_start_sigterm.after")
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait(10)
+        rest = marked(marks)
+        for pid in rest:
+            os.kill(pid, signal.SIGKILL)
+        report("killed_by_this_script", len(rest))
 
 
 def scenario_latency(args):
@@ -248,7 +448,7 @@ def scenario_heapdiff(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak", "heapdiff", "terminal"])
+    ap.add_argument("scenario", choices=["idle", "kube", "latency", "leak", "heapdiff", "terminal", "real", "leftovers"])
     ap.add_argument("--x11", action="store_true")
     ap.add_argument("--bin", default="target/release/devdeck")
     ap.add_argument("--cycles", type=int, default=1000)
@@ -267,6 +467,10 @@ def main():
         scenario_latency(args)
     elif args.scenario == "terminal":
         scenario_terminal(args)
+    elif args.scenario == "real":
+        scenario_real(args)
+    elif args.scenario == "leftovers":
+        scenario_leftovers(args)
     elif args.scenario == "heapdiff":
         if args.bin == "target/release/devdeck":
             args.bin = "target/profiling/release/devdeck"

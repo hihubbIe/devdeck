@@ -516,3 +516,38 @@ fn a_selection_copies_with_either_key_while_running_or_after(cx: &mut TestAppCon
     vcx.simulate_keystrokes("ctrl-shift-c");
     assert_eq!(clipboard(&mut vcx).as_deref(), Some("connected"), "stopped: still copies");
 }
+
+#[gpui::test]
+fn the_runs_terminal_follows_its_view_window_scale_and_detach(cx: &mut TestAppContext) {
+    let shell = start(cx, "view-size");
+    let main = main_window(&shell, cx);
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("entityservice", "go:run");
+    let run = ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() };
+    open(&shell, cx, run.clone());
+    let size = |cx: &TestAppContext| cx.read(|cx| runner.read(cx).run(&key).unwrap().terminal.size());
+    let shown = size(cx);
+    // A wider window: more columns.
+    cx.simulate_window_resize(main, gpui::size(devdeck_ui::logical(1800.), devdeck_ui::logical(1400.)));
+    cx.run_until_parked();
+    let wider = size(cx);
+    assert!(wider.cols > shown.cols && wider.rows > shown.rows, "{shown:?} → {wider:?}");
+    // A larger UI scale: bigger cells, fewer of them.
+    cx.update(|cx| devdeck_app::app_settings::set_scale(1.5, cx));
+    cx.run_until_parked();
+    let scaled = size(cx);
+    assert!(scaled.cols < wider.cols && scaled.rows < wider.rows, "{wider:?} → {scaled:?}");
+    // Detached into a window of its own: that window's size.
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let (p, i) = l.find_view(&run.to_ref()).expect("open");
+                l.detach(p, i).map(|_| ())
+            });
+        })
+    });
+    cx.run_until_parked();
+    let detached = size(cx);
+    assert_ne!(detached, scaled, "sized by its new window");
+}

@@ -310,7 +310,7 @@ reach the program (`with_args`: `npm run dev -- --port 1`, `pnpm run dev --port 
 `cargo run --bin x -- --flag`); the tab header shows the full line. Suggestions read
 from projects come later if recent ones aren't enough.
 
-## Part B: arguments per command, detailed plan (2026-11-07, waiting for a GO)
+## Part B: arguments per command, detailed plan (2026-11-07)
 
 - **Where:** the run tab's toolbar, between the command line and the state: an
   arguments field showing the current arguments (`args…` dim when none) with a ▾.
@@ -428,6 +428,25 @@ submenu was just closed with ← or Esc reopened it (only entering a row acts no
 pending rest reset a submenu the keys had opened and walked; a submenu whose row wasn't
 drawn yet could take keys unseen; while resting on another row the highlight and the
 keys' target disagreed. Each has a test that fails without its fix.
+
+## Step 5 outcome (2026-11-07)
+
+- **Config:** both workspaces load without errors; discovery finds 35 apps in
+  `personal` (3 ms) and 449 in `tadaweb` (0.2 s), 272 of them in `dupes/` (two copies
+  of `front-end` and `monitorapp`). Envs are still commented out in `tadaweb.toml`.
+- **States:** each state below is covered by a test on real processes or a snapshot.
+  Added: wide characters (`terminal.rs`), the run's terminal following its view's
+  window, the UI scale and a detach (`tests/runs.rs`), and the no-config screen
+  (snapshot `09-no-config-welcome`).
+- **Measurements:** [perf/M2.md](../perf/M2.md), "Close". Every threshold passes but
+  two: private memory per leak cycle (336 B, falling; GPUI and Wayland, as in M1) and
+  R8.2 after `kill -9`: a child that left the run's session survives and is never
+  offered at the next start, since only the group leader is recorded
+  (`process.rs:281`, `GroupLog::leftovers`). SIGTERM leaves nothing. Open, waiting for
+  a decision.
+- **Requirements:** R6.1, R6.2, R6.4 and R6.8 done; R1.4 and R1.5 partly (the cluster
+  isn't configured yet); R8.2 partly (above).
+- **Manual test:** [M2-manual-test.md](M2-manual-test.md).
 
 ## States to check
 

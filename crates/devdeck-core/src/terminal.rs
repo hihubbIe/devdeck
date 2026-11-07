@@ -729,6 +729,16 @@ mod tests {
     }
 
     #[test]
+    fn wide_characters_take_two_columns_and_wrap_whole() {
+        let mut t = term(5, 5);
+        t.feed("a家b".as_bytes());
+        assert_eq!(t.lines(), ["a家b"]);
+        // One column left: the next wide one goes to the next row whole.
+        t.feed("家".as_bytes());
+        assert_eq!(t.lines(), ["a家b", "家"]);
+    }
+
+    #[test]
     fn long_lines_wrap_at_the_width_and_rewrap_on_resize() {
         let mut t = term(10, 5);
         t.feed(b"0123456789abcdef");

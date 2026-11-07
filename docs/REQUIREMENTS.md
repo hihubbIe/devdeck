@@ -10,8 +10,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R1.1** Native desktop app written in Rust, shipped as a single executable.
 - [ ] **R1.2** Linux first (Wayland and X11). Wide desktop screens (1920×1080 and up). No mobile or narrow layouts.
 - [~] **R1.3** As fast as possible and as cheap as possible: GPU-rendered text, near-zero CPU when idle, minimal RAM. Only visible content is drawn; long lists and logs are virtualized.
-- [ ] **R1.4** Self-contained. No dependency on the author's own scripts or tools (`cs`, `f`, the project daemon, aliases). External programs (pnpm, go, kubectl, k9s, docker…) are optional capabilities, detected at runtime.
-- [ ] **R1.5** Shareable. Nothing about one machine is hard-coded: paths, envs, clusters, kubeconfigs, folders and tools all come from config.
+- [~] **R1.4** Self-contained. No dependency on the author's own scripts or tools (`cs`, `f`, the project daemon, aliases). External programs (pnpm, go, kubectl, k9s, docker…) are optional capabilities, detected at runtime.
+- [~] **R1.5** Shareable. Nothing about one machine is hard-coded: paths, envs, clusters, kubeconfigs, folders and tools all come from config.
 - [~] **R1.6** Monospace font everywhere.
 
 ## 2. Workspaces
@@ -53,14 +53,14 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 6. Local apps
 
-- [ ] **R6.1** Apps are discovered automatically from the workspace's folders: `package.json` scripts, pnpm/npm workspaces (monorepo packages), Taskfile tasks, Makefile targets, docker compose files, `.vscode/launch.json`, Go modules with a main package, Cargo projects (one run command per binary when `cargo run` alone can't choose). A folder that isn't a project is looked into for projects, down to three levels under the workspace folder (decided 2026-11-07). New folders appear without configuration.
-- [ ] **R6.2** Runnable apps and libraries are told apart; libraries stay listed but de-emphasized.
+- [x] **R6.1** Apps are discovered automatically from the workspace's folders: `package.json` scripts, pnpm/npm workspaces (monorepo packages), Taskfile tasks, Makefile targets, docker compose files, `.vscode/launch.json`, Go modules with a main package, Cargo projects (one run command per binary when `cargo run` alone can't choose). A folder that isn't a project is looked into for projects, down to three levels under the workspace folder (decided 2026-11-07). New folders appear without configuration.
+- [x] **R6.2** Runnable apps and libraries are told apart; libraries stay listed but de-emphasized.
 - [~] **R6.3** Commands have tiers: primary (start, dev, serve…), secondary (build, test, codegen…), hidden (lint, format, prepare, pre/post hooks…). Hidden ones stay reachable.
-- [ ] **R6.4** Overrides (names, commands, env binding, ports, URLs, hidden apps) live only in the central config, never in the project folders.
+- [x] **R6.4** Overrides (names, commands, env binding, ports, URLs, hidden apps) live only in the central config, never in the project folders.
 - [~] **R6.5** Each command declares the tools it needs. When one is missing, the app and its commands show as disabled with a warning sign and the missing thing named ("go not found", ".nvmrc wants node 20, which isn't installed"). A script's programs that the project's install provides are checked too ("vite isn't installed: run npm install"), and Node projects get an install command (decided 2026-11-07).
 - [~] **R6.6** Env for a run: a workspace-wide default plus a per-app override. How the env is applied is generic and declared: command argument (preferred: nothing written to disk; a `{env}` placeholder in the command line), environment variable, rewrite of a gitignored file, or none. Bindings are added per app as needed. The UI says how it is applied.
 - [~] **R6.7** Commands run in a pseudo-terminal: colors, progress output and exit codes are real. Several run at once. Stop, restart, run again, exit status, crash notification. A run that ends on its own with code 0 shows a green ✓, "succeeded in 14 s", and a toast (decided 2026-11-07). Links in the output (`http`, `https`, `file`, and those programs mark) are underlined while shift is held over it; shift+click opens one in the browser (decided 2026-11-07).
-- [ ] **R6.8** Node version per project from `.nvmrc`, resolved against configured node installations. Without an `.nvmrc`, `engines.node` in `package.json`: the default Node when it fits, else the newest installed one that does (decided 2026-11-07).
+- [x] **R6.8** Node version per project from `.nvmrc`, resolved against configured node installations. Without an `.nvmrc`, `engines.node` in `package.json`: the default Node when it fits, else the newest installed one that does (decided 2026-11-07).
 - [~] **R6.9** Listening ports are detected per run. Port conflicts are reported before starting, with an option to stop the holder.
 - [~] **R6.12** Terminal tabs: the user's shell in a folder (the focused tab's app folder, else the workspace's first folder), on the run tab's terminal; `ctrl+shift+t` opens one. Closing its tab, or the detached window holding it, ends the shell; switching layouts doesn't. Every shell of a workspace is listed in the sidebar's Terminals view (`ctrl+5`): its folder, what runs in it, where it shows (here, another layout, nowhere); open or end it there. Quitting asks while a shell runs something (decided 2026-11-07).
 - [~] **R6.13** Opening something somewhere: "Open terminal here" on a tab, a pane and an app row opens a shell in that folder at its default place (this pane; the focused one for an app row); resting on it 300 ms, or →, shows every place ("Send to…"'s panes and a new window) to pick another. The Terminals list's "Open" offers the same places. Any later "open …" item works this way (decided 2026-11-07).
@@ -81,7 +81,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 ## 8. Lifecycle
 
 - [~] **R8.1** Quitting with running processes (in any workspace) asks: "Stop all and quit" or "Cancel". Cancel keeps the app open.
-- [ ] **R8.2** Child processes never outlive the app unless the user chooses so (process groups are killed on quit).
+- [~] **R8.2** Child processes never outlive the app unless the user chooses so (process groups are killed on quit).
 
 ## 9. Look and themes
 
