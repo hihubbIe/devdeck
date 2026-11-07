@@ -21,6 +21,9 @@
 ## A milestone, start to finish
 
 - A milestone is a series of steps (see `ROADMAP.md`).
+- Before it closes: run `scripts/measure.sh` on a release build and record the numbers
+  in `docs/perf/<milestone>.md` (RSS and CPU idle and under load, latency, binary size,
+  leak test). Compare with the previous milestone; investigate any growth.
 - At the end of every milestone, work stops and the user tests the app by hand.
   Feedback goes into `REQUIREMENTS.md` / `DESIGN.md` before the next milestone starts.
 

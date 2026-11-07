@@ -1,0 +1,12 @@
+[package]
+name = "devdeck-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "devdeck"
+path = "src/main.rs"
+
+[dependencies]
+devdeck-core.workspace = true

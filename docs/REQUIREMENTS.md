@@ -95,3 +95,5 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [ ] **R11.1** Work proceeds in steps: plan, review the plan with a subagent, assess, build, check visually across states, run tests, commit.
 - [ ] **R11.2** Unit tests for every feature; the whole suite runs before every commit so nothing regresses.
 - [ ] **R11.3** Dependencies are chosen deliberately (modern, fast, maintained) and pinned.
+- [ ] **R11.4** Performance is measured at every milestone, not assumed: memory at idle and under load, CPU at idle and under load, input latency, binary size, and a leak test (repeated open/close cycles must plateau). Results go in `docs/perf/<milestone>.md` and regressions are fixed before the milestone closes.
+- [ ] **R11.5** Development stops at the end of every milestone for the user's manual test.

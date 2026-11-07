@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/devdeck-core", "crates/devdeck-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+devdeck-core = { path = "crates/devdeck-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+proptest = "1"
+# GPUI: published snapshot of Zed's GPUI (crates.io `gpui` is a year old). See docs/DESIGN.md.
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11"] }
+async-channel = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+kube = "=5.0.0"
+k8s-openapi = "=0.29.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

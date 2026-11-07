@@ -81,18 +81,31 @@ Rules:
 ### Layout model
 
 ```
-Window { root: Node }              main window, plus one per detached tab
-Node = Split { axis, children: [(Node, ratio)] } | Pane(PaneId)
-Pane { tabs: [ViewRef], active, collapsed: bool, maximized: bool }
+Layout { version, windows, panes, focus }
+Window { id, root: Node, maximized: Option<PaneId>, focused: PaneId }
+                                   main window, plus one per detached tab
+Node = Split { id: SplitId, axis, children: [(Node, weight)] } | Pane(PaneId)
+Pane { tabs: [ViewRef], active, collapsed: bool }
 ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
           logs/<env>/<name>, pod/<env>/<pod>, file/<path>, matrix, ports
 ```
 
+- A view is open at most once across all windows.
+- Weights are fractions of their split, renormalized after every operation; the app
+  converts pixel drags to weights and enforces a minimum pane size in pixels.
+- A detached window's root is always a single pane. Closing a detached window
+  re-attaches its tabs to the main window.
+- Each window has a focused pane; focus moves by pure rules after close, move and
+  detach, and directionally using pane rectangles computed from the model.
+- View instances (GPUI entities) are owned by an app-level registry keyed by `ViewRef`,
+  so they survive moving between panes and windows and are dropped on close.
+
 - Moving a tab onto a pane edge replaces that pane with a split.
 - Removing the last tab removes the pane and collapses the split (except the last pane
   of a window).
-- Collapsed pane: rendered as its tab strip only; along a vertical split it keeps its
-  strip height, along a horizontal one it becomes a vertical strip.
+- Collapsed pane: in a column split it is its 32 px tab strip; in a row split it
+  becomes a 28 px rail of tab monograms (GPUI cannot rotate text), full titles as
+  tooltips. The last expanded pane of a window cannot collapse.
 - Detach: a new `Window` whose root is a single pane holding the tab. Detached windows
   belong to the workspace that created them and hide when you switch workspace.
 - Layouts are snapshots of the main window tree plus detached windows.
@@ -125,7 +138,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 | need | choice | why | notes |
 |---|---|---|---|
-| UI | GPUI (Zed), git dependency pinned to a commit | GPU text rendering built for an editor, idle at zero CPU, multi-window | crates.io `gpui` is stale (0.2.2, Oct 2025), so pin a Zed commit |
+| UI | GPUI (Zed) via `gpui-pre =0.3.11` + `gpui-pre-platform` (wayland, x11) | GPU text rendering built for an editor, idle at zero CPU, multi-window | crates.io `gpui` is stale (0.2.2, Oct 2025); gpui-pre is a published Zed snapshot, the one gpui-component pins |
 | widgets | own components; may borrow from gpui-component | full control of the look | gpui-component has docks, inputs, menus |
 | terminal grid | alacritty_terminal | same as Zed's terminal | own view on top |
 | pty | portable-pty | cross-platform, used widely | |
