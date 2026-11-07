@@ -27,6 +27,12 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// A control in the title bar: pressing it doesn't start a window move, which hands the
+/// pointer to the compositor and loses the release, and with it the click.
+fn bar_control(control: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+    control.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
 /// Drag payloads carry their deck: a drop that lands in another workspace's tree
 /// (after a switch mid-drag) is ignored.
 #[derive(Clone)]
@@ -589,7 +595,7 @@ impl Render for WindowView {
             .child(div().text_color(t.hi).child("devdeck"))
             .when_some(menu_shell, |d, shell| {
                 d.child(
-                    button("workspace", ws_name.clone(), &t)
+                    bar_control(button("workspace", ws_name.clone(), &t))
                         .child(button_icon(Icon::Open, &t))
                         .debug_selector(|| "workspace-button".into())
                         .tooltip(tip("switch workspace"))
@@ -610,7 +616,7 @@ impl Render for WindowView {
                 let sidebar = sidebar.clone();
                 let color = if env.protected { t.err } else { t.env };
                 d.child(
-                    button("env", format!("@{}", env.name), &t)
+                    bar_control(button("env", format!("@{}", env.name), &t))
                         // Protected: changes there ask first.
                         .when(env.protected, |b| b.child(icon(Icon::Protected, color, &t)))
                         .child(icon(Icon::Open, color, &t))
@@ -636,7 +642,7 @@ impl Render for WindowView {
                 let deck = self.deck.clone();
                 let current = deck.read(cx).book.current.clone();
                 d.child(
-                    button("layout", current, &t)
+                    bar_control(button("layout", current, &t))
                         .child(button_icon(Icon::Open, &t))
                         .debug_selector(|| "layout-button".into())
                         .tooltip(tip("layouts"))
@@ -650,19 +656,19 @@ impl Render for WindowView {
             .child(div().flex_1())
             .when(is_main, |d| {
                 d.child(
-                    button("search", "search", &t)
+                    bar_control(button("search", "search", &t))
                         .debug_selector(|| "search-button".into())
                         .on_click(|_, window, cx| crate::palette::open(window, cx)),
                 )
                 .child(
-                    button("keys", "?", &t)
+                    bar_control(button("keys", "?", &t))
                         .tooltip(tip("keyboard shortcuts"))
                         .on_click(|_, window, cx| crate::cheat_sheet::open(window, cx)),
                 )
             })
             .when(is_main, |d| {
                 d.child(
-                    labeled_button("settings", Icon::Settings, "settings", &t)
+                    bar_control(labeled_button("settings", Icon::Settings, "settings", &t))
                         .when(settings_open, |b| b.child(icon(Icon::Check, t.accent, &t)))
                         .tooltip(tip("settings"))
                         .on_click(cx.listener(move |this, _, window, cx| this.set_settings_open(!settings_open, window, cx))),
@@ -670,16 +676,16 @@ impl Render for WindowView {
             })
             .when(!is_main, |d| {
                 d.child(
-                    icon_button("reattach", Icon::Reattach, "send back to the main window", &t)
+                    bar_control(icon_button("reattach", Icon::Reattach, "send back to the main window", &t))
                         .on_click(cx.listener(|this, _, _, cx| this.reattach(cx))),
                 )
             })
-            .child(icon_button("min", Icon::WindowMinimize, "minimize", &t).on_click(|_, window, _| window.minimize_window()))
+            .child(bar_control(icon_button("min", Icon::WindowMinimize, "minimize", &t)).on_click(|_, window, _| window.minimize_window()))
             .child(
-                icon_button("max", if window.is_maximized() { Icon::WindowRestore } else { Icon::WindowMaximize }, "maximize or restore", &t)
+                bar_control(icon_button("max", if window.is_maximized() { Icon::WindowRestore } else { Icon::WindowMaximize }, "maximize or restore", &t))
                     .on_click(|_, window, _| window.zoom_window()),
             )
-            .child(icon_button("close", Icon::Close, "close", &t).on_click(move |_, _, cx| {
+            .child(bar_control(icon_button("close", Icon::Close, "close", &t)).on_click(move |_, _, cx| {
                 if id == MAIN_WINDOW {
                     shell::request_quit(cx);
                 } else {
