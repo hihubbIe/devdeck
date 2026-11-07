@@ -62,6 +62,10 @@ pub trait RunControl {
     fn resize(&self, size: TermSize);
     /// Asks the process to stop; its exit comes back through [`Runner::exited`].
     fn stop(&self);
+    /// The process id (also its process group id), when it's a real process.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 pub struct Started {
@@ -108,6 +112,13 @@ impl EventEmitter<RunnerEvent> for Runner {}
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
         Self { workspace, catalog, runs: BTreeMap::new(), driver }
+    }
+
+    /// A new catalog (tools found, apps rediscovered). Runs of commands that disappeared
+    /// keep going; they can't start again until their command is back.
+    pub fn set_catalog(&mut self, catalog: Rc<Catalog>, cx: &mut Context<Self>) {
+        self.catalog = catalog;
+        cx.notify();
     }
 
     pub fn tools(&self) -> &Tools {
@@ -269,6 +280,11 @@ impl Runner {
         for r in self.runs.values_mut() {
             r.restart_after_stop = false;
         }
+    }
+
+    /// The process ids of the runs that have one (port scans, quitting).
+    pub fn pids(&self) -> Vec<(RunKey, u32)> {
+        self.runs.iter().filter_map(|(k, r)| Some((k.clone(), r.control.as_ref()?.pid()?))).collect()
     }
 
     /// Input typed into a run's terminal.

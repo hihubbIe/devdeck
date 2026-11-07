@@ -165,15 +165,25 @@ pub struct Tools {
     pub found: BTreeSet<String>,
     /// When set, it decides (`found` is ignored).
     pub toolbox: Option<crate::environment::Toolbox>,
+    /// The toolbox is still being found: nothing can run yet.
+    pub pending: bool,
 }
 
 impl Tools {
     pub fn new(found: &[&str]) -> Self {
-        Self { found: found.iter().map(|s| s.to_string()).collect(), toolbox: None }
+        Self { found: found.iter().map(|s| s.to_string()).collect(), toolbox: None, pending: false }
+    }
+
+    /// Tools still being found (the login shell is being asked).
+    pub fn pending() -> Self {
+        Self { pending: true, ..Self::default() }
     }
 
     /// Why a command of `app` can't run, if it can't (`go not found`).
     pub fn missing(&self, app: &App, cmd: &Command) -> Option<String> {
+        if self.pending {
+            return Some("checking tools…".into());
+        }
         match &self.toolbox {
             Some(tb) => tb.missing(app, cmd),
             None => cmd.tools.iter().find(|t| !self.found.contains(*t)).map(|t| format!("{t} not found")),

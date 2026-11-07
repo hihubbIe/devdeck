@@ -7,6 +7,7 @@
 
 pub mod app_view;
 pub mod demo;
+pub mod info_view;
 pub mod logs_view;
 pub mod matrix_view;
 pub mod pod_view;
@@ -133,6 +134,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, cx: &mut App) -> Built {
             }
         },
         (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None },
+        (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None },
+        (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None },
     }
 }
 
@@ -155,6 +158,8 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Pod { env, pod } => format!("{env} › {pod}"),
         ViewAddr::Matrix => "branch matrix".into(),
         ViewAddr::Port { port } => format!(":{port}"),
+        ViewAddr::Problems => "problems".into(),
+        ViewAddr::Welcome => "welcome".into(),
         ViewAddr::Other(_) => demo::title(r),
     }
 }

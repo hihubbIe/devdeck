@@ -24,17 +24,24 @@ use std::time::Duration;
 
 actions!(devdeck, [ConfirmQuit]);
 
-/// A workspace as defined by configuration (M2) or the demo (M1).
+/// A workspace from its config file, or from the demo.
 pub struct WorkspaceSpec {
     pub id: String,
     pub name: String,
     /// The layout used when nothing was saved, or the saved one can't be read.
     pub layout: fn() -> Layout,
+    /// `None`: the demo's catalog for `id`.
+    pub config: Option<devdeck_core::config::WorkspaceConfig>,
 }
 
 impl WorkspaceSpec {
     pub fn new(id: &str, name: &str, layout: fn() -> Layout) -> Self {
-        Self { id: id.into(), name: name.into(), layout }
+        Self { id: id.into(), name: name.into(), layout, config: None }
+    }
+
+    /// A configured workspace; it starts with one empty pane.
+    pub fn from_config(config: devdeck_core::config::WorkspaceConfig) -> Self {
+        Self { id: config.id.clone(), name: config.name.clone(), layout: Layout::new, config: Some(config) }
     }
 }
 
@@ -123,7 +130,10 @@ impl Shell {
                     }
                     _ => SidebarState::default(),
                 };
-                let services = Services::demo(&spec.id, &spec.name, sidebar_state.env.clone(), cx);
+                let services = match spec.config.clone() {
+                    Some(c) => Services::from_config(c, sidebar_state.env.clone(), crate::environment::environment(cx), cx),
+                    None => Services::demo(&spec.id, &spec.name, sidebar_state.env.clone(), cx),
+                };
                 let deck_store = store.clone();
                 let deck_services = services.clone();
                 let book = match store.as_ref().map(|s| s.load_book(&spec.id)) {
@@ -172,6 +182,7 @@ impl Shell {
         for p in problems {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, p, vec![], cx));
         }
+        report_problems(&shell, cx);
         shell
     }
 
@@ -322,6 +333,25 @@ impl Shell {
             Err(_) => {}
         }
     }
+}
+
+/// What config files, discovery and overrides reported, as one toast with a count; View
+/// opens the active workspace's problems view (the list stays there, live).
+pub fn report_problems(shell: &Entity<Shell>, cx: &mut App) {
+    let machine = crate::environment::environment(cx).read(cx).problems.len();
+    let s = shell.read(cx);
+    let count = machine + s.workspaces.iter().map(|w| w.services.read(cx).problems.len()).sum::<usize>();
+    if count == 0 {
+        return;
+    }
+    let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(|_, cx| {
+        if let Some(s) = try_shell(cx) {
+            let deck = s.read(cx).active_deck().downgrade();
+            crate::views::open_in(&deck, ViewAddr::Problems, cx);
+        }
+    });
+    let text = if count == 1 { "1 problem reading the config or the projects".to_string() } else { format!("{count} problems reading the config or the projects") };
+    toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![("View".into(), view)], cx));
 }
 
 /// A run failing in any workspace becomes an error toast naming the workspace; "View

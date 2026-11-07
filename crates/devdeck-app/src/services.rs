@@ -1,10 +1,18 @@
 //! What one workspace offers its views: the catalog, the env runs and the cluster list
 //! use, the runner and the cluster. Views get it through [`ViewCx`](crate::views::ViewCx).
+//!
+//! A workspace comes from the demo or from its config file. A config workspace's catalog
+//! is discovery plus the config's overrides, with the machine's tools; it's rebuilt and
+//! swapped in when the tools are found, when folders change and when the config changes
+//! (the runner swaps too; runs of an app that disappeared keep running).
 
 use crate::cluster::{Cluster, new_cluster};
+use crate::environment::Environment;
 use crate::runner::{RunKey, Runner, fake_runner};
-use devdeck_core::demo::Catalog;
+use devdeck_core::catalog::Catalog;
+use devdeck_core::config::{WorkspaceConfig, apply_overrides};
 use gpui::{App, AppContext, Context, Entity};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 pub struct Services {
@@ -16,6 +24,12 @@ pub struct Services {
     pub env: Option<String>,
     pub runner: Entity<Runner>,
     pub cluster: Option<Entity<Cluster>>,
+    /// The config it comes from; `None` for the demo.
+    pub config: Option<WorkspaceConfig>,
+    /// What discovery and the config overrides reported, shown on request.
+    pub problems: Vec<String>,
+    /// Folders to watch for new projects and changed manifests.
+    pub watch: Vec<PathBuf>,
 }
 
 /// A port someone listens on: a configured holder or a running command.
@@ -40,8 +54,50 @@ impl Services {
             if let Some(c) = &cluster {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
-            Services { workspace: workspace.into(), name: name.into(), catalog, env, runner, cluster }
+            Services { workspace: workspace.into(), name: name.into(), catalog, env, runner, cluster, config: None, problems: Vec::new(), watch: Vec::new() }
         })
+    }
+
+    /// A workspace from its config: its apps found in its folders, real runs, no cluster
+    /// (M3). Tools come from `environment` and follow it.
+    pub fn from_config(config: WorkspaceConfig, env: Option<String>, environment: Entity<Environment>, cx: &mut App) -> Entity<Services> {
+        let tools = environment.read(cx).tools();
+        let (catalog, problems, watch) = discover(&config, tools);
+        let catalog = Rc::new(catalog);
+        let env = catalog.pick_env(env);
+        let log = Some(devdeck_core::process::GroupLog::new(&devdeck_core::state::default_state_dir()));
+        let driver = Rc::new(crate::pty_driver::PtyDriver { env: environment.clone(), log });
+        let runner = cx.new(|_| Runner::new(config.id.clone(), catalog.clone(), driver));
+        cx.new(|cx| {
+            cx.observe(&runner, |_, _, cx| cx.notify()).detach();
+            cx.observe(&environment, |this: &mut Services, e, cx| {
+                let tools = e.read(cx).tools();
+                this.set_catalog(Catalog { tools, ..(*this.catalog).clone() }, cx);
+            })
+            .detach();
+            Services { workspace: config.id.clone(), name: config.name.clone(), catalog, env, runner, cluster: None, config: Some(config), problems, watch }
+        })
+    }
+
+    /// Finds the apps again, with `config` when it changed (a config workspace only).
+    pub fn rescan(&mut self, config: Option<WorkspaceConfig>, cx: &mut Context<Self>) {
+        if let Some(c) = config {
+            self.config = Some(c);
+        }
+        let Some(config) = &self.config else { return };
+        let (catalog, problems, watch) = discover(config, self.catalog.tools.clone());
+        self.problems = problems;
+        self.watch = watch;
+        self.set_catalog(catalog, cx);
+    }
+
+    /// Swaps the catalog in, for the views and the runner.
+    pub fn set_catalog(&mut self, catalog: Catalog, cx: &mut Context<Self>) {
+        let catalog = Rc::new(catalog);
+        self.env = catalog.pick_env(self.env.clone());
+        self.catalog = catalog.clone();
+        self.runner.update(cx, |r, cx| r.set_catalog(catalog, cx));
+        cx.notify();
     }
 
     pub fn set_env(&mut self, env: &str, cx: &mut Context<Self>) {
@@ -73,4 +129,15 @@ impl Services {
         out.sort_by_key(|p| p.port);
         out
     }
+}
+
+/// A config workspace's catalog: discovery, then the overrides; and what went wrong, and
+/// the folders to watch.
+fn discover(config: &WorkspaceConfig, tools: devdeck_core::apps::Tools) -> (Catalog, Vec<String>, Vec<PathBuf>) {
+    let found = devdeck_core::discovery::discover(&config.folders);
+    let (apps, warnings) = apply_overrides(found.apps, &config.apps);
+    let mut problems = found.problems;
+    problems.extend(warnings);
+    let catalog = Catalog { apps, tools, envs: config.envs.clone(), default_env: config.default_env.clone(), ..Catalog::default() };
+    (catalog, problems, found.watch)
 }

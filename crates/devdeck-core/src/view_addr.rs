@@ -12,6 +12,10 @@ pub enum ViewAddr {
     Pod { env: String, pod: String },
     Matrix,
     Port { port: String },
+    /// What discovery and the config reported for the workspace.
+    Problems,
+    /// The first-run screen: no workspace configured.
+    Welcome,
     /// Anything else (demo views, refs from older versions).
     Other(String),
 }
@@ -34,6 +38,8 @@ impl ViewAddr {
             ViewAddr::Pod { env, pod } => format!("pod/{}/{}", esc(env), esc(pod)),
             ViewAddr::Matrix => "matrix".to_string(),
             ViewAddr::Port { port } => format!("port/{}", esc(port)),
+            ViewAddr::Problems => "problems".to_string(),
+            ViewAddr::Welcome => "welcome".to_string(),
             ViewAddr::Other(s) => s.clone(),
         })
     }
@@ -50,6 +56,8 @@ impl ViewAddr {
             ["pod", env, pod] => ViewAddr::Pod { env: env.to_string(), pod: pod.to_string() },
             ["matrix"] => ViewAddr::Matrix,
             ["port", port] => ViewAddr::Port { port: port.to_string() },
+            ["problems"] => ViewAddr::Problems,
+            ["welcome"] => ViewAddr::Welcome,
             _ => ViewAddr::Other(s.to_string()),
         }
     }

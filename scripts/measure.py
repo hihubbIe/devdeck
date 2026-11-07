@@ -79,7 +79,8 @@ def start(args, env_extra=None):
     env["DEVDECK_STATS"] = "10"  # rare: reading smaps_rollup itself costs CPU
     env.update(env_extra or {})
     log = open(args.log, "w")
-    p = subprocess.Popen([args.bin], env=env, stdout=log, stderr=subprocess.STDOUT)
+    # The scenarios measure the demo (its fake servers and views).
+    p = subprocess.Popen([args.bin, "--demo"], env=env, stdout=log, stderr=subprocess.STDOUT)
     return p
 
 

@@ -1,10 +1,16 @@
-//! devdeck: the M1 prototype on fake data. Measures itself on request
-//! (`DEVDECK_STATS`, `DEVDECK_STRESS`, `DEVDECK_LATENCY`; see docs/WORKFLOW.md).
+//! devdeck. The workspaces come from the config folder (`workspaces/*.toml`, see
+//! `core::config`); `devdeck --demo` runs the demo on fake data instead, with its own
+//! state. Measures itself on request (`DEVDECK_STATS`, `DEVDECK_STRESS`, which implies
+//! the demo, `DEVDECK_LATENCY`; see docs/WORKFLOW.md).
 //! `DEVDECK_OPEN=<view>` opens a view at start (`run/entityservice/go:run`), and
 //! `DEVDECK_FAKE_RATE` makes the demo's servers write that many lines per second.
 
 use devdeck_app::shell::{Shell, try_shell};
 use devdeck_app::stats;
+use devdeck_app::shell::WorkspaceSpec;
+use devdeck_core::config::{ConfigError, load_machine, load_workspaces};
+use devdeck_core::layout::{Layout, ViewRef};
+use devdeck_core::settings::default_config_dir;
 use devdeck_core::state::{StateStore, default_state_dir};
 use gpui::{App, Entity};
 use std::time::Duration;
@@ -27,9 +33,26 @@ fn main() {
         })
         .detach();
 
-        // The demo keeps its own state, apart from the real workspaces' layouts and pins.
-        let store = StateStore::new(default_state_dir().join("demo"));
-        let shell = Shell::start(devdeck_app::demo_workspaces(), "work", Some(store), cx);
+        let demo = std::env::args().any(|a| a == "--demo") || std::env::var("DEVDECK_STRESS").is_ok();
+        let shell = if demo {
+            // The demo keeps its own state, apart from the real workspaces' layouts and pins.
+            let store = StateStore::new(default_state_dir().join("demo"));
+            Shell::start(devdeck_app::demo_workspaces(), "work", Some(store), cx)
+        } else {
+            let dir = default_config_dir();
+            let (configs, mut errors) = load_workspaces(&dir);
+            let (machine, machine_errors) = load_machine(&dir);
+            errors.extend(machine_errors);
+            let env = devdeck_app::environment::load(machine, cx);
+            env.update(cx, |e, _| e.problems.extend(errors.iter().map(describe)));
+            let mut specs: Vec<WorkspaceSpec> = configs.into_iter().map(WorkspaceSpec::from_config).collect();
+            if specs.is_empty() {
+                specs.push(WorkspaceSpec::new("welcome", "welcome", welcome_layout));
+            }
+            let first = specs.iter().map(|s| s.name.to_lowercase()).min().unwrap_or_default();
+            let first = specs.iter().find(|s| s.name.to_lowercase() == first).map(|s| s.id.clone()).unwrap_or_default();
+            Shell::start(specs, &first, Some(StateStore::new(default_state_dir())), cx)
+        };
         cx.activate(true);
         if let Ok(view) = std::env::var("DEVDECK_OPEN") {
             let deck = shell.read(cx).active_deck().downgrade();
@@ -80,6 +103,21 @@ fn spawn_latency_printer(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// The first-run screen, when no workspace is configured.
+fn welcome_layout() -> Layout {
+    let mut l = Layout::new();
+    let p = l.main().focused;
+    l.open(ViewRef::new("welcome"), p).expect("open the welcome view");
+    l
+}
+
+fn describe(e: &ConfigError) -> String {
+    match e.line {
+        Some(line) => format!("{}:{line}: {}", e.file.display(), e.message),
+        None => format!("{}: {}", e.file.display(), e.message),
+    }
 }
 
 fn spawn_stats_printer(shell: Entity<Shell>, every: Duration, cx: &mut App) {

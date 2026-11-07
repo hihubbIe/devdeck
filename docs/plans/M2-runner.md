@@ -121,6 +121,30 @@ Review of the combined step (subagent) and assessment:
 - **Accepted**: a port held on `::1` counts as a conflict for `127.0.0.1`; quitting from
   a focused terminal goes through the palette or the window button.
 
+## Step 3 plan (2026-11-07)
+
+1. Backbone (lead): a workspace comes from the demo or from a config file; `Services`
+   builds from config (discovery, overrides, envs, problems, folders to watch) with no
+   cluster until M3; the login shell's environment loads once, off the UI thread (apps
+   show "checking tools…" until then) and reaches every workspace through a catalog
+   swap, the same swap rediscovery uses; `devdeck --demo` runs the demo (its own state);
+   without any config, a welcome view says where the files go. Problems are one toast
+   with a count and a View that lists them.
+2. Builders in parallel, each on its own new file: R1 real runs (`pty_driver.rs`), R2
+   watching (`watcher.rs`), R3 lifecycle (`lifecycle.rs`: quit waits for the stop
+   sequence then kills what's left, signals to devdeck, one devdeck at a time, leftovers
+   offered at start), R4 ports (background scan, port memory, conflict before a start
+   with "Stop holder").
+3. Restore on reopen (user, 2026-11-07): every view comes back in its place, fresh;
+   terminal contents aren't kept; a run that was running at quit starts again in its
+   tab; views keep their own small state (scroll, follow, filters) next to the layout.
+4. The user's config (moved here from step 5): `tadaweb` = `~/Documents/repos`,
+   `personal` = `~/Documents/private_repos` and `~/Documents/public_repos`; real apps
+   checked on screen; review; commit.
+
+Decisions: a second devdeck says one is running and exits; leftovers after a crash are
+offered in a dialog at start; problems are one toast with a count.
+
 ## States to check
 
 No config; config error; app vs library; missing tool; `.nvmrc` wants a missing Node;

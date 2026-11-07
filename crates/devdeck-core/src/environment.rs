@@ -57,7 +57,17 @@ impl Toolbox {
     pub fn load(machine: &crate::config::MachineConfig) -> Result<Toolbox, String> {
         let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
         let out = capture(shell_command(&shell), SHELL_TIMEOUT).map_err(|e| format!("login shell {shell}: {e}"))?;
-        let mut vars = parse_env(&out).ok_or_else(|| format!("login shell {shell}: printed no environment"))?;
+        let vars = parse_env(&out).ok_or_else(|| format!("login shell {shell}: printed no environment"))?;
+        Ok(Self::from_vars(vars, machine))
+    }
+
+    /// devdeck's own environment, when the login shell couldn't be asked (it may lack
+    /// what `~/.bashrc` sets: the caller says so).
+    pub fn current(machine: &crate::config::MachineConfig) -> Toolbox {
+        Self::from_vars(std::env::vars().collect(), machine)
+    }
+
+    fn from_vars(mut vars: Vec<(String, String)>, machine: &crate::config::MachineConfig) -> Toolbox {
         prepend_path(&mut vars, &machine.path);
         let home = var(&vars, "HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(PathBuf::from));
         let aliases = home.as_ref().map(|h| h.join(".nvm/alias")).filter(|a| a.is_dir());
@@ -66,7 +76,7 @@ impl Toolbox {
             true => home.map(|h| vec![h.join(".nvm/versions/node")]).unwrap_or_default(),
             false => machine.node_dirs.clone(),
         };
-        Ok(Toolbox { vars, node: node_installs(&dirs), aliases })
+        Toolbox { vars, node: node_installs(&dirs), aliases }
     }
 
     /// The Node install for an app, or why there is none (`.nvmrc wants node 20, which
