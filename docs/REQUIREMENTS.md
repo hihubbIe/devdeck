@@ -30,7 +30,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R3.6** A pane can collapse to only its tab strip, giving its space to its neighbours. Clicking a tab (or a key) expands it again.
 - [~] **R3.7** A pane can be maximized and restored.
 - [~] **R3.8** A tab can be detached into its own OS window. That window contains a single pane (it can receive more tabs), nothing else of the app. It is owned by the main process: closing the main app closes it. The detached window's title bar has a re-attach button (⇲) next to close (×): ⇲ sends its tabs back to the main window, × closes the window and its tabs. Dragging tabs between windows is not required (decided 2026-11-07: GPUI can't do it on Wayland; "Send to…" covers it).
-- [ ] **R3.11** "Send to…" on a tab and on a pane (menu, pane button, key): every pane of every window shows a number and is listed by its active tab and position, plus "new window". Pick by number key, by clicking the list, or by clicking the pane. Esc cancels. Sending a pane moves all its tabs.
+- [x] **R3.11** "Send to…" on a tab and on a pane (menu, pane button, key): every pane of every window shows a number and is listed by its active tab and position, plus "new window". Pick by number key, by clicking the list, or by clicking the pane. Esc cancels. Sending a pane moves all its tabs.
 - [~] **R3.9** Panes never overlap. Each pane clips its own content; content wider than the pane scrolls inside it.
 - [ ] **R3.10** Named layouts per workspace: save the current arrangement, switch between layouts. A view can be marked "keep in every layout".
 
@@ -46,8 +46,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts.
 - [~] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
-- [ ] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
-- [ ] **R5.4** k9s-inspired single-key shortcuts, a context-sensitive hint bar, and a searchable cheat sheet (`?`).
+- [~] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
+- [x] **R5.4** k9s-inspired single-key shortcuts, a context-sensitive hint bar, and a searchable cheat sheet (`?`).
 - [~] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
 
 ## 6. Local apps

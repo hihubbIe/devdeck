@@ -10,7 +10,7 @@ use devdeck_core::runs::{Level, Output};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{InputEvent, TextInput, label, theme, tip, toggle_button};
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, ListHorizontalSizingBehavior,
+    App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
     ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
     Window, actions, div, prelude::*, uniform_list,
 };
@@ -21,20 +21,6 @@ pub const LOGS_TICK: Duration = Duration::from_millis(500);
 pub const LOGS_CAP: usize = 5000;
 
 actions!(logs_view, [Find, NextMatch, PrevMatch, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything]);
-
-pub fn bind_keys(cx: &mut App) {
-    let c = Some("LogsView && !TextInput");
-    cx.bind_keys([
-        KeyBinding::new("/", Find, c),
-        KeyBinding::new("n", NextMatch, c),
-        KeyBinding::new("shift-n", PrevMatch, c),
-        KeyBinding::new("p", TogglePause, c),
-        KeyBinding::new("1", OnlyErrors, c),
-        KeyBinding::new("2", WarnAndUp, c),
-        KeyBinding::new("3", InfoAndUp, c),
-        KeyBinding::new("4", Everything, c),
-    ]);
-}
 
 /// Lowest level shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

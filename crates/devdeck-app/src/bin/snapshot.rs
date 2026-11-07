@@ -352,6 +352,78 @@ fn port(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>)
     open_view(cx, shell, ViewAddr::Port { port: "5720".into() });
 }
 
+fn cheat_sheet(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _shell: &Entity<Shell>) {
+    let _ = cx.update_window(w, |_, window, cx| devdeck_app::cheat_sheet::open(window, cx));
+    cx.run_until_parked();
+}
+
+fn cheat_sheet_filtered(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cheat_sheet(cx, w, shell);
+    cx.update(|cx| {
+        let layer = devdeck_ui::overlay::layer(w, cx);
+        let modal = layer.read(cx).modals.last().cloned().unwrap();
+        let sheet = modal.downcast::<devdeck_app::cheat_sheet::CheatSheet>().unwrap();
+        let input = sheet.read(cx).filter.clone();
+        input.update(cx, |i, cx| i.set_text("tab", cx));
+    });
+}
+
+fn palette_with(text: &'static str, drill: bool) -> impl Fn(&mut HeadlessAppContext, AnyWindowHandle) {
+    move |cx, w| {
+        let _ = cx.update_window(w, |_, window, cx| devdeck_app::palette::open(window, cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let layer = devdeck_ui::overlay::layer(w, cx);
+            let modal = layer.read(cx).modals.last().cloned().unwrap();
+            let p = modal.downcast::<devdeck_app::palette::Palette>().unwrap();
+            let input = p.read(cx).input.clone();
+            input.update(cx, |i, cx| i.set_text(text, cx));
+            if drill {
+                p.update(cx, |p, cx| {
+                    p.drill = Some("entityservice".into());
+                    cx.notify();
+                });
+                input.update(cx, |i, cx| i.set_text("", cx));
+            }
+        });
+    }
+}
+
+fn palette_empty(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>) {
+    palette_with("", false)(cx, w);
+}
+fn palette_matches(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>) {
+    palette_with("ent", false)(cx, w);
+}
+fn palette_drill(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>) {
+    palette_with("", true)(cx, w);
+}
+fn palette_env(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>) {
+    palette_with("event run @33", false)(cx, w);
+}
+
+fn tab_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>) {
+    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::actions::ContextMenu), cx));
+}
+
+fn send_to(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let (p, i) = l.find_view(&ViewRef::new("demo/notes")).unwrap();
+                l.detach(p, i).map(|_| ())
+            });
+        })
+    });
+    cx.run_until_parked();
+    let source = cx.update(|cx| {
+        let l = &deck.read(cx).layout;
+        devdeck_app::deck::SendSource::Tab(l.pane(l.main().focused).unwrap().active_view().unwrap().clone())
+    });
+    let _ = cx.update_window(w, |_, window, cx| devdeck_app::send_to::open(deck.clone(), source, window, cx));
+}
+
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
     l.find_view(&ViewRef::new(v)).expect("view open").0
 }
@@ -478,6 +550,15 @@ fn states() -> Vec<State> {
         w("91-pod-crashloop", "work", 1.0, Some(pod)),
         w("92-matrix-highlight", "work", 1.0, Some(matrix)),
         w("93-port", "work", 1.0, Some(port)),
+        w("A0-cheat-sheet", "work", 1.0, Some(cheat_sheet)),
+        w("A1-cheat-sheet-filtered", "work", 1.0, Some(cheat_sheet_filtered)),
+        w("A2-palette-empty", "work", 1.0, Some(palette_empty)),
+        w("A3-palette-matches", "work", 1.0, Some(palette_matches)),
+        w("A4-palette-drill", "work", 1.0, Some(palette_drill)),
+        w("A5-palette-env", "work", 1.0, Some(palette_env)),
+        w("A6-tab-menu", "work", 1.0, Some(tab_menu)),
+        w("A7-send-to", "work", 1.0, Some(send_to)),
+        w("A8-palette-150", "work", 1.5, Some(palette_matches)),
     ]
 }
 
@@ -508,6 +589,11 @@ fn main() -> Result<(), String> {
         cx.run_until_parked();
         cx.advance_clock(state.settle);
         cx.run_until_parked();
+        if let Some(extra) = state.extra {
+            let main: AnyWindowHandle = cx.update(|cx| shell.read(cx).main_window().expect("main window").into());
+            extra(&mut cx, main, &shell);
+            cx.run_until_parked();
+        }
         // Main window first (w0), then detached ones.
         let windows = cx.update(|cx| {
             let main: AnyWindowHandle = shell.read(cx).main_window().expect("main window").into();
@@ -515,13 +601,12 @@ fn main() -> Result<(), String> {
             all.sort_by_key(|w| *w != main);
             all
         });
-        if let Some(extra) = state.extra {
-            extra(&mut cx, windows[0], &shell);
-            cx.run_until_parked();
-        }
         for (i, w) in windows.iter().enumerate() {
-            cx.update_window(*w, |_, window, _| window.refresh()).map_err(|e| e.to_string())?;
-            cx.run_until_parked();
+            // Twice: the hint bar reads the focus path of the previous frame.
+            for _ in 0..2 {
+                cx.update_window(*w, |_, window, _| window.refresh()).map_err(|e| e.to_string())?;
+                cx.run_until_parked();
+            }
             let image = cx.capture_screenshot(*w).map_err(|e| e.to_string())?;
             let path = out.join(format!("{}-w{i}.png", state.name));
             image.save(&path).map_err(|e| e.to_string())?;

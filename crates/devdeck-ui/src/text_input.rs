@@ -11,7 +11,7 @@ use crate::text_buffer::TextBuffer;
 use crate::theme::theme;
 use gpui::{
     App, Bounds, ClipboardItem, Context, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, SharedString, ShapedLine, Style,
     TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative, size,
 };
@@ -45,35 +45,6 @@ actions!(
         Cancel,
     ]
 );
-
-pub fn bind_keys(cx: &mut App) {
-    let c = Some("TextInput");
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, c),
-        KeyBinding::new("delete", Delete, c),
-        KeyBinding::new("ctrl-backspace", DeleteWordLeft, c),
-        KeyBinding::new("left", Left, c),
-        KeyBinding::new("right", Right, c),
-        KeyBinding::new("shift-left", SelectLeft, c),
-        KeyBinding::new("shift-right", SelectRight, c),
-        KeyBinding::new("ctrl-left", WordLeft, c),
-        KeyBinding::new("ctrl-right", WordRight, c),
-        KeyBinding::new("ctrl-shift-left", SelectWordLeft, c),
-        KeyBinding::new("ctrl-shift-right", SelectWordRight, c),
-        KeyBinding::new("home", Home, c),
-        KeyBinding::new("end", End, c),
-        KeyBinding::new("shift-home", SelectHome, c),
-        KeyBinding::new("shift-end", SelectEnd, c),
-        KeyBinding::new("ctrl-a", SelectAll, c),
-        KeyBinding::new("ctrl-c", Copy, c),
-        KeyBinding::new("ctrl-x", Cut, c),
-        KeyBinding::new("ctrl-v", Paste, c),
-        KeyBinding::new("ctrl-z", Undo, c),
-        KeyBinding::new("ctrl-shift-z", Redo, c),
-        KeyBinding::new("enter", Submit, c),
-        KeyBinding::new("escape", Cancel, c),
-    ]);
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputEvent {

@@ -3,11 +3,15 @@
 
 pub mod actions;
 pub mod app_settings;
+pub mod cheat_sheet;
 pub mod cluster;
 pub mod deck;
 pub mod gallery;
 pub mod kube_feed;
+pub mod palette;
+pub mod registry;
 pub mod runner;
+pub mod send_to;
 pub mod services;
 pub mod settings_view;
 pub mod shell;
@@ -71,13 +75,6 @@ pub fn init(cx: &mut App) {
 pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     load_fonts(cx);
     app_settings::init(dir, cx);
-    devdeck_ui::bind_keys(cx);
     actions::bind(cx);
-    sidebar::bind_keys(cx);
-    views::app_view::bind_keys(cx);
-    views::run_view::bind_keys(cx);
-    views::service_view::bind_keys(cx);
-    views::logs_view::bind_keys(cx);
-    views::matrix_view::bind_keys(cx);
     cx.on_window_closed(|cx, id| devdeck_ui::overlay::forget_layer(id, cx)).detach();
 }

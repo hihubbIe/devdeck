@@ -16,7 +16,7 @@ use devdeck_core::list::{self, ListItem, Row, Section};
 use devdeck_core::state::{SidebarState, StateStore};
 use devdeck_ui::{DragGhost, InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button};
 use gpui::{
-    App, AppContext, Context, Entity, EntityId, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
+    App, AppContext, Context, Entity, EntityId, FocusHandle, Focusable, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
     UniformListScrollHandle, Window, actions, div, prelude::*, uniform_list,
 };
@@ -25,22 +25,6 @@ actions!(
     sidebar,
     [SelectNext, SelectPrev, SelectFirst, SelectLast, OpenSelected, TogglePin, FocusFilter, ToggleRunningOnly, SidebarEscape]
 );
-
-pub fn bind_keys(cx: &mut App) {
-    let any = Some("Sidebar");
-    let list = Some("Sidebar && !TextInput");
-    cx.bind_keys([
-        KeyBinding::new("down", SelectNext, any),
-        KeyBinding::new("up", SelectPrev, any),
-        KeyBinding::new("home", SelectFirst, list),
-        KeyBinding::new("end", SelectLast, list),
-        KeyBinding::new("enter", OpenSelected, list),
-        KeyBinding::new("p", TogglePin, list),
-        KeyBinding::new("/", FocusFilter, list),
-        KeyBinding::new("r", ToggleRunningOnly, list),
-        KeyBinding::new("escape", SidebarEscape, any),
-    ]);
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {

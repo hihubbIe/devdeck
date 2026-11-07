@@ -42,6 +42,15 @@ pub struct Deck {
     save_failed: bool,
     /// Layout writes done (tests check the debounce).
     pub saves: usize,
+    /// A "Send to…" pick in progress (R3.11).
+    pub send: Option<SendSource>,
+}
+
+/// What a "Send to…" pick moves.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SendSource {
+    Tab(ViewRef),
+    Pane(PaneId),
 }
 
 impl Deck {
@@ -63,6 +72,7 @@ impl Deck {
             save_task: None,
             save_failed: false,
             saves: 0,
+            send: None,
         }
     }
 
@@ -138,6 +148,7 @@ impl Deck {
     /// Closing a detached window closes its tabs too. The main window is the shell's.
     pub fn close_window(&mut self, id: WindowId, cx: &mut Context<Self>) {
         debug_assert_ne!(id, MAIN_WINDOW, "the shell handles the main window");
+        self.send = None;
         if id != MAIN_WINDOW {
             self.apply(cx, |l| l.close_window(id).map(|_| ()));
         }
@@ -145,6 +156,7 @@ impl Deck {
 
     /// Sends a detached window's tabs back to the main window (⇲).
     pub fn reattach(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        self.send = None;
         self.apply(cx, |l| l.reattach(id).map(|_| ()));
     }
 
@@ -164,8 +176,56 @@ impl Deck {
         }
     }
 
+    /// Starts a pick: badges appear on every pane of the workspace.
+    pub fn start_send(&mut self, source: SendSource, cx: &mut Context<Self>) {
+        self.send = Some(source);
+        cx.notify();
+    }
+
+    pub fn cancel_send(&mut self, cx: &mut Context<Self>) {
+        if self.send.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Completes a pick: into a pane, or a new window when `None`.
+    pub fn send_to(&mut self, target: Option<PaneId>, cx: &mut Context<Self>) {
+        let Some(source) = self.send.take() else { return };
+        match source {
+            SendSource::Tab(view) => self.apply(cx, |l| l.send_tab(&view, target)),
+            SendSource::Pane(pane) => self.apply(cx, |l| l.send_pane(pane, target)),
+        };
+    }
+
+    /// Why a target can't take the pick, if it can't.
+    pub fn send_refusal(&self, target: Option<PaneId>) -> Option<&'static str> {
+        let source_pane = match self.send.as_ref()? {
+            SendSource::Tab(v) => self.layout.find_view(v)?.0,
+            SendSource::Pane(p) => *p,
+        };
+        match target {
+            Some(t) if t == source_pane => Some("already here"),
+            None => {
+                let w = self.layout.window_of(source_pane).ok()?;
+                let alone = self.layout.is_detached(w) && self.layout.panes_in(w).is_ok_and(|p| p.len() == 1);
+                let single_tab = matches!(self.send, Some(SendSource::Tab(_))) && self.layout.pane(source_pane).is_ok_and(|p| p.tabs.len() == 1);
+                (alone && (single_tab || matches!(self.send, Some(SendSource::Pane(_))))).then_some("already alone in its window")
+            }
+            _ => None,
+        }
+    }
+
     pub fn sync(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
+        // A pick whose source went away is over.
+        let gone = match &self.send {
+            Some(SendSource::Tab(v)) => self.layout.find_view(v).is_none(),
+            Some(SendSource::Pane(p)) => self.layout.pane(*p).is_err(),
+            None => false,
+        };
+        if gone || !self.active {
+            self.send = None;
+        }
         // Views: create missing, drop closed.
         let open = self.layout.views();
         let closed: Vec<ViewRef> = self.views.keys().filter(|r| !open.contains(*r)).cloned().collect();

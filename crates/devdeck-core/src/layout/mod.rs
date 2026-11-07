@@ -641,6 +641,61 @@ impl Layout {
         Ok(target)
     }
 
+    // ---------------------------------------------------------------- send to (R3.11)
+
+    /// Every pane, numbered for "Send to…": the main window first, then detached
+    /// windows in creation order; inside a window, reading order (top to bottom, then
+    /// left to right), ignoring maximize.
+    pub fn numbered_panes(&self) -> Vec<(PaneId, WindowId)> {
+        let mut plain = self.clone();
+        for w in &mut plain.windows {
+            w.maximized = None;
+        }
+        let mut windows: Vec<WindowId> = plain.windows.iter().map(|w| w.id).collect();
+        windows.sort_by_key(|w| (*w != MAIN_WINDOW, w.0));
+        let mut out = Vec::new();
+        for w in windows {
+            let mut rects = plain.pane_rects(w, (1000.0, 1000.0), 0.0).unwrap_or_default();
+            rects.sort_by(|a, b| (a.1.y, a.1.x).partial_cmp(&(b.1.y, b.1.x)).unwrap_or(std::cmp::Ordering::Equal));
+            out.extend(rects.into_iter().map(|(p, _)| (p, w)));
+        }
+        out
+    }
+
+    /// Sends a tab into `target`, or into a new window when `None`.
+    pub fn send_tab(&mut self, view: &ViewRef, target: Option<PaneId>) -> Result<()> {
+        let (pane, idx) = self.find_view(view).ok_or(LayoutError::TabOutOfRange)?;
+        match target {
+            Some(t) if t == pane => Ok(()),
+            Some(t) => self.move_tab(pane, idx, Drop::Into(t)),
+            None => self.detach(pane, idx).map(|_| ()),
+        }
+    }
+
+    /// Sends every tab of a pane into `target`, or into a new window when `None`.
+    pub fn send_pane(&mut self, pane: PaneId, target: Option<PaneId>) -> Result<()> {
+        match target {
+            Some(t) if t == pane => Ok(()),
+            Some(t) => self.move_pane(pane, Drop::Into(t)),
+            None => {
+                let tabs = self.pane(pane)?.tabs.clone();
+                let window = self.window_of(pane)?;
+                if self.is_detached(window) && self.panes_in(window)?.len() == 1 {
+                    return Err(LayoutError::AlreadyAlone);
+                }
+                if tabs.is_empty() {
+                    return Err(LayoutError::TabOutOfRange);
+                }
+                let new_window = self.detach(pane, 0)?;
+                let new_pane = self.window(new_window)?.focused;
+                for v in tabs.iter().skip(1) {
+                    self.send_tab(v, Some(new_pane))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- geometry
 
     /// Pane rectangles of a window for a given size, honouring weights, collapsed

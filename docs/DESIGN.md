@@ -192,6 +192,11 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 Live work follows visibility: metrics sampling and the fake log feed run only
   while their view is on screen (active tab, expanded pane, shown workspace); rollouts
   and runs keep going regardless.
+- 2026-11-07 One action registry (`devdeck-app/src/registry.rs`) binds every key, the
+  shared components' too; menus, palette, cheat sheet, hint bar and tooltips read
+  labels and keys from it. App-wide keys don't fire under a modal or a menu.
+- 2026-11-07 "Send to…" shows a floating list without a backdrop, so every pane (in
+  every window) stays clickable as a target while the pick runs.
 - 2026-11-07 The deploy confirmation shows the whole command, wrapping if needed: the one
   place a view opts into wrapping (R4.4), so the deployed tag is never cut off.
 - Should the palette's empty state show recent actions (ranking by use), given lists

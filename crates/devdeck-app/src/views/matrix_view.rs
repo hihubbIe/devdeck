@@ -9,15 +9,11 @@ use devdeck_core::cluster::Remote;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{label, theme, tip};
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, StatefulInteractiveElement,
+    App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
     Styled, Subscription, Window, actions, div, prelude::*,
 };
 
 actions!(matrix_view, [ClearHighlight]);
-
-pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("escape", ClearHighlight, Some("MatrixView"))]);
-}
 
 pub struct MatrixView {
     ctx: ViewCx,
@@ -100,6 +96,27 @@ impl Render for MatrixView {
                         .when(lit, |d| d.bg(t.selection).text_color(t.hi))
                         .when(tag.is_some(), |d| d.hover(move |s| s.bg(hover)).cursor_pointer())
                         .tooltip(tip(format!("{} on {} (double-click opens it)", text, e.name)))
+                        .on_mouse_down(gpui::MouseButton::Right, {
+                            let (me, ctx, addr, tag) = (cx.entity(), self.ctx.clone(), ViewAddr::Svc { env: e.name.clone(), name: s.clone() }, tag.clone());
+                            move |ev, window, cx| {
+                                let Some(tag) = tag.clone() else { return };
+                                let (ctx, addr, me) = (ctx.clone(), addr.clone(), me.clone());
+                                devdeck_ui::open_menu(
+                                    ev.position,
+                                    vec![
+                                        devdeck_ui::MenuItem::new("Open service", move |_, cx| ctx.open(addr.clone(), cx)),
+                                        devdeck_ui::MenuItem::new(format!("Highlight {tag}"), move |_, cx| {
+                                            me.update(cx, |m, cx| {
+                                                m.highlight = Some(tag.clone());
+                                                cx.notify();
+                                            })
+                                        }),
+                                    ],
+                                    window,
+                                    cx,
+                                );
+                            }
+                        })
                         .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
                             if ev.click_count() == 2 {
                                 ctx.open(addr.clone(), cx);

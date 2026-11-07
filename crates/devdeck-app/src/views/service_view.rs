@@ -17,23 +17,11 @@ use devdeck_ui::{
     theme, tip, toasts,
 };
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render,
+    AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*, relative,
 };
 
 actions!(service_view, [SaveTag, Undo, OpenLogs, EditTag, ConfirmModal]);
-
-pub fn bind_keys(cx: &mut App) {
-    let any = Some("ServiceView");
-    let keys = Some("ServiceView && !TextInput");
-    cx.bind_keys([
-        KeyBinding::new("ctrl-s", SaveTag, any),
-        KeyBinding::new("u", Undo, keys),
-        KeyBinding::new("l", OpenLogs, keys),
-        KeyBinding::new("t", EditTag, keys),
-        KeyBinding::new("enter", ConfirmModal, Some("Modal && ServiceModal")),
-    ]);
-}
 
 pub struct ServiceView {
     pub env: String,
@@ -493,6 +481,22 @@ impl Render for ServiceView {
                     .rounded(t.radius_s)
                     .hover(move |s| s.bg(hover))
                     .cursor_pointer()
+                    .on_mouse_down(gpui::MouseButton::Right, {
+                        let (ctx, pod, logs) = (self.ctx.clone(), addr.clone(), ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() });
+                        move |e, window, cx| {
+                            let (c1, c2) = (ctx.clone(), ctx.clone());
+                            let (pod, logs) = (pod.clone(), logs.clone());
+                            open_menu(
+                                e.position,
+                                vec![
+                                    MenuItem::new("Open pod", move |_, cx| c1.open(pod.clone(), cx)).hint("⏎"),
+                                    MenuItem::new("Logs", move |_, cx| c2.open(logs.clone(), cx)).hint(crate::registry::key_for("svc.logs")),
+                                ],
+                                window,
+                                cx,
+                            );
+                        }
+                    })
                     .on_click(move |_, _, cx| ctx.open(addr.clone(), cx))
                     .child(col(300., p.name.clone(), t.fg))
                     .child(col(150., phase, if ok { t.ok } else { t.err }))

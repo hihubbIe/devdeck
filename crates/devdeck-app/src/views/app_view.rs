@@ -8,24 +8,11 @@ use devdeck_core::apps::{Command, Tier};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{Theme, ToastKind, label, section, theme, tip, toasts};
 use gpui::{
-    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, SharedString,
+    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
 };
 
 actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden]);
-
-pub fn bind_keys(cx: &mut App) {
-    let c = Some("AppView && !TextInput");
-    cx.bind_keys([
-        KeyBinding::new("down", SelectNext, c),
-        KeyBinding::new("up", SelectPrev, c),
-        KeyBinding::new("enter", RunSelected, c),
-        KeyBinding::new("s", StopSelected, c),
-        KeyBinding::new("r", RestartSelected, c),
-        KeyBinding::new("o", OpenOutput, c),
-        KeyBinding::new("h", ToggleHidden, c),
-    ]);
-}
 
 pub struct AppView {
     pub app: String,
@@ -33,13 +20,15 @@ pub struct AppView {
     focus: FocusHandle,
     pub selected: Option<String>,
     pub show_hidden: bool,
+    /// Top-left on screen (keyboard-opened menus are placed from it).
+    origin: std::rc::Rc<std::cell::Cell<gpui::Point<gpui::Pixels>>>,
     _observe: Subscription,
 }
 
 impl AppView {
     pub fn new(app: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&ctx.services, |_, _, cx| cx.notify());
-        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, _observe: observe }
+        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), _observe: observe }
     }
 
     /// Commands in display order (hidden ones only when shown).
@@ -111,6 +100,23 @@ impl AppView {
         if let Some(cmd) = self.selected.clone() {
             f(self, &cmd, cx);
         }
+    }
+}
+
+impl AppView {
+    /// The menu of a command row (right-click, shift+F10).
+    pub fn command_menu(this: &gpui::Entity<Self>, cmd: &str) -> Vec<devdeck_ui::MenuItem> {
+        use crate::registry::key_for;
+        let item = |label: &'static str, key: &'static str, f: fn(&mut Self, &str, &mut Context<Self>)| {
+            let (me, cmd) = (this.clone(), cmd.to_string());
+            devdeck_ui::MenuItem::new(label, move |_, cx| me.update(cx, |v, cx| f(v, &cmd, cx))).hint(key_for(key))
+        };
+        vec![
+            item("Run", "app_view.run", Self::run),
+            item("Stop", "app_view.stop", Self::stop),
+            item("Restart", "app_view.restart", Self::restart),
+            item("Output", "app_view.output", Self::open_output),
+        ]
     }
 }
 
@@ -222,6 +228,16 @@ impl Render for AppView {
                         .gap_2()
                         .rounded(t.radius_s)
                         .when(selected, |d| d.bg(if focused { t.selection } else { t.hover }))
+                        .on_mouse_down(gpui::MouseButton::Right, {
+                            let (me, id) = (cx.entity(), c.id.clone());
+                            move |e, window, cx| {
+                                me.update(cx, |v, cx| {
+                                    v.selected = Some(id.clone());
+                                    cx.notify();
+                                });
+                                devdeck_ui::open_menu(e.position, AppView::command_menu(&me, &id), window, cx);
+                            }
+                        })
                         .on_click(cx.listener(move |this, e: &gpui::ClickEvent, _, cx| {
                             this.selected = Some(r1.clone());
                             if e.click_count() == 2 {
@@ -253,6 +269,7 @@ impl Render for AppView {
         div()
             .id("app-view")
             .key_context("AppView")
+            .relative()
             .track_focus(&self.focus)
             .size_full()
             .flex()
@@ -263,10 +280,23 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &StopSelected, _, cx| this.with_selected(cx, |s, c, cx| s.stop(c, cx))))
             .on_action(cx.listener(|this, _: &RestartSelected, _, cx| this.with_selected(cx, |s, c, cx| s.restart(c, cx))))
             .on_action(cx.listener(|this, _: &OpenOutput, _, cx| this.with_selected(cx, |s, c, cx| s.open_output(c, cx))))
+            .on_action(cx.listener(|this, _: &crate::actions::ContextMenu, window, cx| {
+                if this.selected.is_none() {
+                    this.move_selection(0, cx);
+                }
+                if let Some(cmd) = this.selected.clone() {
+                    let at = this.origin.get() + gpui::point(theme(cx).size(140.), theme(cx).size(96.));
+                    devdeck_ui::open_menu(at, AppView::command_menu(&cx.entity(), &cmd), window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
                 this.show_hidden = !this.show_hidden;
                 cx.notify();
             }))
+            .child({
+                let origin = self.origin.clone();
+                gpui::canvas(move |b, _, _| origin.set(b.origin), |_, _, _, _| {}).absolute().size_full()
+            })
             .child(header)
             .child(body)
             .child(

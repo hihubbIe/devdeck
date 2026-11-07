@@ -6,10 +6,11 @@
 //! `render`, so drawing never holds a borrow of the deck.
 
 use crate::actions::*;
-use crate::deck::Deck;
+use crate::deck::{Deck, SendSource};
 use crate::stats;
 use crate::app_settings;
 use crate::settings_view::SettingsView;
+use crate::registry;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
@@ -22,7 +23,9 @@ use gpui::{
     WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, relative,
     size,
 };
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Drag payloads carry their deck: a drop that lands in another workspace's tree
 /// (after a switch mid-drag) is ignored.
@@ -66,6 +69,12 @@ pub struct WindowView {
     deck_sub: Subscription,
     /// Main window: the active workspace's sidebar.
     sidebar: Option<(Entity<Sidebar>, Subscription)>,
+    /// Top-left of the pane area (keyboard-opened menus are placed from it).
+    panes_origin: Rc<Cell<Point<Pixels>>>,
+    /// Hint bar entries of the last frame (re-render once when they change).
+    last_hints: Vec<(String, &'static str)>,
+    /// A frame has been drawn (GPUI's focus path needs one).
+    drawn: bool,
     /// Focused pane and its active view when keys last moved to a view.
     view_target: Option<(PaneId, Option<devdeck_core::layout::ViewRef>)>,
     _observe: Vec<Subscription>,
@@ -104,6 +113,8 @@ pub fn workspace_menu_items(shell: &Entity<Shell>, cx: &App) -> Vec<MenuItem> {
 /// Everything a render pass needs, copied out of the deck.
 struct Frame<'a> {
     layout: &'a Layout,
+    /// Send to badges: pane → (number, can take the pick).
+    numbers: &'a HashMap<PaneId, (usize, bool)>,
     views: &'a HashMap<PaneId, AnyView>,
     window: WindowId,
     deck: &'a Entity<Deck>,
@@ -176,6 +187,9 @@ impl WindowView {
             deck_sub,
             sidebar: None,
             view_target: None,
+            panes_origin: Rc::new(Cell::new(Point::default())),
+            last_hints: Vec::new(),
+            drawn: false,
             _observe: observe,
         };
         this.sync_view_focus(window, cx);
@@ -257,6 +271,64 @@ impl WindowView {
         cx.notify();
     }
 
+    /// Starts "Send to…" for the focused pane's active tab, or the whole pane.
+    fn start_send(&mut self, pane: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.focused_pane(cx) else { return };
+        let source = if pane {
+            SendSource::Pane(p)
+        } else {
+            match self.deck.read(cx).layout.pane(p).ok().and_then(|p| p.active_view().cloned()) {
+                Some(v) => SendSource::Tab(v),
+                None => return,
+            }
+        };
+        crate::send_to::open(self.deck.clone(), source, window, cx);
+    }
+
+    /// shift+F10 / Menu key: the menu of what has focus, placed next to it.
+    fn open_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let t = theme(cx).clone();
+        if let Some(sidebar) = self.active_sidebar()
+            && Self::sidebar_has_focus(&sidebar, window, cx)
+        {
+            let s = sidebar.read(cx);
+            if let Some(key) = s.selected.clone() {
+                let pinned = s.state.pins.values().any(|p| p.contains(&key));
+                let items = Sidebar::item_menu(&sidebar, &key, pinned);
+                open_menu(point(t.activity_w + t.size(40.), t.title_h + t.size(90.)), items, window, cx);
+            }
+            return;
+        }
+        let Some(p) = self.focused_pane(cx) else { return };
+        let (rect, active) = {
+            let d = self.deck.read(cx);
+            let size = self.body_size(window, &t, cx);
+            let rect = d.layout.pane_rects(self.id, size, f32::from(t.tab_h)).ok().and_then(|r| r.into_iter().find(|(q, _)| *q == p)).map(|(_, r)| r);
+            (rect, d.layout.pane(p).map(|p| p.active).unwrap_or(0))
+        };
+        let origin = self.panes_origin.get();
+        let at = rect.map_or(origin, |r| point(origin.x + logical(r.x) + t.size(24.), origin.y + logical(r.y) + t.tab_h));
+        open_menu(at, tab_menu(&self.deck, p, active, self.id, &self.deck.read(cx).layout), window, cx);
+    }
+
+    /// ctrl+k: the palette opens in the main window (brought forward from a detached one).
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_main() {
+            if !app_settings::is_open(cx) {
+                crate::palette::open(window, cx);
+            }
+            return;
+        }
+        if let Some(main) = shell::try_shell(cx).and_then(|s| s.read(cx).main_window()) {
+            cx.defer(move |cx| {
+                let _ = main.update(cx, |_, window, cx| {
+                    window.activate_window();
+                    crate::palette::open(window, cx);
+                });
+            });
+        }
+    }
+
     fn active_sidebar(&self) -> Option<Entity<Sidebar>> {
         self.sidebar.as_ref().map(|(s, _)| s.clone())
     }
@@ -322,7 +394,8 @@ impl WindowView {
                 w -= t.sidebar_w;
             }
         }
-        (f32::from(w), f32::from(s.height - t.title_h - t.status_h))
+        let bottom = if self.is_main() { t.status_h } else { Pixels::ZERO };
+        (f32::from(w), f32::from(s.height - t.title_h - bottom))
     }
 
     fn focus_dir(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
@@ -405,7 +478,15 @@ impl Render for WindowView {
         let Ok(w) = layout.window(self.id) else {
             return div().size_full().bg(t.bg).into_any_element();
         };
-        let frame = Frame { layout: &layout, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
+        let numbers: HashMap<PaneId, (usize, bool)> = {
+            let d = self.deck.read(cx);
+            if d.send.is_some() {
+                layout.numbered_panes().into_iter().enumerate().map(|(i, (p, _))| (p, (i + 1, d.send_refusal(Some(p)).is_none()))).collect()
+            } else {
+                HashMap::new()
+            }
+        };
+        let frame = Frame { layout: &layout, numbers: &numbers, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
         let deck_id = self.deck.entity_id();
         let workspace = self.deck.read(cx).workspace.clone();
         let shell = self.shell.as_ref().and_then(WeakEntity::upgrade);
@@ -414,14 +495,20 @@ impl Render for WindowView {
             Some(p) => render_pane(&frame, p, None),
             None => render_node(&frame, &w.root, None),
         };
-        let status = format!(
-            "{ws_name} · {} · focused pane {} · {} views · {} renders{}",
-            if is_main { "main window" } else { "detached window" },
-            w.focused.0,
-            live,
-            stats::renders(),
-            last_error.map(|e| format!(" · {e}")).unwrap_or_default()
-        );
+        let _ = live;
+        // The focus path comes from the last drawn frame; there is none before the first.
+        // The first render is part of drawing the first frame; every later one has a frame.
+        let hints = if self.drawn { hint_bar_items(window, cx) } else { Vec::new() };
+        let first = !self.drawn;
+        self.drawn = true;
+        if first || hints != self.last_hints {
+            // Built from the last frame's focus path: draw once more so a modal or a view
+            // that just appeared shows its own keys.
+            self.last_hints = hints.clone();
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        }
+        let env_text = self.active_sidebar().and_then(|s| s.read(cx).env(cx)).map(|e| format!(" · @{}", e.name)).unwrap_or_default();
+        let place = if is_main { format!("{ws_name}{env_text}") } else { format!("{ws_name} · detached") };
         let id = self.id;
         let close_deck = self.deck.clone();
         let menu_shell = shell.clone();
@@ -452,9 +539,16 @@ impl Render for WindowView {
                     button("workspace", format!("{ws_name} ▾"), &t)
                         .debug_selector(|| "workspace-button".into())
                         .tooltip(tip("switch workspace (ctrl alt 1…9)"))
-                        .on_click(move |e, window, cx| {
+                        .on_click({
+                            let shell = shell.clone();
+                            move |e, window, cx| {
+                                let items = workspace_menu_items(&shell, cx);
+                                open_menu(e.position(), items, window, cx);
+                            }
+                        })
+                        .on_mouse_down(MouseButton::Right, move |e, window, cx| {
                             let items = workspace_menu_items(&shell, cx);
-                            open_menu(e.position(), items, window, cx);
+                            open_menu(e.position, items, window, cx);
                         }),
                 )
             })
@@ -466,15 +560,35 @@ impl Render for WindowView {
                         .text_color(if env.protected { t.err } else { t.env })
                         .debug_selector(|| "env-button".into())
                         .tooltip(tip("env for runs and the cluster list (ctrl e)"))
-                        .on_click(move |e, window, cx| {
+                        .on_click({
+                            let sidebar = sidebar.clone();
+                            move |e, window, cx| {
+                                if let Some(s) = &sidebar {
+                                    open_menu(e.position(), Sidebar::env_menu(s, cx), window, cx);
+                                }
+                            }
+                        })
+                        .on_mouse_down(MouseButton::Right, move |e, window, cx| {
                             if let Some(s) = &sidebar {
-                                open_menu(e.position(), Sidebar::env_menu(s, cx), window, cx);
+                                open_menu(e.position, Sidebar::env_menu(s, cx), window, cx);
                             }
                         }),
                 )
             })
             .when(!is_main, |d| d.child(div().text_color(t.mute).child(format!("{ws_name} · detached window"))))
             .child(div().flex_1())
+            .when(is_main, |d| {
+                d.child(
+                    button("search", format!("search {}", registry::key_for("app.palette")), &t)
+                        .debug_selector(|| "search-button".into())
+                        .on_click(|_, window, cx| crate::palette::open(window, cx)),
+                )
+                .child(
+                    button("keys", "?", &t)
+                        .tooltip(tip(format!("keys ({})", registry::key_for("app.cheat_sheet"))))
+                        .on_click(|_, window, cx| crate::cheat_sheet::open(window, cx)),
+                )
+            })
             .when(is_main, |d| {
                 d.child(
                     button("settings", if settings_open { "⚙ settings ✓" } else { "⚙ settings" }, &t)
@@ -508,11 +622,20 @@ impl Render for WindowView {
             .bg(t.bar)
             .border_t_1()
             .border_color(t.line)
+            .gap_3()
             .text_color(t.mute)
-            .child(div().flex_1().min_w_0().truncate().child(status));
+            .debug_selector(|| "hint-bar".into())
+            .child(
+                div().flex_1().min_w_0().overflow_hidden().flex().gap_3().children(hints.into_iter().map(|(key, label)| {
+                    div().flex_none().flex().gap_1().child(div().text_color(t.fg).child(key)).child(div().text_color(t.mute).child(label))
+                })),
+            )
+            .when_some(last_error, |d, e| d.child(label(e).text_color(t.warn).max_w(relative(0.4))))
+            .child(div().flex_none().text_color(t.mute).child(place));
 
         let panes = div()
             .id("panes")
+            .relative()
             .key_context("Panes")
             .track_focus(&self.panes_focus)
             .flex_1()
@@ -551,6 +674,8 @@ impl Render for WindowView {
                     l.detach(p, i).map(|_| ())
                 })
             }))
+            .on_action(cx.listener(|this, _: &SendTab, w, cx| this.start_send(false, w, cx)))
+            .on_action(cx.listener(|this, _: &SendPane, w, cx| this.start_send(true, w, cx)))
             .on_action(cx.listener(|this, _: &GrowPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, 0.05))))
             .on_action(cx.listener(|this, _: &ShrinkPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, -0.05))))
             .on_action(cx.listener(|this, _: &ToggleFollow, _, cx| {
@@ -562,7 +687,11 @@ impl Render for WindowView {
                 }
             }))
             // Per-workspace id, so element state never carries over between workspaces.
-            .child(div().id(("ws", deck_id.as_u64())).size_full().min_w_0().min_h_0().flex().child(tree));
+            .child(div().id(("ws", deck_id.as_u64())).size_full().min_w_0().min_h_0().flex().child(tree))
+            .child({
+                let origin = self.panes_origin.clone();
+                canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {}).absolute().size_full()
+            });
         let body = match (&self.settings, settings_open) {
             (Some(view), true) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
             _ => match self.active_sidebar() {
@@ -594,28 +723,37 @@ impl Render for WindowView {
             .font_family(t.font.clone())
             .text_size(t.text)
             .line_height(t.line_height)
-            .on_action(cx.listener(|this, _: &ToggleSettings, w, cx| {
-                let open = app_settings::is_open(cx);
-                this.set_settings_open(!open, w, cx);
-            }))
-            .on_action(cx.listener(|this, _: &CloseSettings, w, cx| this.set_settings_open(false, w, cx)))
             .on_action(|_: &IncreaseScale, _, cx| app_settings::increase(cx))
             .on_action(|_: &DecreaseScale, _, cx| app_settings::decrease(cx))
             .on_action(|_: &ResetScale, _, cx| app_settings::reset(cx))
-            .on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx)))
-            .on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))
-            .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
-            .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
-            .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {
-                let visible = this.active_sidebar().is_some_and(|s| s.read(cx).state.visible);
-                this.set_sidebar_visible(!visible, w, cx);
-            }))
-            .on_action(cx.listener(|this, _: &OpenEnvMenu, w, cx| this.open_env_menu(w, cx)))
-            // Esc with an empty filter: back to the panes.
-            .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.panes_focus.focus(w, cx)))
+            .on_action(|_: &CheatSheet, window, cx| crate::cheat_sheet::open(window, cx))
+            .on_action(cx.listener(|this, _: &Palette, w, cx| this.open_palette(w, cx)))
+            // Only where they do something (R5.1: unavailable actions aren't offered).
+            .when(is_main, |d| {
+                d.on_action(cx.listener(|this, _: &ToggleSettings, w, cx| {
+                    let open = app_settings::is_open(cx);
+                    this.set_settings_open(!open, w, cx);
+                }))
+                .on_action(cx.listener(|this, _: &CloseSettings, w, cx| this.set_settings_open(false, w, cx)))
+            })
+            .when(!is_main, |d| d.on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx))))
+            .when(is_main && !settings_open, |d| {
+                d.on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))
+                    .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
+                    .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
+                    .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {
+                        let visible = this.active_sidebar().is_some_and(|s| s.read(cx).state.visible);
+                        this.set_sidebar_visible(!visible, w, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenEnvMenu, w, cx| this.open_env_menu(w, cx)))
+                    // Esc with an empty filter: back to the panes.
+                    .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.panes_focus.focus(w, cx)))
+            })
+            .when(!settings_open, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
             .child(title_bar)
             .child(body)
-            .child(status_bar)
+            // A detached window holds its pane and nothing else (R3.8).
+            .when(is_main, |d| d.child(status_bar))
             .children(devdeck_ui::render_layer(window, cx))
             .when(is_main, |d| d.child(devdeck_ui::toasts(cx)));
 
@@ -640,6 +778,52 @@ impl Render for WindowView {
             }
         }
     }
+}
+
+/// What the hint bar shows: registry actions that would run from where focus is (a
+/// handler on the focus path and a key binding matching the context there), the
+/// focused thing's own keys first, the app's palette and cheat sheet last.
+pub fn hint_bar_items(window: &Window, cx: &App) -> Vec<(String, &'static str)> {
+    let stack = window.context_stack();
+    // Group order: deepest key context first.
+    let groups: Vec<&str> = stack
+        .iter()
+        .rev()
+        .flat_map(|c| {
+            ["TextInput", "Menu", "Modal", "QuitGuard", "Sidebar", "AppView", "RunView", "ServiceView", "LogsView", "MatrixView", "Settings", "Panes"]
+                .into_iter()
+                .filter(move |k| c.contains(k))
+        })
+        .map(|k| match k {
+            "TextInput" => "Text",
+            "Menu" | "Modal" => "Menus",
+            "Sidebar" => "Sidebar",
+            "AppView" => "App view",
+            "RunView" => "Run output",
+            "ServiceView" => "Service",
+            "LogsView" => "Logs",
+            "MatrixView" => "Branch matrix",
+            "Panes" => "Panes",
+            _ => "App",
+        })
+        .collect();
+    let mut out: Vec<(usize, String, &'static str)> = Vec::new();
+    for spec in registry::all().iter().filter(|s| s.hint) {
+        let action = (spec.build)();
+        // A handler on the focus path, and the entry's context true there.
+        // Exactly as GPUI enables a binding: the predicate holds at some depth.
+        let applies = spec.context.is_none_or(|c| gpui::KeyBindingContextPredicate::parse(c).is_ok_and(|p| p.depth_of(&stack).is_some()));
+        if !applies || !window.is_action_available(action.as_ref(), cx) {
+            continue;
+        }
+        if out.iter().any(|(_, _, l)| *l == spec.label) {
+            continue;
+        }
+        let rank = groups.iter().position(|g| *g == spec.group).unwrap_or(if spec.group == "App" { usize::MAX } else { usize::MAX - 1 });
+        out.push((rank, spec.key_text().unwrap_or_default(), spec.label));
+    }
+    out.sort_by_key(|(rank, _, _)| *rank);
+    out.into_iter().map(|(_, k, l)| (k, l)).collect()
 }
 
 /// The activity bar: one button per activity the workspace offers. Clicking the shown
@@ -673,6 +857,17 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                         this.show_activity(a, window, cx);
                     }
                 }))
+                .on_mouse_down(MouseButton::Right, {
+                    let me = cx.entity();
+                    move |e, window, cx| {
+                        let (m1, m2) = (me.clone(), me.clone());
+                        let items = vec![
+                            MenuItem::new(format!("Show {}", a.title()), move |window, cx| m1.update(cx, |v, cx| v.show_activity(a, window, cx))).hint(a.key_hint()),
+                            MenuItem::new("Hide sidebar", move |window, cx| m2.update(cx, |v, cx| v.set_sidebar_visible(false, window, cx))).hint(registry::key_for("sidebar.toggle")),
+                        ];
+                        open_menu(e.position, items, window, cx);
+                    }
+                })
                 .child(a.glyph()),
         );
     }
@@ -804,6 +999,105 @@ fn apply_on(deck: &Entity<Deck>, cx: &mut App, op: impl FnOnce(&mut Layout) -> d
 }
 
 fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
+    let inner = render_pane_inner(f, pane, parent);
+    let Some(&(n, enabled)) = f.numbers.get(&pane) else { return inner };
+    // Send to: this pane's number; clicking it completes the pick.
+    let t = f.t;
+    let deck = f.deck.clone();
+    // The whole pane is the target while a pick runs (R3.11: click the pane).
+    let target = div()
+        .id(("send-target", pane.0))
+        .debug_selector(move || format!("send-target-{n}"))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .occlude()
+        .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(t.drop_bg)))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            if enabled {
+                deck.update(cx, |d, cx| d.send_to(Some(pane), cx));
+            }
+        });
+    let badge = div()
+        .debug_selector(move || format!("send-badge-{n}"))
+        .absolute()
+        .top(t.size(4.))
+        .left(t.size(4.))
+        .min_w(t.size(28.))
+        .h(t.size(28.))
+        .px_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(t.radius_m)
+        .bg(if enabled { t.accent } else { t.line })
+        .text_color(if enabled { t.bg } else { t.mute })
+        .text_size(t.size(16.))
+        .child(n.to_string());
+    div().relative().size_full().min_w_0().min_h_0().flex().child(inner).child(target.child(badge)).into_any_element()
+}
+
+/// The menu of a tab (right-click, shift+F10).
+fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout) -> Vec<MenuItem> {
+    let Some(view) = layout.pane(pane).ok().and_then(|p| p.tabs.get(idx).cloned()) else { return Vec::new() };
+    let alone = layout.is_detached(window) && layout.pane(pane).is_ok_and(|p| p.tabs.len() == 1);
+    let maximized = layout.window(window).is_ok_and(|w| w.maximized == Some(pane));
+    let d = |deck: &Entity<Deck>| deck.clone();
+    let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
+    let (v1, v2) = (view.clone(), view.clone());
+    let mut detach = MenuItem::new("Detach to a window", move |_, cx| apply_on(&d3, cx, |l| l.detach(pane, idx).map(|_| ()))).hint(registry::key_for("pane.detach"));
+    if alone {
+        detach = detach.disabled("already alone in its window");
+    }
+    vec![
+        MenuItem::new("Close", move |_, cx| apply_on(&d1, cx, |l| l.close_view(&v1))).hint(registry::key_for("pane.close_tab")),
+        MenuItem::new("Close others", move |_, cx| {
+            apply_on(&d2, cx, |l| {
+                let others: Vec<_> = l.pane(pane)?.tabs.iter().filter(|r| **r != v2).cloned().collect();
+                for r in others {
+                    l.close_view(&r)?;
+                }
+                Ok(())
+            })
+        }),
+        MenuItem::separator(),
+        MenuItem::new("Send to…", move |window, cx| crate::send_to::open(d4.clone(), SendSource::Tab(view.clone()), window, cx)).hint(registry::key_for("pane.send_tab")),
+        detach,
+        MenuItem::separator(),
+        MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized).hint(registry::key_for("pane.maximize")),
+        MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))).hint(registry::key_for("pane.collapse")),
+    ]
+}
+
+/// The menu of a pane (right-click on its tab strip or grip).
+fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout) -> Vec<MenuItem> {
+    let tabs = layout.pane(pane).map(|p| p.tabs.len()).unwrap_or(0);
+    let d = |deck: &Entity<Deck>| deck.clone();
+    let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
+    let split = |item: MenuItem| if tabs < 2 { item.disabled("needs two tabs") } else { item };
+    vec![
+        split(MenuItem::new("Split right", move |_, cx| apply_on(&d1, cx, |l| split_active(l, pane, Edge::Right))).hint(registry::key_for("pane.split_right"))),
+        split(MenuItem::new("Split down", move |_, cx| apply_on(&d2, cx, |l| split_active(l, pane, Edge::Bottom))).hint(registry::key_for("pane.split_down"))),
+        MenuItem::separator(),
+        MenuItem::new("Collapse", move |_, cx| apply_on(&d3, cx, |l| l.toggle_collapse(pane))).hint(registry::key_for("pane.collapse")),
+        MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))).hint(registry::key_for("pane.maximize")),
+        MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx)).hint(registry::key_for("pane.send_pane")),
+        MenuItem::separator(),
+        MenuItem::new("Close pane", move |_, cx| {
+            apply_on(&d6, cx, |l| {
+                let views = l.pane(pane)?.tabs.clone();
+                for v in views {
+                    l.close_view(&v)?;
+                }
+                Ok(())
+            })
+        }),
+    ]
+}
+
+fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
     let Ok(p) = f.layout.pane(pane) else { return div().into_any_element() };
     let t = f.t;
     let win = f.layout.window(f.window).ok();
@@ -854,6 +1148,13 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
         .border_b_1()
         .border_color(t.line)
         .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(drop_bg))
+        .on_mouse_down(MouseButton::Right, {
+            let deck = f.deck.clone();
+            move |e, window, cx| {
+                let layout = deck.read(cx).layout.clone();
+                open_menu(e.position, pane_menu(&deck, pane, &layout), window, cx);
+            }
+        })
         .on_drop(move |tab: &DraggedTab, _, cx| {
             if tab.deck == deck_id {
                 let tab = tab.clone();
@@ -916,6 +1217,14 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
                     });
                 })
                 .on_mouse_down(MouseButton::Middle, move |_, _, cx| apply_on(&d_mid, cx, |l| l.close_tab(pane, i).map(|_| ())))
+                .on_mouse_down(MouseButton::Right, {
+                    let (deck, window_id) = (f.deck.clone(), f.window);
+                    move |e, window, cx| {
+                        cx.stop_propagation();
+                        let layout = deck.read(cx).layout.clone();
+                        open_menu(e.position, tab_menu(&deck, pane, i, window_id, &layout), window, cx);
+                    }
+                })
                 .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| {
                     cx.new(|_| DragGhost(d.title.clone()))
                 })
@@ -960,6 +1269,14 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
                 .child(
                     icon_button(("maximize", pane.0), if maximized { "◱" } else { "□" }, "maximize or restore (ctrl shift m)", t)
                         .on_click(move |_, _, cx| apply_on(&d_max, cx, |l| l.toggle_maximize(pane))),
+                )
+            })
+            .when(!p.tabs.is_empty(), |d| {
+                let deck = f.deck.clone();
+                d.child(
+                    icon_button(("send", pane.0), "⇢", "send this pane's tabs to another pane (ctrl alt shift s)", t).on_click(move |_, window, cx| {
+                        crate::send_to::open(deck.clone(), SendSource::Pane(pane), window, cx);
+                    }),
                 )
             })
             .when(can_detach, |d| {

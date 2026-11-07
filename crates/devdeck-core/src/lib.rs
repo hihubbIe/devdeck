@@ -4,6 +4,7 @@
 pub mod apps;
 pub mod cluster;
 pub mod demo;
+pub mod fuzzy;
 pub mod layout;
 pub mod list;
 pub mod runs;

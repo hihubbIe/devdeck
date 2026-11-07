@@ -12,7 +12,7 @@
 use crate::components::label;
 use crate::theme::{Theme, theme};
 use gpui::{
-    Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global, KeyBinding,
+    Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global,
     Pixels, Point, Render, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
     deferred, div, point, prelude::*,
 };
@@ -26,20 +26,6 @@ pub const PRIORITY_MENU: usize = 20;
 pub const PRIORITY_TOAST: usize = 30;
 
 actions!(overlay, [MenuUp, MenuDown, MenuConfirm, MenuClose, ModalNext, ModalPrev, ModalClose]);
-
-pub fn bind_keys(cx: &mut App) {
-    let m = Some("Menu");
-    let d = Some("Modal");
-    cx.bind_keys([
-        KeyBinding::new("up", MenuUp, m),
-        KeyBinding::new("down", MenuDown, m),
-        KeyBinding::new("enter", MenuConfirm, m),
-        KeyBinding::new("escape", MenuClose, m),
-        KeyBinding::new("tab", ModalNext, d),
-        KeyBinding::new("shift-tab", ModalPrev, d),
-        KeyBinding::new("escape", ModalClose, d),
-    ]);
-}
 
 // ------------------------------------------------------------------ menu model
 

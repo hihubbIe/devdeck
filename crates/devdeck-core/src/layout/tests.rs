@@ -584,3 +584,37 @@ proptest! {
         prop_assert_eq!(back, l);
     }
 }
+
+#[test]
+fn send_to_numbers_panes_in_reading_order_main_first() {
+    let (mut l, a) = with_tabs(&["a", "b", "c", "d"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap(); // b right of a
+    let b = l.find_view(&v("b")).unwrap().0;
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Bottom)).unwrap(); // c under a
+    let c = l.find_view(&v("c")).unwrap().0;
+    let d_win = l.detach(a, 1).unwrap(); // d alone
+    let d = l.window(d_win).unwrap().focused;
+    l.toggle_maximize(b).unwrap();
+    let numbered: Vec<PaneId> = l.numbered_panes().into_iter().map(|(p, _)| p).collect();
+    assert_eq!(numbered, [a, b, c, d], "top row left to right, then below, then detached; maximize ignored");
+}
+
+#[test]
+fn send_tab_and_pane_into_panes_and_new_windows() {
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 2, Drop::Edge(a, Edge::Right)).unwrap();
+    let c = l.find_view(&v("c")).unwrap().0;
+    l.send_tab(&v("b"), Some(c)).unwrap();
+    assert_eq!(l.pane(c).unwrap().tabs, [v("c"), v("b")]);
+    ok(&l);
+    l.send_pane(c, None).unwrap();
+    assert_eq!(l.windows.len(), 2, "the pane's tabs moved to one new window");
+    let w = l.windows[1].id;
+    let np = l.window(w).unwrap().focused;
+    assert_eq!(l.pane(np).unwrap().tabs, [v("c"), v("b")]);
+    assert!(matches!(l.send_pane(np, None), Err(LayoutError::AlreadyAlone)), "already alone");
+    l.send_pane(np, Some(a)).unwrap();
+    assert_eq!(l.windows.len(), 1, "sending a detached window's pane back closes it");
+    assert_eq!(l.pane(a).unwrap().tabs.len(), 3);
+    ok(&l);
+}

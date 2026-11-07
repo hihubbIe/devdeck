@@ -8,17 +8,12 @@ use crate::runner::RunKey;
 use devdeck_core::runs::{Level, RunState};
 use devdeck_ui::{ToastKind, label, theme, tip, toasts, toggle_button};
 use gpui::{
-    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, ListHorizontalSizingBehavior, ParentElement,
+    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*,
     uniform_list,
 };
 
 actions!(run_view, [RunAgain, Stop, Restart]);
-
-pub fn bind_keys(cx: &mut App) {
-    let c = Some("RunView && !TextInput");
-    cx.bind_keys([KeyBinding::new("enter", RunAgain, c), KeyBinding::new("s", Stop, c), KeyBinding::new("r", Restart, c)]);
-}
 
 pub struct RunView {
     pub key: RunKey,

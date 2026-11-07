@@ -627,3 +627,17 @@ Out of scope: user-configurable keymaps (later), palette recents (open question)
     `?`; detached windows drop the bottom bar (R3.8, nothing else). **Accepted.**
 12. Step 6 tests go in one binary (`tests/actions.rs`); fuzzy, pane numbering and
     conflict checks are pure. **Accepted.**
+
+### Step 6 outcome
+
+Built as assessed. New: `registry.rs`, `palette.rs`, `cheat_sheet.rs`, `send_to.rs`,
+core `fuzzy` and layout `numbered_panes` / `send_tab` / `send_pane`. The bottom bar of
+the main window is now the hint bar; detached windows have none.
+
+Found while checking:
+- GPUI's `bindings_for_action` matches against the frame's own context stack, not the focus path, so the hint bar evaluates each entry's predicate with `depth_of` on the focused stack.
+- Asking for the focus path before a window's first frame panics in GPUI; the hint bar skips the first render.
+- The Send to list's backdrop blocked clicks on its own window's panes; it is now a floating panel, and the whole pane is the click target during a pick.
+- The snapshot tool listed windows before a state's setup ran, so a window opened during setup leaked into the next state.
+
+Checks: 7 tests in `tests/actions.rs`, plus 5 core tests. Snapshots A0–A8 checked: cheat sheet, palette (empty, matches, drill-down, `@33`, 150 %), tab menu, Send to in the main window and a detached one. Hint bars checked in the panes, the palette and the app view.
