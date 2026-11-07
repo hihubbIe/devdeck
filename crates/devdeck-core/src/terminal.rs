@@ -405,6 +405,107 @@ impl Terminal {
     pub fn lines(&self) -> Vec<String> {
         (0..self.rows()).map(|i| self.row(i).text).collect()
     }
+
+    /// The links on rows `rows` (numbered as [`Terminal::row`]): addresses a program
+    /// marked (OSC 8), and `http://`, `https://` and `file://` addresses in the text. A
+    /// link can run on over rows that wrapped; one starting above `rows` counts.
+    pub fn links(&self, rows: std::ops::Range<usize>) -> Vec<Link> {
+        let cols = self.term.grid().columns();
+        let wraps = |i: usize| self.line(i).is_some_and(|cells| cells[Column(cols - 1)].flags.contains(Flags::WRAPLINE));
+        // From the start of the line the first row belongs to.
+        let mut i = rows.start;
+        while i > 0 && wraps(i - 1) {
+            i -= 1;
+        }
+        let mut out = Vec::new();
+        while i < rows.end {
+            // One line as the text reads, and the cell each character came from.
+            let (mut text, mut cells, mut marked) = (String::new(), Vec::new(), Vec::new());
+            while let Some(row) = self.line(i) {
+                let end = if wraps(i) { cols } else { self.end_of(row) };
+                for c in 0..end {
+                    let cell = &row[Column(c)];
+                    if is_spacer(cell) {
+                        continue;
+                    }
+                    let before = text.len();
+                    push_cell(&mut text, cell);
+                    for _ in before..text.len() {
+                        cells.push((i, c));
+                    }
+                    marked.push(((i, c), cell.hyperlink().map(|h| h.uri().to_string())));
+                }
+                i += 1;
+                if !wraps(i - 1) {
+                    break;
+                }
+            }
+            if cells.is_empty() && self.line(i).is_none() {
+                break;
+            }
+            let from_marks = marked_links(&marked);
+            for link in from_marks.iter().chain(&text_links(&text, &cells)) {
+                if !out.iter().any(|o: &Link| o.from == link.from) && link.from.0 < rows.end && link.to.0 >= rows.start {
+                    out.push(link.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A link in a terminal: from cell `from` to cell `to` (row, column), both included.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub from: (usize, usize),
+    pub to: (usize, usize),
+    pub url: String,
+}
+
+/// Addresses that open: on the web, or a file.
+const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
+
+/// Runs of cells a program marked with the same address that opens.
+fn marked_links(marked: &[((usize, usize), Option<String>)]) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::new();
+    let mut prev: Option<&str> = None;
+    for (cell, url) in marked {
+        match url.as_deref() {
+            Some(u) if prev == Some(u) => out.last_mut().expect("started").to = *cell,
+            Some(u) if SCHEMES.iter().any(|s| u.starts_with(s)) => out.push(Link { from: *cell, to: *cell, url: u.to_string() }),
+            _ => {}
+        }
+        prev = url.as_deref();
+    }
+    out
+}
+
+/// Addresses written in `text` (one line), `cells` giving each byte's cell. An address
+/// ends at a space, a quote or `<>`; trailing punctuation isn't part of it, nor a
+/// closing bracket it didn't open.
+fn text_links(text: &str, cells: &[(usize, usize)]) -> Vec<Link> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some((start, scheme)) = SCHEMES.iter().filter_map(|s| text[at..].find(s).map(|i| (at + i, *s))).min_by_key(|(i, _)| *i) {
+        let preceded = text[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric());
+        let rest = &text[start..];
+        let mut end = rest.find(|c: char| c.is_whitespace() || "\"'<>`".contains(c)).unwrap_or(rest.len());
+        loop {
+            let url = &rest[..end];
+            let Some(last) = url.chars().next_back() else { break };
+            let unopened = |open: char, close: char| last == close && url.matches(open).count() < url.matches(close).count();
+            if ".,;:!?".contains(last) || unopened('(', ')') || unopened('[', ']') || unopened('{', '}') {
+                end -= last.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if !preceded && end > scheme.len() {
+            out.push(Link { from: cells[start], to: cells[start + end - 1], url: rest[..end].to_string() });
+        }
+        at = start + end.max(scheme.len());
+    }
+    out
 }
 
 /// The second half of a wide character, or the gap a wide one left at a row's end.
@@ -806,5 +907,30 @@ mod tests {
     fn pastes_send_returns_and_honour_bracketed_paste() {
         assert_eq!(paste_bytes("a\nb\r\nc", false), b"a\rb\rc");
         assert_eq!(paste_bytes("x\x1b[201~y\n", true), b"\x1b[200~x[201~y\r\x1b[201~", "no way out of the brackets");
+    }
+
+    #[test]
+    fn links_are_found_in_the_text_and_where_programs_marked_them() {
+        let mut t = term(30, 6);
+        t.feed(b"  Local:   http://localhost:5173/\r\n");
+        t.feed(b"see (https://x.dev/a_(b)) and https://y.dev/p?q=1, done.\r\n");
+        t.feed(b"\x1b]8;;https://docs.rs/gpui\x1b\\docs\x1b]8;;\x1b\\ and mailto:a@b.c ftp://x\r\n");
+        let links = t.links(0..t.rows());
+        let urls: Vec<&str> = links.iter().map(|l| l.url.as_str()).collect();
+        assert_eq!(urls, ["http://localhost:5173/", "https://x.dev/a_(b)", "https://y.dev/p?q=1", "https://docs.rs/gpui"]);
+        assert_eq!((links[0].from, links[0].to), ((0, 11), (1, 2)), "33 characters wrap at 30");
+        let docs = links.iter().find(|l| l.url == "https://docs.rs/gpui").unwrap();
+        assert_eq!((docs.from, docs.to), ((4, 0), (4, 3)), "the marked text, not the address");
+    }
+
+    #[test]
+    fn a_link_that_wraps_is_one_link() {
+        let mut t = term(16, 5);
+        t.feed(b"go to https://example.com/a/long/path now\r\n");
+        let links = t.links(1..2);
+        assert_eq!(links.len(), 1, "found from its second row: {links:?}");
+        assert_eq!(links[0].url, "https://example.com/a/long/path");
+        assert_eq!((links[0].from, links[0].to), ((0, 6), (2, 4)));
+        assert_eq!(t.links(4..5), [], "rows without links");
     }
 }

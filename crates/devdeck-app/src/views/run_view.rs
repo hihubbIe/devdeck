@@ -8,7 +8,9 @@
 //! Keys (`RunView`): ⏎ run, s stop, r restart, i types into the terminal; alt+f follow.
 //! In the terminal (`Terminal`, focused by a click or i) keys go to the process except
 //! alt+… and ctrl+shift+…: ctrl+shift+⏎/x/r run, stop and restart, ctrl+shift+c/v copy
-//! and paste, ctrl+shift+esc leaves it. Dragging selects; the wheel scrolls. When several
+//! and paste, ctrl+shift+esc leaves it. Dragging selects; the wheel scrolls. With shift
+//! held over the output, its links are underlined and shift+click opens one in the
+//! browser (`http`, `https` and `file` only). When several
 //! views show one run, the one focused last sizes its terminal. Output redraws at most
 //! every [`OUTPUT_FRAME`], except right after typing, so echo shows at once.
 
@@ -67,6 +69,8 @@ pub struct RunView {
     args_input: Option<(Entity<TextInput>, Subscription)>,
     /// Where the arguments field was drawn (its menu opens below it).
     args_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Shift is held over the output: its links show.
+    links_on: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -113,6 +117,7 @@ impl RunView {
             restoring: false,
             args_input: None,
             args_bounds: Rc::default(),
+            links_on: false,
             _subs: subs,
         }
     }
@@ -206,6 +211,28 @@ impl RunView {
             .child(div().flex_none().text_color(t.mute).child("▾"))
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
             .into_any_element()
+    }
+
+    /// Whether the output's links show (shift held).
+    pub fn links_shown(&self) -> bool {
+        self.links_on
+    }
+
+    /// The middle of cell `col` of row `row` (numbered as `Terminal::row`), where it was
+    /// last drawn; `None` when it isn't shown.
+    pub fn cell_center(&self, row: usize, col: usize) -> Option<gpui::Point<Pixels>> {
+        let g = self.geometry.get()?;
+        let on_screen = (row as u64 + g.dropped).checked_sub(g.first)?;
+        let x = g.origin.x + g.cell.width * (col as f32 + 0.5);
+        Some(gpui::point(x, g.origin.y + g.cell.height * (on_screen as f32 + 0.5)))
+    }
+
+    /// Shows or hides the output's links (shift held or released).
+    pub fn show_links(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.links_on != on {
+            self.links_on = on;
+            cx.notify();
+        }
     }
 
     /// Runs with `args`: a restart when it runs, a start otherwise.
@@ -464,8 +491,8 @@ impl Render for RunView {
                 .tooltip(tip(tooltip))
                 .child(glyph)
         };
-        // What the run is takes the room left and shrinks (the line first); the actions
-        // after it always stay visible.
+        // What the run is takes the room left and shrinks (the line first, then the
+        // arguments and the name; the state stays whole); the actions always stay visible.
         let info = div()
             .flex_1()
             .min_w_0()
@@ -474,16 +501,16 @@ impl Render for RunView {
             .items_center()
             .gap_2()
             .child(div().flex_none().text_color(color).child(glyph))
-            .child(div().flex_none().text_color(t.hi).child(runner.title(&self.key)))
+            .child(div().id("title").min_w_0().tooltip(tip(runner.title(&self.key))).child(label(runner.title(&self.key)).text_color(t.hi)))
             .when_some(env, |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
             .child(div().id("line").flex_1().min_w_0().tooltip(tip(line.clone())).child(label(line).text_color(t.dim)))
             .child(args_field)
             .child(
                 div()
-                    .id("state")
-                    .min_w_0()
-                    .tooltip(tip(state_text.clone()))
-                    .child(label(state_text).text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute })),
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute })
+                    .child(state_text),
             )
             .when_some(refusal.clone(), |d, r| d.child(label(format!("⚠ {r}")).text_color(t.warn)));
         let toolbar = div()
@@ -526,6 +553,7 @@ impl Render for RunView {
             let (me, view, scrollback) = (cx.entity_id(), cx.entity().downgrade(), self.scrollback.clone());
             let focused = self.focus.contains_focused(window, cx);
             let cursor_on = running && self.term_focus.is_focused(window);
+            let links_on = self.links_on;
             // One canvas draws the visible rows: no element per row, so a frame of streaming
             // output costs little more than its text.
             let area = canvas(
@@ -561,18 +589,53 @@ impl Render for RunView {
                     // One more row than fit, partly shown.
                     let visible = first..(first + shown + 1).min(rows);
                     let cursor = (cursor_on && term.modes().show_cursor).then(|| term.cursor()).filter(|c| visible.contains(&c.row));
-                    let frame = Frame { rows: visible.clone().map(|i| term.row(i)).collect(), first, cols, selection: scrollback.selection(dropped), cursor };
-                    Some((frame, cell, window.insert_hitbox(bounds, HitboxBehavior::Normal), g))
+                    let links = if links_on { term.links(visible.clone()) } else { Vec::new() };
+                    let spans = links.iter().map(|l| (l.from, l.to)).collect();
+                    let frame = Frame { rows: visible.clone().map(|i| term.row(i)).collect(), first, cols, selection: scrollback.selection(dropped), cursor, links: spans };
+                    let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                    // A hand over each link's cells, row by row.
+                    let link_boxes: Vec<(gpui::Hitbox, String)> = links
+                        .iter()
+                        .flat_map(|l| {
+                            (l.from.0.max(first)..=l.to.0).filter(|r| visible.contains(r)).map(move |r| {
+                                let (a, b) = (if r == l.from.0 { l.from.1 } else { 0 }, if r == l.to.0 { l.to.1 + 1 } else { cols });
+                                let at = gpui::point(bounds.origin.x + cell.width * a as f32, bounds.origin.y + cell.height * (r - first) as f32);
+                                (Bounds::new(at, gpui::size(cell.width * b.saturating_sub(a) as f32, cell.height)), l.url.clone())
+                            })
+                        })
+                        .map(|(b, url)| (window.insert_hitbox(b, HitboxBehavior::Normal), url))
+                        .collect();
+                    Some((frame, cell, hitbox, g, link_boxes))
                 },
                 move |bounds, prepared, window, cx| {
-                    let Some((frame, cell, hitbox, g)) = prepared else { return };
+                    let Some((frame, cell, hitbox, g, link_boxes)) = prepared else { return };
                     let t = theme(cx).clone();
                     terminal::paint(frame, bounds, cell, &t, window, cx);
                     window.set_cursor_style(CursorStyle::IBeam, &hitbox);
-                    let (down, drag, wheel) = (view.clone(), view.clone(), view.clone());
-                    let hit = hitbox.clone();
+                    for (b, _) in &link_boxes {
+                        window.set_cursor_style(CursorStyle::PointingHand, b);
+                    }
+                    let (down, drag, wheel, shift) = (view.clone(), view.clone(), view.clone(), view.clone());
+                    let (hit, over) = (hitbox.clone(), hitbox.clone());
+                    // Shift held or released while the mouse moves over the output.
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                        let on = e.modifiers.shift && over.is_hovered(window);
+                        if phase == DispatchPhase::Bubble && on != links_on {
+                            let _ = shift.update(cx, |this, cx| this.show_links(on, cx));
+                        }
+                    });
                     window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
-                        if phase == DispatchPhase::Bubble && e.button == MouseButton::Left && hit.is_hovered(window) {
+                        if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+                            return;
+                        }
+                        if e.modifiers.shift
+                            && let Some((_, url)) = link_boxes.iter().find(|(b, _)| b.is_hovered(window))
+                        {
+                            cx.open_url(url);
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if hit.is_hovered(window) {
                             let _ = down.update(cx, |this, cx| {
                                 this.scrollback.press(g.at(e.position));
                                 cx.notify();
@@ -627,6 +690,7 @@ impl Render for RunView {
             .size_full()
             .flex()
             .flex_col()
+            .on_modifiers_changed(cx.listener(|this, e: &gpui::ModifiersChangedEvent, _, cx| this.show_links(e.modifiers.shift, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
             .on_action(cx.listener(|this, _: &RunAgain, _, cx| this.act("run", cx)))
             .on_action(cx.listener(|this, _: &Stop, _, cx| this.act("stop", cx)))

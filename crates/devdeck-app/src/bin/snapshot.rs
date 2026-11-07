@@ -240,6 +240,17 @@ fn run_terminal(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<
     cx.update(|cx| v.update(cx, |v, cx| v.select((2, 4), (4, 30), cx)));
 }
 
+/// mastertadaapp's dev server with shift held: its link underlined.
+fn run_links(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let addr = ViewAddr::Run { app: "front-end/mastertadaapp".into(), cmd: "pnpm:start:dev".into() };
+    open_view(cx, shell, addr.clone());
+    cx.advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<RunView>().unwrap());
+    cx.update(|cx| v.update(cx, |v, cx| v.show_links(true, cx)));
+}
+
 /// eventservice's run with arguments, running; its view.
 fn run_with_args(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<RunView> {
     let addr = ViewAddr::Run { app: "eventservice".into(), cmd: "go:run".into() };
@@ -661,6 +672,7 @@ fn states() -> Vec<State> {
         w("74-run-crashed-toast", "work", 1.0, Some(run_crashed)),
         w("75-run-not-started", "work", 1.0, Some(run_not_started)),
         w("76-run-terminal-focused", "work", 1.0, Some(run_terminal)),
+        w("76b-run-links", "work", 1.0, Some(run_links)),
         w("77-run-args", "work", 1.0, Some(run_args)),
         w("78-run-args-menu", "work", 1.0, Some(run_args_menu)),
         w("79-run-args-typing", "work", 1.0, Some(run_args_typing)),

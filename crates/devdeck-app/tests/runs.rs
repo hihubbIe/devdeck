@@ -442,3 +442,39 @@ fn a_command_that_succeeds_says_so_with_how_long_it_took(cx: &mut TestAppContext
     assert!(lines(&runner, &key, cx).iter().any(|l| *l == format!("succeeded in {shown}")), "in its output");
     assert!(toast_texts(cx).contains(&format!("work · pagerendererservice · build succeeded in {shown}")), "{:?}", toast_texts(cx));
 }
+
+#[gpui::test]
+fn shift_shows_the_outputs_links_and_shift_click_opens_one(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, VisualTestContext};
+    let shell = start(cx, "links");
+    let addr = ViewAddr::Run { app: "front-end/mastertadaapp".into(), cmd: "pnpm:start:dev".into() };
+    open(&shell, cx, addr.clone());
+    advance(cx, LINE_GAP * 4);
+    let main = main_window(&shell, cx);
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let view = cx.read(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<RunView>().unwrap());
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("front-end/mastertadaapp", "pnpm:start:dev");
+    let lines = lines(&runner, &key, cx);
+    let (row, col) = lines.iter().enumerate().find_map(|(r, l)| l.find("http://").map(|c| (r, c))).expect("a link in the output");
+    let url: String = lines[row][col..].split_whitespace().next().unwrap().to_string();
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    let at = vcx.read(|cx| view.read(cx).cell_center(row, col + 3)).expect("drawn");
+    let shift = Modifiers { shift: true, ..Modifiers::none() };
+    vcx.simulate_mouse_move(at, None, Modifiers::none());
+    assert!(!vcx.read(|cx| view.read(cx).links_shown()));
+    vcx.simulate_mouse_move(at, None, shift);
+    assert!(vcx.read(|cx| view.read(cx).links_shown()), "shift over the output shows them");
+    vcx.simulate_event(MouseDownEvent { button: MouseButton::Left, position: at, modifiers: shift, click_count: 1, first_mouse: false });
+    vcx.simulate_event(MouseUpEvent { button: MouseButton::Left, position: at, modifiers: shift, click_count: 1 });
+    assert_eq!(vcx.opened_url(), Some(url), "shift+click opens it");
+    vcx.simulate_mouse_move(at, None, Modifiers::none());
+    assert!(!vcx.read(|cx| view.read(cx).links_shown()), "released: hidden again");
+    // A focused tab follows shift without the mouse moving.
+    vcx.update(|window, cx| gpui::Focusable::focus_handle(view.read(cx), cx).focus(window, cx));
+    vcx.simulate_modifiers_change(shift);
+    assert!(vcx.read(|cx| view.read(cx).links_shown()));
+    vcx.simulate_modifiers_change(Modifiers::none());
+    assert!(!vcx.read(|cx| view.read(cx).links_shown()));
+}

@@ -180,6 +180,8 @@ pub struct Frame {
     pub cols: usize,
     pub selection: Option<((usize, usize), (usize, usize))>,
     pub cursor: Option<Cursor>,
+    /// Links to underline, from cell to cell (both included).
+    pub links: Vec<((usize, usize), (usize, usize))>,
 }
 
 /// Paints `frame` at `bounds.origin`, clipped to `bounds`: backgrounds, the selection, the
@@ -212,6 +214,12 @@ pub fn paint(frame: Frame, bounds: Bounds<Pixels>, cell: Size<Pixels>, t: &Theme
             }
             if let Some(line) = &line {
                 let _ = line.paint(at, cell.height, TextAlign::Left, None, window, cx);
+            }
+            for &((r0, c0), (r1, c1)) in frame.links.iter().filter(|((r0, _), (r1, _))| (*r0..=*r1).contains(&r)) {
+                let (a, b) = (if r == r0 { c0 } else { 0 }, if r == r1 { c1 + 1 } else { cols });
+                let thickness = t.hairline.max(t.size(1.));
+                let under = point(cell_at(a).x, at.y + cell.height - thickness);
+                window.paint_quad(fill(Bounds::new(under, size(cell.width * b.saturating_sub(a) as f32, thickness)), t.accent));
             }
         }
     });
