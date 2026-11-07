@@ -1417,6 +1417,7 @@ dependencies = [
  "image",
  "k8s-openapi",
  "kube",
+ "notify-debouncer-full",
  "serde_json",
  "tokio",
 ]

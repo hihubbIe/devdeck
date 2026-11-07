@@ -51,7 +51,11 @@ fn main() {
             }
             let first = specs.iter().map(|s| s.name.to_lowercase()).min().unwrap_or_default();
             let first = specs.iter().find(|s| s.name.to_lowercase() == first).map(|s| s.id.clone()).unwrap_or_default();
-            Shell::start(specs, &first, Some(StateStore::new(default_state_dir())), cx)
+            let shell = Shell::start(specs, &first, Some(StateStore::new(default_state_dir())), cx);
+            if let Some(w) = devdeck_app::watcher::start(&shell, dir, cx) {
+                devdeck_app::watcher::keep(w, cx);
+            }
+            shell
         };
         cx.activate(true);
         if let Ok(view) = std::env::var("DEVDECK_OPEN") {
