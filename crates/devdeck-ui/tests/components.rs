@@ -1,11 +1,12 @@
 //! The basic components on their own: buttons take clicks and keep mouse-down from the
 //! title bar under them; icon buttons show their tooltip on hover; labels and section
-//! headings stay on one line and truncate (R4.4).
+//! headings stay on one line and truncate (R4.4); tree rows indent by level and their
+//! chevron toggles without reaching the row.
 
 mod common;
 
 use common::{host, the_theme};
-use devdeck_ui::{button, icon_button, label, logical, section, tip, toggle_button};
+use devdeck_ui::{TREE_INDENT, button, icon_button, label, logical, section, tip, toggle_button, tree_row};
 use gpui::{
     InteractiveElement, IntoElement, Modifiers, MouseButton, ParentElement, StatefulInteractiveElement, Styled, TestAppContext,
     VisualTestContext, div, point,
@@ -109,4 +110,56 @@ fn a_section_heading_is_one_line_across_its_container(cx: &mut TestAppContext) {
     let b = vcx.debug_bounds("section").expect("drawn");
     assert_eq!(b.size.width, logical(150.));
     assert!(b.size.height < t.line_height * 2., "one line plus its spacing: {b:?}");
+}
+
+#[gpui::test]
+fn tree_rows_indent_by_level_and_line_up_with_or_without_children(cx: &mut TestAppContext) {
+    let window = host(cx, |_, cx| {
+        let t = devdeck_ui::theme(cx).clone();
+        div()
+            .w(logical(200.))
+            .child(tree_row("top", 0, Some(false), |_, _| {}, &t).child(div().debug_selector(|| "top-label".into()).child("top")))
+            .child(tree_row("leaf", 0, None, |_, _| {}, &t).child(div().debug_selector(|| "leaf-label".into()).child("leaf")))
+            .child(tree_row("deep", 2, Some(true), |_, _| {}, &t).child(div().debug_selector(|| "deep-label".into()).child("deep")))
+            .into_any_element()
+    });
+    let t = the_theme(cx);
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let x = |vcx: &mut VisualTestContext, s: &'static str| vcx.debug_bounds(s).expect(s).left();
+    assert_eq!(x(&mut vcx, "top-label"), x(&mut vcx, "leaf-label"), "a leaf's label lines up with a folder's");
+    assert_eq!(x(&mut vcx, "deep-chevron") - x(&mut vcx, "top-chevron"), t.size(TREE_INDENT) * 2., "two levels in");
+    for s in ["top", "leaf", "deep"] {
+        assert_eq!(vcx.debug_bounds(s).expect(s).size.height, t.row_h, "{s}: one row high");
+    }
+}
+
+#[gpui::test]
+fn a_tree_chevron_toggles_without_reaching_the_row(cx: &mut TestAppContext) {
+    let (open, row_downs) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(0)));
+    let (o, r) = (open.clone(), row_downs.clone());
+    let window = host(cx, move |_, cx| {
+        let (o, r) = (o.clone(), r.clone());
+        let t = devdeck_ui::theme(cx).clone();
+        let toggle = o.clone();
+        div()
+            .w(logical(200.))
+            .child(
+                tree_row("folder", 1, Some(o.get()), move |_, _| toggle.set(!toggle.get()), &t)
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| r.set(r.get() + 1))
+                    .child(div().debug_selector(|| "folder-label".into()).child("folder")),
+            )
+            .child(tree_row("leaf", 1, None, |_, _| panic!("a leaf has no chevron"), &t).child("leaf"))
+            .into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    for want in [true, false] {
+        let c = vcx.debug_bounds("folder-chevron").expect("drawn");
+        vcx.simulate_click(c.center(), Modifiers::none());
+        assert_eq!((open.get(), row_downs.get()), (want, 0), "the chevron toggles, the row doesn't see it");
+    }
+    let label = vcx.debug_bounds("folder-label").expect("drawn");
+    vcx.simulate_click(label.center(), Modifiers::none());
+    assert_eq!((open.get(), row_downs.get()), (false, 1), "the rest of the row is the row's");
+    let blank = vcx.debug_bounds("leaf-chevron").expect("drawn");
+    vcx.simulate_click(blank.center(), Modifiers::none());
 }

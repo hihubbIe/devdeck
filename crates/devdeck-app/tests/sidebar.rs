@@ -1,5 +1,6 @@
 //! M1 step 4: activity bar and sidebar lists (R4.1–R4.3, R2.3, R5.1, R5.2), on GPUI's
 //! test platform with the demo workspaces (`work` has a cluster, `personal` doesn't).
+//! M2 step 3: the Apps list as a tree of folders (apps added to the demo's).
 
 use devdeck_app::cluster::LOAD_DELAY;
 use devdeck_app::shell::Shell;
@@ -9,7 +10,7 @@ use devdeck_core::list::Row;
 use devdeck_core::state::{Loaded, SidebarState, StateStore};
 use devdeck_ui::overlay::layer_state;
 use devdeck_ui::{logical, toasts};
-use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
+use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext, point};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -50,7 +51,7 @@ fn pinned(s: &Entity<Sidebar>, cx: &TestAppContext) -> Vec<String> {
         let (items, rows) = s.read(cx).rows(cx);
         rows.iter()
             .filter_map(|r| match r {
-                Row::Item { index, pinned: true } => Some(items[*index].key.clone()),
+                Row::Item { index, pinned: true, .. } => Some(items[*index].key.clone()),
                 _ => None,
             })
             .collect()
@@ -241,6 +242,7 @@ fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
         visible: true,
         env: Some("dev33".into()),
         pins: BTreeMap::from([("deployments".into(), BTreeSet::from(["vesselservice".into(), "gone-service".into()]))]),
+        open: BTreeMap::new(),
     };
     store.save_sidebar("work", &saved).unwrap();
     std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();
@@ -272,4 +274,122 @@ fn rows_dropped_on_a_pane_open_there() {
     assert_ne!(q, p);
     open_at(&mut l, ViewRef::new("app/entityservice"), Drop::Into(p)).unwrap();
     assert_eq!(l.find_view(&ViewRef::new("app/entityservice")).unwrap().0, p, "an open item moves instead of duplicating");
+}
+
+/// Adds a monorepo to `work`'s apps: `mono` holding `apps/shell` and the library
+/// `packages/ui`.
+fn with_tree(shell: &Entity<Shell>, cx: &mut TestAppContext) {
+    let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
+    let mut catalog = cx.read(|cx| (*services.read(cx).catalog).clone());
+    let base = catalog.apps[0].clone();
+    for (id, name, library) in [("mono", "mono", false), ("mono/apps/shell", "shell", false), ("mono/packages/ui", "ui", true)] {
+        catalog.apps.push(devdeck_core::apps::App { id: id.into(), name: name.into(), library, ..base.clone() });
+    }
+    cx.update(|cx| services.update(cx, |s, cx| s.set_catalog(catalog, cx)));
+    cx.run_until_parked();
+}
+
+/// The rows from `mono` down: indented labels, folders with `/`, `▸`/`▾` when they hold.
+fn tree(s: &Entity<Sidebar>, cx: &TestAppContext) -> Vec<String> {
+    cx.read(|cx| {
+        let (items, rows) = s.read(cx).rows(cx);
+        let mark = |k: Option<devdeck_core::list::Kids>| k.map_or("", |k| if k.open { " ▾" } else { " ▸" });
+        rows.iter()
+            .filter_map(|r| match r {
+                Row::Item { index, depth, kids, .. } => Some(format!("{}{}{}", "  ".repeat(*depth), items[*index].label, mark(*kids))),
+                Row::Folder { name, depth, kids, .. } => Some(format!("{}{name}/{}", "  ".repeat(*depth), mark(Some(*kids)))),
+                _ => None,
+            })
+            .skip_while(|l| !l.starts_with("mono"))
+            .take_while(|l| l.starts_with("mono") || l.starts_with(' '))
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn apps_are_a_tree_that_arrows_open_and_close(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "tree-keys");
+    with_tree(&shell, cx);
+    let main = main_window(&shell, cx);
+    let s = sidebar(&shell, cx);
+    assert_eq!(tree(&s, cx), ["mono ▸"], "closed at first");
+    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.update(|cx| s.update(cx, |s, cx| {
+        s.selected = Some("mono".into());
+        cx.notify();
+    }));
+    cx.simulate_keystrokes(main, "right");
+    assert_eq!(tree(&s, cx), ["mono ▾", "  apps/ ▸", "  packages/ ▸"], "→ opens");
+    cx.simulate_keystrokes(main, "right");
+    assert_eq!(selected(&s, cx).as_deref(), Some("mono/apps/"), "→ again: the first child");
+    cx.simulate_keystrokes(main, "enter");
+    assert_eq!(tree(&s, cx), ["mono ▾", "  apps/ ▾", "    shell", "  packages/ ▸"], "enter opens a folder");
+    cx.simulate_keystrokes(main, "down");
+    assert_eq!(selected(&s, cx).as_deref(), Some("mono/apps/shell"));
+    cx.simulate_keystrokes(main, "left");
+    assert_eq!(selected(&s, cx).as_deref(), Some("mono/apps/"), "← on a leaf: its parent");
+    cx.simulate_keystrokes(main, "left");
+    assert_eq!(tree(&s, cx), ["mono ▾", "  apps/ ▸", "  packages/ ▸"], "← closes");
+    cx.simulate_keystrokes(main, "left");
+    assert_eq!(selected(&s, cx).as_deref(), Some("mono"), "← on a closed one: its parent");
+    cx.simulate_keystrokes(main, "p");
+    assert!(pinned(&s, cx).contains(&"mono".to_string()), "an app holding apps pins");
+    let folder = cx.read(|cx| {
+        let (_, rows) = s.read(cx).rows(cx);
+        rows.iter().any(|r| matches!(r, Row::Folder { path, depth: 0, .. } if path == "mono"))
+    });
+    assert!(folder, "what it held stays in All, under a folder row");
+    cx.update(|cx| s.update(cx, |s, cx| {
+        s.selected = Some("mono/".into());
+        cx.notify();
+    }));
+    cx.simulate_keystrokes(main, "p");
+    assert_eq!(pinned(&s, cx), ["mono"], "folders don't pin");
+}
+
+#[gpui::test]
+fn the_chevron_and_a_double_click_toggle_and_a_closing_folder_takes_the_selection(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "tree-mouse");
+    with_tree(&shell, cx);
+    let main = main_window(&shell, cx);
+    let s = sidebar(&shell, cx);
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    let chevron = vcx.debug_bounds("row-mono-chevron").expect("drawn");
+    vcx.simulate_click(chevron.center(), Modifiers::none());
+    assert_eq!(tree(&s, &vcx), ["mono ▾", "  apps/ ▸", "  packages/ ▸"]);
+    assert_eq!(selected(&s, &vcx), None, "the chevron doesn't select");
+    let folder = vcx.debug_bounds("row-mono/packages/").expect("drawn");
+    vcx.simulate_click(folder.center(), Modifiers::none());
+    vcx.simulate_event(MouseDownEvent { button: MouseButton::Left, position: folder.center(), modifiers: Modifiers::none(), click_count: 2, first_mouse: false });
+    vcx.simulate_mouse_up(folder.center(), MouseButton::Left, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(tree(&s, &vcx), ["mono ▾", "  apps/ ▸", "  packages/ ▾", "    ui"], "double click opens a folder");
+    vcx.update(|_, cx| s.update(cx, |s, cx| {
+        s.selected = Some("mono/packages/ui".into());
+        cx.notify();
+    }));
+    let chevron = vcx.debug_bounds("row-mono-chevron").expect("drawn");
+    vcx.simulate_click(chevron.center(), Modifiers::none());
+    assert_eq!(tree(&s, &vcx), ["mono ▸"]);
+    assert_eq!(selected(&s, &vcx).as_deref(), Some("mono"), "the selection moves to the row that closed");
+}
+
+#[gpui::test]
+fn whats_open_is_saved_and_a_filter_leaves_it_as_it_was(cx: &mut TestAppContext) {
+    let dir = temp(cx, "tree-save");
+    let shell = start(cx, Some(StateStore::new(dir.clone())), "tree-save");
+    with_tree(&shell, cx);
+    let s = sidebar(&shell, cx);
+    cx.update(|cx| s.update(cx, |s, cx| s.toggle_open("mono", cx)));
+    cx.run_until_parked();
+    let Loaded::Ok(saved) = StateStore::new(dir).load_sidebar("work") else { panic!("saved") };
+    assert_eq!(saved.open["apps"], BTreeSet::from(["mono".to_string()]));
+    cx.update(|cx| s.update(cx, |s, cx| s.filter.update(cx, |f, cx| f.set_text("shell", cx))));
+    cx.run_until_parked();
+    assert_eq!(tree(&s, cx), ["mono ▾", "  apps/ ▾", "    shell"], "the way to the match, open");
+    cx.update(|cx| s.update(cx, |s, cx| s.toggle_open("mono", cx)));
+    assert_eq!(cx.read(|cx| s.read(cx).state.open["apps"].clone()), BTreeSet::from(["mono".to_string()]), "nothing to toggle while filtering");
+    cx.update(|cx| s.update(cx, |s, cx| s.filter.update(cx, |f, cx| f.set_text("", cx))));
+    cx.run_until_parked();
+    assert_eq!(tree(&s, cx), ["mono ▾", "  apps/ ▸", "  packages/ ▸"], "as it was");
 }

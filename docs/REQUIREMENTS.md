@@ -38,6 +38,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R4.1** Every list is sorted alphabetically.
 - [x] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
+- [~] **R4.6** The Apps list's All section is a tree that keeps the folders apps sit in (a monorepo holds its apps and packages). Rows are closed at first and say what they hold (how many, something running, a missing tool); → and ← open and close, as do the chevron and a double click on a folder. What's open is remembered per workspace. A filter or "running only" shows the matches with their folders open, and leaves what's open as it was. Pinned stays flat. (Decided 2026-11-07.)
 - [~] **R4.3** No "mine" grouping and no recency-ordered sections. Running state is shown as an indicator on the row, with a "running only" filter.
 - [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover. Terminals (run output, shell tabs) wrap at the pane width and never scroll horizontally (decided 2026-11-07).
 - [~] **R4.5** Status markers and glyphs never shrink or move to another line; the label truncates instead.

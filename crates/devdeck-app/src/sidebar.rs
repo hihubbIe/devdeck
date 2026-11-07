@@ -6,15 +6,20 @@
 //! gets hidden drops the selection. Rows open their item as a tab in the main window's
 //! focused pane (or wherever they are dropped), and pin or unpin with `p`, the menu, or a
 //! drop on the other section.
+//!
+//! Apps are a tree of their folders (`list::rows`): → opens a row (or goes to its first
+//! child), ← closes it (or goes to its parent), Enter or a double click toggles a folder,
+//! the chevron toggles any row. What's open is saved with the sidebar; while filtering,
+//! the matches show with their folders open and the saved state is left as it was.
 
 use crate::deck::Deck;
 use crate::services::Services;
 use devdeck_core::cluster::{Env, Remote};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Drop, Layout, Result as LayoutResult, ViewRef};
-use devdeck_core::list::{self, ListItem, Row, Section};
+use devdeck_core::list::{self, Kids, ListItem, Row, Section};
 use devdeck_core::state::{SidebarState, StateStore};
-use devdeck_ui::{DragGhost, InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button};
+use devdeck_ui::{DragGhost, InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, Focusable, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
@@ -23,7 +28,19 @@ use gpui::{
 
 actions!(
     sidebar,
-    [SelectNext, SelectPrev, SelectFirst, SelectLast, OpenSelected, TogglePin, FocusFilter, ToggleRunningOnly, SidebarEscape]
+    [
+        SelectNext,
+        SelectPrev,
+        SelectFirst,
+        SelectLast,
+        OpenSelected,
+        ExpandSelected,
+        CollapseSelected,
+        TogglePin,
+        FocusFilter,
+        ToggleRunningOnly,
+        SidebarEscape
+    ]
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,7 +246,12 @@ impl Sidebar {
                     .iter()
                     .map(|a| {
                         let warning = tools.unusable(a);
-                        ListItem::new(a.id.clone(), a.name.clone()).detail(a.kind.clone()).running(runner.app_running(&a.id)).warning(warning)
+                        ListItem::new(a.id.clone(), a.name.clone())
+                            .detail(a.kind.clone())
+                            .running(runner.app_running(&a.id))
+                            .warning(warning)
+                            .path(a.id.clone())
+                            .dim(a.library)
                     })
                     .collect()
             }
@@ -273,16 +295,29 @@ impl Sidebar {
         self.state.pins.get(self.activity().list_id()).cloned().unwrap_or_default()
     }
 
+    /// The open tree rows of the shown list.
+    fn opened(&self) -> std::collections::BTreeSet<String> {
+        self.state.open.get(self.activity().list_id()).cloned().unwrap_or_default()
+    }
+
+    fn running_only(&self) -> bool {
+        self.running_only && self.activity() == Activity::Apps
+    }
+
+    /// Filtering or "running only": the tree shows the matches, all open.
+    fn narrowing(&self, cx: &App) -> bool {
+        !self.filter.read(cx).text().trim().is_empty() || self.running_only()
+    }
+
     pub fn rows(&self, cx: &App) -> (Vec<ListItem>, Vec<Row>) {
         let items = self.items(cx);
-        let running_only = self.running_only && self.activity() == Activity::Apps;
-        let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), running_only);
+        let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), self.running_only(), &self.opened());
         (items, rows)
     }
 
     fn selected_row(&self, items: &[ListItem], rows: &[Row]) -> Option<usize> {
         let key = self.selected.as_deref()?;
-        rows.iter().position(|r| matches!(r, Row::Item { index, .. } if items[*index].key == key))
+        rows.iter().position(|r| row_key(items, r).as_deref() == Some(key))
     }
 
     fn drop_hidden_selection(&mut self, cx: &App) {
@@ -294,12 +329,60 @@ impl Sidebar {
 
     fn select_row(&mut self, items: &[ListItem], rows: &[Row], row: Option<usize>, cx: &mut Context<Self>) {
         if let Some(r) = row
-            && let Row::Item { index, .. } = rows[r]
+            && let Some(key) = row_key(items, &rows[r])
         {
-            self.selected = Some(items[index].key.clone());
+            self.selected = Some(key);
             self.scroll.scroll_to_item(r, ScrollStrategy::Nearest);
         }
         cx.notify();
+    }
+
+    /// Opens or closes a tree row. While filtering everything shown is open: nothing to
+    /// toggle. A selection inside a row that closes moves to it.
+    pub fn toggle_open(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.narrowing(cx) {
+            return;
+        }
+        let open = self.state.open.entry(self.activity().list_id().to_string()).or_default();
+        let closing = open.remove(path);
+        if !closing {
+            open.insert(path.to_string());
+        }
+        let (items, rows) = self.rows(cx);
+        if closing && self.selected.is_some() && self.selected_row(&items, &rows).is_none() {
+            let row = rows.iter().position(|r| r.open_path(&items) == Some(path));
+            self.select_row(&items, &rows, row, cx);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// →: opens the selected row, or goes to its first child when it's open.
+    fn expand_selected(&mut self, cx: &mut Context<Self>) {
+        let (items, rows) = self.rows(cx);
+        let Some(r) = self.selected_row(&items, &rows) else { return };
+        match (rows[r].kids(), rows[r].open_path(&items)) {
+            (Some(k), Some(path)) if !k.open => self.toggle_open(path, cx),
+            (Some(_), _) => self.move_selection(1, cx),
+            _ => {}
+        }
+    }
+
+    /// ←: closes the selected row, or goes to its parent.
+    fn collapse_selected(&mut self, cx: &mut Context<Self>) {
+        let (items, rows) = self.rows(cx);
+        let Some(r) = self.selected_row(&items, &rows) else { return };
+        if let (Some(k), Some(path)) = (rows[r].kids(), rows[r].open_path(&items))
+            && k.open
+            && !self.narrowing(cx)
+        {
+            return self.toggle_open(path, cx);
+        }
+        let depth = rows[r].depth();
+        let parent = (0..r).rev().find(|&i| rows[i].is_selectable() && rows[i].depth() < depth);
+        if depth > 0 && parent.is_some() {
+            self.select_row(&items, &rows, parent, cx);
+        }
     }
 
     pub fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -344,15 +427,21 @@ impl Sidebar {
         });
     }
 
+    /// Enter: opens the selected item, opens or closes the selected folder.
     pub fn open_selected(&mut self, cx: &mut Context<Self>) {
         let (items, rows) = self.rows(cx);
         if self.selected_row(&items, &rows).is_none() {
-            // Nothing selected (e.g. right after typing a filter): take the first match.
-            let first = list::step(&rows, None, 0);
+            // Nothing selected (e.g. right after typing a filter): take the first match,
+            // not a folder or an app shown only to hold it.
+            let filter = self.filter.read(cx).text().to_string();
+            let first = rows.iter().position(|r| matches!(r, Row::Item { index, .. } if list::keeps(&items[*index], &filter, self.running_only())));
             self.select_row(&items, &rows, first, cx);
         }
-        if let Some(key) = self.selected.clone() {
-            self.open(&key, cx);
+        let Some(r) = self.selected_row(&items, &rows) else { return };
+        match &rows[r] {
+            Row::Folder { path, .. } => self.toggle_open(&path.clone(), cx),
+            Row::Item { index, .. } => self.open(&items[*index].key.clone(), cx),
+            _ => {}
         }
     }
 
@@ -364,7 +453,8 @@ impl Sidebar {
     }
 
     fn toggle_pin_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(key) = self.selected.clone() {
+        // Folders aren't pinned (their key ends with `/`).
+        if let Some(key) = self.selected.clone().filter(|k| !k.ends_with('/')) {
             self.toggle_pin(&key, cx);
             let (items, rows) = self.rows(cx);
             let row = self.selected_row(&items, &rows);
@@ -499,6 +589,15 @@ impl Focusable for Sidebar {
     }
 }
 
+/// The selection key of a row: the item's key, a folder's [`list::folder_key`].
+fn row_key(items: &[ListItem], row: &Row) -> Option<String> {
+    match row {
+        Row::Item { index, .. } => Some(items[*index].key.clone()),
+        Row::Folder { path, .. } => Some(list::folder_key(path)),
+        _ => None,
+    }
+}
+
 fn empty_text(section: Section, filtered: bool, running_only: bool, status: Option<&str>) -> String {
     match (section, status) {
         (Section::All, Some(s)) => s.to_string(),
@@ -515,8 +614,8 @@ impl Render for Sidebar {
         let activity = self.activity();
         let count = self.rows(cx).1.len();
         let list_focused = self.list_focus.is_focused(window);
-        let filtered = !self.filter.read(cx).text().trim().is_empty();
         let running_only = self.running_only;
+        let filter = self.filter.read(cx).text().to_string();
 
         let header = div()
             .flex_none()
@@ -561,6 +660,7 @@ impl Render for Sidebar {
                 let selected = this.selected_row(&items, &rows);
                 let focused = this.list_focus.is_focused(window);
                 let me = cx.entity();
+                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, t };
                 range
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
                     .map(|(i, row)| {
@@ -568,7 +668,7 @@ impl Render for Sidebar {
                             Row::Item { index, .. } => this.view_ref(&items[*index].key, cx),
                             _ => None,
                         };
-                        render_row(&me, &this.deck, &items, &rows, i, row, selected == Some(i), focused, filtered, running_only, &t, status.clone(), view_ref)
+                        render_row(&me, &this.deck, &items, &rows, i, row, selected == Some(i), &look, view_ref)
                     })
                     .collect()
             }),
@@ -594,6 +694,8 @@ impl Render for Sidebar {
             .on_action(cx.listener(|this, _: &SelectFirst, _, cx| this.select_edge(false, cx)))
             .on_action(cx.listener(|this, _: &SelectLast, _, cx| this.select_edge(true, cx)))
             .on_action(cx.listener(|this, _: &OpenSelected, _, cx| this.open_selected(cx)))
+            .on_action(cx.listener(|this, _: &ExpandSelected, _, cx| this.expand_selected(cx)))
+            .on_action(cx.listener(|this, _: &CollapseSelected, _, cx| this.collapse_selected(cx)))
             .on_action(cx.listener(|this, _: &TogglePin, _, cx| this.toggle_pin_selected(cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningOnly, _, cx| this.toggle_running_only(cx)))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
@@ -618,6 +720,15 @@ impl Render for Sidebar {
     }
 }
 
+/// What every row of one frame is drawn with.
+struct Look {
+    filter: String,
+    running_only: bool,
+    focused: bool,
+    status: Option<String>,
+    t: Theme,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_row(
     me: &Entity<Sidebar>,
@@ -627,13 +738,11 @@ fn render_row(
     i: usize,
     row: Row,
     selected: bool,
-    focused: bool,
-    filtered: bool,
-    running_only: bool,
-    t: &Theme,
-    status: Option<String>,
+    look: &Look,
     view_ref: Option<ViewRef>,
 ) -> gpui::AnyElement {
+    let t = &look.t;
+    let filtered = !look.filter.trim().is_empty();
     let sidebar_id = me.entity_id();
     let base = div().h(t.row_h).w_full().px_3().flex().items_center().gap_2().whitespace_nowrap();
     // Drops on a section (header, empty line or row) pin or unpin.
@@ -648,9 +757,22 @@ fn render_row(
                 }
             })
     };
+    // A tree row: selection look, hover, and the chevron opening or closing `path`.
+    let tree = |key: &str, depth: usize, kids: Option<Kids>, path: Option<String>| {
+        let m = me.clone();
+        let hover = t.hover;
+        tree_row(format!("row-{key}"), depth, kids.map(|k| k.open), move |_, cx| {
+            if let Some(path) = &path {
+                m.update(cx, |s, cx| s.toggle_open(path, cx));
+            }
+        }, t)
+        .when(selected, |d| d.bg(if look.focused { t.selection } else { t.hover }))
+        .hover(move |s| s.bg(hover))
+        .cursor_pointer()
+    };
     match row {
         Row::Header(section) => {
-            let n = sidebar_count(rows, section);
+            let n = list::count(rows, section);
             let text = match section {
                 Section::Pinned => format!("PINNED · {n}"),
                 Section::All => format!("ALL · {n}"),
@@ -661,10 +783,30 @@ fn render_row(
         }
         Row::Empty(section) => section_drop(
             section,
-            base.id(("empty", i)).pl_6().text_color(t.dim).child(label(empty_text(section, filtered, running_only, status.as_deref()))),
+            base.id(("empty", i)).pl_6().text_color(t.dim).child(label(empty_text(section, filtered, look.running_only, look.status.as_deref()))),
         )
         .into_any_element(),
-        Row::Item { index, pinned } => {
+        Row::Folder { path, name, depth, kids } => {
+            let key = list::folder_key(&path);
+            let m = me.clone();
+            let el = tree(&key, depth, Some(kids), Some(path.clone()))
+                .tooltip(tip(path.clone()))
+                .on_mouse_down(MouseButton::Left, move |e, window, cx| {
+                    let double = e.click_count == 2;
+                    m.update(cx, |s, cx| {
+                        s.selected = Some(key.clone());
+                        s.list_focus.focus(window, cx);
+                        if double {
+                            s.toggle_open(&path, cx);
+                        }
+                        cx.notify();
+                    });
+                })
+                .child(div().flex_1().min_w_0().truncate().text_color(t.mute).child(format!("{name}/")))
+                .when(!kids.open, |d| d.child(holds(kids, t)));
+            section_drop(Section::All, el).into_any_element()
+        }
+        Row::Item { index, pinned, depth, kids } => {
             let item = &items[index];
             let section = if pinned { Section::Pinned } else { Section::All };
             let key = item.key.clone();
@@ -672,14 +814,10 @@ fn render_row(
             let (m_click, m_menu) = (me.clone(), me.clone());
             let label_text: SharedString = item.label.clone().into();
             let drag = view_ref.map(|view| DraggedListItem { sidebar: sidebar_id, deck: deck.entity_id(), key: key.clone(), label: label_text.clone(), pinned, view });
-            let hover = t.hover;
-            let selector = format!("row-{key}");
-            let el = base
-                .id(("row", i))
-                .debug_selector(move || selector.clone())
-                .when(selected, |d| d.bg(if focused { t.selection } else { t.hover }))
-                .hover(move |s| s.bg(hover))
-                .cursor_pointer()
+            // Shown only to hold matches below it, or a library: de-emphasized.
+            let context_only = !list::keeps(item, &look.filter, look.running_only);
+            let text_color = if context_only { t.dim } else if item.warning.is_some() || item.dim { t.mute } else { t.fg };
+            let el = tree(&key, depth, kids, rows[i].open_path(items).map(String::from))
                 .tooltip(tip(label_text.clone()))
                 .on_mouse_down(MouseButton::Left, move |e, window, cx| {
                     let double = e.click_count == 2;
@@ -705,7 +843,8 @@ fn render_row(
                     Some(_) => div().flex_none().text_color(t.warn).child("⚠"),
                     None => div().flex_none().text_color(if item.running { t.ok } else { t.dim }).child(if item.running { "●" } else { "○" }),
                 })
-                .child(div().flex_1().min_w_0().truncate().text_color(if item.warning.is_some() { t.mute } else { t.fg }).child(label_text))
+                .child(div().flex_1().min_w_0().truncate().text_color(text_color).child(label_text))
+                .when_some(kids.filter(|k| !k.open), |d, k| d.child(holds(k, t)))
                 .when_some(item.warning.clone().or((!item.detail.is_empty()).then(|| item.detail.clone())), |d, detail| {
                     let color = if item.warning.is_some() { t.warn } else { t.dim };
                     d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(color).child(detail))
@@ -715,7 +854,14 @@ fn render_row(
     }
 }
 
-/// Items shown in a section (header counts follow the filter).
-fn sidebar_count(rows: &[Row], section: Section) -> usize {
-    rows.iter().filter(|r| matches!(r, Row::Item { pinned, .. } if *pinned == (section == Section::Pinned))).count()
+/// What a closed row holds: how many, and whether something in it runs or can't run.
+fn holds(kids: Kids, t: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .flex()
+        .gap_1()
+        .text_size(t.text_small)
+        .when(kids.running, |d| d.child(div().text_color(t.ok).child("●")))
+        .when(kids.warning, |d| d.child(div().text_color(t.warn).child("⚠")))
+        .child(div().text_color(t.dim).child(kids.count.to_string()))
 }

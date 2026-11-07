@@ -103,6 +103,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("sidebar.first", "first", "Sidebar", SIDEBAR_LIST, ["home"], sb::SelectFirst),
         spec!("sidebar.last", "last", "Sidebar", SIDEBAR_LIST, ["end"], sb::SelectLast),
         spec!("sidebar.open", "open", "Sidebar", SIDEBAR_LIST, ["enter"], sb::OpenSelected),
+        spec!("sidebar.expand", "open folder", "Sidebar", SIDEBAR_LIST, ["right"], sb::ExpandSelected),
+        spec!("sidebar.collapse", "close folder", "Sidebar", SIDEBAR_LIST, ["left"], sb::CollapseSelected),
         spec!("sidebar.pin", "pin", "Sidebar", SIDEBAR_LIST, ["p"], sb::TogglePin),
         spec!("sidebar.filter", "filter", "Sidebar", SIDEBAR_LIST, ["/"], sb::FocusFilter),
         spec!("sidebar.running", "running only", "Sidebar", SIDEBAR_LIST, ["r"], sb::ToggleRunningOnly),

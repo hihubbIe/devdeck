@@ -117,6 +117,36 @@ fn running_only(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity
     cx.update(|cx| s.update(cx, |s, cx| s.toggle_running_only(cx)));
 }
 
+/// A monorepo in `work`'s apps: `mono` holding two apps and two libraries, one running,
+/// one that can't run (its tool is missing); `mono` open, `mono/packages` closed.
+fn apps_tree(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let services = cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
+    let mut catalog = cx.update(|cx| (*services.read(cx).catalog).clone());
+    let base = catalog.app("eventservice").unwrap().clone();
+    let blocked = catalog.app("remotedesktopapp").unwrap().clone();
+    for (id, name, library) in [("mono", "mono", false), ("mono/apps/shell", "shell", false), ("mono/apps/landing", "landing", false)] {
+        catalog.apps.push(devdeck_core::apps::App { id: id.into(), name: name.into(), library, ..base.clone() });
+    }
+    catalog.apps.push(devdeck_core::apps::App { id: "mono/packages/ui".into(), name: "ui".into(), library: true, ..base.clone() });
+    catalog.apps.push(devdeck_core::apps::App { id: "mono/packages/infra".into(), name: "infra".into(), ..blocked });
+    cx.update(|cx| services.update(cx, |s, cx| s.set_catalog(catalog, cx)));
+    run_cmd(cx, shell, "mono/apps/shell", "go:run", 300);
+    let s = sidebar(cx, shell);
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.toggle_open("mono", cx);
+            s.toggle_open("mono/apps", cx);
+            s.selected = Some("mono/packages/".into());
+        })
+    });
+    let _ = cx.update_window(w, |_, window, cx| s.read(cx).list_focus.clone().focus(window, cx));
+}
+
+fn apps_tree_filtered(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    apps_tree(cx, w, shell);
+    filter(cx, w, shell, "infra");
+}
+
 fn cluster_env_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     let s = sidebar(cx, shell);
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
@@ -596,6 +626,8 @@ fn states() -> Vec<State> {
         w("58-apps-150", "work", 1.5, Some(apps_pinned)),
         w("59-row-menu", "work", 1.0, Some(row_menu)),
         w("60-ports", "work", 1.0, Some(ports)),
+        w("61-apps-tree", "work", 1.0, Some(apps_tree)),
+        w("62-apps-tree-filtered", "work", 1.0, Some(apps_tree_filtered)),
         w("70-app-view", "work", 1.0, Some(app_view)),
         w("71-app-missing-tool", "work", 1.0, Some(app_missing_tool)),
         w("72-run-streaming", "work", 1.0, Some(run_streaming)),

@@ -120,6 +120,54 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, tooltip: &'sta
         .child(glyph)
 }
 
+/// How far each level of a tree is indented (logical pixels, before the UI scale).
+pub const TREE_INDENT: f32 = 12.;
+
+/// One row of a tree: indented by `depth`, then a chevron cell, ▸ closed or ▾ open when
+/// the row has children (`open: Some(..)`), blank otherwise so labels line up. A mouse
+/// down on the chevron toggles (`on_toggle`) and doesn't reach the row, so the row's own
+/// handlers (select, open, drag) stay the caller's, as does its content. `name` is the
+/// row's element id and test selector; the chevron's is `{name}-chevron`.
+pub fn tree_row(
+    name: impl Into<SharedString>,
+    depth: usize,
+    open: Option<bool>,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+    t: &Theme,
+) -> Stateful<gpui::Div> {
+    let name: SharedString = name.into();
+    let (row_selector, chevron_selector) = (name.to_string(), format!("{name}-chevron"));
+    let chevron = div()
+        .debug_selector(move || chevron_selector.clone())
+        .flex_none()
+        .w(t.size(TREE_INDENT))
+        .flex()
+        .justify_center()
+        .text_color(t.dim);
+    let chevron = match open {
+        Some(open) => chevron
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                on_toggle(window, cx);
+            })
+            .child(if open { "▾" } else { "▸" }),
+        None => chevron,
+    };
+    div()
+        .id(ElementId::Name(name))
+        .debug_selector(move || row_selector.clone())
+        .h(t.row_h)
+        .w_full()
+        .pl(t.size(8.) + t.size(TREE_INDENT) * depth as f32)
+        .pr_3()
+        .flex()
+        .items_center()
+        .gap_1()
+        .whitespace_nowrap()
+        .child(chevron)
+}
+
 /// Section heading inside a view: muted text over a soft hairline.
 pub fn section(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
     div()

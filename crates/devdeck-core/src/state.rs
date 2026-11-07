@@ -39,11 +39,13 @@ pub struct SidebarState {
     pub visible: bool,
     pub env: Option<String>,
     pub pins: Pins,
+    /// Open tree rows (folders, apps holding apps) per list id, by tree path.
+    pub open: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new() }
+        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new() }
     }
 }
 
@@ -290,7 +292,8 @@ mod tests {
         let s = store("sidebar");
         assert_eq!(s.load_sidebar("work"), Loaded::Missing);
         let pins: Pins = BTreeMap::from([("apps".to_string(), BTreeSet::from(["entityservice".to_string()]))]);
-        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins };
+        let open = BTreeMap::from([("apps".to_string(), BTreeSet::from(["front-end".to_string()]))]);
+        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins, open };
         s.save_sidebar("work", &state).unwrap();
         assert_eq!(s.load_sidebar("work"), Loaded::Ok(state));
         std::fs::write(s.dir.join("workspaces/work/sidebar.json"), "[").unwrap();
