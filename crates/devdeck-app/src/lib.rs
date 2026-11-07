@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod app_settings;
 pub mod deck;
+pub mod gallery;
 pub mod kube_feed;
 pub mod settings_view;
 pub mod stats;
@@ -19,7 +20,7 @@ use std::borrow::Cow;
 pub fn initial_layout() -> Layout {
     let mut l = Layout::new();
     let a = l.main().focused;
-    for v in ["demo/logs", "demo/long", "demo/deployments", "demo/notes"] {
+    for v in ["demo/logs", "demo/long", "demo/deployments", "demo/notes", "demo/gallery"] {
         l.open(ViewRef::new(v), a).expect("open demo view");
     }
     l.move_tab(a, 2, Drop::Edge(a, Edge::Right)).expect("split right");
@@ -49,5 +50,6 @@ pub fn init(cx: &mut App) {
 pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     load_fonts(cx);
     app_settings::init(dir, cx);
+    devdeck_ui::bind_keys(cx);
     actions::bind(cx);
 }

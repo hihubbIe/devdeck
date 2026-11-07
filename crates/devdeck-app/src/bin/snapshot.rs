@@ -4,12 +4,15 @@
 //!
 //! `cargo run -p devdeck-app --features snapshot --bin devdeck-snapshot -- <out-dir> [filter]`
 
-use devdeck_app::{app_settings, deck::Deck};
+use devdeck_app::{app_settings, deck::Deck, gallery::Gallery};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
-use gpui::{AppContext, HeadlessAppContext};
+use devdeck_ui::{ToastKind, logical, open_menu, toasts};
+use gpui::{AnyWindowHandle, AppContext, Entity, Focusable, HeadlessAppContext, point};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+type Extra = fn(&mut HeadlessAppContext, AnyWindowHandle, &Entity<Deck>);
 
 struct State {
     name: &'static str,
@@ -17,6 +20,38 @@ struct State {
     settle: Duration,
     scale: f32,
     settings_open: bool,
+    extra: Option<Extra>,
+}
+
+fn gallery_layout() -> Layout {
+    let mut l = devdeck_app::initial_layout();
+    let p = l.main().focused;
+    l.open(ViewRef::new("demo/gallery"), p).unwrap();
+    l.toggle_maximize(p).unwrap();
+    l
+}
+
+fn gallery_menu_and_toasts(cx: &mut HeadlessAppContext, w: AnyWindowHandle, deck: &Entity<Deck>) {
+    let g = cx.update(|cx| deck.read(cx).view(&ViewRef::new("demo/gallery")).unwrap().downcast::<Gallery>().unwrap());
+    let _ = cx.update_window(w, |_, window, cx| {
+        let filled = g.read(cx).filled.clone();
+        filled.read(cx).focus_handle(cx).focus(window, cx);
+        for (kind, text) in [
+            (ToastKind::Info, "Layout: Geo work."),
+            (ToastKind::Ok, "dev35 › entityservice now runs lan-160."),
+            (ToastKind::Warn, "Port 5800 is held by node (pid 7712)."),
+            (ToastKind::Err, "boardservice · start:watch exited 1."),
+        ] {
+            toasts(cx).update(cx, |t, cx| t.push(kind, text, vec![], cx));
+        }
+        open_menu(point(logical(520.), logical(330.)), devdeck_app::gallery::demo_menu_items(), window, cx);
+    });
+}
+
+fn gallery_modal(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _deck: &Entity<Deck>) {
+    let _ = cx.update_window(w, |_, window, cx| {
+        devdeck_app::gallery::open_demo_modal(window, cx);
+    });
 }
 
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
@@ -69,6 +104,15 @@ fn states() -> Vec<State> {
         settle: Duration::from_millis(settle_ms),
         scale,
         settings_open,
+        extra: None,
+    };
+    let x = |name, scale, extra: Extra| State {
+        name,
+        layout: gallery_layout,
+        settle: Duration::from_millis(200),
+        scale,
+        settings_open: false,
+        extra: Some(extra),
     };
     vec![
         s("01-initial", devdeck_app::initial_layout, 500, 1.0, false),
@@ -86,6 +130,9 @@ fn states() -> Vec<State> {
         s("14-detached-at-150", detached, 500, 1.5, false),
         s("20-settings-100", devdeck_app::initial_layout, 200, 1.0, true),
         s("21-settings-150", devdeck_app::initial_layout, 200, 1.5, true),
+        x("30-gallery-menu-toasts", 1.0, gallery_menu_and_toasts),
+        x("31-gallery-menu-toasts-150", 1.5, gallery_menu_and_toasts),
+        x("32-gallery-modal", 1.0, gallery_modal),
     ]
 }
 
@@ -102,6 +149,10 @@ fn main() -> Result<(), String> {
         cx.update(|cx| {
             app_settings::set_scale(state.scale, cx);
             app_settings::set_open(state.settings_open, cx);
+            toasts(cx).update(cx, |t, cx| {
+                t.queue.items.clear();
+                cx.notify();
+            });
         });
         let deck = cx.update(|cx| cx.new(|_| Deck::new((state.layout)())));
         cx.update(|cx| deck.update(cx, |d, cx| d.sync(cx)));
@@ -109,6 +160,10 @@ fn main() -> Result<(), String> {
         cx.advance_clock(state.settle);
         cx.run_until_parked();
         let windows = cx.update(|cx| cx.windows());
+        if let Some(extra) = state.extra {
+            extra(&mut cx, windows[0], &deck);
+            cx.run_until_parked();
+        }
         for (i, w) in windows.iter().enumerate() {
             cx.update_window(*w, |_, window, _| window.refresh()).map_err(|e| e.to_string())?;
             cx.run_until_parked();

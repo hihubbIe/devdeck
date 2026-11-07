@@ -25,7 +25,7 @@ fn setup(cx: &mut TestAppContext) -> Entity<Deck> {
 fn main_window_opens_with_initial_views(cx: &mut TestAppContext) {
     let deck = setup(cx);
     assert_eq!(cx.windows().len(), 1);
-    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 4);
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 5);
 }
 
 #[gpui::test]
@@ -51,7 +51,7 @@ fn detach_opens_a_window_and_reattach_closes_it(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 1, "the detached window closes on re-attach");
-    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 4, "no view lost or duplicated");
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 5, "no view lost or duplicated");
 }
 
 #[gpui::test]
@@ -71,7 +71,7 @@ fn closing_a_detached_window_closes_its_tabs(cx: &mut TestAppContext) {
     cx.update(|cx| deck.update(cx, |d, cx| d.close_window(window, cx)));
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 1);
-    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 3, "the detached tab closed with its window");
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 4, "the detached tab closed with its window");
 }
 
 #[gpui::test]
@@ -91,7 +91,7 @@ fn reattach_button_path_sends_tabs_back(cx: &mut TestAppContext) {
     cx.update(|cx| deck.update(cx, |d, cx| d.reattach(window, cx)));
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 1);
-    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 4);
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 5);
 }
 
 #[gpui::test]
@@ -106,7 +106,7 @@ fn closed_views_are_released(cx: &mut TestAppContext) {
         cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |_| Ok(()))));
         cx.run_until_parked();
     }
-    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 1);
+    assert_eq!(cx.read(|cx| deck.read(cx).live_views()), 2);
     let leaked = cx.update(|cx| deck.update(cx, |d, _| d.leaked_views(3)));
     assert_eq!(leaked, 0, "closed views must be dropped");
 }

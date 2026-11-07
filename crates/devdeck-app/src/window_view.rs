@@ -342,7 +342,9 @@ impl Render for WindowView {
             .on_action(|_: &Quit, _, cx| cx.quit())
             .child(title_bar)
             .child(body)
-            .child(status_bar);
+            .child(status_bar)
+            .children(devdeck_ui::render_layer(window, cx))
+            .when(is_main, |d| d.child(devdeck_ui::toasts(cx)));
 
         match window.window_decorations() {
             Decorations::Server => root.into_any_element(),

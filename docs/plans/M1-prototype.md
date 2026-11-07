@@ -152,3 +152,71 @@ Out of scope: per-workspace theme choice (step 3), more settings.
     window and long titles at other scales). **Accepted.**
 16. Geometry tests on the real text system with `debug_selector` / `debug_bounds`;
     PNGs stay for human checks. **Accepted.**
+
+## Step 2 · Components and theme files
+
+Scope:
+- **Theme files** (`devdeck-core::theme_file`): TOML `name`, `[colors]` with hex tokens
+  (`bg`, `bar`, `raised`, `hover`, `selected`, `line`, `line_soft`, `fg`, `hi`, `mute`,
+  `dim`, `accent`, `accent_bg`, `drop`, `ok`, `warn`, `err`, `env`, `env_bg`). Built-in
+  `devdeck-dark` is embedded from `assets/themes/devdeck-dark.toml`. User themes from
+  `<config>/themes/*.toml`; a missing token falls back to devdeck-dark's, a bad value or
+  file is reported (shown in Settings) and skipped. Unknown theme name in settings →
+  devdeck-dark plus a message. Where the choice lives (global or per workspace) waits for
+  the user's answer; the loader is the same either way.
+- **TextInput** (devdeck-ui), adapted from GPUI's `examples/input.rs`: single line,
+  placeholder, selection by mouse and shift+keys, word moves (ctrl+←/→), ctrl+a,
+  ctrl+backspace, clipboard, IME, horizontal scroll that keeps the caret visible, undo
+  (ctrl+z). The caret does not blink, so idle renders stay 0. Editing logic lives in a
+  pure `TextBuffer` (byte/char safe for UTF-8) with unit tests; the element only draws it.
+- **Menu**: anchored popover (`deferred(anchored())`) with items
+  `{label, key hint, checked, disabled reason, separator}`; ↑/↓ skip separators and
+  disabled items, Enter runs, Esc closes, hover selects, click runs; a disabled item
+  shows its reason as a tooltip. Selection logic pure and tested.
+- **Modal**: centered panel over a dimmed backdrop, Esc and backdrop click close it,
+  focus trapped inside, restored on close.
+- **Toast**: bottom-right stack, kinds info/ok/warn/err, optional actions, auto-dismiss
+  (6 s, errors 10 s) with a single timer that stops when the stack is empty.
+- A **component gallery** state in `devdeck-snapshot` showing every component in its
+  states (input empty/placeholder/selected/long text scrolled, menu with checked and
+  disabled items, modal, each toast kind) at 100 % and 150 %.
+
+Tests: theme parsing (full, partial fallback, bad hex, unknown name), TextBuffer
+operations (insert, delete, word moves, selection, UTF-8, undo), menu navigation,
+toast expiry; GPUI tests for typing into a TextInput, menu keyboard flow, modal focus
+restore; idle-render check with an input focused.
+
+Out of scope: actions registry and real menus on app elements (step 6).
+
+### Step 2 review and assessment
+
+1. Single-letter and app keys fire inside inputs on Linux (bindings beat text input).
+   Bindings that could collide use `"Panes && !TextInput"`; GPUI test types `pw` into an
+   input inside Panes and checks nothing else happened. **Accepted.**
+2. TextInput gaps vs `input.rs` (own `TextInput` context and ctrl keys, horizontal
+   scroll with clamped `scroll_x` computed in prepaint, content mask, scroll-aware
+   hit testing and IME bounds, paste normalization of \r\n \r \t, word moves,
+   ctrl+backspace/delete, shift+home/end, double-click word, Enter/Esc as events,
+   grouped undo, redo). **Accepted.**
+3. TextBuffer: grapheme-safe (unicode-segmentation), UTF-16 conversion and marked
+   range in the buffer, tested. **Accepted.**
+4. Menu: occluding backdrop closes it without clicking through; own focus handle and
+   `Menu` context, focus restored through a weak handle, closes on blur; max height
+   with scroll. **Accepted.**
+5. Overlays render from the window root, never inside a pane; priority constants in
+   devdeck-ui (modal < menu < toast). **Accepted.**
+6. Modal: own `Modal` context, tab/shift-tab cycle its own focus handles, occluding
+   backdrop, focus restore with fallback, a modal stack; context-free bindings stay
+   active only where harmless (scale keys), quit opens its guard over modals.
+   **Accepted.**
+7. Toasts: one task sleeping until the earliest deadline, dropped when empty; time from
+   the executor so tests can advance it; no animation. **Accepted.**
+8. Theme tokens added: backdrop, focus, selection, caret, scrollbar; optional `[ansi]`
+   table (16 colors plus fg/bg/cursor/selection) so M2's terminal doesn't change the
+   format; unknown keys warn; a user theme reusing the built-in name is an error.
+   **Accepted.**
+9. Disabled reason shown inline on the selected menu item (keyboard reachable).
+   **Accepted.** Keyboard key to open a context menu: **step 6.**
+10. Test list (outside click, menu inside viewport after resize, modal tab cycle,
+    focus restore fallback, toast task stops, caret stays visible). **Accepted.**
+11. Middle-click primary paste. **Skipped for now** (unverified on Wayland).

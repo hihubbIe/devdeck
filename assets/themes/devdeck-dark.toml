@@ -1,0 +1,53 @@
+# devdeck-dark: the approved prototype palette with slightly more contrast.
+# Copy this file to ~/.config/devdeck/themes/<name>.toml to make your own theme.
+# Colors are #rrggbb or #rrggbbaa. Any token left out falls back to this theme.
+name = "devdeck-dark"
+
+[colors]
+bg = "#0f1012"         # pane background
+bar = "#15161a"        # title bar, tab strips, status bar
+raised = "#1c1d22"     # menus, palette, tooltips
+hover = "#1b1e24"      # hovered rows and buttons
+selected = "#1f2c3d"   # selected row
+line = "#30333a"       # dividers and borders
+line_soft = "#23252b"  # section rules
+fg = "#e1e2e5"         # text
+hi = "#f5f6f8"         # emphasized text
+mute = "#8d9099"       # secondary text
+dim = "#666a73"        # hints
+accent = "#64a6e3"     # focus, links
+accent_bg = "#16222f"  # selected toggle background
+drop = "#64a6e32e"     # drop zone highlight
+ok = "#67c174"         # running, ready, success
+warn = "#e3ad48"       # warnings, missing tools
+err = "#eb7474"        # failures, protected envs
+env = "#cbbdf7"        # env chip text
+env_bg = "#2d2645"     # env chip background
+backdrop = "#00000073" # dims the window behind modals
+focus = "#64a6e3"      # keyboard focus ring
+selection = "#64a6e34d" # selected text
+caret = "#e1e2e5"      # text caret
+scrollbar = "#ffffff1f" # scrollbar thumb
+
+# Terminal colors for command output (16 ANSI colors plus defaults).
+[ansi]
+black = "#1c1d22"
+red = "#eb7474"
+green = "#67c174"
+yellow = "#e3ad48"
+blue = "#64a6e3"
+magenta = "#cbbdf7"
+cyan = "#5fc5c2"
+white = "#c6c8cd"
+bright_black = "#666a73"
+bright_red = "#ff9a9a"
+bright_green = "#8fd99a"
+bright_yellow = "#f2c86f"
+bright_blue = "#8cc2f2"
+bright_magenta = "#ded3ff"
+bright_cyan = "#86dcd9"
+bright_white = "#f5f6f8"
+foreground = "#e1e2e5"
+background = "#0f1012"
+cursor = "#e1e2e5"
+selection = "#64a6e34d"

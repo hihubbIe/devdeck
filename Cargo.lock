@@ -1399,7 +1399,9 @@ dependencies = [
 name = "devdeck-ui"
 version = "0.1.0"
 dependencies = [
+ "devdeck-core",
  "gpui-pre",
+ "unicode-segmentation",
 ]
 
 [[package]]

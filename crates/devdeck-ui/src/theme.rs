@@ -2,7 +2,8 @@
 //! multiplied by the UI scale (R9.4) and rounded once here, to whole logical pixels,
 //! matching how GPUI rounds line heights. Only the hairline stays 1 px at any scale.
 
-use gpui::{App, Global, Hsla, Pixels, SharedString, Window, px, rgb};
+use devdeck_core::theme_file::{ThemeColors, builtin_dark};
+use gpui::{App, Global, Hsla, Pixels, SharedString, Window, px, rgba};
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -28,6 +29,11 @@ pub struct Theme {
     pub err: Hsla,
     pub env: Hsla,
     pub env_bg: Hsla,
+    pub backdrop: Hsla,
+    pub focus: Hsla,
+    pub selection: Hsla,
+    pub caret: Hsla,
+    pub scrollbar: Hsla,
     // type
     pub font: SharedString,
     pub text: Pixels,
@@ -56,34 +62,42 @@ pub struct Theme {
 impl Global for Theme {}
 
 impl Theme {
-    /// The approved prototype palette with slightly more contrast (docs/DESIGN.md).
+    /// The built-in theme at a UI scale.
     pub fn devdeck_dark(scale: f32) -> Self {
-        let c = |v: u32| -> Hsla { rgb(v).into() };
-        let mut drop_bg: Hsla = rgb(0x64a6e3).into();
-        drop_bg.a = 0.18;
+        Self::from_colors(&builtin_dark(), scale)
+    }
+
+    /// A theme file's colors with every size derived from `scale`.
+    pub fn from_colors(colors: &ThemeColors, scale: f32) -> Self {
+        let c = |token: &str| -> Hsla { rgba(colors.get(token)).into() };
         let s = |base: f32| scaled(base, scale);
         Self {
-            name: "devdeck-dark".into(),
+            name: colors.name.clone().into(),
             scale,
-            bg: c(0x0f1012),
-            bar: c(0x15161a),
-            raised: c(0x1c1d22),
-            hover: c(0x1b1e24),
-            selected: c(0x1f2c3d),
-            line: c(0x30333a),
-            line_soft: c(0x23252b),
-            fg: c(0xe1e2e5),
-            hi: c(0xf5f6f8),
-            mute: c(0x8d9099),
-            dim: c(0x666a73),
-            accent: c(0x64a6e3),
-            accent_bg: c(0x16222f),
-            drop_bg,
-            ok: c(0x67c174),
-            warn: c(0xe3ad48),
-            err: c(0xeb7474),
-            env: c(0xcbbdf7),
-            env_bg: c(0x2d2645),
+            bg: c("bg"),
+            bar: c("bar"),
+            raised: c("raised"),
+            hover: c("hover"),
+            selected: c("selected"),
+            line: c("line"),
+            line_soft: c("line_soft"),
+            fg: c("fg"),
+            hi: c("hi"),
+            mute: c("mute"),
+            dim: c("dim"),
+            accent: c("accent"),
+            accent_bg: c("accent_bg"),
+            drop_bg: c("drop"),
+            ok: c("ok"),
+            warn: c("warn"),
+            err: c("err"),
+            env: c("env"),
+            env_bg: c("env_bg"),
+            backdrop: c("backdrop"),
+            focus: c("focus"),
+            selection: c("selection"),
+            caret: c("caret"),
+            scrollbar: c("scrollbar"),
             font: "JetBrains Mono NL".into(),
             text: s(13.),
             text_small: s(11.),

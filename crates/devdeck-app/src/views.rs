@@ -16,6 +16,8 @@ pub fn build(r: &ViewRef, cx: &mut App) -> AnyView {
         cx.new(LogsView::new).into()
     } else if s == "demo/deployments" {
         cx.new(DeploymentsView::new).into()
+    } else if s == "demo/gallery" {
+        cx.new(crate::gallery::Gallery::new).into()
     } else {
         let title: SharedString = title(r).into();
         cx.new(|_| TextView::new(title)).into()
@@ -28,6 +30,7 @@ pub fn title(r: &ViewRef) -> String {
         "demo/logs" => "dev35 › entityservice · logs".into(),
         "demo/deployments" => "dev35 › deployments".into(),
         "demo/notes" => "notes".into(),
+        "demo/gallery" => "components".into(),
         "demo/long" => "a tab whose title is far too long to ever fit in a tab strip".into(),
         other => other.rsplit('/').next().unwrap_or(other).to_string(),
     }

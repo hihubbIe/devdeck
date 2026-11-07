@@ -37,7 +37,8 @@ actions!(
 );
 
 pub fn bind(cx: &mut App) {
-    let panes = Some("Panes");
+    // Pane keys never fire while typing in an input.
+    let panes = Some("Panes && !TextInput");
     cx.bind_keys([
         KeyBinding::new("alt-left", FocusLeft, panes),
         KeyBinding::new("alt-right", FocusRight, panes),

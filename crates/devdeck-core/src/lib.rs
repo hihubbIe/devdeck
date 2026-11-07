@@ -3,3 +3,4 @@
 
 pub mod layout;
 pub mod settings;
+pub mod theme_file;
