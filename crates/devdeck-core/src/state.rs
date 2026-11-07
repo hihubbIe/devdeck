@@ -41,11 +41,13 @@ pub struct SidebarState {
     pub pins: Pins,
     /// Open tree rows (folders, apps holding apps) per list id, by tree path.
     pub open: BTreeMap<String, BTreeSet<String>>,
+    /// The Cluster list watches every pod of its env (M3, off by default).
+    pub watch_pods: bool,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new() }
+        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false }
     }
 }
 
@@ -293,7 +295,7 @@ mod tests {
         assert_eq!(s.load_sidebar("work"), Loaded::Missing);
         let pins: Pins = BTreeMap::from([("apps".to_string(), BTreeSet::from(["entityservice".to_string()]))]);
         let open = BTreeMap::from([("apps".to_string(), BTreeSet::from(["front-end".to_string()]))]);
-        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins, open };
+        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins, open, watch_pods: true };
         s.save_sidebar("work", &state).unwrap();
         assert_eq!(s.load_sidebar("work"), Loaded::Ok(state));
         std::fs::write(s.dir.join("workspaces/work/sidebar.json"), "[").unwrap();

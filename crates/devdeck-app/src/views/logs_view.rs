@@ -101,9 +101,10 @@ impl ServiceLogsView {
         self.feed.is_some()
     }
 
-    /// The fake feed runs only while the view is on screen.
+    /// The fake feed runs only while the view is on screen, and only where the driver
+    /// shows logs (the real cluster's come in step 4: nothing is made up from real pods).
     fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if visible && self.feed.is_none() {
+        if visible && self.feed.is_none() && self.cluster.read(cx).logs().is_ok() {
             self.feed = Some(cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(LOGS_TICK).await;
@@ -274,8 +275,9 @@ impl Render for ServiceLogsView {
             )
             .child(toggle_button("follow", "follow", self.follow, &t).tooltip(tip("follow")).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))));
 
-        let body = if pods == 0 {
-            let why = self.cluster.read(cx).pods_read().err().map_or_else(|| "no pods".to_string(), |why| format!("pods: {why}"));
+        let refused = self.cluster.read(cx).logs().err();
+        let body = if pods == 0 || refused.is_some() {
+            let why = refused.map_or_else(|| "no pods".to_string(), |why| format!("logs: {why}"));
             div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label(why)).into_any_element()
         } else {
             let (ok, warn, err, mute, fg, hit, current_bg, accent) = (t.ok, t.warn, t.err, t.mute, t.fg, t.drop_bg, t.selection, t.accent);

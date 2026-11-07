@@ -5,6 +5,7 @@ pub mod actions;
 pub mod app_settings;
 pub mod cheat_sheet;
 pub mod cluster;
+pub mod cluster_pods;
 pub mod deck;
 pub mod environment;
 pub mod fake_cluster;

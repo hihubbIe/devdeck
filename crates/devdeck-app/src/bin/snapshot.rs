@@ -5,7 +5,7 @@
 //! `cargo run -p devdeck-app --features snapshot --bin devdeck-snapshot -- <out-dir> [filter]`
 //! where `filter` is a comma-separated list of name fragments (`50-,51-`).
 
-use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate};
+use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, PodScope, PodUpdate};
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
@@ -423,10 +423,11 @@ fn svc_lost_connection(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: 
     cx.update(|cx| c.update(cx, |c, cx| c.apply("dev35", problem, cx)));
 }
 
-/// Reads deployments only, as the kube driver of M3 step 1.
-struct DeploymentsOnly;
+/// As the kube driver: pods watched for whoever wants them (the demo's), no logs, no
+/// deploys.
+struct KubeLike;
 
-impl ClusterDriver for DeploymentsOnly {
+impl ClusterDriver for KubeLike {
     fn watch(&self, _env: &str, _cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
         None
     }
@@ -436,21 +437,42 @@ impl ClusterDriver for DeploymentsOnly {
     fn writes(&self) -> Result<(), String> {
         Err(devdeck_app::kube_cluster::NO_DEPLOYS.into())
     }
-    fn pods(&self) -> Result<(), String> {
-        Err(devdeck_app::kube_cluster::NOT_YET.into())
+    fn logs(&self) -> Result<(), String> {
+        Err(devdeck_app::kube_cluster::NO_LOGS.into())
     }
-    fn metrics(&self, _env: &str) -> Result<(), String> {
-        Err(devdeck_app::kube_cluster::NOT_YET.into())
+    fn watch_pods(&self, env: &str, scope: PodScope, _selector: Option<&str>, cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |c, cx| {
+                let pods = match &scope {
+                    PodScope::Service(name) => c.deployment(&env, name).map(|d| devdeck_core::demo::pods(&env, d)).unwrap_or_default(),
+                    PodScope::Env => Vec::new(),
+                };
+                c.apply_pods(&env, scope, PodUpdate::Pods(pods), cx);
+            });
+        }))
     }
 }
 
-/// M3 step 1: a service on the kube driver: containers, no pods or metrics yet, save
-/// disabled with its reason.
-fn svc_deployments_only(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    let name = multi_container(cx, shell);
+/// A service on the kube driver: its pods watched while open (one crash-looping), logs
+/// and deploys refused with their reasons, metrics not read yet.
+fn svc_kube_like(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     let c = work_cluster(cx, shell);
-    cx.update(|cx| c.update(cx, |c, cx| c.set_driver(c.envs.clone(), std::rc::Rc::new(DeploymentsOnly), cx)));
+    cx.update(|cx| c.update(cx, |c, cx| c.want("dev35", cx)));
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    let name = cx.update(|cx| c.read(cx).names().into_iter().find(|n| c.read(cx).deployment("dev35", n).is_some_and(|d| d.ready < d.replicas)).map(str::to_string)).expect("a deployment with a pod down");
+    cx.update(|cx| c.update(cx, |c, cx| c.set_driver(c.envs.clone(), std::rc::Rc::new(KubeLike), cx)));
     service(cx, shell, "dev35", &name, true);
+}
+
+/// The Cluster list with **watch** on: deployments with a pod in trouble are marked.
+fn cluster_watch(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.update(|cx| s.update(cx, |s, cx| s.toggle_watch_pods(cx)));
 }
 
 fn maximize_focused(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) {
@@ -792,7 +814,8 @@ fn states() -> Vec<State> {
         w("91-pod-crashloop", "work", 1.0, Some(pod)),
         w("92-matrix-highlight", "work", 1.0, Some(matrix)),
         w("94-svc-lost-connection", "work", 1.0, Some(svc_lost_connection)),
-        w("95-svc-deployments-only", "work", 1.0, Some(svc_deployments_only)),
+        w("95-svc-kube-like", "work", 1.0, Some(svc_kube_like)),
+        w("96-cluster-watch", "work", 1.0, Some(cluster_watch)),
         w("93-port", "work", 1.0, Some(port)),
         w("A0-cheat-sheet", "work", 1.0, Some(cheat_sheet)),
         w("A1-cheat-sheet-filtered", "work", 1.0, Some(cheat_sheet_filtered)),

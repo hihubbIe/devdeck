@@ -190,7 +190,20 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   a removed `[cluster]` empties the cluster (views keep it) until it comes back.
 - Each watch lasts 60 s on the server, so a connection that died silently shows as a
   problem within about a minute. A paused or stuck rollout is said as such.
-- Metrics are sampled only for views that are visible (pods and metrics: M3 step 2).
+- Pods are watched only for whoever holds an interest handle: a service or pod view for
+  its deployment (filtered by the deployment's label selector), the Cluster list's
+  **watch** toggle for its whole env (off by default, saved with the sidebar). The
+  env-wide watch replaces the services' own once it has listed. Pods belong to the
+  deployment that owns their ReplicaSet (`ownerReferences`, no ReplicaSet permission
+  needed), grouped once per update. A dropped handle tells the cluster over a channel,
+  no timer.
+- "Running since" comes from the pods when known: the earliest start among running pods
+  of the newest template; a scale keeps it, a new version moves it.
+- Metrics (`metrics.k8s.io`) are read per env while a service or pod view of it is
+  visible: at once, then every 15 s, one read at a time, 10 s at most; a 403 or 404 stops
+  the reading until the env's target changes. Usage is joined at read time.
+- Logs (step 4) and deploys (step 5) say why they aren't there; nothing is made up from
+  real pods.
 - The user's RBAC cannot read ReplicaSets or events, so deploy history is kept by
   devdeck in its state folder, and failure reasons come from pod container states.
 - Writes: patch the container image, rollout restart, scale. Protected envs need an
@@ -327,6 +340,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 (user, M3) Cluster envs are watched from first use until the workspace's
   cluster changes, not only while visible: an idle watch costs no CPU and lists show at
   once on return. Can be revisited.
+- 2026-11-08 (user, M3) Pods are watched on demand: open services' own, and every pod of
+  the list's env only with the list's **watch** toggle on (off by default).
 - 2026-11-07 (user, M3) Git comes back read only (R6.10): image tags are branch names, so
   a service's repository and branches matter to deploys. Worktrees and a git page stay
   with the later ideas.

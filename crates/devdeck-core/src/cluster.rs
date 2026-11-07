@@ -143,22 +143,98 @@ pub struct Usage {
 pub enum PodPhase {
     Running,
     Pending,
-    /// Waiting with a reason (`ImagePullBackOff`, `CrashLoopBackOff`).
+    /// A container waiting with a reason (`ImagePullBackOff`, `CrashLoopBackOff`,
+    /// `Init:CrashLoopBackOff` for an init container).
     Waiting(String),
     Terminating,
+    /// Ended badly, with a reason (`Evicted`).
+    Failed(String),
+    Succeeded,
+}
+
+impl PodPhase {
+    pub fn text(&self) -> String {
+        match self {
+            PodPhase::Running => "Running".into(),
+            PodPhase::Pending => "Pending".into(),
+            PodPhase::Waiting(r) | PodPhase::Failed(r) => r.clone(),
+            PodPhase::Terminating => "Terminating".into(),
+            PodPhase::Succeeded => "Succeeded".into(),
+        }
+    }
+
+    pub fn ok(&self) -> bool {
+        matches!(self, PodPhase::Running | PodPhase::Succeeded)
+    }
+}
+
+/// How a container last ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Termination {
+    /// `Error`, `OOMKilled`, `Completed`.
+    pub reason: String,
+    pub exit_code: Option<i32>,
+    /// What it said, when anything (first line).
+    pub message: Option<String>,
+    /// When (epoch seconds).
+    pub at: Option<u64>,
+}
+
+impl Termination {
+    /// `Error (exit 2): panic: missing TADA_DB_URL`.
+    pub fn text(&self) -> String {
+        let code = self.exit_code.map(|c| format!(" (exit {c})")).unwrap_or_default();
+        let message = self.message.as_deref().map(|m| format!(": {m}")).unwrap_or_default();
+        format!("{}{code}{message}", self.reason)
+    }
+}
+
+/// One container of a pod, as the cluster reports it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContainerStatus {
+    pub name: String,
+    /// An init container (runs before the others).
+    pub init: bool,
+    pub ready: bool,
+    pub restarts: u32,
+    /// `running`, `waiting: CrashLoopBackOff`, `terminated: Error (exit 1)`.
+    pub state: String,
+    pub last_termination: Option<Termination>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pod {
     pub name: String,
+    /// The deployment it belongs to (its ReplicaSet's owner), when it has one.
+    pub owner: Option<String>,
+    /// Its `pod-template-hash`: pods of one version of a deployment share it.
+    pub template: String,
     pub phase: PodPhase,
     pub ready: bool,
+    /// Every container's restarts.
     pub restarts: u32,
-    pub last_termination: Option<String>,
-    pub age_s: u64,
+    /// The latest termination of any of its containers.
+    pub last_termination: Option<Termination>,
+    /// When it started (epoch seconds); `None` while pending.
+    pub started: Option<u64>,
     pub node: String,
+    /// The main container's tag, from its spec.
     pub tag: String,
-    pub usage: Usage,
+    pub containers: Vec<ContainerStatus>,
+}
+
+/// Waiting reasons that mean a pod is in trouble, not on its way (`ContainerCreating`).
+const TROUBLE: [&str; 6] = ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError", "CreateContainerError", "InvalidImageName"];
+
+impl Pod {
+    /// What's wrong with it, when something is: a waiting reason that won't fix itself.
+    /// Ending pods, ended pods and pods merely not ready yet aren't trouble.
+    pub fn trouble(&self) -> Option<&str> {
+        match &self.phase {
+            PodPhase::Waiting(r) if TROUBLE.iter().any(|t| r.trim_start_matches("Init:") == *t) => Some(r),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -171,6 +247,8 @@ pub struct Deployment {
     /// Replicas on the current version.
     pub updated: u32,
     pub progress: Progress,
+    /// Which pods are its, as a label selector (`app=api,tier in (web)`); empty: every pod.
+    pub selector: String,
     /// When the current version finished rolling out (epoch seconds), else when the
     /// deployment was created; `None` unless [`Progress::Settled`].
     pub since: Option<u64>,
@@ -327,6 +405,7 @@ mod tests {
             ready: 2,
             updated: 2,
             progress: Progress::Settled,
+            selector: "app=entityservice".into(),
             since: Some(60),
         }
     }

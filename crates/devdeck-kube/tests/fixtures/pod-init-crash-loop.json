@@ -1,0 +1,142 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "creationTimestamp": "2026-11-07T16:20:41Z",
+    "generateName": "notifier-84f6d7c95-",
+    "labels": {
+      "app": "notifier",
+      "pod-template-hash": "84f6d7c95"
+    },
+    "name": "notifier-84f6d7c95-k9w3z",
+    "namespace": "dev35",
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "ReplicaSet",
+        "name": "notifier-84f6d7c95",
+        "uid": "0b6f3e2a-7c1d-4a9e-8f2b-5d4c3b2a1f0e"
+      }
+    ],
+    "resourceVersion": "918300112",
+    "uid": "a4c2e1f0-9b8d-4c7e-a6f5-3d2c1b0a9f8e"
+  },
+  "spec": {
+    "containers": [
+      {
+        "image": "europe-west1-docker.pkg.dev/project/registry06/notifier:1.4.0",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "notifier",
+        "ports": [
+          {
+            "containerPort": 8080,
+            "protocol": "TCP"
+          }
+        ],
+        "resources": {
+          "requests": {
+            "cpu": "250m",
+            "memory": "512Mi"
+          }
+        }
+      }
+    ],
+    "nodeName": "gke-km011gcp-pool-2-8f3a1c2d-x7kq",
+    "restartPolicy": "Always",
+    "serviceAccountName": "default",
+    "initContainers": [
+      {
+        "image": "busybox:1.36",
+        "name": "wait-for-db",
+        "command": [
+          "sh",
+          "-c",
+          "nc -z db 5432"
+        ]
+      }
+    ]
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-11-07T16:20:43Z",
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:20:42Z",
+        "status": "False",
+        "type": "Initialized",
+        "reason": "ContainersNotInitialized"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:21:02Z",
+        "status": "False",
+        "type": "Ready",
+        "reason": "ContainersNotReady",
+        "message": "containers with unready status: [notifier]"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:21:02Z",
+        "status": "False",
+        "type": "ContainersReady",
+        "reason": "ContainersNotReady",
+        "message": "containers with unready status: [notifier]"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:20:41Z",
+        "status": "True",
+        "type": "PodScheduled"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "image": "europe-west1-docker.pkg.dev/project/registry06/notifier:1.4.0",
+        "imageID": "",
+        "lastState": {},
+        "name": "notifier",
+        "ready": false,
+        "restartCount": 0,
+        "started": false,
+        "state": {
+          "waiting": {
+            "reason": "PodInitializing"
+          }
+        }
+      }
+    ],
+    "hostIP": "10.132.0.41",
+    "phase": "Pending",
+    "podIP": "10.48.3.17",
+    "qosClass": "Burstable",
+    "startTime": "2026-11-07T16:20:41Z",
+    "initContainerStatuses": [
+      {
+        "containerID": "containerd://wait-for-db0f1e2d3c4b5a69788",
+        "image": "docker.io/library/busybox:1.36",
+        "imageID": "docker.io/library/busybox@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+        "lastState": {
+          "terminated": {
+            "containerID": "containerd://77aa66bb55cc",
+            "exitCode": 1,
+            "finishedAt": "2026-11-08T08:59:30Z",
+            "reason": "Error",
+            "startedAt": "2026-11-08T08:59:29Z"
+          }
+        },
+        "name": "wait-for-db",
+        "ready": false,
+        "restartCount": 6,
+        "started": false,
+        "state": {
+          "waiting": {
+            "message": "back-off 2m40s restarting failed container=wait-for-db",
+            "reason": "CrashLoopBackOff"
+          }
+        }
+      }
+    ]
+  }
+}

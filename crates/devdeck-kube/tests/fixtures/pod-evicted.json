@@ -1,0 +1,84 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "creationTimestamp": "2026-11-07T16:20:41Z",
+    "generateName": "crawler-6f7a8b9c5-",
+    "labels": {
+      "app": "crawler",
+      "pod-template-hash": "6f7a8b9c5"
+    },
+    "name": "crawler-6f7a8b9c5-p4s5d",
+    "namespace": "dev35",
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "ReplicaSet",
+        "name": "crawler-6f7a8b9c5",
+        "uid": "0b6f3e2a-7c1d-4a9e-8f2b-5d4c3b2a1f0e"
+      }
+    ],
+    "resourceVersion": "918300112",
+    "uid": "a4c2e1f0-9b8d-4c7e-a6f5-3d2c1b0a9f8e"
+  },
+  "spec": {
+    "containers": [
+      {
+        "image": "europe-west1-docker.pkg.dev/project/registry06/crawler:0.9.12",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "crawler",
+        "ports": [
+          {
+            "containerPort": 8080,
+            "protocol": "TCP"
+          }
+        ],
+        "resources": {
+          "requests": {
+            "cpu": "250m",
+            "memory": "512Mi"
+          }
+        }
+      }
+    ],
+    "nodeName": "gke-km011gcp-pool-2-8f3a1c2d-x7kq",
+    "restartPolicy": "Always",
+    "serviceAccountName": "default"
+  },
+  "status": {
+    "message": "The node was low on resource: memory. Threshold quantity: 100Mi, available: 87212Ki. Container crawler was using 2215312Ki, request is 0, has larger consumption of memory.",
+    "phase": "Failed",
+    "reason": "Evicted",
+    "startTime": "2026-11-06T22:14:03Z",
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-11-07T03:40:11Z",
+        "status": "False",
+        "type": "Ready",
+        "reason": "PodFailed"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "containerID": "containerd://crawler0f1e2d3c4b5a69788",
+        "image": "europe-west1-docker.pkg.dev/project/registry06/crawler:0.9.12",
+        "imageID": "europe-west1-docker.pkg.dev/project/registry06/crawler@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+        "lastState": {},
+        "name": "crawler",
+        "ready": false,
+        "restartCount": 0,
+        "started": false,
+        "state": {
+          "terminated": {
+            "exitCode": 137,
+            "finishedAt": "2026-11-07T03:40:10Z",
+            "reason": "OOMKilled",
+            "startedAt": "2026-11-06T22:14:05Z"
+          }
+        }
+      }
+    ]
+  }
+}

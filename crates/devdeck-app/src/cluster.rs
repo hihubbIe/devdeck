@@ -8,11 +8,11 @@
 //! once when one comes back (user, 2026-11-07). A lost connection keeps the last list,
 //! with the problem next to it.
 //!
-//! Metrics are sampled only while someone holds a [`Sampling`] handle (a visible service
-//! view); rollouts tick on their own timer while one runs, in any workspace. Rollouts and
-//! metrics are simulated (the fake's) until real writes and pods arrive (M3 steps 2, 5).
+//! Pods and metrics: [`crate::cluster_pods`]. Rollouts tick on their own timer while one
+//! runs, in any workspace; they're simulated (the fake's) until real writes (M3 step 5).
 
-use devdeck_core::cluster::{DeployRecord, Deployment, Env, Pod, PodPhase, Remote, Rollout, RolloutSim, Usage, check_write, set_image_command, walk};
+use devdeck_core::cluster::{DeployRecord, Deployment, Env, PodPhase, Remote, Rollout, RolloutSim, check_write, set_image_command};
+pub use crate::cluster_pods::{MetricsRead, PodScope, PodUpdate, PodsInterest, Sampling};
 pub use devdeck_kube::EnvUpdate;
 use gpui::{AppContext, Context, Task};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +23,7 @@ pub use crate::fake_cluster::{LOAD_DELAY, NO_METRICS_ENV, UNREACHABLE_ENV};
 
 /// One replica rolls per step.
 pub const ROLLOUT_STEP: Duration = Duration::from_secs(1);
-/// Metrics refresh while sampled.
+/// The fake's metrics pace.
 pub const METRICS_TICK: Duration = Duration::from_secs(2);
 
 /// What feeds a [`Cluster`].
@@ -42,14 +42,29 @@ pub trait ClusterDriver {
     fn namespace(&self, env: &str) -> String;
     /// Why deploys can't be made, if they can't.
     fn writes(&self) -> Result<(), String>;
-    /// Why pods aren't read, if they aren't.
-    fn pods(&self) -> Result<(), String>;
     /// Why `env`'s metrics can't be read, if they can't (R7.8).
-    fn metrics(&self, env: &str) -> Result<(), String>;
+    fn metrics(&self, _env: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// Starts feeding `scope`'s pods in `env` ([`Cluster::apply_pods`]), filtered by
+    /// `selector` when given; dropping the task stops it. `None`: this driver doesn't
+    /// watch pods (the fake loads them with the deployments).
+    fn watch_pods(&self, _env: &str, _scope: PodScope, _selector: Option<&str>, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
+    /// Reads `env`'s metrics once ([`Cluster::apply_metrics`]).
+    fn sample(&self, _env: &str, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
+    /// How often metrics are read while someone looks.
+    fn metrics_every(&self) -> Duration {
+        Duration::from_secs(15)
+    }
+    /// Why logs aren't shown, if they aren't.
+    fn logs(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
-
-/// Held by whoever wants live metrics; dropping it stops the sampling.
-pub struct Sampling(#[allow(dead_code)] Rc<()>);
 
 /// An env as last heard of.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -65,7 +80,7 @@ type Key = (String, String);
 pub struct Cluster {
     /// The workspace's envs, alphabetical.
     pub envs: Vec<Env>,
-    driver: Rc<dyn ClusterDriver>,
+    pub(crate) driver: Rc<dyn ClusterDriver>,
     states: BTreeMap<String, EnvState>,
     /// The envs something asked for, watched from then on.
     wanted: BTreeSet<String>,
@@ -77,14 +92,11 @@ pub struct Cluster {
     /// What reading the cluster's config found wrong (a broken kubeconfig), shown with
     /// the workspace's problems.
     pub problems: Vec<String>,
-    pods: BTreeMap<Key, Vec<Pod>>,
+    pub(crate) pod: crate::cluster_pods::PodState,
     rollouts: BTreeMap<Key, RolloutSim>,
     history: BTreeMap<Key, Vec<DeployRecord>>,
-    seed: u64,
-    samplers: Rc<()>,
-    sampling: Option<Task<()>>,
     rolling: Option<Task<()>>,
-    /// Metrics ticks done (tests check sampling stops).
+    /// Metrics reads started (tests check sampling stops).
     pub metric_ticks: usize,
     /// A fixed clock (epoch seconds) that rollouts advance: the demo's, so snapshots
     /// don't change. `None`: the system's.
@@ -103,12 +115,9 @@ impl Cluster {
             watches: BTreeMap::new(),
             loading,
             problems: Vec::new(),
-            pods: BTreeMap::new(),
+            pod: Default::default(),
             rollouts: BTreeMap::new(),
             history: BTreeMap::new(),
-            seed: 42,
-            samplers: Rc::new(()),
-            sampling: None,
             rolling: None,
             metric_ticks: 0,
             clock,
@@ -119,12 +128,13 @@ impl Cluster {
     pub fn set_driver(&mut self, envs: Vec<Env>, driver: Rc<dyn ClusterDriver>, cx: &mut Context<Self>) {
         self.set_envs(envs, cx);
         // Pods are the driver's: a new one reads them again.
-        self.pods.clear();
+        self.forget_pods(&|_| false);
         self.watches.clear();
         self.driver = driver;
         self.problems.clear();
         self.loading = self.driver.clone().start(cx);
         self.restart(self.wanted.clone(), cx);
+        self.reinstate_pods(cx);
         cx.notify();
     }
 
@@ -136,11 +146,12 @@ impl Cluster {
         self.states.retain(|e, _| names.contains(e));
         self.wanted.retain(|e| names.contains(e));
         self.watches.retain(|e, _| names.contains(e));
-        self.pods.retain(|(e, _), _| names.contains(e));
+        self.forget_pods(&|e| names.contains(e));
         self.envs = envs;
         if self.all {
             self.want_all(cx);
         }
+        self.reinstate_pods(cx);
         cx.notify();
     }
 
@@ -152,7 +163,7 @@ impl Cluster {
         self.wanted.clear();
         self.watches.clear();
         self.loading = None;
-        self.pods.clear();
+        self.forget_pods(&|_| false);
         self.problems.clear();
         cx.notify();
     }
@@ -160,6 +171,7 @@ impl Cluster {
     /// Reads the driver's config again (it changed, or a kubeconfig did); watches whose
     /// target changed restart.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.retry_metrics();
         self.loading = self.driver.clone().start(cx);
     }
 
@@ -191,6 +203,7 @@ impl Cluster {
             if self.wanted.contains(&env) {
                 self.watches.remove(&env);
                 self.start_watch(&env, cx);
+                self.restart_pods(&env, cx);
             }
         }
     }
@@ -214,6 +227,10 @@ impl Cluster {
                 let map: BTreeMap<String, Deployment> = list.into_iter().map(|d| (d.name.clone(), d)).collect();
                 let changed = state.deployments.as_ref() != Some(&map);
                 state.deployments = Some(map);
+                if changed {
+                    // A service's watch waits for its deployment's selector.
+                    self.refresh_pods(env, cx);
+                }
                 changed
             }
             EnvUpdate::Problem(p) => {
@@ -225,11 +242,6 @@ impl Cluster {
         if changed {
             cx.notify();
         }
-    }
-
-    /// The pods of a deployment, as the driver read them.
-    pub fn set_pods(&mut self, env: &str, name: &str, pods: Vec<Pod>) {
-        self.pods.insert((env.into(), name.into()), pods);
     }
 
     /// What reading the driver's config found wrong; new problems are said once (a toast),
@@ -285,14 +297,6 @@ impl Cluster {
         self.clock.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()))
     }
 
-    pub fn pods(&self, env: &str, name: &str) -> &[Pod] {
-        self.pods.get(&(env.to_string(), name.to_string())).map_or(&[], |p| p.as_slice())
-    }
-
-    pub fn find_pod(&self, env: &str, pod: &str) -> Option<(&str, &Pod)> {
-        self.pods.iter().filter(|((e, _), _)| e == env).find_map(|((_, n), pods)| pods.iter().find(|p| p.name == pod).map(|p| (n.as_str(), p)))
-    }
-
     pub fn rollout(&self, env: &str, name: &str) -> Option<&Rollout> {
         self.rollouts.get(&(env.to_string(), name.to_string())).map(|r| &r.state)
     }
@@ -301,13 +305,9 @@ impl Cluster {
         self.history.get(&(env.to_string(), name.to_string())).map_or(&[], |h| h.as_slice())
     }
 
-    /// Why pods aren't read, if they aren't.
-    pub fn pods_read(&self) -> Result<(), String> {
-        self.driver.pods()
-    }
-
-    pub fn metrics_allowed(&self, env: &str) -> Result<(), String> {
-        self.driver.metrics(env)
+    /// Why logs aren't shown, if they aren't.
+    pub fn logs(&self) -> Result<(), String> {
+        self.driver.logs()
     }
 
     /// Why deploys can't be made here, if they can't.
@@ -367,7 +367,7 @@ impl Cluster {
         if self.deployment(env, name).is_some_and(|d| d.tag() == target) {
             // A failed rollout never replaced the tag: clear the failure.
             self.rollouts.remove(&(env.to_string(), name.to_string()));
-            self.refresh_pods(env, name);
+            self.roll_pods(env, name, cx);
             cx.notify();
             return Ok(());
         }
@@ -418,7 +418,7 @@ impl Cluster {
                 }
                 Rollout::Progressing { .. } => {}
             }
-            self.refresh_pods(&env, &name);
+            self.roll_pods(&env, &name, cx);
         }
         cx.notify();
         self.rollouts.values().any(|r| !r.finished())
@@ -431,14 +431,15 @@ impl Cluster {
 
     /// Pods follow the deployment and its rollout: new-tag pods appear as it progresses; a
     /// failed one leaves a pod stuck pulling the image.
-    fn refresh_pods(&mut self, env: &str, name: &str) {
+    fn roll_pods(&mut self, env: &str, name: &str, cx: &mut Context<Self>) {
         let Some(d) = self.deployment(env, name).cloned() else { return };
+        let now = self.now_s();
         let mut pods = devdeck_core::demo::pods(env, &d);
         match self.rollout(env, name) {
             Some(Rollout::Progressing { to, updated, .. }) => {
                 for p in pods.iter_mut().take(*updated as usize) {
                     p.tag = to.clone();
-                    p.age_s = 0;
+                    p.started = Some(now);
                 }
             }
             Some(Rollout::Failed { to, .. }) => {
@@ -448,61 +449,13 @@ impl Cluster {
                 stuck.phase = PodPhase::Waiting("ImagePullBackOff".into());
                 stuck.ready = false;
                 stuck.restarts = 0;
-                stuck.age_s = 0;
-                stuck.usage = Usage { cpu_m: 0, mem_mi: 0 };
+                stuck.started = None;
+                stuck.last_termination = None;
                 pods.push(stuck);
             }
             _ => {}
         }
-        self.pods.insert((env.into(), name.into()), pods);
-    }
-
-    /// Live metrics while the returned handle lives (only where pods are read).
-    pub fn sample(&mut self, cx: &mut Context<Self>) -> Sampling {
-        let handle = Sampling(self.samplers.clone());
-        if self.sampling.is_none() && self.driver.pods().is_ok() {
-            self.sampling = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    cx.background_executor().timer(METRICS_TICK).await;
-                    let more = this
-                        .update(cx, |c, cx| {
-                            if Rc::strong_count(&c.samplers) <= 1 {
-                                c.sampling = None;
-                                return false;
-                            }
-                            c.tick_metrics(cx);
-                            true
-                        })
-                        .unwrap_or(false);
-                    if !more {
-                        return;
-                    }
-                }
-            }));
-        }
-        handle
-    }
-
-    /// Live sampling handles (the leak run checks they go back to zero).
-    pub fn samplers(&self) -> usize {
-        Rc::strong_count(&self.samplers) - 1
-    }
-
-    pub fn is_sampling(&self) -> bool {
-        self.sampling.is_some()
-    }
-
-    fn tick_metrics(&mut self, cx: &mut Context<Self>) {
-        self.metric_ticks += 1;
-        let mut seed = self.seed;
-        for pods in self.pods.values_mut() {
-            for p in pods.iter_mut().filter(|p| p.ready) {
-                p.usage.cpu_m = walk(p.usage.cpu_m, &mut seed, 5, 480);
-                p.usage.mem_mi = walk(p.usage.mem_mi, &mut seed, 60, 500);
-            }
-        }
-        self.seed = seed;
-        cx.notify();
+        self.replace_pods(env, name, pods, cx);
     }
 }
 

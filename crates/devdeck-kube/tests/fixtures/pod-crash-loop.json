@@ -1,0 +1,115 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "creationTimestamp": "2026-11-07T16:20:41Z",
+    "generateName": "entityservice-7b5d9f6c8-",
+    "labels": {
+      "app": "entityservice",
+      "pod-template-hash": "7b5d9f6c8"
+    },
+    "name": "entityservice-7b5d9f6c8-q8r2t",
+    "namespace": "dev35",
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "ReplicaSet",
+        "name": "entityservice-7b5d9f6c8",
+        "uid": "0b6f3e2a-7c1d-4a9e-8f2b-5d4c3b2a1f0e"
+      }
+    ],
+    "resourceVersion": "918300112",
+    "uid": "a4c2e1f0-9b8d-4c7e-a6f5-3d2c1b0a9f8e"
+  },
+  "spec": {
+    "containers": [
+      {
+        "image": "europe-west1-docker.pkg.dev/project/registry06/entityservice:lan-160",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "entityservice",
+        "ports": [
+          {
+            "containerPort": 8080,
+            "protocol": "TCP"
+          }
+        ],
+        "resources": {
+          "requests": {
+            "cpu": "250m",
+            "memory": "512Mi"
+          }
+        }
+      }
+    ],
+    "nodeName": "gke-km011gcp-pool-2-8f3a1c2d-x7kq",
+    "restartPolicy": "Always",
+    "serviceAccountName": "default"
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-11-07T16:20:43Z",
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:20:42Z",
+        "status": "True",
+        "type": "Initialized"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:21:02Z",
+        "status": "False",
+        "type": "Ready",
+        "reason": "ContainersNotReady",
+        "message": "containers with unready status: [entityservice]"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:21:02Z",
+        "status": "False",
+        "type": "ContainersReady",
+        "reason": "ContainersNotReady",
+        "message": "containers with unready status: [entityservice]"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:20:41Z",
+        "status": "True",
+        "type": "PodScheduled"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "containerID": "containerd://entityservice0f1e2d3c4b5a69788",
+        "image": "europe-west1-docker.pkg.dev/project/registry06/entityservice:lan-160",
+        "imageID": "europe-west1-docker.pkg.dev/project/registry06/entityservice@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+        "lastState": {
+          "terminated": {
+            "containerID": "containerd://5e4d3c2b1a09",
+            "exitCode": 2,
+            "finishedAt": "2026-11-08T08:57:12Z",
+            "message": "panic: missing TADA_DB_URL\n\ngoroutine 1 [running]:\nmain.main()\n",
+            "reason": "Error",
+            "startedAt": "2026-11-08T08:57:10Z"
+          }
+        },
+        "name": "entityservice",
+        "ready": false,
+        "restartCount": 14,
+        "started": false,
+        "state": {
+          "waiting": {
+            "message": "back-off 5m0s restarting failed container=entityservice pod=entityservice-7b5d9f6c8-q8r2t_dev35(a4c2e1f0)",
+            "reason": "CrashLoopBackOff"
+          }
+        }
+      }
+    ],
+    "hostIP": "10.132.0.41",
+    "phase": "Running",
+    "podIP": "10.48.3.17",
+    "qosClass": "Burstable",
+    "startTime": "2026-11-07T16:20:41Z"
+  }
+}

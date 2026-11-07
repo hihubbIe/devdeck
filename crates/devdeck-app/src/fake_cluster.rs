@@ -1,8 +1,9 @@
 //! The demo's cluster driver: an env lists after [`LOAD_DELAY`], dev36's API server can't
 //! be reached, metrics are forbidden on lab (R7.8). Deployments and their pods come from
-//! `devdeck_core::demo`; rollouts and metrics are the entity's simulation.
+//! `devdeck_core::demo`, every pod of an env at once; its metrics walk; rollouts are the
+//! entity's simulation.
 
-use crate::cluster::{Cluster, ClusterDriver, EnvUpdate};
+use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, METRICS_TICK};
 use devdeck_core::demo::{self, ClusterSpec};
 use gpui::{Context, Task};
 use std::time::Duration;
@@ -30,10 +31,9 @@ impl ClusterDriver for FakeCluster {
                     return c.apply(&env, EnvUpdate::Problem(Some(problem)), cx);
                 }
                 let deployments: Vec<_> = services.iter().filter_map(|s| demo::deployment(&env, s)).collect();
-                for d in &deployments {
-                    c.set_pods(&env, &d.name, demo::pods(&env, d));
-                }
+                let pods = deployments.iter().flat_map(|d| demo::pods(&env, d)).collect();
                 c.apply(&env, EnvUpdate::Deployments(deployments), cx);
+                c.set_env_pods(&env, pods, cx);
             });
         }))
     }
@@ -46,11 +46,18 @@ impl ClusterDriver for FakeCluster {
         Ok(())
     }
 
-    fn pods(&self) -> Result<(), String> {
-        Ok(())
-    }
-
     fn metrics(&self, env: &str) -> Result<(), String> {
         if env == NO_METRICS_ENV { Err("metrics forbidden: your role can't read metrics.k8s.io".into()) } else { Ok(()) }
+    }
+
+    fn sample(&self, env: &str, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |c, cx| c.walk_usage(&env, cx));
+        }))
+    }
+
+    fn metrics_every(&self) -> Duration {
+        METRICS_TICK
     }
 }

@@ -5,9 +5,10 @@
 //! changes: only envs whose target changed (another context, folder or file content, a
 //! rotated token) reconnect.
 //!
-//! Step 1 reads deployments only: deploys, pods and metrics say why they aren't there.
+//! Deployments, pods (for whoever wants them) and metrics are read; logs (step 4) and
+//! deploys (step 5) say why they aren't there.
 
-use crate::cluster::{Cluster, ClusterDriver, EnvUpdate};
+use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, MetricsRead, PodScope};
 use devdeck_core::config::ClusterConfig;
 use devdeck_kube::{Kubeconfigs, Target};
 use gpui::{Context, Task};
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 /// What the kube driver can't do yet.
-pub const NOT_YET: &str = "not read yet";
+pub const NO_LOGS: &str = "logs come in a later step";
 pub const NO_DEPLOYS: &str = "deploys come in a later step";
 
 pub struct KubeCluster {
@@ -101,11 +102,40 @@ impl ClusterDriver for KubeCluster {
         Err(NO_DEPLOYS.into())
     }
 
-    fn pods(&self) -> Result<(), String> {
-        Err(NOT_YET.into())
+    fn logs(&self) -> Result<(), String> {
+        Err(NO_LOGS.into())
     }
 
-    fn metrics(&self, _env: &str) -> Result<(), String> {
-        Err(NOT_YET.into())
+    fn watch_pods(&self, env: &str, scope: PodScope, selector: Option<&str>, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let target = match self.target(env)? {
+            Ok(t) => t,
+            // The deployments' watch says why.
+            Err(_) => return None,
+        };
+        let (updates, handle) = devdeck_kube::watch_pods(&target, selector);
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let _handle = handle;
+            while let Ok(update) = updates.recv().await {
+                if this.update(cx, |c, cx| c.apply_pods(&env, scope.clone(), update, cx)).is_err() {
+                    return;
+                }
+            }
+        }))
+    }
+
+    fn sample(&self, env: &str, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let target = self.target(env)?.ok()?;
+        let read = devdeck_kube::metrics(&target);
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let result = match read.recv().await {
+                Ok(Ok(usage)) => MetricsRead::Usage(usage),
+                Ok(Err(devdeck_kube::MetricsError::Refused(why))) => MetricsRead::Refused(why),
+                Ok(Err(devdeck_kube::MetricsError::Failed(why))) => MetricsRead::Failed(why),
+                Err(_) => MetricsRead::Failed("the read stopped".into()),
+            };
+            let _ = this.update(cx, |c, cx| c.apply_metrics(&env, result, cx));
+        }))
     }
 }

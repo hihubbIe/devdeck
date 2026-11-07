@@ -4,13 +4,14 @@ use crate::Target;
 use kube::runtime::watcher;
 use std::error::Error;
 
-/// What went wrong reading `target`, in words a user can act on.
-pub fn describe(e: &kube::Error, target: &Target) -> String {
+/// What went wrong reading `target`'s `listed` ("deployments", "pods"), in words a user
+/// can act on.
+pub fn describe(e: &kube::Error, target: &Target, listed: &str) -> String {
     let (cluster, env) = (&target.cluster, &target.env);
     if let kube::Error::Api(status) = e {
         return match status.code {
             401 => format!("{cluster} refused your credentials"),
-            403 => format!("your account can't list deployments in {env}"),
+            403 => format!("your account can't list {listed} in {env}"),
             code => {
                 let message = if status.message.is_empty() { &status.reason } else { &status.message };
                 format!("{cluster} ({env}): {message} ({code})")
@@ -24,10 +25,10 @@ pub fn describe(e: &kube::Error, target: &Target) -> String {
 }
 
 /// What a watcher's error says, as [`describe`].
-pub(crate) fn describe_watcher(e: &watcher::Error, target: &Target) -> String {
+pub(crate) fn describe_watcher(e: &watcher::Error, target: &Target, listed: &str) -> String {
     match e {
-        watcher::Error::InitialListFailed(e) | watcher::Error::WatchStartFailed(e) | watcher::Error::WatchFailed(e) => describe(e, target),
-        watcher::Error::WatchError(status) => describe(&kube::Error::Api(status.clone()), target),
+        watcher::Error::InitialListFailed(e) | watcher::Error::WatchStartFailed(e) | watcher::Error::WatchFailed(e) => describe(e, target, listed),
+        watcher::Error::WatchError(status) => describe(&kube::Error::Api(status.clone()), target, listed),
         watcher::Error::NoResourceVersion => e.to_string(),
     }
 }
@@ -83,34 +84,35 @@ mod tests {
 
     #[test]
     fn credentials_and_permissions() {
-        assert_eq!(describe(&api(401, "Unauthorized", "Unauthorized"), &target()), "km011gcp refused your credentials");
+        assert_eq!(describe(&api(401, "Unauthorized", "Unauthorized"), &target(), "deployments"), "km011gcp refused your credentials");
         let forbidden = "deployments.apps is forbidden: User \"system:serviceaccount:x\" cannot list resource \"deployments\"";
-        assert_eq!(describe(&api(403, forbidden, "Forbidden"), &target()), "your account can't list deployments in dev35");
+        assert_eq!(describe(&api(403, forbidden, "Forbidden"), &target(), "deployments"), "your account can't list deployments in dev35");
+        assert_eq!(describe(&api(403, "pods is forbidden", "Forbidden"), &target(), "pods"), "your account can't list pods in dev35");
     }
 
     #[test]
     fn other_api_errors_keep_their_message_and_code() {
-        assert_eq!(describe(&api(404, "the server could not find the requested resource", "NotFound"), &target()), "km011gcp (dev35): the server could not find the requested resource (404)");
-        assert_eq!(describe(&api(503, "", "ServiceUnavailable"), &target()), "km011gcp (dev35): ServiceUnavailable (503)");
+        assert_eq!(describe(&api(404, "the server could not find the requested resource", "NotFound"), &target(), "deployments"), "km011gcp (dev35): the server could not find the requested resource (404)");
+        assert_eq!(describe(&api(503, "", "ServiceUnavailable"), &target(), "deployments"), "km011gcp (dev35): ServiceUnavailable (503)");
     }
 
     #[test]
     fn unreachable_clusters_give_the_root_cause() {
         let refused = service(Wrapped("tcp connect error", Box::new(io::Error::new(io::ErrorKind::ConnectionRefused, "Connection refused (os error 111)"))));
-        assert_eq!(describe(&refused, &target()), "can't reach km011gcp (dev35): Connection refused (os error 111)");
+        assert_eq!(describe(&refused, &target(), "deployments"), "can't reach km011gcp (dev35): Connection refused (os error 111)");
         let dns = service(Wrapped("dns error", Box::new(io::Error::other("failed to lookup address information: Name or service not known"))));
-        assert_eq!(describe(&dns, &target()), "can't reach km011gcp (dev35): failed to lookup address information: Name or service not known");
+        assert_eq!(describe(&dns, &target(), "deployments"), "can't reach km011gcp (dev35): failed to lookup address information: Name or service not known");
         let timeout = service(io::Error::new(io::ErrorKind::TimedOut, "deadline has elapsed"));
-        assert_eq!(describe(&timeout, &target()), "can't reach km011gcp (dev35): connection timed out");
+        assert_eq!(describe(&timeout, &target(), "deployments"), "can't reach km011gcp (dev35): connection timed out");
         let reset = kube::Error::ReadEvents(io::Error::new(io::ErrorKind::ConnectionReset, "connection reset by peer"));
-        assert_eq!(describe(&reset, &target()), "can't reach km011gcp (dev35): connection reset by peer");
+        assert_eq!(describe(&reset, &target(), "deployments"), "can't reach km011gcp (dev35): connection reset by peer");
     }
 
     #[test]
     fn anything_else_is_its_text() {
         let e = kube::Error::LinesCodecMaxLineLengthExceeded;
-        assert_eq!(describe(&e, &target()), e.to_string());
+        assert_eq!(describe(&e, &target(), "deployments"), e.to_string());
         let watch = watcher::Error::WatchError(Status::failure("too old resource version", "Expired").with_code(410).boxed());
-        assert_eq!(describe_watcher(&watch, &target()), "km011gcp (dev35): too old resource version (410)");
+        assert_eq!(describe_watcher(&watch, &target(), "deployments"), "km011gcp (dev35): too old resource version (410)");
     }
 }

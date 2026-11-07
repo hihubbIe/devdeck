@@ -38,6 +38,8 @@ fn views(n: u64) -> Vec<ViewRef> {
         ViewAddr::Run { app: "eventservice".into(), cmd: "go:build".into() }.to_ref(),
         ViewAddr::Svc { env: "dev35".into(), name: "graphservice".into() }.to_ref(),
         ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() }.to_ref(),
+        // A pod that isn't there: it still takes its deployment's pods while open.
+        ViewAddr::Pod { env: "dev35".into(), pod: "graphservice-0-0".into() }.to_ref(),
         ViewAddr::Matrix.to_ref(),
         ViewAddr::Port { port: "5720".into() }.to_ref(),
         ViewRef::new(format!("stress/{n}")),
@@ -144,6 +146,7 @@ impl Stress {
             }
         }
         self.run_once(cx).await;
+        self.watch_pods(cx).await;
         self.layout_moves(n, opened.last().expect("a demo view").clone(), cx).await;
         self.overlays(cx).await;
         for to in [self.other, self.home] {
@@ -157,6 +160,21 @@ impl Stress {
         for v in opened {
             self.apply(cx, n, "close", move |l| l.close_view(&v));
         }
+        self.frame(cx).await;
+    }
+
+    /// The Cluster list's **watch** on, then off: its env-wide pod watch comes and goes.
+    async fn watch_pods(&self, cx: &mut AsyncApp) {
+        let sidebar = cx.update(|cx| self.shell.read(cx).active_sidebar());
+        cx.update(|cx| {
+            sidebar.update(cx, |s, cx| {
+                let back = s.activity();
+                s.show(crate::sidebar::Activity::Cluster, cx);
+                s.toggle_watch_pods(cx);
+                s.toggle_watch_pods(cx);
+                s.show(back, cx);
+            })
+        });
         self.frame(cx).await;
     }
 
@@ -244,24 +262,27 @@ impl Stress {
     }
 
     /// Memory and engine counters: views and overlay layers must stay flat, no view may
-    /// outlive its tab, no metrics sampler may outlive its view.
+    /// outlive its tab, no metrics sampler or pod interest may outlive its view.
     fn report(&self, n: u64, cx: &mut AsyncApp) {
         let m = stats::memory();
-        let (views, leaked, windows, layers, samplers) = cx.update(|cx| {
+        let (views, leaked, windows, layers, samplers, interests) = cx.update(|cx| {
             let s = self.shell.read(cx);
             let decks: Vec<_> = s.workspaces.iter().map(|w| w.deck.clone()).collect();
-            let samplers: usize = s.workspaces.iter().filter_map(|w| w.services.read(cx).cluster.clone()).map(|c| c.read(cx).samplers()).sum();
+            let clusters: Vec<_> = s.workspaces.iter().filter_map(|w| w.services.read(cx).cluster.clone()).collect();
+            let samplers: usize = clusters.iter().map(|c| c.read(cx).samplers()).sum();
+            let interests: usize = clusters.iter().map(|c| c.read(cx).pod_interests()).sum();
             let views: usize = decks.iter().map(|d| d.read(cx).live_views()).sum();
             let leaked: usize = decks.iter().map(|d| d.update(cx, |d, _| d.leaked_views(3))).sum();
-            (views, leaked, cx.windows().len(), devdeck_ui::overlay::layer_count(cx), samplers)
+            (views, leaked, cx.windows().len(), devdeck_ui::overlay::layer_count(cx), samplers, interests)
         });
         eprintln!(
-            "devdeck-stress cycle={n} rss_kb={} pss_kb={} uss_kb={} views={views} leaked_views={leaked} windows={windows} layers={layers} samplers={samplers}",
+            "devdeck-stress cycle={n} rss_kb={} pss_kb={} uss_kb={} views={views} leaked_views={leaked} windows={windows} layers={layers} samplers={samplers} pod_interests={interests}",
             m.rss, m.pss, m.uss
         );
-        // Between cycles nothing is open: no sampler, no view outliving its tab.
-        if samplers != 0 || leaked != 0 {
-            eprintln!("devdeck-stress cycle={n} step failed: {samplers} samplers and {leaked} views left");
+        // Between cycles nothing is open: no sampler, no pod interest, no view outliving
+        // its tab.
+        if samplers != 0 || interests != 0 || leaked != 0 {
+            eprintln!("devdeck-stress cycle={n} step failed: {samplers} samplers, {interests} pod interests and {leaked} views left");
         }
     }
 }

@@ -368,3 +368,196 @@ the lead. Departures and findings:
     to end by the watcher test (a context added reconnects that env).
 12. `lifecycle.rs` `one_devdeck_per_state_folder` fails about 1 run in 12, on the last
     commit too (not this step): **out of scope**, reported to the user.
+
+## Step 2 · Service inspector on real data (plan, 2026-11-08)
+
+Requirements: R7.1 (restarts, running since), R7.2, R7.8, R5.5.
+
+Seen on the real cluster (read only): about 100 pods per dev env, 20 on hades; the
+account can list and watch pods and read `metrics.k8s.io` (`kubectl top` works), and has
+logs, exec and port-forward (step 4); no ReplicaSets, no events.
+
+### Decisions (user, 2026-11-08)
+
+- A **watch** toggle in the Cluster list's header, off by default, remembered per
+  workspace (in its sidebar state). On: every pod of the list's env is watched and rows
+  get a warning mark (a pod crash-looping, failing to pull, or not ready) with the reason.
+  Off: only the pods of services open in a view are watched, one watch per open service,
+  filtered by its deployment's labels; the list shows no pod marks. With the toggle on,
+  open services use its env-wide watch instead of their own.
+- Deployment lists stay watched from first use (step 1). The toggle is about pods only.
+
+### Model (`devdeck-core::cluster`)
+
+- `Deployment.selector: BTreeMap<String, String>` (its `matchLabels`).
+- `Pod`: `labels`, `template` (its `pod-template-hash`), `started: Option<u64>` (epoch,
+  replaces the fixed `age_s`), `containers: Vec<ContainerState>` (name, ready, restarts,
+  state text: "running", "waiting: CrashLoopBackOff", "terminated: Error (exit 1)", last
+  termination), `last_termination: Option<Termination>` (reason, exit code, message,
+  when), `usage: Option<Usage>` (none until metrics are read). `tag`, `node`, `phase`,
+  `ready`, `restarts` stay.
+- `Selector::matches(labels)` (every `matchLabels` pair present).
+- The demo builds the same (labels `app=<name>`, one container, a template per tag).
+
+### devdeck-kube
+
+- `watch_pods(target, selector: Option<label selector>) -> (Receiver<PodUpdate>,
+  WatchHandle)`: the deployments watch made generic over the resource and its
+  conversion (same relist, backoff, settle, timeout and send-only-changes rules), on
+  pods of the namespace, optionally filtered. `PodUpdate::{Pods(Vec<Pod>), Problem}`.
+- `convert::pod`: phase from the pod's phase, `deletionTimestamp` (Terminating) and the
+  main container's waiting reason; ready from the `Ready` condition; restarts summed;
+  last termination from the container with the latest one; tag from the main container
+  (named like the deployment's app label, else the first); node; start time.
+- `metrics(target) -> Receiver<Result<BTreeMap<pod, Usage>, String>>`: one list of
+  `metrics.k8s.io/v1beta1` PodMetrics in the namespace (`DynamicObject`, quantities
+  parsed, containers summed). 403: "your account can't read metrics in <env>"; 404:
+  "metrics aren't available on <cluster>".
+- Errors for pods: 403 "your account can't list pods in <env>".
+
+### The cluster entity
+
+- Pods come from sources per env: the env-wide one or one per service. `pods(env, name)`
+  returns the deployment's pods (by selector from the env-wide source, else its own),
+  owned (`Vec<Pod>`); `find_pod` searches both.
+- Interest handles, like `Sampling`: `pods_interest(env, Some(service) | None)` returns a
+  handle; dropping the last one of a key sends its key on a channel the entity listens on
+  (no timer), which stops that watch. `refresh_pods(env)` keeps the driver's pod watches
+  in line with the interests: the env-wide one alone when held, else one per held
+  service whose deployment (and selector) is known; called on an interest, a drop, a
+  new deployments list (a selector arrives or changes), and env or driver changes.
+- Driver: `watch_pods(env, selector, cx)`, `sample(env, cx)` (one metrics read; the fake
+  walks its numbers), `metrics_every()` (fake 2 s, kube 15 s), `logs()` (why logs aren't
+  shown: kube "logs come in step 4 of M3"; the fake streams its own). `pods()` goes.
+- Metrics per env: `Sampling` handles per env; while any is held, the env's metrics are
+  read every `metrics_every()` and merged into its pods' `usage` (kept across pod
+  updates by name). A metrics problem is kept per env and shown in the Metrics section.
+- "Running since": `Cluster::since(env, d)`: when the deployment's pods are known, the
+  earliest start among the pods of the newest template (the template of the most
+  recently started pod); else the deployment's own `since` (step 1). A scale no longer
+  moves it; a restart does.
+- The fake fills an env-wide source at load as today (rollouts replace a service's pods
+  in it).
+
+### Views
+
+- Sidebar: the **watch** toggle (Cluster activity only; also a registered action, in the
+  palette and cheat sheet, without a default key), holding an env-wide interest for the list's env while on; rows get a warning (reason: the worst
+  pod state, "CrashLoopBackOff", "ImagePullBackOff", "1/2 ready") with the tag in the
+  hover text. Off: no marks.
+- Service view: holds its service's interest while open and `Sampling` for its env while
+  visible. Pods table from real pods (age from `started`, last termination with its
+  age); "not read yet" goes; a pods problem shows in place of the table; metrics bars
+  sum pod usage; logs action disabled with the driver's `logs()` reason.
+- Pod view: holds its service's interest (the deployment from the pod's name:
+  `<deployment>-<hash>-<id>`); the made-up "Events" section becomes "Containers" (each
+  container's state, ready, restarts, last termination) plus the pod's usage.
+- Logs view: on a driver whose `logs()` refuses, says why and streams nothing (today it
+  would invent lines from real pods).
+
+### Tests
+
+- Core: selector matching; demo pods' new fields.
+- devdeck-kube: pod conversion from fixtures shaped like real pods (crash loop with last
+  termination, image pull back-off, terminating, two containers, pending); the pod watch
+  on the mock API (list, changes, selector in the request, 403); metrics parsing (sums,
+  quantities), 403 and 404.
+- App: interests (a service view opens and closes its watch; the toggle replaces the
+  service watches and gives them back when off; nothing watched when nothing holds);
+  sampling per env only while visible, at the driver's pace; "since" from pods (scale
+  keeps it, newer template moves it); the toggle's state saved; logs refused with a
+  reason; the existing fake tests unchanged in behaviour.
+- Snapshots: a service with a crash-looping pod (kube-like driver), the pod view's
+  containers, metrics refused, the list with the watch toggle on and marks.
+- By hand, read only: dev35 pods of one service match `kubectl get pods -l`; metrics
+  match `kubectl top`.
+
+### Out of scope
+
+Git (step 3); logs, shell, port-forward, k9s (step 4); writes (step 5).
+
+### Review of the step 2 plan (subagent, 2026-11-08) and assessment
+
+Every point accepted; the plan above reads with these changes.
+1. A changed target didn't restart pod watches. **Accepted**: `restart(env)` restarts the
+   env's pod watches and clears its metrics problem too.
+2. Pods had no loading state. **Accepted**: pod sources hold `Remote`-like state (no list
+   yet, a list, a problem next to a kept list); per-service sources stay until the
+   env-wide one has listed; a source's pods go with its watch.
+3. `matchLabels` alone is wrong. **Accepted**: the request selector is built from the full
+   `LabelSelector` (kube's `Selector`), kept as a string on the deployment; pods are
+   grouped by owner (the ReplicaSet in `ownerReferences` minus `-<pod-template-hash>`),
+   which also gives the main container (named like the deployment).
+4. Pod name → deployment. **Accepted**: the longest known deployment `d` with the pod named
+   `d-<x>-<y>`; the owner confirms once the pod is there.
+5. Per-render cost. **Accepted**: pods grouped by deployment once per update, by
+   reference; usage joined at read time from a per-env `pod → Usage` map (`Pod.usage`
+   goes); a pods update notifies only when the grouped result changed.
+6. Interests and lost envs. **Accepted**: holding an interest wants the env; the interest
+   table survives `set_envs`/`clear`/`reload`, which re-want and refresh from it.
+7. The sidebar's interest. **Accepted**: computed in `load_list` (already called on every
+   Services change), replaced when its key changes; held only while the Cluster activity
+   shows with the toggle on. An env-wide pods problem shows under the list header, like
+   a deployments problem.
+8. R7.1. **Accepted**: with the toggle on, a row's hover text says the tag, running since
+   and restarts.
+9. Pod phases. **Accepted**: `Failed(reason)` and `Succeeded`; init containers read;
+   marks from waiting reasons only (CrashLoopBackOff, ImagePullBackOff, ErrImagePull,
+   CreateContainerConfigError…), never from Terminating/Failed/Succeeded pods or plain
+   "not ready"; pending pods (no start) left out of "since".
+10. "Since" from pods. **Accepted**: `None` unless settled; Running pods only.
+11. Metrics. **Accepted**: the pod view samples while visible; the first read is at once;
+    no read while one is in flight; after a 403/404 an env isn't read again until a
+    reload.
+12. Driver API. **Accepted**: `watch_pods` takes the source key; new trait methods have
+    defaults; the fake rollout's `refresh_pods` becomes `roll_pods`.
+13. Tests and runs. **Accepted**: a scripted driver counting live pod watches (start,
+    drop, restart on selector, target and driver changes, `clear` and back); the stress
+    run opens a pod view, flips the toggle and reports live pod interests; the test and
+    snapshot edits listed.
+14. Drop channel. **Accepted**: the strong count is checked on receipt; the pod's tag
+    comes from the spec image.
+
+### Step 2 outcome (2026-11-08)
+
+Built as planned with the review's changes; devdeck-kube by a builder (pod conversion,
+the watch made generic over deployments and pods, metrics), the app side by the lead.
+- Pod state lives in `cluster_pods.rs`: interests, pod watches and their sources, pods
+  grouped by owner, usage per env, sampling. `Cluster::pods` stays a slice (empty when
+  unknown); `pods_state` gives loading and problems.
+- A metrics read is bounded to 10 s (a silently dead connection would block that env's
+  metrics forever); the builder raised it.
+- Before the first metrics read, the service and pod views say "not read yet" rather than
+  0; a pod missing from a read (a crash-looping one) has "no cpu or memory reported".
+- Read-only check on dev35: entityservice's pod, its state, restarts, tag and start
+  match `kubectl get pods`; its metrics match `kubectl top` (5m, 38Mi); the full
+  selector (three labels) came through; 26 of 98 pods have no deployment owner (jobs,
+  completed pods) and are left out; no pod in trouble.
+- The stress run opens a pod view and flips the watch toggle every cycle, and fails on a
+  pod interest left over.
+- Snapshots: `95-svc-kube-like` (pods watched for the open service, one crash-looping,
+  logs and deploys refused), `96-cluster-watch` (a row marked CrashLoopBackOff); the pod
+  view's containers in `91-pod-crashloop`.
+
+### Review of the step 2 diff (subagent, 2026-11-08) and assessment
+
+1. Metrics stopped for good after a cluster clear, an env removed or a new driver: views
+   kept their handles but nothing restarted the reading. **Fixed**: envs still sampled get
+   their reading back. Test.
+2. A finished init container (exit 0) showed as every healthy pod's last termination.
+   **Fixed**: only a non-zero current end counts, else the previous one. Test.
+3. The list's pods stayed watched while the sidebar was hidden. **Fixed**: held only while
+   the list is on screen. A workspace not displayed keeps its own (switching doesn't stop
+   anything, R2.2): **accepted**.
+4. Turning **watch** off flashed "loading pods…" in open services. **Fixed**: the env-wide
+   pods stay shown until the services' own watches have listed. Test.
+5. A pod watch failing after listing showed old pods without a word. **Fixed**: the
+   problem shows above the kept pods.
+6. The pod view never checked its guessed deployment against the pod's owner. **Fixed**:
+   it follows the owner once known; a pod no deployment owns says so.
+7. A handle taken again while the loop waited read only at the loop's next turn.
+   **Fixed**: read at once. Test.
+8. `metric_ticks` counted reads that never started; the in-flight guard was untested.
+   **Fixed** and tested.
+9. A refused env was read again only after a target change, not a reload. **Fixed**: a
+   reload retries refused metrics.

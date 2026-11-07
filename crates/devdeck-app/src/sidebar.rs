@@ -41,6 +41,7 @@ actions!(
         TogglePin,
         FocusFilter,
         ToggleRunningOnly,
+        ToggleWatchPods,
         SidebarEscape
     ]
 );
@@ -141,6 +142,8 @@ pub struct Sidebar {
     pub selected: Option<String>,
     scroll: UniformListScrollHandle,
     save_failed: bool,
+    /// The list env's pods, while the Cluster list shows with **watch** on.
+    pods: Option<(String, crate::cluster::PodsInterest)>,
     /// While the Terminals list shows: redraws every [`TERMINALS_TICK`] (what a shell
     /// runs changes without anyone saying so).
     tick: Option<gpui::Task<()>>,
@@ -185,7 +188,7 @@ impl Sidebar {
             InputEvent::Cancel => {}
         }),
         ];
-        let this = Self {
+        let mut this = Self {
             workspace,
             services,
             deck,
@@ -197,6 +200,7 @@ impl Sidebar {
             selected: None,
             scroll: UniformListScrollHandle::new(),
             save_failed: false,
+            pods: None,
             tick: None,
             _subs: subs,
         };
@@ -204,17 +208,41 @@ impl Sidebar {
         this
     }
 
-    /// Starts loading what the shown list needs (the env's deployments).
-    fn load_list(&self, cx: &mut App) {
-        if self.activity() != Activity::Cluster {
-            return;
-        }
+    /// Starts loading what the shown list needs: the env's deployments, and with **watch**
+    /// on and the list on screen, its pods (a new handle before the old one goes, so a same-env refresh keeps the
+    /// watch).
+    fn load_list(&mut self, cx: &mut Context<Self>) {
         let s = self.services.read(cx);
-        if let (Some(cluster), Some(env)) = (s.cluster.clone(), s.env.clone()) {
-            cluster.update(cx, |c, cx| {
-                c.want(&env, cx);
-            });
+        let target = match (self.activity(), s.cluster.clone(), s.env.clone()) {
+            (Activity::Cluster, Some(cluster), Some(env)) => Some((cluster, env)),
+            _ => None,
+        };
+        let Some((cluster, env)) = target else {
+            self.pods = None;
+            return;
+        };
+        // The pods only while the list is on screen.
+        let watch = self.state.watch_pods && self.state.visible;
+        let pods = cluster.update(cx, |c, cx| {
+            c.want(&env, cx);
+            watch.then(|| c.pods_interest(&env, crate::cluster::PodScope::Env, cx))
+        });
+        self.pods = pods.map(|p| (env, p));
+    }
+
+    /// **watch**: the Cluster list watches every pod of its env, and marks deployments in
+    /// trouble; off, only open services' pods are watched.
+    pub fn toggle_watch_pods(&mut self, cx: &mut Context<Self>) {
+        if self.activity() == Activity::Cluster {
+            self.state.watch_pods = !self.state.watch_pods;
+            self.load_list(cx);
+            self.save(cx);
+            cx.notify();
         }
+    }
+
+    pub fn watching_pods(&self) -> bool {
+        self.pods.is_some()
     }
 
     pub fn activity(&self) -> Activity {
@@ -244,7 +272,9 @@ impl Sidebar {
         }
         let s = self.services.read(cx);
         let (c, env) = (s.cluster.as_ref()?.read(cx), s.env.as_deref()?);
-        matches!(c.peek(env), Remote::Ready(_)).then(|| c.problem(env).map(str::to_string)).flatten()
+        let deployments = matches!(c.peek(env), Remote::Ready(_)).then(|| c.problem(env).map(str::to_string)).flatten();
+        let pods = self.state.watch_pods.then(|| c.pods_problem(env).map(|p| format!("pods: {p}"))).flatten();
+        deployments.or(pods)
     }
 
     /// Why the list is empty when it is for a reason (loading, unreachable env).
@@ -285,6 +315,8 @@ impl Sidebar {
             Activity::Cluster => match (s.cluster.as_ref(), s.env.as_deref()) {
                 (Some(c), Some(env)) => {
                     let c = c.read(cx);
+                    let watch = self.state.watch_pods;
+                    let now = c.now_s();
                     c.peek(env)
                         .ready()
                         .map(|deps| {
@@ -296,10 +328,23 @@ impl Sidebar {
                                     if let Some(state) = d.progress.label() {
                                         tag.push_str(&format!(" · {state}"));
                                     }
-                                    // The other containers, on hover.
+                                    // The other containers and, watching pods, running since and restarts, on hover.
                                     let others: Vec<String> = d.containers.iter().filter(|x| x.name != d.main().name).map(|x| format!("{}: {}", x.name, x.image.label())).collect();
-                                    let hint = (!others.is_empty()).then(|| format!("{} {} · also {}", d.name, d.tag(), others.join(", ")));
-                                    ListItem::new(d.name.clone(), d.name.clone()).detail(tag).busy(rolling).running(d.ready == d.replicas).hint(hint)
+                                    let mut hint: Vec<String> = Vec::new();
+                                    if !others.is_empty() {
+                                        hint.push(format!("also {}", others.join(", ")));
+                                    }
+                                    let pods = if watch { c.pods(env, &d.name) } else { &[] };
+                                    if watch {
+                                        if let Some(since) = c.since(env, d) {
+                                            hint.push(format!("since {}", crate::views::fmt_age(now.saturating_sub(since))));
+                                        }
+                                        hint.push(format!("{} restarts", pods.iter().map(|p| p.restarts).sum::<u32>()));
+                                    }
+                                    let hint = (!hint.is_empty()).then(|| format!("{} {} · {}", d.name, d.tag(), hint.join(" · ")));
+                                    // Watching pods: a pod in trouble marks the row with its reason.
+                                    let trouble = pods.iter().find_map(|p| p.trouble()).map(str::to_string);
+                                    ListItem::new(d.name.clone(), d.name.clone()).detail(tag).busy(rolling).running(d.ready == d.replicas).hint(hint).warning(trouble)
                                 })
                                 .collect()
                         })
@@ -561,6 +606,7 @@ impl Sidebar {
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.state.visible != visible {
             self.state.visible = visible;
+            self.load_list(cx);
             self.save(cx);
             cx.notify();
         }
@@ -769,6 +815,13 @@ impl Render for Sidebar {
                             })),
                     )
             })
+            .when(activity == Activity::Cluster, |d| {
+                d.child(
+                    toggle_button("watch-pods", "watch", self.state.watch_pods, &t)
+                        .tooltip(tip("watch every pod of this env and mark deployments in trouble"))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_watch_pods(cx))),
+                )
+            })
             .when(activity == Activity::Apps, |d| {
                 d.child(
                     toggle_button("running-only", "running", running_only, &t)
@@ -825,6 +878,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(|this, _: &CollapseSelected, _, cx| this.collapse_selected(cx)))
             .on_action(cx.listener(|this, _: &TogglePin, _, cx| this.toggle_pin_selected(cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningOnly, _, cx| this.toggle_running_only(cx)))
+            .on_action(cx.listener(|this, _: &ToggleWatchPods, _, cx| this.toggle_watch_pods(cx)))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.read(cx).focus_handle(cx).focus(window, cx);
             }))

@@ -243,6 +243,7 @@ fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
         env: Some("dev33".into()),
         pins: BTreeMap::from([("deployments".into(), BTreeSet::from(["vesselservice".into(), "gone-service".into()]))]),
         open: BTreeMap::new(),
+        watch_pods: false,
     };
     store.save_sidebar("work", &saved).unwrap();
     std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();
@@ -392,4 +393,37 @@ fn whats_open_is_saved_and_a_filter_leaves_it_as_it_was(cx: &mut TestAppContext)
     cx.update(|cx| s.update(cx, |s, cx| s.filter.update(cx, |f, cx| f.set_text("", cx))));
     cx.run_until_parked();
     assert_eq!(tree(&s, cx), ["mono ▾", "  apps/ ▸", "  packages/ ▸"], "as it was");
+}
+
+/// M3 step 2: the Cluster list's **watch** toggle: off by default; on, it holds the env's
+/// pods while the Cluster list shows and marks a deployment whose pod is in trouble with
+/// the reason; it's saved with the sidebar.
+#[gpui::test]
+fn the_watch_toggle_holds_the_envs_pods_and_marks_trouble(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "watch");
+    let s = sidebar(&shell, cx);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let marks = |cx: &TestAppContext| cx.read(|cx| s.read(cx).items(cx).iter().filter_map(|i| i.warning.clone()).collect::<Vec<_>>());
+    assert!(!cx.read(|cx| s.read(cx).state.watch_pods || s.read(cx).watching_pods()), "off by default");
+    assert!(marks(cx).is_empty());
+    cx.update(|cx| s.update(cx, |s, cx| s.toggle_watch_pods(cx)));
+    assert!(cx.read(|cx| s.read(cx).state.watch_pods && s.read(cx).watching_pods()));
+    let found = marks(cx);
+    assert!(!found.is_empty() && found.iter().all(|m| m == "CrashLoopBackOff"), "{found:?}");
+    let hint = cx.read(|cx| s.read(cx).items(cx).into_iter().find_map(|i| i.hint)).unwrap();
+    assert!(hint.contains("restarts") && hint.contains("since"), "{hint}");
+    // Another list: the pods are let go, the toggle stays on.
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
+    assert!(cx.read(|cx| !s.read(cx).watching_pods() && s.read(cx).state.watch_pods));
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    assert!(cx.read(|cx| s.read(cx).watching_pods()));
+    // The sidebar hidden: the pods are let go too.
+    cx.update(|cx| s.update(cx, |s, cx| s.set_visible(false, cx)));
+    assert!(cx.read(|cx| !s.read(cx).watching_pods()));
+    cx.update(|cx| s.update(cx, |s, cx| s.set_visible(true, cx)));
+    assert!(cx.read(|cx| s.read(cx).watching_pods()));
+    cx.update(|cx| s.update(cx, |s, cx| s.toggle_watch_pods(cx)));
+    assert!(marks(cx).is_empty() && cx.read(|cx| !s.read(cx).watching_pods()));
 }

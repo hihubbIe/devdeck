@@ -236,3 +236,13 @@ impl Render for Message {
         div().size_full().flex().items_center().justify_center().text_color(t.mute).child(label(self.0.clone()))
     }
 }
+
+/// An age, short: `45s`, `12m`, `3h`, `9d`.
+pub fn fmt_age(s: u64) -> String {
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        3600..86400 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86400),
+    }
+}

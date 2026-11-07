@@ -1,0 +1,136 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "creationTimestamp": "2026-11-07T16:20:41Z",
+    "generateName": "entityservice-7b5d9f6c8-",
+    "labels": {
+      "app": "entityservice",
+      "pod-template-hash": "7b5d9f6c8"
+    },
+    "name": "entityservice-7b5d9f6c8-w1e2r",
+    "namespace": "dev35",
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "ReplicaSet",
+        "name": "entityservice-7b5d9f6c8",
+        "uid": "0b6f3e2a-7c1d-4a9e-8f2b-5d4c3b2a1f0e"
+      }
+    ],
+    "resourceVersion": "918300112",
+    "uid": "a4c2e1f0-9b8d-4c7e-a6f5-3d2c1b0a9f8e"
+  },
+  "spec": {
+    "containers": [
+      {
+        "image": "envoyproxy/envoy:v1.31.2",
+        "name": "envoy"
+      },
+      {
+        "image": "europe-west1-docker.pkg.dev/project/registry06/entityservice:lan-160",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "entityservice",
+        "ports": [
+          {
+            "containerPort": 8080,
+            "protocol": "TCP"
+          }
+        ],
+        "resources": {
+          "requests": {
+            "cpu": "250m",
+            "memory": "512Mi"
+          }
+        }
+      }
+    ],
+    "nodeName": "gke-km011gcp-pool-2-8f3a1c2d-x7kq",
+    "restartPolicy": "Always",
+    "serviceAccountName": "default"
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-11-07T16:20:43Z",
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:20:42Z",
+        "status": "True",
+        "type": "Initialized"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:21:02Z",
+        "status": "True",
+        "type": "Ready"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:21:02Z",
+        "status": "True",
+        "type": "ContainersReady"
+      },
+      {
+        "lastTransitionTime": "2026-11-07T16:20:41Z",
+        "status": "True",
+        "type": "PodScheduled"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "containerID": "containerd://entityservice0f1e2d3c4b5a69788",
+        "image": "europe-west1-docker.pkg.dev/project/registry06/entityservice:lan-160",
+        "imageID": "europe-west1-docker.pkg.dev/project/registry06/entityservice@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+        "lastState": {
+          "terminated": {
+            "containerID": "containerd://1a2b3c",
+            "exitCode": 137,
+            "finishedAt": "2026-11-07T18:02:50Z",
+            "reason": "OOMKilled",
+            "startedAt": "2026-11-07T16:20:44Z"
+          }
+        },
+        "name": "entityservice",
+        "ready": true,
+        "restartCount": 1,
+        "started": true,
+        "state": {
+          "running": {
+            "startedAt": "2026-11-07T18:02:51Z"
+          }
+        }
+      },
+      {
+        "containerID": "containerd://envoy0f1e2d3c4b5a69788",
+        "image": "docker.io/envoyproxy/envoy:v1.31.2",
+        "imageID": "docker.io/envoyproxy/envoy@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b",
+        "lastState": {
+          "terminated": {
+            "containerID": "containerd://4d5e6f",
+            "exitCode": 0,
+            "finishedAt": "2026-11-07T21:15:08Z",
+            "reason": "Completed",
+            "startedAt": "2026-11-07T18:30:00Z"
+          }
+        },
+        "name": "envoy",
+        "ready": true,
+        "restartCount": 2,
+        "started": true,
+        "state": {
+          "running": {
+            "startedAt": "2026-11-07T21:15:09Z"
+          }
+        }
+      }
+    ],
+    "hostIP": "10.132.0.41",
+    "phase": "Running",
+    "podIP": "10.48.3.17",
+    "qosClass": "Burstable",
+    "startTime": "2026-11-07T16:20:41Z"
+  }
+}

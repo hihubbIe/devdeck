@@ -18,19 +18,38 @@ type Events = BodySender<Bytes, io::Error>;
 enum Reply {
     List(Vec<Value>),
     Status(u16),
+    /// Not a `Status`: what a path the API doesn't serve answers.
+    Text(u16, &'static str),
 }
 
 struct Mock {
     /// Answered in order; the last one again and again.
     lists: Mutex<Vec<Reply>>,
     requests: AtomicUsize,
+    /// The query of each request.
+    queries: Mutex<Vec<String>>,
     watches: async_channel::Sender<Events>,
 }
 
 impl Mock {
+    /// A mock answering lists with `lists`, a client to it, and the body of each watch
+    /// it opens, in order.
+    fn start(lists: Vec<Reply>) -> (Arc<Mock>, Client, async_channel::Receiver<Events>) {
+        let (watches, opened) = async_channel::unbounded();
+        let mock = Arc::new(Mock { lists: Mutex::new(lists), requests: AtomicUsize::new(0), queries: Mutex::default(), watches });
+        let m = mock.clone();
+        let service = tower::service_fn(move |req: http::Request<kube::client::Body>| {
+            let response = m.answer(&req);
+            async move { Ok::<_, Infallible>(response) }
+        });
+        (mock, Client::new(service, "dev35"), opened)
+    }
+
     fn answer(&self, req: &http::Request<kube::client::Body>) -> http::Response<Either<Full<Bytes>, Channel<Bytes, io::Error>>> {
         self.requests.fetch_add(1, Ordering::SeqCst);
-        if req.uri().query().unwrap_or_default().contains("watch=true") {
+        let query = req.uri().query().unwrap_or_default();
+        self.queries.lock().unwrap().push(query.into());
+        if query.contains("watch=true") {
             let (events, body) = Channel::new(16);
             let _ = self.watches.try_send(events);
             return http::Response::new(Either::Right(body));
@@ -40,13 +59,14 @@ impl Mock {
             if lists.len() > 1 { lists.remove(0) } else { lists[0].clone() }
         };
         let (code, body) = match reply {
-            Reply::List(items) => (200, json!({"apiVersion": "apps/v1", "kind": "DeploymentList", "metadata": {"resourceVersion": "100"}, "items": items})),
+            Reply::List(items) => (200, json!({"kind": "List", "metadata": {"resourceVersion": "100"}, "items": items}).to_string()),
             Reply::Status(code) => (
                 code,
-                json!({"apiVersion": "v1", "kind": "Status", "metadata": {}, "status": "Failure", "message": "deployments.apps is forbidden", "reason": "Forbidden", "code": code}),
+                json!({"apiVersion": "v1", "kind": "Status", "metadata": {}, "status": "Failure", "message": "deployments.apps is forbidden", "reason": "Forbidden", "code": code}).to_string(),
             ),
+            Reply::Text(code, text) => (code, text.to_string()),
         };
-        let mut response = http::Response::new(Either::Left(Full::new(Bytes::from(body.to_string()))));
+        let mut response = http::Response::new(Either::Left(Full::new(Bytes::from(body))));
         *response.status_mut() = http::StatusCode::from_u16(code).unwrap();
         response
     }
@@ -54,10 +74,14 @@ impl Mock {
     fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
     }
+
+    fn queries(&self) -> Vec<String> {
+        self.queries.lock().unwrap().clone()
+    }
 }
 
-struct Watch {
-    rx: async_channel::Receiver<EnvUpdate>,
+struct Watch<K: Watched> {
+    rx: async_channel::Receiver<K::Update>,
     handle: WatchHandle,
     task: tokio::task::JoinHandle<()>,
     mock: Arc<Mock>,
@@ -65,25 +89,34 @@ struct Watch {
     opened: async_channel::Receiver<Events>,
 }
 
-impl Watch {
-    /// A watch of dev35 on km011gcp, whose lists are answered with `lists`.
-    fn start(lists: Vec<Reply>) -> Watch {
-        let (watches, opened) = async_channel::unbounded();
-        let mock = Arc::new(Mock { lists: Mutex::new(lists), requests: AtomicUsize::new(0), watches });
-        let m = mock.clone();
-        let service = tower::service_fn(move |req: http::Request<kube::client::Body>| {
-            let response = m.answer(&req);
-            async move { Ok::<_, Infallible>(response) }
-        });
-        let client = Client::new(service, "dev35");
+impl Watch<apps::Deployment> {
+    /// A watch of dev35's deployments on km011gcp, whose lists are answered with `lists`.
+    fn start(lists: Vec<Reply>) -> Self {
+        Self::open(lists, watcher::Config::default())
+    }
+}
+
+impl Watch<core::Pod> {
+    /// A watch of dev35's pods `selector` selects, as [`watch_pods`] starts it.
+    fn pods(lists: Vec<Reply>, selector: Option<&str>) -> Self {
+        Self::open(lists, selecting(selector))
+    }
+}
+
+impl<K: Watched> Watch<K>
+where
+    K::Update: Debug + PartialEq,
+{
+    fn open(lists: Vec<Reply>, config: watcher::Config) -> Self {
+        let (mock, client, opened) = Mock::start(lists);
         let (tx, rx) = async_channel::unbounded();
-        let mut out = Out::new(tx.clone());
+        let mut out = Out::<K>::new(tx.clone());
         let target = Target::for_tests("dev35", "km011gcp");
-        let task = tokio::spawn(until_closed(tx, async move { feed(client, &target, &mut out).await }));
+        let task = tokio::spawn(until_closed(tx, async move { feed(client, &target, config, &mut out).await }));
         Watch { rx, handle: WatchHandle { task: task.abort_handle() }, task, mock, opened }
     }
 
-    async fn next(&self) -> EnvUpdate {
+    async fn next(&self) -> K::Update {
         tokio::time::timeout(Duration::from_secs(60), self.rx.recv()).await.expect("an update").expect("the watch runs")
     }
 
@@ -242,14 +275,126 @@ async fn dropping_the_receiver_ends_the_watch() {
     tokio::time::timeout(Duration::from_secs(1), w.task).await.expect("the task ends").unwrap();
 }
 
+/// A pod as the API returns it, running one container `registry/<app>:<tag>`, of
+/// deployment `app`.
+fn pod(name: &str, app: &str, tag: &str, version: u32) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": name, "namespace": "dev35", "resourceVersion": version.to_string(),
+            "labels": {"app": app, "pod-template-hash": "5d8f7c9b6"},
+            "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": format!("{app}-5d8f7c9b6"), "uid": "1", "controller": true}]
+        },
+        "spec": {"nodeName": "node-1", "containers": [{"name": app, "image": format!("registry/{app}:{tag}")}]},
+        "status": {
+            "phase": "Running", "startTime": "2026-11-08T09:00:00Z",
+            "conditions": [{"type": "Ready", "status": "True"}],
+            "containerStatuses": [{"name": app, "image": format!("registry/{app}:{tag}"), "imageID": "", "ready": true, "restartCount": 0, "state": {"running": {"startedAt": "2026-11-08T09:00:05Z"}}}]
+        }
+    })
+}
+
+fn pods(vs: &[&Value]) -> PodUpdate {
+    PodUpdate::Pods(vs.iter().map(|v| convert::pod(&serde_json::from_value((*v).clone()).unwrap()).unwrap()).collect())
+}
+
+#[tokio::test(start_paused = true)]
+async fn pods_come_as_a_list_then_changes_by_name() {
+    let (a1, a2) = (pod("api-5d8f7c9b6-x2k4p", "api", "1.0", 10), pod("api-5d8f7c9b6-b7m9q", "api", "1.0", 11));
+    let w = Watch::pods(vec![Reply::List(vec![a1.clone(), a2.clone()])], None);
+    assert_eq!(w.next().await, PodUpdate::Problem(None));
+    assert_eq!(w.next().await, pods(&[&a2, &a1]), "by name");
+    let mut events = w.events().await;
+    let b = pod("billing-5d8f7c9b6-c4d5e", "billing", "2.0", 101);
+    send(&mut events, "ADDED", &b).await;
+    assert_eq!(w.next().await, pods(&[&a2, &a1, &b]));
+    let mut a1_down = pod("api-5d8f7c9b6-x2k4p", "api", "1.0", 102);
+    a1_down["status"]["conditions"][0]["status"] = json!("False");
+    send(&mut events, "MODIFIED", &a1_down).await;
+    assert_eq!(w.next().await, pods(&[&a2, &a1_down, &b]));
+    send(&mut events, "DELETED", &a2).await;
+    assert_eq!(w.next().await, pods(&[&a1_down, &b]));
+    w.quiet().await;
+    assert!(w.mock.queries().iter().all(|q| !q.contains("labelSelector")), "every pod of the namespace");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pod_selector_reaches_the_list_and_the_watch() {
+    let w = Watch::pods(vec![Reply::List(vec![])], Some("app=api,tier in (web)"));
+    w.next().await;
+    assert_eq!(w.next().await, PodUpdate::Pods(vec![]));
+    let _events = w.events().await;
+    let queries = w.mock.queries();
+    assert_eq!(queries.len(), 2, "{queries:?}");
+    for query in queries {
+        assert!(query.contains("labelSelector=app%3Dapi%2Ctier+in+%28web%29"), "{query}");
+    }
+    let w = Watch::pods(vec![Reply::List(vec![])], Some(""));
+    w.next().await;
+    assert!(w.mock.queries().iter().all(|q| !q.contains("labelSelector")), "an empty selector selects every pod");
+}
+
+#[tokio::test(start_paused = true)]
+async fn pods_forbidden_say_pods() {
+    let w = Watch::pods(vec![Reply::Status(403)], Some("app=api"));
+    assert_eq!(w.next().await, PodUpdate::Problem(Some("your account can't list pods in dev35".into())));
+}
+
+/// Pod metrics as metrics-server returns them, one usage per container.
+fn pod_metrics(name: &str, usage: &[(&str, &str)]) -> Value {
+    let containers: Vec<Value> = usage.iter().enumerate().map(|(i, (cpu, memory))| json!({"name": format!("c{i}"), "usage": {"cpu": cpu, "memory": memory}})).collect();
+    json!({
+        "apiVersion": "metrics.k8s.io/v1beta1",
+        "kind": "PodMetrics",
+        "metadata": {"name": name, "namespace": "dev35"},
+        "timestamp": "2026-11-08T09:00:00Z",
+        "window": "15.003s",
+        "containers": containers
+    })
+}
+
+async fn read(reply: Reply) -> Result<BTreeMap<String, Usage>, MetricsError> {
+    let (mock, client, _) = Mock::start(vec![reply]);
+    let result = read_metrics(client, &Target::for_tests("dev35", "km011gcp")).await;
+    assert_eq!(mock.requests(), 1, "one read");
+    result
+}
+
+#[tokio::test]
+async fn metrics_sum_each_pods_containers() {
+    let items = vec![pod_metrics("api-5d8f7c9b6-x2k4p", &[("250m", "64Mi"), ("1", "100M")]), pod_metrics("billing-5d8f7c9b6-c4d5e", &[("12345678n", "1Gi")]), pod_metrics("idle-5d8f7c9b6-a1b2c", &[])];
+    let usage = read(Reply::List(items)).await.unwrap();
+    let expected = BTreeMap::from([
+        ("api-5d8f7c9b6-x2k4p".to_string(), Usage { cpu_m: 1250, mem_mi: 64 + 95 }),
+        ("billing-5d8f7c9b6-c4d5e".to_string(), Usage { cpu_m: 13, mem_mi: 1024 }),
+        ("idle-5d8f7c9b6-a1b2c".to_string(), Usage { cpu_m: 0, mem_mi: 0 }),
+    ]);
+    assert_eq!(usage, expected);
+}
+
+#[tokio::test]
+async fn metrics_refused_or_missing_are_refused_other_errors_failed() {
+    assert_eq!(read(Reply::Status(403)).await, Err(MetricsError::Refused("your account can't read metrics in dev35".into())));
+    assert_eq!(read(Reply::Text(404, "404 page not found")).await, Err(MetricsError::Refused("metrics aren't available on km011gcp".into())));
+    assert_eq!(read(Reply::Text(503, "upstream connect error")).await, Err(MetricsError::Failed("km011gcp (dev35): upstream connect error (503)".into())));
+}
+
+/// A kubeconfig of envs dev35 and dev36 on km011gcp, at a local port nothing listens on.
+const REFUSING: &str = "apiVersion: v1\nkind: Config\nclusters:\n- name: km011gcp\n  cluster:\n    server: http://127.0.0.1:1\nusers:\n- name: tailscale-auth\n  user:\n    token: fake-token\ncontexts:\n- name: dev35\n  context:\n    cluster: km011gcp\n    user: tailscale-auth\n    namespace: dev35\n- name: dev36\n  context:\n    cluster: km011gcp\n    user: tailscale-auth\n    namespace: dev36\n";
+
+/// The users of each client of `file`.
+fn clients(file: &std::path::Path) -> Vec<usize> {
+    CLIENTS.lock().unwrap().iter().filter(|((f, _, _), _)| f == file).map(|(_, s)| s.users).collect()
+}
+
 /// The real path, from a kubeconfig to a problem, against a local port nothing listens on
 /// (no cluster is contacted): the runtime starts, one client serves both envs of the file,
 /// and a refused connection reads as one.
 #[test]
 fn a_cluster_that_refuses_connections_is_unreachable() {
     let dir = devdeck_core::testing::TempDir::new("kube-refused");
-    let config = "apiVersion: v1\nkind: Config\nclusters:\n- name: km011gcp\n  cluster:\n    server: http://127.0.0.1:1\nusers:\n- name: tailscale-auth\n  user:\n    token: fake-token\ncontexts:\n- name: dev35\n  context:\n    cluster: km011gcp\n    user: tailscale-auth\n    namespace: dev35\n- name: dev36\n  context:\n    cluster: km011gcp\n    user: tailscale-auth\n    namespace: dev36\n";
-    std::fs::write(dir.join("dev-km011gcp"), config).unwrap();
+    std::fs::write(dir.join("dev-km011gcp"), REFUSING).unwrap();
     let (configs, problems) = crate::Kubeconfigs::load(&dir);
     assert!(problems.is_empty(), "{problems:?}");
     let mut watches = Vec::new();
@@ -261,12 +406,25 @@ fn a_cluster_that_refuses_connections_is_unreachable() {
         watches.push((rx, handle));
     }
     let file = dir.join("dev-km011gcp");
-    let clients = || CLIENTS.lock().unwrap().iter().filter(|((f, _, _), _)| *f == file).map(|(_, s)| s.users).collect::<Vec<_>>();
-    assert_eq!(clients(), [2], "one client, both watches using it");
+    assert_eq!(clients(&file), [2], "one client, both watches using it");
     drop(watches);
     let end = std::time::Instant::now() + Duration::from_secs(2);
-    while !clients().is_empty() {
+    while !clients(&file).is_empty() {
         assert!(std::time::Instant::now() < end, "the client goes with its last watch");
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// A metrics read on the real path, against the same refusing port: it fails once, as
+/// unreachable, and its client goes with it.
+#[test]
+fn a_metrics_read_of_an_unreachable_cluster_fails_once() {
+    let dir = devdeck_core::testing::TempDir::new("kube-metrics-refused");
+    std::fs::write(dir.join("dev-km011gcp"), REFUSING).unwrap();
+    let (configs, _) = crate::Kubeconfigs::load(&dir);
+    let rx = metrics(&configs.target("dev35", "dev35").unwrap());
+    let Err(MetricsError::Failed(problem)) = rx.recv_blocking().unwrap() else { panic!("a failure") };
+    assert!(problem.starts_with("can't reach km011gcp (dev35): "), "{problem}");
+    assert!(rx.recv_blocking().is_err(), "one result, then the channel closes");
+    assert!(clients(&dir.join("dev-km011gcp")).is_empty(), "the client is released");
 }

@@ -3,7 +3,7 @@
 
 use crate::apps::{App, Command, EnvApply, Tier, Tools};
 pub use crate::catalog::{Catalog, ClusterSpec, Env, PortSpec};
-use crate::cluster::{Container, Deployment, Image, Pod, PodPhase, Progress, Resources, Usage};
+use crate::cluster::{Container, ContainerStatus, Deployment, Image, Pod, PodPhase, Progress, Resources, Termination, Usage};
 
 /// FNV-1a of `s` (see [`crate::fnv1a`]).
 pub fn hash(s: &str) -> u64 {
@@ -168,7 +168,16 @@ pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
         let image = Image::parse("europe-west1-docker.pkg.dev/registry/envoy:v1.39.1");
         containers.push(Container { name: "envoy".into(), image, ports: vec![9901], resources: Resources::default(), config_maps: Vec::new() });
     }
-    Some(Deployment { name: name.into(), containers, replicas, ready, updated: replicas, progress: Progress::Settled, since: Some(NOW_S - 3600 * (1 + h % 70)) })
+    Some(Deployment {
+        name: name.into(),
+        containers,
+        replicas,
+        ready,
+        updated: replicas,
+        progress: Progress::Settled,
+        selector: format!("app={name}"),
+        since: Some(NOW_S - 3600 * (1 + h % 70)),
+    })
 }
 
 /// The demo's clock (epoch seconds): ages and history are computed against it, so
@@ -177,23 +186,37 @@ pub const NOW_S: u64 = 1_762_500_000;
 
 /// The pods of a deployment: one per replica; the last one waits when not all are ready.
 pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
+    let template = format!("{:x}", hash(&format!("{}/{}", d.name, d.tag())) % 0xffff);
     (0..d.replicas)
         .map(|i| {
             let h = hash(&format!("{env}/{}/{i}", d.name));
             let healthy = i < d.ready;
+            let restarts = if healthy { (h % 3) as u32 } else { 7 + (h % 5) as u32 };
+            let crashed = Termination { reason: "Error".into(), exit_code: Some(2), message: Some("panic: missing TADA_DB_URL".into()), at: Some(NOW_S - 40) };
+            let last_termination = (!healthy).then_some(crashed);
+            let state = if healthy { "running".to_string() } else { "waiting: CrashLoopBackOff".to_string() };
+            let main = ContainerStatus { name: d.main().name.clone(), init: false, ready: healthy, restarts, state, last_termination: last_termination.clone() };
             Pod {
-                name: format!("{}-{:x}-{:05x}", d.name, h % 0xffff, (h >> 20) % 0xfffff),
+                name: format!("{}-{template}-{:05x}", d.name, (h >> 20) % 0xfffff),
+                owner: Some(d.name.clone()),
+                template: template.clone(),
                 phase: if healthy { PodPhase::Running } else { PodPhase::Waiting("CrashLoopBackOff".into()) },
                 ready: healthy,
-                restarts: if healthy { (h % 3) as u32 } else { 7 + (h % 5) as u32 },
-                last_termination: (!healthy).then(|| "Error (exit 2): panic: missing TADA_DB_URL".to_string()),
-                age_s: NOW_S.saturating_sub(d.since.unwrap_or(NOW_S)),
+                restarts,
+                last_termination,
+                started: d.since,
                 node: format!("gke-{env}-pool-{}", h % 4),
                 tag: d.tag(),
-                usage: Usage { cpu_m: 40 + (h % 120) as u32, mem_mi: 90 + (h % 200) as u32 },
+                containers: vec![main],
             }
         })
         .collect()
+}
+
+/// A pod's CPU and memory, as metrics would say.
+pub fn usage(pod: &str) -> Usage {
+    let h = hash(pod);
+    Usage { cpu_m: 40 + (h % 120) as u32, mem_mi: 90 + (h % 200) as u32 }
 }
 
 #[cfg(test)]

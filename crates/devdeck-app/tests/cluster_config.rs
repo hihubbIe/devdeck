@@ -4,7 +4,7 @@
 //! problems, refused writes. Nothing here reaches a cluster.
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, new_cluster};
-use devdeck_app::kube_cluster::{NO_DEPLOYS, NOT_YET};
+use devdeck_app::kube_cluster::{NO_DEPLOYS, NO_LOGS};
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::sidebar::Activity;
 use devdeck_app::views::service_view::ServiceView;
@@ -30,12 +30,6 @@ impl ClusterDriver for Script {
     fn writes(&self) -> Result<(), String> {
         Err("no".into())
     }
-    fn pods(&self) -> Result<(), String> {
-        Err(NOT_YET.into())
-    }
-    fn metrics(&self, _env: &str) -> Result<(), String> {
-        Err(NOT_YET.into())
-    }
 }
 
 fn env(name: &str) -> Env {
@@ -45,7 +39,7 @@ fn env(name: &str) -> Env {
 fn dep(name: &str, tag: &str) -> Deployment {
     let image = Image::parse(&format!("registry/{name}:{tag}"));
     let c = Container { name: name.into(), image, ports: vec![80], resources: Resources::default(), config_maps: Vec::new() };
-    Deployment { name: name.into(), containers: vec![c], replicas: 1, ready: 1, updated: 1, progress: Progress::Settled, since: Some(100) }
+    Deployment { name: name.into(), containers: vec![c], replicas: 1, ready: 1, updated: 1, progress: Progress::Settled, selector: format!("app={name}"), since: Some(100) }
 }
 
 fn scripted(cx: &mut TestAppContext, envs: &[&str]) -> Entity<Cluster> {
@@ -154,12 +148,6 @@ impl ClusterDriver for Counting {
     fn writes(&self) -> Result<(), String> {
         Err("no".into())
     }
-    fn pods(&self) -> Result<(), String> {
-        Err(NOT_YET.into())
-    }
-    fn metrics(&self, _env: &str) -> Result<(), String> {
-        Err(NOT_YET.into())
-    }
 }
 
 #[gpui::test]
@@ -258,7 +246,7 @@ fn a_cluster_section_brings_the_cluster_area_and_its_kubeconfig_problems(cx: &mu
     // Deploys, pods and metrics say why they aren't there (R5.5).
     cx.read(|cx| {
         let c = c.read(cx);
-        assert_eq!((c.writes(), c.pods_read()), (Err(NO_DEPLOYS.to_string()), Err(NOT_YET.to_string())));
+        assert_eq!((c.writes(), c.logs()), (Err(NO_DEPLOYS.to_string()), Err(NO_LOGS.to_string())));
     });
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let r = ViewAddr::Svc { env: "hades".into(), name: "graphservice".into() }.to_ref();

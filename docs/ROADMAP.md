@@ -46,7 +46,7 @@ kube-rs data, service inspector, git read only, deploys with journal and undo, l
 exec, port-forward, metrics, protected envs, k9s launch. Plan:
 [plans/M3-cluster.md](plans/M3-cluster.md). Steps, one at a time:
 1. Config and real deployments, read only — done 2026-11-07.
-2. Service inspector on real data (pods, metrics).
+2. Service inspector on real data (pods, metrics) — done 2026-11-08.
 3. Git, read only.
 4. Logs, shell, port-forward, k9s.
 5. Writes.

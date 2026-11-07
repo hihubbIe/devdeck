@@ -7,9 +7,9 @@
 //! Keys (`ServiceView`): ctrl+s save, u undo, l logs, t edit tag; Esc in the tag editor
 //! reverts it (the pane then gives the keys back to the view).
 
-use super::ViewCx;
-use crate::cluster::{Cluster, Sampling};
-use devdeck_core::cluster::{Deployment, Pod, PodPhase, Remote, Rollout, unlock_matches};
+use super::{ViewCx, fmt_age};
+use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling};
+use devdeck_core::cluster::{Deployment, Pod, Remote, Rollout, unlock_matches};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
@@ -35,6 +35,8 @@ pub struct ServiceView {
     /// Writes allowed on a protected env until the view closes (R7.6).
     pub unlocked: bool,
     sampling: Option<Sampling>,
+    /// Its pods are watched while it's open.
+    _pods: PodsInterest,
     /// The window it last drew in: modals open there.
     window: Option<AnyWindowHandle>,
     _subs: Vec<Subscription>,
@@ -52,10 +54,8 @@ impl ServiceView {
             }),
         ];
         subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
-        cluster.update(cx, |c, cx| {
-            c.want(&env, cx);
-        });
-        let mut this = Self { env, name, ctx, cluster, focus: cx.focus_handle(), tag, shown_tag: None, unlocked: false, sampling: None, window: None, _subs: subs };
+        let pods = cluster.update(cx, |c, cx| c.pods_interest(&env, PodScope::Service(name.clone()), cx));
+        let mut this = Self { env, name, ctx, cluster, focus: cx.focus_handle(), tag, shown_tag: None, unlocked: false, sampling: None, _pods: pods, window: None, _subs: subs };
         this.cluster_changed(cx);
         this
     }
@@ -66,7 +66,8 @@ impl ServiceView {
 
     /// Holds a sampling handle only while on screen.
     fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        self.sampling = visible.then(|| self.cluster.update(cx, |c, cx| c.sample(cx)));
+        let env = self.env.clone();
+        self.sampling = visible.then(|| self.cluster.update(cx, |c, cx| c.sample(&env, cx)));
     }
 
     /// Keeps the editor on the deployed tag unless the user changed it.
@@ -186,7 +187,7 @@ impl ServiceView {
     }
 
     fn open_logs(&mut self, cx: &mut Context<Self>) {
-        if let Err(why) = self.cluster.read(cx).pods_read() {
+        if let Err(why) = self.cluster.read(cx).logs() {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, format!("Logs: {why}."), vec![], cx));
             return;
         }
@@ -237,14 +238,6 @@ impl Focusable for ServiceView {
     }
 }
 
-fn fmt_age(s: u64) -> String {
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
-}
 
 /// `512Mi`, or "none" when unset.
 fn quantity(v: Option<u32>, unit: &str) -> String {
@@ -268,12 +261,7 @@ fn bar(used: u32, request: Option<u32>, limit: Option<u32>, t: &Theme) -> impl I
 }
 
 fn phase_text(p: &Pod) -> (String, bool) {
-    match &p.phase {
-        PodPhase::Running => ("Running".into(), true),
-        PodPhase::Pending => ("Pending".into(), false),
-        PodPhase::Waiting(r) => (r.clone(), false),
-        PodPhase::Terminating => ("Terminating".into(), false),
-    }
+    (p.phase.text(), p.phase.ok())
 }
 
 impl Render for ServiceView {
@@ -307,7 +295,9 @@ impl Render for ServiceView {
             (Remote::Ready(_), Some(d)) => d.clone(),
         };
         let rollout = c.rollout(&self.env, &self.name).cloned();
-        let pods: Vec<Pod> = c.pods(&self.env, &self.name).to_vec();
+        let pods_state = c.pods_state(&self.env, &self.name);
+        let pods: Vec<Pod> = pods_state.ready().map(|p| p.to_vec()).unwrap_or_default();
+        let usage = |p: &Pod| c.usage(&self.env, &p.name);
         let history = c.history(&self.env, &self.name).to_vec();
         let metrics = c.metrics_allowed(&self.env);
         let k9s_missing = !self.ctx.services.read(cx).catalog.tools.found.contains("k9s");
@@ -345,7 +335,7 @@ impl Render for ServiceView {
             })
             .child(div().flex_none().flex().items_center().gap_1().text_color(status_color).child(status_mark).child(status))
             .child(
-                label(match (d.progress.label(), d.since) {
+                label(match (d.progress.label(), c.since(&self.env, &d)) {
                     (Some(state), _) => format!("{} · {state}", d.tag()),
                     (None, Some(since)) => format!("{} · since {}", d.tag(), fmt_age(c.now_s().saturating_sub(since))),
                     (None, None) => d.tag(),
@@ -359,7 +349,7 @@ impl Render for ServiceView {
             button(id, text, &t).when(!enabled, |b| b.text_color(t.dim)).tooltip(tip(why.unwrap_or_else(|| text.to_string())))
         };
         let later = || Some("comes in a later step of M3".to_string());
-        let pods_read = c.pods_read();
+        let logs = c.logs();
         let actions = div()
             .flex_none()
             .px_3()
@@ -369,7 +359,7 @@ impl Render for ServiceView {
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(action("logs", "logs", pods_read.clone().err().map(|why| format!("logs: {why}"))).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
+            .child(action("logs", "logs", logs.err().map(|why| format!("logs: {why}"))).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
             .child(action("restart", "restart", later()))
             .child(action("scale", "replicas", later()))
             .child(action("port-forward", "port-forward", later()))
@@ -437,12 +427,12 @@ impl Render for ServiceView {
         });
 
         let res = d.main().resources;
-        let (cpu, mem) = pods.iter().filter(|p| p.ready).fold((0u32, 0u32), |(c, m), p| (c + p.usage.cpu_m, m + p.usage.mem_mi));
+        let (cpu, mem) = pods.iter().filter(|p| p.ready).filter_map(usage).fold((0u32, 0u32), |(c, m), u| (c + u.cpu_m, m + u.mem_mi));
         let n = d.replicas.max(1);
         let times = |v: Option<u32>| v.map(|v| v * n);
-        let metrics_el = match pods_read.clone().and(metrics) {
-            Err(e) if pods_read.is_err() => label(format!("metrics: {e}")).text_color(t.dim).into_any_element(),
+        let metrics_el = match metrics {
             Err(e) => icon_text(Icon::Warning, t.warn, e, &t).into_any_element(),
+            Ok(()) if !c.usage_read(&self.env) => label("cpu and memory: not read yet").text_color(t.dim).into_any_element(),
             Ok(()) => div()
                 .flex()
                 .flex_col()
@@ -486,11 +476,20 @@ impl Render for ServiceView {
                 .child(col(100., "tag".into(), t.dim))
                 .child(div().flex_1().min_w_0().truncate().child("node · last termination")),
         );
-        if let Err(why) = &pods_read {
-            pod_rows = pod_rows.child(label(format!("pods: {why}")).text_color(t.dim));
-        } else if pods.is_empty() {
-            pod_rows = pod_rows.child(label("no pods").text_color(t.dim));
+        match &pods_state {
+            Remote::Loading => pod_rows = pod_rows.child(label("loading pods…").text_color(t.dim)),
+            Remote::Error(why) => pod_rows = pod_rows.child(icon_text(Icon::Warning, t.warn, why.clone(), &t)),
+            Remote::Ready(list) => {
+                // A watch that failed after listing: its last pods, with what's wrong.
+                if let Some(why) = c.pods_problem(&self.env) {
+                    pod_rows = pod_rows.child(icon_text(Icon::Warning, t.warn, why.to_string(), &t));
+                }
+                if list.is_empty() {
+                    pod_rows = pod_rows.child(label("no pods").text_color(t.dim));
+                }
+            }
         }
+        let now = c.now_s();
         for (i, p) in pods.iter().enumerate() {
             let (phase, ok) = phase_text(p);
             let addr = ViewAddr::Pod { env: self.env.clone(), pod: p.name.clone() };
@@ -527,11 +526,11 @@ impl Render for ServiceView {
                     .child(col(150., phase, if ok { t.ok } else { t.err }))
                     .child(div().flex_none().w(t.size(60.)).child(if p.ready { icon(Icon::Check, t.ok, &t) } else { icon(Icon::Close, t.err, &t) }))
                     .child(col(70., p.restarts.to_string(), if p.restarts > 3 { t.warn } else { t.mute }))
-                    .child(col(50., fmt_age(p.age_s), t.mute))
-                    .child(col(60., format!("{}m", p.usage.cpu_m), t.mute))
-                    .child(col(60., format!("{}Mi", p.usage.mem_mi), t.mute))
+                    .child(col(50., p.started.map_or_else(|| "—".into(), |s| fmt_age(now.saturating_sub(s))), t.mute))
+                    .child(col(60., usage(p).map_or_else(|| "—".into(), |u| format!("{}m", u.cpu_m)), t.mute))
+                    .child(col(60., usage(p).map_or_else(|| "—".into(), |u| format!("{}Mi", u.mem_mi)), t.mute))
                     .child(col(100., p.tag.clone(), t.mute))
-                    .child(label(format!("{}{}", p.node, p.last_termination.as_ref().map(|l| format!(" · {l}")).unwrap_or_default())).flex_1().text_color(if p.last_termination.is_some() { t.warn } else { t.dim })),
+                    .child(label(format!("{}{}", p.node, p.last_termination.as_ref().map(|l| format!(" · {}{}", l.text(), l.at.map(|at| format!(" {} ago", fmt_age(now.saturating_sub(at)))).unwrap_or_default())).unwrap_or_default())).flex_1().text_color(if p.last_termination.is_some() { t.warn } else { t.dim })),
             );
         }
 
