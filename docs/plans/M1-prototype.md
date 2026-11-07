@@ -673,3 +673,34 @@ M1 measurements (end of milestone, release build, `scripts/measure.py`): idle CP
 memory, streaming load, input latency (X11), leak run of 5 000 cycles including
 workspace switches and layout switches (views, windows and overlay layers must stay
 flat), binary size. Results in `docs/perf/M1.md`, compared with M0.
+
+### Step 7 review and assessment
+
+1. Measurements and stress must not touch the real state: `measure.py` sets fresh
+   temporary `DEVDECK_STATE_DIR` and `DEVDECK_CONFIG_DIR` for every scenario.
+   **Accepted.**
+2. The leak run cycles real views (app, run, service shown then hidden, logs, matrix,
+   port) and checks every deck. **Accepted.**
+3. The leak run also opens and closes the palette, the cheat sheet and a menu, in the
+   main and a detached window, so the layer count means something. **Accepted.**
+4. Ids repeat across stored layouts. A switch closes every detached OS window of the
+   workspace and lets `sync` open the target's fresh; the Send to pick is cancelled.
+   An in-flight drag can't be cancelled from the model (the deck id check stays the
+   guard). Tested with colliding window ids. **Accepted.**
+5. Focus after a switch: when focus was on a view that closed, the window focuses the
+   new focused pane's view. **Accepted.**
+6. Keep merge: kept views go into the main window's focused pane (or the maximized one,
+   or the first expanded one) without taking the active tab; closing a kept tab clears
+   its keep mark. **Accepted.**
+7. A switch writes `layout.json` (the new live tree) and `layouts.json` together, at
+   once; first run is "default"; a broken `layouts.json` falls back without touching
+   `layout.json`. **Accepted.**
+8. Views closed by a switch lose unsaved edits (tag, find text, unlock), as closing
+   their tab does; a switch can't start while a modal is open (app keys wait), so no
+   modal outlives its view. **Accepted as is, noted.**
+9. Names: trimmed, unique ignoring case, alphabetical ignoring case, truncated in
+   menus; refusals shown. Pins of a renamed layout don't follow (they hide, M1 limit).
+   **Partly accepted.**
+10. Tests added: a switch inside the save debounce writes the right trees once, a
+    detached window absent from the target closes, switching to the current layout does
+    nothing. **Accepted.**
