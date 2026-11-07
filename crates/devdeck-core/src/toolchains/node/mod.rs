@@ -89,6 +89,11 @@ impl Toolchain for Node {
         Ok(machine.node.choose(facts)?.map(|i| i.bin.clone()).into_iter().collect())
     }
 
+    /// npm passes a script's arguments after `--`; pnpm and yarn take them as they are.
+    fn with_args(&self, cmd: &Command, line: &str, args: &str) -> String {
+        if cmd.source() == "npm" && !cmd.setup { super::after_separator(line, args) } else { format!("{line} {args}") }
+    }
+
     fn installed(&self, _app: &App, cmd: &Command, path: &[PathBuf]) -> Option<String> {
         let missing = cmd.from_install.iter().find(|p| which(p, path).is_none())?;
         Some(format!("{missing} isn't installed: run {} install", cmd.source()))

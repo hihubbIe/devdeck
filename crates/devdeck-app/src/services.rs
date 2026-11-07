@@ -85,7 +85,8 @@ impl Services {
 
     /// A workspace from its config: its apps found in its folders, real runs, no cluster
     /// (M3). Tools come from `environment` and follow it.
-    /// `state_dir` holds what runs leave behind (started process groups, ports seen);
+    /// `state_dir` holds what runs leave behind (started process groups, ports seen,
+    /// arguments used);
     /// `None` keeps nothing (tests).
     pub fn from_config(config: WorkspaceConfig, env: Option<String>, environment: Entity<Environment>, state_dir: Option<PathBuf>, cx: &mut App) -> Entity<Services> {
         let tools = environment.read(cx).tools();
@@ -94,7 +95,14 @@ impl Services {
         let env = catalog.pick_env(env);
         let log = state_dir.as_deref().map(devdeck_core::process::GroupLog::new);
         let driver = Rc::new(crate::pty_driver::PtyDriver { env: environment.clone(), log });
-        let runner = cx.new(|_| Runner::new(config.id.clone(), catalog.clone(), driver));
+        let recent = state_dir.as_deref().map(devdeck_core::recent_args::RecentArgs::load);
+        let runner = cx.new(|_| {
+            let runner = Runner::new(config.id.clone(), catalog.clone(), driver);
+            match recent {
+                Some(r) => runner.with_recent_args(r),
+                None => runner,
+            }
+        });
         let ports = Ports::new(&config.id, runner.clone(), state_dir, cx);
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();

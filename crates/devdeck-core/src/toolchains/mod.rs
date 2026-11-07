@@ -83,6 +83,31 @@ pub(crate) trait Toolchain: Sync {
     fn installed(&self, _app: &App, _cmd: &Command, _path: &[PathBuf]) -> Option<String> {
         None
     }
+
+    /// `line` with the arguments typed for its command (not empty), as they reach the
+    /// program: at the end by default.
+    fn with_args(&self, _cmd: &Command, line: &str, args: &str) -> String {
+        format!("{line} {args}")
+    }
+}
+
+/// `line` (a command's line, env applied) with `args` typed for it: as its toolchain
+/// passes them, else at the end. Typed as is: quotes and `$` are the shell's.
+pub fn with_args(cmd: &Command, line: &str, args: &str) -> String {
+    let args = args.trim();
+    if args.is_empty() {
+        return line.to_string();
+    }
+    match of(cmd) {
+        Some(t) => t.with_args(cmd, line, args),
+        None => format!("{line} {args}"),
+    }
+}
+
+/// `line -- args`, for tools that take their own options before `--` and pass what
+/// follows to the program; as typed when the arguments have their own `--`.
+pub(crate) fn after_separator(line: &str, args: &str) -> String {
+    if args.split_whitespace().any(|w| w == "--") { format!("{line} {args}") } else { format!("{line} -- {args}") }
 }
 
 /// Every toolchain, in the order that decides an app's kind.
@@ -179,6 +204,26 @@ mod tests {
                 assert!(of(cmd).is_some(), "{}: {} has no toolchain", app.id, cmd.id);
             }
         }
+    }
+
+    #[test]
+    fn arguments_reach_the_program_as_each_toolchain_passes_them() {
+        use crate::apps::Tier;
+        let cmd = |id: &str| Command { id: id.into(), line: String::new(), tier: Tier::Primary, tools: vec![], from_install: vec![], setup: false, ports: vec![] };
+        let w = |id: &str, line: &str, args: &str| with_args(&cmd(id), line, args);
+        assert_eq!(w("npm:dev", "npm run dev", "--port 3001"), "npm run dev -- --port 3001");
+        assert_eq!(w("npm:dev", "npm run dev", "--silent -- --port 1"), "npm run dev --silent -- --port 1", "their own --");
+        assert_eq!(w("pnpm:dev", "pnpm run dev", "--port 3001"), "pnpm run dev --port 3001");
+        assert_eq!(w("yarn:dev", "yarn dev", "--port 3001"), "yarn dev --port 3001");
+        assert_eq!(w("cargo:run:devdeck", "cargo run --bin devdeck", "--demo"), "cargo run --bin devdeck -- --demo");
+        assert_eq!(w("cargo:run", "cargo run", "--release -- --demo"), "cargo run --release -- --demo");
+        assert_eq!(w("cargo:test", "cargo test", "list"), "cargo test list", "cargo's own");
+        assert_eq!(w("go:run", "go run .", "serve -s dev35"), "go run . serve -s dev35");
+        assert_eq!(w("make:run", "make run", "PORT=1"), "make run PORT=1");
+        assert_eq!(w("task:run", "task run", "-- x"), "task run -- x");
+        assert_eq!(w("compose:up", "docker compose up", "db"), "docker compose up db");
+        assert_eq!(w("sh:x", "x", " a 'b c' "), "x a 'b c'", "no toolchain: at the end, trimmed, as typed");
+        assert_eq!(w("npm:dev", "npm run dev", "  "), "npm run dev", "none");
     }
 
     #[test]

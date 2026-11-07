@@ -352,3 +352,79 @@ fn stop_after_restart_cancels_the_restart(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Stopped));
     assert_eq!(launches.borrow().len(), 1, "not started again");
 }
+
+#[gpui::test]
+fn arguments_reach_the_line_and_a_restart_keeps_them(cx: &mut TestAppContext) {
+    let shell = start(cx, "args");
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("eventservice", "go:run");
+    cx.update(|cx| runner.update(cx, |r, cx| r.set_args(&key, " serve --port 3001 ", cx)));
+    assert_eq!(cx.read(|cx| runner.read(cx).args(&key).to_string()), "serve --port 3001", "trimmed");
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    let header = lines(&runner, &key, cx).into_iter().find(|l| l.starts_with("── run 1")).unwrap();
+    assert!(header.contains("serve --port 3001"), "{header}");
+    cx.update(|cx| runner.update(cx, |r, cx| r.restart(&key, None, cx))).unwrap();
+    advance(cx, STOP_DELAY * 2);
+    let again = lines(&runner, &key, cx).into_iter().find(|l| l.starts_with("── run 2")).unwrap();
+    assert!(again.contains("serve --port 3001"), "{again}");
+    cx.update(|cx| runner.update(cx, |r, cx| r.set_args(&key, "", cx)));
+    let bare = cx.read(|cx| runner.read(cx).line(&key, None)).unwrap();
+    let command = cx.read(|_| devdeck_core::demo::catalog("work").app("eventservice").unwrap().command("go:run").unwrap().line.clone());
+    assert_eq!(bare, command, "none: the bare line");
+    assert!(cx.read(|cx| runner.read(cx).recent_args(&key)).is_empty(), "the demo keeps nothing");
+}
+
+#[gpui::test]
+fn arguments_used_are_offered_again(cx: &mut TestAppContext) {
+    let dir = cx.update(|cx| devdeck_app::test_dir("recent-args", cx));
+    let catalog = std::rc::Rc::new(devdeck_core::demo::catalog("work"));
+    let driver = std::rc::Rc::new(devdeck_app::fake_driver::FakeDriver);
+    let recent = devdeck_core::recent_args::RecentArgs::load(&dir);
+    let runner = cx.update(|cx| cx.new(|_| devdeck_app::runner::Runner::new("work".into(), catalog, driver).with_recent_args(recent)));
+    let key = RunKey::new("eventservice", "go:run");
+    for args in ["-p 1", "-p 2", "-p 1"] {
+        cx.update(|cx| {
+            runner.update(cx, |r, cx| {
+                r.set_args(&key, args, cx);
+                r.stop(&key, cx);
+            })
+        });
+        advance(cx, STOP_DELAY * 2);
+        cx.update(|cx| runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    }
+    assert_eq!(cx.read(|cx| runner.read(cx).recent_args(&key)), ["-p 1", "-p 2"], "most recent first, once");
+    assert_eq!(devdeck_core::recent_args::RecentArgs::load(&dir).get("work", "eventservice", "go:run"), ["-p 1", "-p 2"], "saved");
+}
+
+#[gpui::test]
+fn the_arguments_field_offers_recent_ones_and_takes_new_ones(cx: &mut TestAppContext) {
+    use gpui::{Focusable, Modifiers, VisualTestContext};
+    let shell = start(cx, "args-field");
+    let addr = ViewAddr::Run { app: "eventservice".into(), cmd: "go:run".into() };
+    open(&shell, cx, addr.clone());
+    let main = main_window(&shell, cx);
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let view = cx.read(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<RunView>().unwrap());
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("eventservice", "go:run");
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    let field = vcx.debug_bounds("run-args").expect("drawn");
+    vcx.simulate_click(field.center(), Modifiers::none());
+    assert!(vcx.update(|_, cx| devdeck_ui::overlay::layer_state(main, cx).0), "a click opens the menu");
+    vcx.simulate_keystrokes("down enter");
+    assert!(vcx.debug_bounds("run-args-input").is_some(), "new arguments: the field is an input");
+    vcx.simulate_input("serve -p 9");
+    vcx.simulate_keystrokes("enter");
+    assert_eq!(vcx.read(|cx| runner.read(cx).args(&key).to_string()), "serve -p 9");
+    assert_eq!(vcx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Running), "they start it");
+    let header = vcx.read(|cx| runner.read(cx).run(&key).unwrap().terminal.lines()).into_iter().find(|l| l.starts_with("── run 1")).unwrap();
+    assert!(header.contains("serve -p 9"), "{header}");
+    assert!(vcx.debug_bounds("run-args-input").is_none(), "back to the field");
+    // The key opens the menu too; the tab keeps its arguments.
+    vcx.update(|window, cx| view.read(cx).focus_handle(cx).focus(window, cx));
+    vcx.simulate_keystrokes("a");
+    assert!(vcx.update(|_, cx| devdeck_ui::overlay::layer_state(main, cx).0), "a opens the menu");
+    vcx.simulate_keystrokes("escape");
+    let saved = vcx.read(|cx| deck.read(cx).view_states(cx));
+    assert_eq!(saved[addr.to_ref().as_str()]["args"], "serve -p 9");
+}

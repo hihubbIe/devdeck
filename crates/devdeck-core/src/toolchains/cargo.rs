@@ -13,6 +13,7 @@
 //! library.
 
 use super::{Cx, Facts, Listing, Part, Toolchain, glob, quote};
+use crate::apps::Command;
 use std::path::Path;
 
 pub struct Cargo;
@@ -24,6 +25,12 @@ impl Toolchain for Cargo {
 
     fn reads(&self, name: &str) -> bool {
         name == "Cargo.toml"
+    }
+
+    /// `cargo run` passes the program's arguments after `--`; other commands take
+    /// cargo's own (`--release`, a test filter).
+    fn with_args(&self, cmd: &Command, line: &str, args: &str) -> String {
+        if cmd.name() == "run" || cmd.name().starts_with("run:") { super::after_separator(line, args) } else { format!("{line} {args}") }
     }
 
     fn scan(&self, dir: &Path, listing: &Listing, _parent: Option<&Facts>, cx: &mut Cx) -> Option<Part> {

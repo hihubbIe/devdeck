@@ -291,7 +291,7 @@ fn quitting_saves_what_the_views_keep_and_what_ran(cx: &mut TestAppContext) {
     cx.update(|cx| runner.update(cx, |r, cx| r.stop_all(cx)));
     cx.update(|cx| shell.update(cx, |s, cx| s.flush(cx)));
     let Loaded::Ok(views) = StateStore::new(dir).load_views("work") else { panic!("views saved") };
-    assert_eq!(views[run_ref().as_str()], serde_json::json!({"follow": false, "running": true}), "running when devdeck quit");
+    assert_eq!(views[run_ref().as_str()], serde_json::json!({"follow": false, "running": true, "args": ""}), "running when devdeck quit");
     assert_eq!(views[ViewAddr::App { app: "eventservice".into() }.to_ref().as_str()]["show_hidden"], true);
 }
 
@@ -312,13 +312,13 @@ fn a_run_starting_is_saved_without_waiting_for_quit(cx: &mut TestAppContext) {
     cx.update(|cx| work.update(cx, |d, cx| d.apply(cx, |l| { *l = with_run_and_app(); Ok(()) })));
     cx.executor().advance_clock(SAVE_DELAY);
     cx.run_until_parked();
-    assert_eq!(saved_run(&dir), Some(serde_json::json!({"follow": true, "running": false})));
+    assert_eq!(saved_run(&dir), Some(serde_json::json!({"follow": true, "running": false, "args": ""})));
     let runner = work_runner(&shell, cx);
     cx.update(|cx| runner.update(cx, |r, cx| r.start(&devdeck_app::runner::RunKey::new("eventservice", "go:run"), None, cx))).unwrap();
     cx.run_until_parked();
     cx.executor().advance_clock(SAVE_DELAY);
     cx.run_until_parked();
-    assert_eq!(saved_run(&dir), Some(serde_json::json!({"follow": true, "running": true})), "saved soon, a crash wouldn't lose it");
+    assert_eq!(saved_run(&dir), Some(serde_json::json!({"follow": true, "running": true, "args": ""})), "saved soon, a crash wouldn't lose it");
 }
 
 #[gpui::test]
@@ -361,7 +361,7 @@ fn reopening_brings_views_back_and_restarts_what_ran(cx: &mut TestAppContext) {
     let store = StateStore::new(dir.clone());
     store.save_layout("work", &with_run_and_app()).unwrap();
     let views: devdeck_core::state::ViewStates = [
-        (run_ref().as_str().to_string(), serde_json::json!({"follow": false, "running": true})),
+        (run_ref().as_str().to_string(), serde_json::json!({"follow": false, "running": true, "args": "serve -p 9"})),
         (ViewAddr::App { app: "eventservice".into() }.to_ref().as_str().to_string(), serde_json::json!({"selected": "go:build", "show_hidden": true})),
     ]
     .into();
@@ -378,6 +378,9 @@ fn reopening_brings_views_back_and_restarts_what_ran(cx: &mut TestAppContext) {
         w.services.read(cx).runner.read(cx).state(&devdeck_app::runner::RunKey::new("eventservice", "go:run"))
     });
     assert_eq!(state, Some(devdeck_core::runs::RunState::Running), "it ran when devdeck quit: it starts again");
+    let runner = work_runner(&shell, cx);
+    let args = cx.read(|cx| runner.read(cx).args(&devdeck_app::runner::RunKey::new("eventservice", "go:run")).to_string());
+    assert_eq!(args, "serve -p 9", "with its arguments");
 }
 
 #[gpui::test]

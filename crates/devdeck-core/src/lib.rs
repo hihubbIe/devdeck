@@ -15,6 +15,7 @@ pub mod list;
 pub mod ports;
 pub mod process;
 pub mod procfs;
+pub mod recent_args;
 pub mod runs;
 pub mod settings;
 pub mod state;

@@ -334,6 +334,10 @@ from projects come later if recent ones aren't enough.
   arguments per run (tested with the fake driver); the run view's field and menu
   (snapshots: closed, open with recent ones, typing new ones; mouse and key tests).
 
+Part B outcome: built as planned. The field shrinks before the toolbar's actions in a
+narrow pane (seen on the first snapshots: "follow" was pushed out), and its tooltip
+shows the full arguments. Snapshots 77–79.
+
 ## States to check
 
 No config; config error; app vs library; missing tool; `.nvmrc` wants a missing Node;

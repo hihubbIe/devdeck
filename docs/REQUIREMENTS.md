@@ -62,6 +62,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R6.7** Commands run in a pseudo-terminal: colors, progress output and exit codes are real. Several run at once. Stop, restart, run again, exit status, crash notification.
 - [ ] **R6.8** Node version per project from `.nvmrc`, resolved against configured node installations. Without an `.nvmrc`, `engines.node` in `package.json`: the default Node when it fits, else the newest installed one that does (decided 2026-11-07).
 - [~] **R6.9** Listening ports are detected per run. Port conflicts are reported before starting, with an option to stop the holder.
+- [~] **R6.11** A command takes arguments without becoming another command: in its run tab, recent arguments (per workspace, app and command), none, or new ones typed; choosing them starts or restarts the run. Each toolchain adds them its way (npm and `cargo run` after `--`). Restart and reopen keep them (decided 2026-11-07).
 - [ ] **R6.10** No git and no editor features (no branch, no ahead/behind, no "open in editor").
 
 ## 7. Cluster (optional per workspace)

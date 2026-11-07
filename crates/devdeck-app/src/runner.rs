@@ -2,7 +2,9 @@
 //! [`RunDriver`] does the work: [`FakeDriver`](crate::fake_driver::FakeDriver) for the
 //! demo, real processes in a pseudo-terminal otherwise. A driver reports output bytes
 //! and the exit; the runner keeps one terminal per run, so output is kept whether or not
-//! a view shows it, and the state follows the real exit.
+//! a view shows it, and the state follows the real exit. Each command has its current
+//! arguments (empty: none), added to its line by its toolchain when it starts; those used
+//! are remembered (`RecentArgs`) when the runner has a state folder.
 
 use devdeck_core::apps::{App, Command, Tools};
 use devdeck_core::catalog::Catalog;
@@ -133,13 +135,52 @@ pub struct Runner {
     stopped_to_quit: std::collections::BTreeSet<RunKey>,
     /// The workspace's ports, checked before a start (none: no check).
     ports: Option<WeakEntity<Ports>>,
+    /// Each command's current arguments.
+    args: BTreeMap<RunKey, String>,
+    /// The arguments used before, per command (none: not kept).
+    recent: Option<devdeck_core::recent_args::RecentArgs>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None }
+    }
+
+    /// Keeps the arguments used in `recent` (the state folder's).
+    pub fn with_recent_args(mut self, recent: devdeck_core::recent_args::RecentArgs) -> Self {
+        self.recent = Some(recent);
+        self
+    }
+
+    /// A command's current arguments (empty: none).
+    pub fn args(&self, key: &RunKey) -> &str {
+        self.args.get(key).map_or("", String::as_str)
+    }
+
+    /// Sets a command's arguments for its next start (a restart included).
+    pub fn set_args(&mut self, key: &RunKey, args: &str, cx: &mut Context<Self>) {
+        let args = args.trim();
+        if self.args(key) != args {
+            if args.is_empty() {
+                self.args.remove(key);
+            } else {
+                self.args.insert(key.clone(), args.to_string());
+            }
+            cx.notify();
+        }
+    }
+
+    /// The arguments used for a command before, most recent first.
+    pub fn recent_args(&self, key: &RunKey) -> Vec<String> {
+        self.recent.as_ref().map(|r| r.get(&self.workspace, &key.app, &key.cmd).to_vec()).unwrap_or_default()
+    }
+
+    /// The line a start of `key` runs: its command's, env and arguments applied.
+    pub fn line(&self, key: &RunKey, env: Option<&str>) -> Option<String> {
+        let (app, cmd) = self.command(key)?;
+        Some(devdeck_core::toolchains::with_args(cmd, &app.env.apply(&cmd.line, env).line, self.args(key)))
     }
 
     /// The ports checked before a start ([`Ports::new`] sets them).
@@ -274,10 +315,17 @@ impl Runner {
         run.restart_after_stop = false;
         run.stop = devdeck_core::process::StopKind::of(&cmd).total();
         let applied = app.env.apply(&cmd.line, env.as_deref());
-        let header = format!("── run {} · {}{} ──", run.runs, applied.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
+        let args = self.args.get(key).cloned().unwrap_or_default();
+        let line = devdeck_core::toolchains::with_args(&cmd, &applied.line, &args);
+        if let Some(recent) = &mut self.recent {
+            // Best effort: arguments that can't be saved are only not offered again.
+            let _ = recent.remember(&self.workspace, &key.app, &key.cmd, &args);
+        }
+        let run = self.runs.get_mut(key).expect("just set up");
+        let header = format!("── run {} · {}{} ──", run.runs, line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
         note(&mut run.terminal, &header);
         let id = RunId { key: key.clone(), n: run.runs };
-        let launch = Launch { id: id.clone(), app, cmd, line: applied.line, vars: applied.vars, env, size };
+        let launch = Launch { id: id.clone(), app, cmd, line, vars: applied.vars, env, size };
         let driver = self.driver.clone();
         match driver.spawn(launch, cx) {
             Ok(started) => {

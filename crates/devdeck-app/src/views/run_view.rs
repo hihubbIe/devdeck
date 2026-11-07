@@ -1,6 +1,10 @@
-//! Run output (`run/<app>/<cmd>`, R6.7): toolbar with the command, env, state and
-//! actions, then the run's terminal, wrapping at the pane width (R4.4 exception) and
-//! sized to the pane. A run that never started (restored layout) offers to start it.
+//! Run output (`run/<app>/<cmd>`, R6.7): toolbar with the command line, its arguments,
+//! env, state and actions, then the run's terminal, wrapping at the pane width (R4.4
+//! exception) and sized to the pane. A run that never started (restored layout) offers
+//! to start it.
+//! Arguments: the field's menu (a click, or a / ctrl+shift+a) offers the recent ones,
+//! none, or new ones typed in the field (⏎ uses them, esc cancels); choosing starts the
+//! run with them, or restarts it when it runs. The tab keeps its arguments.
 //! Keys (`RunView`): ⏎ run, s stop, r restart, i types into the terminal; alt+f follow.
 //! In the terminal (`Terminal`, focused by a click or i) keys go to the process except
 //! alt+… and ctrl+shift+…: ctrl+shift+⏎/x/r run, stop and restart, ctrl+shift+c/v copy
@@ -13,10 +17,10 @@ use crate::runner::{RunKey, RunnerEvent};
 use devdeck_core::runs::RunState;
 use devdeck_core::terminal::{Mods, TermSize, key_bytes, paste_bytes};
 use devdeck_ui::terminal::{self, Frame, Geometry, Scrollback};
-use devdeck_ui::{ToastKind, label, theme, tip, toasts, toggle_button};
+use devdeck_ui::{InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button};
 use gpui::{
-    App, ClipboardItem, Context, CursorStyle, DispatchPhase, EntityId, FocusHandle, Focusable, Global, HitboxBehavior, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render, ScrollEvent,
+    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EntityId, FocusHandle, Focusable, Global, HitboxBehavior, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent,
     StatefulInteractiveElement, Styled, Subscription, Window, actions, canvas, div, prelude::*,
 };
 use std::cell::Cell;
@@ -29,7 +33,7 @@ pub const OUTPUT_FRAME: Duration = Duration::from_millis(33);
 /// Output this soon after a key redraws at once (echo).
 const TYPING: Duration = Duration::from_millis(500);
 
-actions!(run_view, [RunAgain, Stop, Restart, FocusTerminal, LeaveTerminal]);
+actions!(run_view, [RunAgain, Stop, Restart, FocusTerminal, LeaveTerminal, ChooseArgs]);
 
 /// The view that sizes each run's terminal: the one focused last.
 #[derive(Default)]
@@ -59,6 +63,10 @@ pub struct RunView {
     typed: Option<Instant>,
     /// Restored as running: start the run once it can.
     restoring: bool,
+    /// New arguments being typed, and the input's subscription.
+    args_input: Option<(Entity<TextInput>, Subscription)>,
+    /// Where the arguments field was drawn (its menu opens below it).
+    args_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     _subs: Vec<Subscription>,
 }
 
@@ -103,8 +111,109 @@ impl RunView {
             pending: None,
             typed: None,
             restoring: false,
+            args_input: None,
+            args_bounds: Rc::default(),
             _subs: subs,
         }
+    }
+
+    /// The menu of arguments: the recent ones (the current one checked), none, new ones.
+    pub fn choose_args(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let runner = self.ctx.services.read(cx).runner.read(cx);
+        let current = runner.args(&self.key).to_string();
+        let mut recent = runner.recent_args(&self.key);
+        if !current.is_empty() && !recent.contains(&current) {
+            recent.insert(0, current.clone());
+        }
+        let me = cx.entity().downgrade();
+        let pick = |args: String| {
+            let me = me.clone();
+            move |_: &mut Window, cx: &mut App| {
+                let _ = me.update(cx, |v, cx| v.use_args(&args, cx));
+            }
+        };
+        let mut items: Vec<MenuItem> = recent.iter().map(|a| MenuItem::new(a.clone(), pick(a.clone())).checked(*a == current)).collect();
+        if !items.is_empty() {
+            items.push(MenuItem::separator());
+        }
+        items.push(MenuItem::new("no arguments", pick(String::new())).checked(current.is_empty()));
+        let typing = me.clone();
+        items.push(MenuItem::new("new arguments…", move |window, cx| {
+            let _ = typing.update(cx, |v, cx| v.type_args(window, cx));
+        }));
+        let at = self.args_bounds.get().map_or_else(|| window.bounds().center(), |b| b.bottom_left());
+        open_menu(at, items, window, cx);
+    }
+
+    /// Shows the field as an input with the current arguments, focused.
+    pub fn type_args(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.ctx.services.read(cx).runner.read(cx).args(&self.key).to_string();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("arguments", cx);
+            input.set_text(&current, cx);
+            input
+        });
+        let sub = cx.subscribe_in(&input, window, |this, _, e: &InputEvent, window, cx| match e {
+            InputEvent::Submit(text) => {
+                let text = text.clone();
+                this.close_args_input(window, cx);
+                this.use_args(&text, cx);
+            }
+            InputEvent::Cancel => this.close_args_input(window, cx),
+            InputEvent::Changed(_) => {}
+        });
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        self.args_input = Some((input, sub));
+        cx.notify();
+    }
+
+    fn close_args_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.args_input = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// The arguments field: the input while new ones are typed, else the current ones
+    /// (`args…` without) and a ▾, opening the menu. It shrinks before the actions do, so
+    /// they stay in a narrow pane.
+    fn args_field(&self, args: String, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if let Some((input, _)) = &self.args_input {
+            let field = div().w(t.size(220.)).flex_shrink(1.).min_w(t.size(80.)).debug_selector(|| "run-args-input".into());
+            return field.child(input.clone()).into_any_element();
+        }
+        let bounds = self.args_bounds.clone();
+        let (hover, empty) = (t.hover, args.is_empty());
+        div()
+            .id("args")
+            .debug_selector(|| "run-args".into())
+            .relative()
+            .flex_shrink(1.)
+            .min_w(t.size(60.))
+            .max_w(t.size(220.))
+            .h(t.button_h)
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded(t.radius_s)
+            .border_1()
+            .border_color(if empty { t.line } else { t.accent })
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .tooltip(tip(if empty { "arguments: recent ones, none, or new ones".to_string() } else { format!("arguments: {args}") }))
+            .on_click(cx.listener(|this, _, window, cx| this.choose_args(window, cx)))
+            .child(label(if empty { "args…".to_string() } else { args }).text_color(if empty { t.dim } else { t.fg }))
+            .child(div().flex_none().text_color(t.mute).child("▾"))
+            .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
+            .into_any_element()
+    }
+
+    /// Runs with `args`: a restart when it runs, a start otherwise.
+    pub fn use_args(&mut self, args: &str, cx: &mut Context<Self>) {
+        let runner = self.ctx.services.read(cx).runner.clone();
+        runner.update(cx, |r, cx| r.set_args(&self.key, args, cx));
+        let running = runner.read(cx).state(&self.key).is_some_and(RunState::is_running);
+        self.act(if running { "restart" } else { "run" }, cx);
     }
 
     /// New output: redraws now, or once [`OUTPUT_FRAME`] has passed since the last
@@ -277,15 +386,21 @@ impl RunView {
     }
 }
 
-/// Follow, and whether the run was running: it starts again in its tab on reopen.
+/// Follow, the arguments, and whether the run was running: it starts again in its tab
+/// on reopen, with them.
 impl super::KeepsState for RunView {
     fn save(&self, cx: &App) -> serde_json::Value {
-        let running = self.ctx.services.read(cx).runner.read(cx).was_running(&self.key);
-        serde_json::json!({ "follow": self.follow, "running": running })
+        let runner = self.ctx.services.read(cx).runner.read(cx);
+        let running = runner.was_running(&self.key);
+        serde_json::json!({ "follow": self.follow, "running": running, "args": runner.args(&self.key) })
     }
 
     fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
         self.follow = state["follow"].as_bool().unwrap_or(true);
+        if let Some(args) = state["args"].as_str().filter(|a| !a.is_empty()) {
+            let runner = self.ctx.services.read(cx).runner.clone();
+            runner.update(cx, |r, cx| r.set_args(&self.key, args, cx));
+        }
         self.restoring = state["running"].as_bool().unwrap_or(false);
         self.start_if_restoring(cx);
     }
@@ -300,14 +415,16 @@ impl Focusable for RunView {
 impl Render for RunView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
+        let args = self.ctx.services.read(cx).runner.read(cx).args(&self.key).to_string();
+        let args_field = self.args_field(args, &t, cx);
         let services = self.ctx.services.read(cx);
         let runner = services.runner.read(cx);
         let run = runner.run(&self.key);
         let state = run.map(|r| r.state);
         let (glyph, color) = run_glyph(state, &t);
         let refusal = runner.refusal(&self.key).filter(|r| r != "already running");
-        let line = services.catalog.app(&self.key.app).and_then(|a| a.command(&self.key.cmd)).map(|c| c.line.clone()).unwrap_or_default();
         let env = run.and_then(|r| r.env.clone()).or(services.env.clone());
+        let line = runner.line(&self.key, env.as_deref()).unwrap_or_default();
         let state_text = match state {
             None => "not started".to_string(),
             Some(RunState::Running) => "running".into(),
@@ -359,6 +476,7 @@ impl Render for RunView {
             .child(div().flex_none().text_color(t.hi).child(runner.title(&self.key)))
             .when_some(env, |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
             .child(label(line).flex_1().min_w_0().text_color(t.dim))
+            .child(args_field)
             .child(div().flex_none().text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute }).child(state_text))
             .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(format!("⚠ {r}"))))
             .child(
@@ -496,6 +614,7 @@ impl Render for RunView {
             .on_action(cx.listener(|this, _: &RunAgain, _, cx| this.act("run", cx)))
             .on_action(cx.listener(|this, _: &Stop, _, cx| this.act("stop", cx)))
             .on_action(cx.listener(|this, _: &Restart, _, cx| this.act("restart", cx)))
+            .on_action(cx.listener(|this, _: &ChooseArgs, window, cx| this.choose_args(window, cx)))
             .on_action(cx.listener(|this, _: &FocusTerminal, window, cx| this.focus_terminal(window, cx)))
             .child(toolbar)
             .child(body)
