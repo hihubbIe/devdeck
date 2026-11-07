@@ -183,6 +183,17 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 ## Open questions
 
+- 2026-11-07 Views stay in `devdeck-app/src/views/` for M1 (one module per view, the
+  registry in `views/mod.rs`); they reach their workspace through `ViewCx`. Runs and
+  the cluster sit behind stable entities (`Runner` with a `RunDriver`, `Cluster`) whose
+  M1 drivers are fakes, so M2/M3 swap drivers, not views.
+- 2026-11-07 View addresses are typed (`core::view_addr::ViewAddr`) and escape `/` in ids;
+  unknown or old refs open a message view instead of breaking a saved layout.
+- 2026-11-07 Live work follows visibility: metrics sampling and the fake log feed run only
+  while their view is on screen (active tab, expanded pane, shown workspace); rollouts
+  and runs keep going regardless.
+- 2026-11-07 The deploy confirmation shows the whole command, wrapping if needed: the one
+  place a view opts into wrapping (R4.4), so the deployed tag is never cut off.
 - Should the palette's empty state show recent actions (ranking by use), given lists
   are alphabetical? Current answer: yes, the palette is a search tool, not a list.
 - Running section in the Apps sidebar: replaced by the row indicator and a filter.

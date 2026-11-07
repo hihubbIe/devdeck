@@ -48,30 +48,30 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
 - [ ] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
 - [ ] **R5.4** k9s-inspired single-key shortcuts, a context-sensitive hint bar, and a searchable cheat sheet (`?`).
-- [ ] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
+- [~] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
 
 ## 6. Local apps
 
 - [ ] **R6.1** Apps are discovered automatically from the workspace's folders: `package.json` scripts, pnpm/npm workspaces (monorepo packages), Taskfile tasks, Makefile targets, docker compose files, `.vscode/launch.json`. New folders appear without configuration.
 - [ ] **R6.2** Runnable apps and libraries are told apart; libraries stay listed but de-emphasized.
-- [ ] **R6.3** Commands have tiers: primary (start, dev, serve…), secondary (build, test, codegen…), hidden (lint, format, prepare, pre/post hooks…). Hidden ones stay reachable.
+- [~] **R6.3** Commands have tiers: primary (start, dev, serve…), secondary (build, test, codegen…), hidden (lint, format, prepare, pre/post hooks…). Hidden ones stay reachable.
 - [ ] **R6.4** Overrides (names, commands, env binding, ports, URLs, hidden apps) live only in the central config, never in the project folders.
-- [ ] **R6.5** Each command declares the tools it needs. When one is missing, the app and its commands show as disabled with a warning sign and the missing thing named ("go not found", ".nvmrc wants node 20, which isn't installed").
-- [ ] **R6.6** Env for a run: a workspace-wide default plus a per-app override. How the env is applied is generic and declared: environment variable, command argument, rewrite of a gitignored file, or none. The UI says how it is applied.
-- [ ] **R6.7** Commands run in a pseudo-terminal: colors, progress output and exit codes are real. Several run at once. Stop, restart, run again, exit status, crash notification.
+- [~] **R6.5** Each command declares the tools it needs. When one is missing, the app and its commands show as disabled with a warning sign and the missing thing named ("go not found", ".nvmrc wants node 20, which isn't installed").
+- [~] **R6.6** Env for a run: a workspace-wide default plus a per-app override. How the env is applied is generic and declared: environment variable, command argument, rewrite of a gitignored file, or none. The UI says how it is applied.
+- [~] **R6.7** Commands run in a pseudo-terminal: colors, progress output and exit codes are real. Several run at once. Stop, restart, run again, exit status, crash notification.
 - [ ] **R6.8** Node version per project from `.nvmrc`, resolved against configured node installations.
-- [ ] **R6.9** Listening ports are detected per run. Port conflicts are reported before starting, with an option to stop the holder.
+- [~] **R6.9** Listening ports are detected per run. Port conflicts are reported before starting, with an option to stop the holder.
 - [ ] **R6.10** No git and no editor features (no branch, no ahead/behind, no "open in editor").
 
 ## 7. Cluster (optional per workspace)
 
-- [ ] **R7.1** Per env: list of deployments (alphabetical, Pinned and All) with status, image tag, ready count, restarts, running since.
-- [ ] **R7.2** Service inspector: header and actions; live CPU and memory against request and limit; pods (status, ready, restarts, last termination reason, age, node, cpu, memory); container (image, ports, resources, configmap); deploy history recorded by devdeck.
-- [ ] **R7.3** Image tag editor with suggestions (tags deployed on other envs, devdeck history, free text), an unsaved marker, save with ctrl+s or a button, and a confirmation that states the exact change and the exact command.
-- [ ] **R7.4** Rollout follow-up: progress, success, and failure detection (image pull errors) with one-action undo.
-- [ ] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, pause, follow, find), open k9s scoped to the env.
-- [ ] **R7.6** Protected envs (declared in config) refuse writes until unlocked by typing the env name.
-- [ ] **R7.7** Branch matrix: services × envs with the image tag in each cell; highlight a tag.
+- [~] **R7.1** Per env: list of deployments (alphabetical, Pinned and All) with status, image tag, ready count, restarts, running since.
+- [~] **R7.2** Service inspector: header and actions; live CPU and memory against request and limit; pods (status, ready, restarts, last termination reason, age, node, cpu, memory); container (image, ports, resources, configmap); deploy history recorded by devdeck.
+- [~] **R7.3** Image tag editor with suggestions (tags deployed on other envs, devdeck history, free text), an unsaved marker, save with ctrl+s or a button, and a confirmation that states the exact change and the exact command.
+- [~] **R7.4** Rollout follow-up: progress, success, and failure detection (image pull errors) with one-action undo.
+- [~] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, pause, follow, find), open k9s scoped to the env.
+- [~] **R7.6** Protected envs (declared in config) refuse writes until unlocked by typing the env name.
+- [~] **R7.7** Branch matrix: services × envs with the image tag in each cell; highlight a tag.
 - [~] **R7.8** Works with what the user's access allows; missing permissions are explained, not hidden.
 
 ## 8. Lifecycle

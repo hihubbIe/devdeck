@@ -293,6 +293,65 @@ fn svc_forbidden_narrow(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell:
     service(cx, shell, "lab", "tadawebapi", false);
 }
 
+fn maximize_focused(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.toggle_maximize(l.main().focused))));
+    cx.run_until_parked();
+}
+
+fn logs_find(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let addr = ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() };
+    open_view(cx, shell, addr.clone());
+    maximize_focused(cx, shell);
+    cx.advance_clock(Duration::from_secs(20));
+    cx.run_until_parked();
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<devdeck_app::views::logs_view::ServiceLogsView>().unwrap());
+    cx.update(|cx| {
+        v.update(cx, |v, cx| {
+            v.set_min_level(devdeck_app::views::logs_view::MinLevel::Warn, cx);
+            v.find.update(cx, |f, cx| f.set_text("slow", cx));
+            v.step_match(1, cx);
+            v.step_match(1, cx);
+        })
+    });
+}
+
+fn pod(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| {
+        c.update(cx, |c, cx| {
+            c.deployments("dev35", cx);
+        })
+    });
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    let name = cx.update(|cx| {
+        let c = c.read(cx);
+        c.spec.services.iter().flat_map(|s| c.pods("dev35", s).to_vec()).find(|p| !p.ready).map(|p| p.name).unwrap_or_default()
+    });
+    open_view(cx, shell, ViewAddr::Pod { env: "dev35".into(), pod: name });
+}
+
+fn matrix(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, ViewAddr::Matrix);
+    maximize_focused(cx, shell);
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let m = cx.update(|cx| deck.read(cx).view(&ViewAddr::Matrix.to_ref()).unwrap().downcast::<devdeck_app::views::matrix_view::MatrixView>().unwrap());
+    cx.update(|cx| {
+        m.update(cx, |m, cx| {
+            m.highlight = Some("main".into());
+            cx.notify();
+        })
+    });
+}
+
+fn port(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, ViewAddr::Port { port: "5720".into() });
+}
+
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
     l.find_view(&ViewRef::new(v)).expect("view open").0
 }
@@ -415,6 +474,10 @@ fn states() -> Vec<State> {
         w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),
         w("88-svc-forbidden-narrow", "work", 1.0, Some(svc_forbidden_narrow)),
         w("89-svc-ready-150", "work", 1.5, Some(svc_ready)),
+        w("90-logs-filter-find", "work", 1.0, Some(logs_find)),
+        w("91-pod-crashloop", "work", 1.0, Some(pod)),
+        w("92-matrix-highlight", "work", 1.0, Some(matrix)),
+        w("93-port", "work", 1.0, Some(port)),
     ]
 }
 

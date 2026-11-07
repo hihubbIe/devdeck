@@ -506,6 +506,19 @@ impl Render for Sidebar {
             .when(activity == Activity::Cluster, |d| {
                 let protected = self.env(cx).is_some_and(|e| e.protected);
                 d.child(label(format!("@{}", self.state.env.as_deref().unwrap_or("-"))).text_color(if protected { t.err } else { t.env }))
+                    .child(
+                        devdeck_ui::button("open-matrix", "matrix", &t)
+                            .tooltip(tip("tags of every service on every env"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let view = ViewAddr::Matrix.to_ref();
+                                this.deck.update(cx, |d, cx| {
+                                    d.apply(cx, |l| {
+                                        let p = l.main().focused;
+                                        l.open(view, p).map(|_| ())
+                                    });
+                                });
+                            })),
+                    )
             })
             .when(activity == Activity::Apps, |d| {
                 d.child(

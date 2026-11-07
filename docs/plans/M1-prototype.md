@@ -519,3 +519,20 @@ Out of scope: real processes, PTY and terminal grid (M2), real cluster (M3), pal
     in the leak check, `ViewAddr` round trip, sidebar and matrix follow runs and
     rollouts, crash in an inactive workspace, `r`/`s` typed in the tag editor or find
     input do nothing. **Accepted.**
+
+### Step 5 outcome
+
+Built as assessed, in three commits.
+- 5a: runner and the App and Run views.
+- 5b: the fake cluster and the service inspector.
+- 5c: logs, pod, branch matrix and port views; the matrix opens from the Cluster sidebar header.
+
+Found while checking:
+- A view built during the deck's update read the deck to check its visibility and panicked; the check is now deferred.
+- The deploy confirmation cut off the command, so it now wraps.
+- The pods table was clipped in narrow panes, so it now scrolls sideways.
+- `docker compose up` counted as a secondary command, so `up` now counts as primary. An app is flagged unusable when none of its visible commands can run.
+
+Checks:
+- New tests: 7 in `tests/runs.rs`, 6 in `tests/service.rs`, 5 in `tests/cluster_views.rs`, plus core tests for apps, runs, the cluster and view addresses. All use short fake-clock spans.
+- Snapshots 70–75 (app and run views), 80–89 (inspector states) and 90–93 (logs, pod, matrix, port) checked.

@@ -77,5 +77,7 @@ pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     views::app_view::bind_keys(cx);
     views::run_view::bind_keys(cx);
     views::service_view::bind_keys(cx);
+    views::logs_view::bind_keys(cx);
+    views::matrix_view::bind_keys(cx);
     cx.on_window_closed(|cx, id| devdeck_ui::overlay::forget_layer(id, cx)).detach();
 }

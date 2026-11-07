@@ -7,6 +7,10 @@
 
 pub mod app_view;
 pub mod demo;
+pub mod logs_view;
+pub mod matrix_view;
+pub mod pod_view;
+pub mod port_view;
 pub mod run_view;
 pub mod service_view;
 
@@ -87,8 +91,35 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, cx: &mut App) -> Built {
             let v = cx.new(|cx| service_view::ServiceView::new(env, name, ctx.clone(), cluster, cx));
             focusable(v, cx)
         }
-        (_, Some(_)) => message("This view comes later in M1.".into(), cx),
+        (ViewAddr::Logs { env, name }, Some(ctx)) => match cluster_env(ctx, &env, cx) {
+            Err(text) => message(text, cx),
+            Ok(cluster) => {
+                let v = cx.new(|cx| logs_view::ServiceLogsView::new(env, name, ctx.clone(), cluster, cx));
+                focusable(v, cx)
+            }
+        },
+        (ViewAddr::Pod { env, pod }, Some(ctx)) => match cluster_env(ctx, &env, cx) {
+            Err(text) => message(text, cx),
+            Ok(cluster) => Built { view: cx.new(|cx| pod_view::PodView::new(env, pod, ctx.clone(), cluster, cx)).into(), focus: None },
+        },
+        (ViewAddr::Matrix, Some(ctx)) => match ctx.services.read(cx).cluster.clone() {
+            None => message("This workspace has no cluster.".into(), cx),
+            Some(cluster) => {
+                let v = cx.new(|cx| matrix_view::MatrixView::new(ctx.clone(), cluster, cx));
+                focusable(v, cx)
+            }
+        },
+        (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None },
     }
+}
+
+/// The workspace's cluster when it has `env`, or the message to show instead.
+fn cluster_env(ctx: &ViewCx, env: &str, cx: &App) -> Result<Entity<crate::cluster::Cluster>, String> {
+    let cluster = ctx.services.read(cx).cluster.clone().ok_or("This workspace has no cluster.")?;
+    if cluster.read(cx).env(env).is_none() {
+        return Err(format!("{env} isn't an env of this workspace."));
+    }
+    Ok(cluster)
 }
 
 /// The tab label of a view.
@@ -110,6 +141,8 @@ pub fn toggle_follow(view: &AnyView, cx: &mut App) {
     if let Ok(v) = view.clone().downcast::<LogsView>() {
         v.update(cx, |v, cx| v.toggle_follow(cx));
     } else if let Ok(v) = view.clone().downcast::<run_view::RunView>() {
+        v.update(cx, |v, cx| v.toggle_follow(cx));
+    } else if let Ok(v) = view.clone().downcast::<logs_view::ServiceLogsView>() {
         v.update(cx, |v, cx| v.toggle_follow(cx));
     }
 }
