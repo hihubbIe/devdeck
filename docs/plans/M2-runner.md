@@ -338,6 +338,73 @@ Part B outcome: built as planned. The field shrinks before the toolbar's actions
 narrow pane (seen on the first snapshots: "follow" was pushed out), and its tooltip
 shows the full arguments. Snapshots 77–79.
 
+## Terminal tabs: plan (step 4, 2026-11-07)
+
+A tab with the user's shell in a folder, on the run tab's terminal (keys, selection,
+links, resizing, killing on quit, restore), not a second copy of it:
+- **Address:** `ViewAddr::Terminal { n, dir }` → `term/<n>/<dir escaped>`; the folder is
+  in the address, so a restored layout knows it. `n` numbers terminals per workspace.
+- **A run of an ad-hoc command:** the runner keeps ad-hoc launches next to the
+  catalog's (`Runner::open_terminal`): an app (the catalog's app whose folder it is,
+  for its Node; else one made for the folder) and a command `shell:<n>` running the
+  login shell (`$SHELL` of the toolbox, else `/bin/sh`) interactively. Everything
+  that looks a command up finds it there; the toolbox's PATH applies as for runs.
+- **What differs from a run:** no arguments field; no success or failure toast; it
+  stops with SIGHUP (a new `StopKind::HangUp`: hang-up, then 2 s, SIGKILL), as a
+  terminal closing does. Closing the tab ends the shell (runs of commands keep
+  running when their tab closes). The quit guard counts a terminal only while its
+  shell runs something (it has child processes).
+- **Its tab:** title `terminal · ~/folder`; started when the view is built (opened or
+  restored: a fresh shell in the same folder); when the shell exits the tab stays
+  ("ended"), ⏎ starts a new one.
+- **Opening it (until the menus of the next item):** a palette command and a key,
+  "New terminal" (`ctrl+shift+t`, unbound today), in the focused pane: in the folder of
+  the focused tab's app (app or run tab), else the workspace's first folder (the home
+  folder in the demo).
+- **Tests:** the address round-trips; the runner opens, stops (hang-up) and lists
+  terminals; closing the tab ends the shell; a restored layout starts a fresh shell;
+  the quit guard; a real shell in a pseudo-terminal (as the pty driver tests do).
+
+Review of the plan (subagent) and assessment, all **accepted**:
+- Terminals are keyed apart from apps (`RunKey { app: "", cmd: "term/<n>" }`): no
+  running dot on an app, no port memory or port conflict for them, no success or
+  failure toast (a shell exits with its last command's status).
+- Closing the tab goes through the deck's own closing (`Deck::sync`), not the view's
+  release, and stops the shell (hang-up). A shell that exits takes what it left running
+  with it (no leftovers).
+- The view starts its shell when built, once the tools are known, unless one runs; it
+  doesn't use the run tab's restore. The tab opens with the terminal focused.
+- The quit guard counts a terminal while something runs in its foreground (the
+  terminal's foreground group isn't the shell); quitting still waits for every shell
+  to end.
+- The shell runs as `exec "${SHELL:-/bin/sh}" -i`: interactive, not a login shell (the
+  environment already is the login shell's); `TMUX`, `VTE_VERSION`, `TERM_PROGRAM`
+  removed. Its rc files may put another Node first: the app's Node is a start, not a
+  promise.
+- A new terminal's number is above every terminal of the layouts (the book included).
+  A folder that's gone shows the tab ended, without a toast. The demo's terminals say
+  they need a real workspace. Real-shell tests use temp `HOME` and `ENV`.
+
+Rules decided with the user (2026-11-07):
+- Closing a terminal tab ends its shell and what runs in it; so does closing a detached
+  window holding terminals ("closing is closing"; reattach first to keep them).
+  Switching layouts doesn't: a terminal of another layout keeps running, its output
+  arriving, and shows as it was when its layout comes back. Moving a tab or detaching
+  keeps it.
+- Every shell of a workspace is in one list, the sidebar's **Terminals** view: its
+  folder, its state (idle, the program running in it, ended), where it shows (here,
+  another layout, or not shown); open (activated where it shows, else in the focused
+  pane) or end it. A terminal no layout shows any more stays listed, running, until
+  ended there or quitting: nothing is ended unseen, nothing is lost.
+- Quitting asks while any shell runs something, shown or not.
+
+Terminal tabs outcome: built with these rules. Review of the diff (subagent), all
+**fixed**: a terminal listening on a port crashed the port scan; an ended terminal
+came back when a layout still holding it was shown (ending now removes it from every
+saved layout, and a tab only starts a shell the runner never ran: `exit` stays ended
+until ⏎); the arguments key restarted a shell; a terminal's ports showed as a run;
+quitting with only idle shells skipped their hang-up; terminal rows could be pinned.
+
 ## States to check
 
 No config; config error; app vs library; missing tool; `.nvmrc` wants a missing Node;

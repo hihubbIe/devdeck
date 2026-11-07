@@ -181,7 +181,8 @@ impl Services {
             .collect();
         let runner = self.runner.read(cx);
         let line = |key: &RunKey| self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)).map(|c| c.line.clone()).unwrap_or_default();
-        let real: BTreeSet<RunKey> = runner.pids().into_iter().map(|(k, _)| k).collect();
+        // Terminals aren't runs: what listens in one shows as any other holder would.
+        let real: BTreeSet<RunKey> = runner.pids().into_iter().map(|(k, _)| k).filter(|k| !k.is_terminal()).collect();
         // Runs without a process (the demo's fake ones): the ports their command declares.
         for (key, port) in runner.running_ports() {
             if !real.contains(&key) {

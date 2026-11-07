@@ -9,7 +9,9 @@
 //! - schedules a save of the layout (one timer, about a second after the first change),
 //! - notifies observers so every window re-renders.
 
+use crate::runner::RunKey;
 use crate::views::{self, ViewCx};
+use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, PaneId, ViewRef, WindowId};
 use devdeck_core::layout_book::{BookError, LayoutBook};
@@ -53,6 +55,8 @@ pub struct Deck {
     generation: u64,
     store: Option<StateStore>,
     dirty: bool,
+    /// A layout switch is under way: terminals leaving with the old layout keep running.
+    switching: bool,
     save_task: Option<Task<()>>,
     save_failed: bool,
     /// Layout writes done (tests check the debounce).
@@ -103,6 +107,7 @@ impl Deck {
             generation: 0,
             store: None,
             dirty: false,
+            switching: false,
             save_task: None,
             save_failed: false,
             saves: 0,
@@ -119,6 +124,66 @@ impl Deck {
         self.store = store;
         self.active = active;
         self
+    }
+
+    /// A number for a new terminal: above every terminal of the layouts (the book's
+    /// included) and of the runner.
+    pub fn next_terminal(&self, cx: &App) -> u32 {
+        let number = |r: &ViewRef| match ViewAddr::parse(r) {
+            ViewAddr::Terminal { n, .. } => Some(n),
+            _ => None,
+        };
+        let in_layouts = std::iter::once(&self.layout).chain(self.book.layouts.values()).flat_map(|l| l.views()).filter_map(|r| number(&r));
+        let in_runner = self.services.iter().flat_map(|s| s.read(cx).runner.read(cx).terminals()).filter_map(|(k, _)| k.terminal_number());
+        in_layouts.chain(in_runner).max().map_or(1, |n: u32| n + 1)
+    }
+
+    /// Ends terminal `n` everywhere: its tab closes (in this layout), it leaves every
+    /// saved layout, and its shell hangs up. Closing its tab comes here too.
+    pub fn end_terminal(&mut self, n: u32, cx: &mut Context<Self>) {
+        let is_it = |r: &ViewRef| matches!(ViewAddr::parse(r), ViewAddr::Terminal { n: m, .. } if m == n);
+        if let Some(r) = self.layout.views().into_iter().find(is_it) {
+            // Its closing comes back here through `sync`, with the tab gone.
+            self.apply(cx, |l| l.close_view(&r));
+            return;
+        }
+        let mut purged = false;
+        for layout in self.book.layouts.values_mut() {
+            for r in layout.views().into_iter().filter(is_it) {
+                purged |= layout.close_view(&r).is_ok();
+            }
+        }
+        if purged {
+            self.save_book(cx);
+        }
+        if let Some(services) = &self.services {
+            let runner = services.read(cx).runner.clone();
+            runner.update(cx, |r, cx| r.end_terminal(&RunKey::terminal(n), cx));
+        }
+    }
+
+    /// Opens a new terminal in `dir`, in `pane` (the focused one when `None`).
+    pub fn open_terminal(&mut self, dir: &std::path::Path, pane: Option<PaneId>, cx: &mut Context<Self>) {
+        let addr = ViewAddr::Terminal { n: self.next_terminal(cx), dir: dir.display().to_string() };
+        self.apply(cx, |l| {
+            let p = pane.unwrap_or(l.main().focused);
+            l.open(addr.to_ref(), p).map(|_| ())
+        });
+    }
+
+    /// Where a new terminal starts for `pane`: the folder of its active tab's app (an app
+    /// or a run tab), else the workspace's first folder, else the home folder.
+    pub fn terminal_folder(&self, pane: Option<PaneId>, cx: &App) -> std::path::PathBuf {
+        let home = || std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| "/".into());
+        let Some(services) = &self.services else { return home() };
+        let s = services.read(cx);
+        let active = pane.or(Some(self.layout.main().focused)).and_then(|p| self.layout.pane(p).ok()?.active_view().cloned());
+        let app = active.and_then(|r| match ViewAddr::parse(&r) {
+            ViewAddr::App { app } | ViewAddr::Run { app, .. } => s.catalog.app(&app).map(|a| a.dir.clone()),
+            ViewAddr::Terminal { dir, .. } => Some(dir.into()),
+            _ => None,
+        });
+        app.or_else(|| s.config.as_ref()?.folders.first().cloned()).unwrap_or_else(home)
     }
 
     pub fn with_services(mut self, services: Entity<crate::services::Services>) -> Self {
@@ -324,10 +389,12 @@ impl Deck {
                 });
             }
         }
+        self.switching = true;
         self.apply(cx, |l| {
             *l = target;
             Ok(())
         });
+        self.switching = false;
         // Both files at once, so they never disagree about which tree is current.
         if self.store.is_some() {
             self.save_task = None;
@@ -433,6 +500,12 @@ impl Deck {
         // it stays as small as the leaks themselves.
         self.released.retain(|(weak, _)| weak.upgrade().is_some());
         for r in closed {
+            // Closing a terminal ends its shell; a layout switch only hides it.
+            if !self.switching
+                && let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&r)
+            {
+                self.end_terminal(n, cx);
+            }
             self.focus.remove(&r);
             self.savers.remove(&r);
             self.missing.remove(&r);

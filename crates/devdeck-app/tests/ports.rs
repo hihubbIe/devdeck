@@ -309,3 +309,20 @@ fn the_scan_runs_only_while_a_run_runs_or_a_port_view_is_shown(cx: &mut TestAppC
     advance(cx, SCAN_EVERY * 3);
     assert_eq!(scans(cx), (false, 3), "stops once the view is gone");
 }
+
+#[gpui::test]
+fn a_terminal_listening_is_scanned_without_being_remembered(cx: &mut TestAppContext) {
+    let (l, port) = bind();
+    let s = setup(cx, "terminal-ports", vec![command("a:serve", &[])]);
+    s.next.pid.set(Some(std::process::id()));
+    *s.next.listener.borrow_mut() = Some(l);
+    let key = cx.update(|cx| s.runner.update(cx, |r, _| r.open_terminal(1, &std::env::temp_dir())));
+    let started = cx.update(|cx| s.runner.update(cx, |r, cx| r.try_start(&key, None, cx)));
+    assert_eq!(started, Ok(()), "no port check for a terminal");
+    advance(cx, SCAN_EVERY);
+    advance(cx, SCAN_EVERY);
+    let found = cx.read(|cx| s.ports.read(cx).scan.listening.get(&key).cloned().unwrap_or_default());
+    assert!(found.contains(&port), "scanned (it shows who holds the port): {found:?}");
+    let memory = PortMemory::load(&s.state);
+    assert!(memory.get(WS, "", "term/1").is_empty(), "not remembered: what a terminal runs changes");
+}

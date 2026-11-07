@@ -179,3 +179,25 @@ fn a_missing_folder_is_not_started_with_the_reason(cx: &mut TestAppContext) {
     let error = cx.read(|cx| s.runner.read(cx).run(&key("hello")).unwrap().error.clone());
     assert_eq!(error, Some(format!("{}: no such folder", missing.display())));
 }
+
+#[gpui::test]
+fn a_terminal_is_an_interactive_shell_that_hangs_up_when_ended(cx: &mut TestAppContext) {
+    // The toolbox has no SHELL and a temp HOME: /bin/sh, reading no rc file of the user's.
+    let s = setup(cx, None, &[]);
+    let dir = cx.update(|cx| devdeck_app::test_dir("term-dir", cx));
+    let key = cx.update(|cx| s.runner.update(cx, |r, _| r.open_terminal(1, &dir)));
+    cx.update(|cx| s.runner.update(cx, |r, cx| r.start(&key, None, cx))).unwrap();
+    let shows = |cx: &TestAppContext, text: &str| cx.read(|cx| s.runner.read(cx).run(&key).map(|r| r.terminal.lines()).unwrap_or_default()).iter().any(|l| l.contains(text));
+    cx.update(|cx| s.runner.update(cx, |r, _| r.write(&key, b"echo in-$PWD\n")));
+    let here = format!("in-{}", dir.display());
+    wait_until(cx, "the shell's answer", |cx| shows(cx, &here));
+    // A program in its foreground: busy, named.
+    cx.update(|cx| s.runner.update(cx, |r, _| r.write(&key, b"sleep 30\n")));
+    wait_until(cx, "sleep in the foreground", |cx| cx.read(|cx| s.runner.read(cx).terminal_program(&key)).as_deref() == Some("sleep"));
+    assert!(cx.read(|cx| s.runner.read(cx).running()).iter().any(|t| t.ends_with("· sleep")), "in the quit list while it runs something");
+    let at = Instant::now();
+    cx.update(|cx| s.runner.update(cx, |r, cx| r.end_terminal(&key, cx)));
+    wait_until(cx, "the shell gone", |cx| cx.read(|cx| s.runner.read(cx).state(&key)).is_none());
+    assert!(at.elapsed() < Duration::from_secs(2), "a hang-up, not the SIGKILL fallback: {:?}", at.elapsed());
+    assert!(cx.read(|cx| s.runner.read(cx).terminals()).is_empty(), "forgotten");
+}

@@ -13,6 +13,7 @@
 //! the matches show with their folders open and the saved state is left as it was.
 
 use crate::deck::Deck;
+use crate::runner::RunKey;
 use crate::services::Services;
 use devdeck_core::cluster::{Env, Remote};
 use devdeck_core::view_addr::ViewAddr;
@@ -49,10 +50,12 @@ pub enum Activity {
     Cluster,
     Ports,
     Layouts,
+    /// Every shell of the workspace, shown or not.
+    Terminals,
 }
 
 impl Activity {
-    pub const ALL: [Activity; 4] = [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts];
+    pub const ALL: [Activity; 5] = [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -60,6 +63,7 @@ impl Activity {
             Activity::Cluster => "cluster",
             Activity::Ports => "ports",
             Activity::Layouts => "layouts",
+            Activity::Terminals => "terminals",
         }
     }
 
@@ -74,6 +78,7 @@ impl Activity {
             Activity::Cluster => "deployments",
             Activity::Ports => "ports",
             Activity::Layouts => "layouts",
+            Activity::Terminals => "terminals",
         }
     }
 
@@ -83,6 +88,7 @@ impl Activity {
             Activity::Cluster => "Cluster",
             Activity::Ports => "Ports",
             Activity::Layouts => "Layouts",
+            Activity::Terminals => "Terminals",
         }
     }
 
@@ -92,6 +98,7 @@ impl Activity {
             Activity::Cluster => "◈",
             Activity::Ports => "⊡",
             Activity::Layouts => "◫",
+            Activity::Terminals => "❯",
         }
     }
 }
@@ -133,8 +140,14 @@ pub struct Sidebar {
     pub selected: Option<String>,
     scroll: UniformListScrollHandle,
     save_failed: bool,
+    /// While the Terminals list shows: redraws every [`TERMINALS_TICK`] (what a shell
+    /// runs changes without anyone saying so).
+    tick: Option<gpui::Task<()>>,
     _subs: Vec<Subscription>,
 }
+
+/// How often the Terminals list looks at what its shells run.
+pub const TERMINALS_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Sidebar {
     pub fn new(
@@ -181,6 +194,7 @@ impl Sidebar {
             selected: None,
             scroll: UniformListScrollHandle::new(),
             save_failed: false,
+            tick: None,
             _subs: subs,
         };
         this.load_list(cx);
@@ -284,6 +298,37 @@ impl Sidebar {
                     .map(|n| {
                         let current = n == book.current;
                         ListItem::new(n.clone(), n).detail(if current { "current" } else { "" }).running(current)
+                    })
+                    .collect()
+            }
+            Activity::Terminals => {
+                // Each shell, what it does, and where it shows: here, another layout, or
+                // nowhere (still running, listed here so it isn't lost).
+                let runner = s.runner.read(cx);
+                let deck = self.deck.read(cx);
+                let shows_in = |n: u32| -> String {
+                    let is_it = |r: &ViewRef| matches!(ViewAddr::parse(r), ViewAddr::Terminal { n: m, .. } if m == n);
+                    if deck.layout().views().iter().any(is_it) {
+                        return "here".into();
+                    }
+                    let other = deck.book.layouts.iter().find(|(name, l)| **name != deck.book.current && l.views().iter().any(is_it));
+                    other.map_or_else(|| "not shown".into(), |(name, _)| format!("in {name}"))
+                };
+                runner
+                    .terminals()
+                    .into_iter()
+                    .filter_map(|(key, _)| {
+                        let n = key.terminal_number()?;
+                        let state = runner.state(&key);
+                        let doing = match (runner.terminal_program(&key), state) {
+                            (Some(program), _) => program,
+                            (None, Some(s)) if s.is_running() => "idle".into(),
+                            (None, Some(_)) => "ended".into(),
+                            (None, None) => "not started".into(),
+                        };
+                        let folder = runner.title(&key).trim_start_matches("terminal · ").to_string();
+                        let item = ListItem::new(n.to_string(), folder).detail(format!("{doing} · {}", shows_in(n)));
+                        Some(item.running(state.is_some_and(|s| s.is_running())))
                     })
                     .collect()
             }
@@ -397,7 +442,6 @@ impl Sidebar {
         self.select_row(&items, &rows, to, cx);
     }
 
-    /// The view address an item opens as.
     /// The view an item opens as (`None` for layouts: they switch instead).
     pub fn view_ref(&self, key: &str, cx: &App) -> Option<ViewRef> {
         Some(match self.activity() {
@@ -405,8 +449,18 @@ impl Sidebar {
             Activity::Cluster => ViewAddr::Svc { env: self.services.read(cx).env.clone().unwrap_or_default(), name: key.into() },
             Activity::Ports => ViewAddr::Port { port: key.into() },
             Activity::Layouts => return None,
+            Activity::Terminals => {
+                let n: u32 = key.parse().ok()?;
+                let dir = self.services.read(cx).runner.read(cx).terminals().into_iter().find(|(k, _)| *k == RunKey::terminal(n))?.1;
+                ViewAddr::Terminal { n, dir: dir.display().to_string() }
+            }
         }
         .to_ref())
+    }
+
+    /// Ends terminal `n` everywhere (its tab, every layout, its shell).
+    pub fn end_terminal(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.deck.update(cx, |d, cx| d.end_terminal(n, cx));
     }
 
     /// Opens an item in the main window's focused pane; an open one is activated.
@@ -445,6 +499,10 @@ impl Sidebar {
     }
 
     pub fn toggle_pin(&mut self, key: &str, cx: &mut Context<Self>) {
+        // Terminals come and go with their numbers: nothing to pin.
+        if self.activity() == Activity::Terminals {
+            return;
+        }
         let pins = self.state.pins.entry(self.activity().list_id().to_string()).or_default();
         list::toggle_pin(pins, key);
         self.save(cx);
@@ -537,6 +595,14 @@ impl Sidebar {
     }
 
     pub fn item_menu(this: &Entity<Self>, key: &str, pinned: bool, cx: &App) -> Vec<MenuItem> {
+        if this.read(cx).activity() == Activity::Terminals {
+            let (open, end) = (this.clone(), this.clone());
+            let (k1, n) = (key.to_string(), key.parse::<u32>().unwrap_or_default());
+            return vec![
+                MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
+                MenuItem::new("End", move |_, cx| end.update(cx, |s, cx| s.end_terminal(n, cx))),
+            ];
+        }
         if this.read(cx).activity() == Activity::Layouts {
             let deck = this.read(cx).deck.clone();
             let current = deck.read(cx).book.current == key;
@@ -611,6 +677,25 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let activity = self.activity();
+        if activity == Activity::Terminals && self.state.visible && self.tick.is_none() {
+            self.tick = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(TERMINALS_TICK).await;
+                    let shown = this.update(cx, |s, cx| {
+                        let on = s.activity() == Activity::Terminals && s.state.visible;
+                        if on {
+                            cx.notify();
+                        } else {
+                            s.tick = None;
+                        }
+                        on
+                    });
+                    if !matches!(shown, Ok(true)) {
+                        return;
+                    }
+                }
+            }));
+        }
         let count = self.rows(cx).1.len();
         let list_focused = self.list_focus.is_focused(window);
         let running_only = self.running_only;

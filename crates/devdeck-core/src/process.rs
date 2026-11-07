@@ -50,15 +50,24 @@ pub enum StopKind {
     /// docker compose stops its containers on ^C (10 s by default each): ^C, then 15 s,
     /// SIGTERM, then 5 s, SIGKILL.
     Compose,
+    /// A terminal's shell, as when a terminal closes: SIGHUP to everything (an
+    /// interactive shell ignores ^C and SIGTERM and hangs its jobs up), then 2 s,
+    /// SIGTERM, then 300 ms, SIGKILL.
+    HangUp,
     /// Tests: 300 ms each.
     #[cfg(test)]
     Quick,
 }
 
 impl StopKind {
-    /// docker compose commands get [`StopKind::Compose`].
+    /// docker compose commands get [`StopKind::Compose`], a terminal's shell
+    /// [`StopKind::HangUp`].
     pub fn of(cmd: &Command) -> StopKind {
-        if cmd.source() == "compose" { StopKind::Compose } else { StopKind::Default }
+        match cmd.source() {
+            "compose" => StopKind::Compose,
+            "shell" => StopKind::HangUp,
+            _ => StopKind::Default,
+        }
     }
 
     /// The whole stop sequence's length: quitting waits this long before killing.
@@ -71,6 +80,7 @@ impl StopKind {
         match self {
             StopKind::Default => (Duration::from_secs(3), Duration::from_secs(2)),
             StopKind::Compose => (Duration::from_secs(15), Duration::from_secs(5)),
+            StopKind::HangUp => (Duration::from_secs(2), Duration::from_millis(300)),
             #[cfg(test)]
             StopKind::Quick => (Duration::from_millis(300), Duration::from_millis(300)),
         }
@@ -181,15 +191,34 @@ impl Process {
         let _ = rustix::termios::tcsetwinsize(&*self.master, winsize(size));
     }
 
+    /// Something other than the process itself runs in its terminal's foreground (a
+    /// shell running a command), as terminal emulators tell before closing.
+    pub fn busy(&self) -> bool {
+        self.foreground().is_some()
+    }
+
+    /// The process group in its terminal's foreground, when it isn't the process's own.
+    pub fn foreground(&self) -> Option<u32> {
+        let group = rustix::termios::tcgetpgrp(&*self.master).ok()?.as_raw_nonzero().get() as u32;
+        (group != self.tree.pid).then_some(group)
+    }
+
+    /// The name of the program in its terminal's foreground (`vite`), when it isn't the
+    /// process itself.
+    pub fn foreground_program(&self) -> Option<String> {
+        let group = self.foreground()?;
+        std::fs::read_to_string(format!("/proc/{group}/comm")).ok().map(|n| n.trim_end().to_string())
+    }
+
     /// Starts the stop sequence (returns at once; the exit arrives as an event).
     pub fn stop(&self) {
         if self.tree.stopping.swap(true, Ordering::SeqCst) {
             return;
         }
         let tree = self.tree.clone();
-        let waits = self.stop.waits();
+        let (waits, hang_up) = (self.stop.waits(), self.stop == StopKind::HangUp);
         let name = format!("stop {}", tree.pid);
-        if std::thread::Builder::new().name(name).spawn(move || tree.stop(waits)).is_err() {
+        if std::thread::Builder::new().name(name).spawn(move || tree.stop(waits, hang_up)).is_err() {
             self.tree.collect();
             self.tree.signal_all(Signal::KILL);
         }
@@ -356,10 +385,15 @@ struct Tree {
 }
 
 impl Tree {
-    /// ^C, then SIGTERM, then SIGKILL, each after its wait; ends once nothing is left.
-    fn stop(&self, waits: (Duration, Duration)) {
+    /// ^C to the group (SIGHUP to everything when `hang_up`), then SIGTERM, then
+    /// SIGKILL, each after its wait; ends once nothing is left.
+    fn stop(&self, waits: (Duration, Duration), hang_up: bool) {
         self.collect();
-        self.signal_group(Signal::INT);
+        if hang_up {
+            self.signal_all(Signal::HUP);
+        } else {
+            self.signal_group(Signal::INT);
+        }
         if self.gone_within(waits.0) {
             return;
         }
@@ -709,6 +743,43 @@ mod tests {
         p.stop();
         assert_eq!(read(&rx, &mut out, None), Some(Exit::Signal(9)));
         assert!(at.elapsed() >= StopKind::Quick.total(), "{:?}", at.elapsed());
+    }
+
+    #[test]
+    fn busy_while_a_job_holds_the_foreground() {
+        // An interactive shell gives the terminal to its foreground job, a job its own
+        // group: here `sh -m` (job control) running `sleep` in the foreground.
+        let (p, rx) = spawn("exec sh -m -c 'echo ready; sleep 0.5; echo back; sleep 30'");
+        let mut out = String::new();
+        read(&rx, &mut out, Some("ready"));
+        wait_until("the job in the foreground", || p.busy());
+        assert_eq!(p.foreground_program().as_deref(), Some("sleep"));
+        read(&rx, &mut out, Some("back"));
+        p.stop();
+        // Without job control, what runs stays in the process's own group: not busy.
+        let (q, rx) = spawn("echo ready; sleep 30");
+        let mut out = String::new();
+        read(&rx, &mut out, Some("ready"));
+        assert!(!q.busy());
+    }
+
+    #[test]
+    fn a_hang_up_ends_what_ignores_ctrl_c_and_sigterm_at_once() {
+        // As an interactive shell does.
+        let spawn = Spawn {
+            line: "trap '' INT TERM; echo ready; sleep 30".into(),
+            dir: std::env::temp_dir(),
+            vars: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+            size: SIZE,
+            stop: StopKind::HangUp,
+        };
+        let (p, rx) = Process::spawn(spawn, None).expect("spawns");
+        let mut out = String::new();
+        read(&rx, &mut out, Some("ready"));
+        let at = Instant::now();
+        p.stop();
+        assert_eq!(read(&rx, &mut out, None), Some(Exit::Signal(1)), "SIGHUP");
+        assert!(at.elapsed() < Duration::from_secs(1), "no wait for SIGTERM or SIGKILL: {:?}", at.elapsed());
     }
 
     /// A child in its own session, as the run prints it: `(process, its pid, its start)`.

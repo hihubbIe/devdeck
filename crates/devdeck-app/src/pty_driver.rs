@@ -51,6 +51,10 @@ impl RunControl for PtyControl {
     fn pid(&self) -> Option<u32> {
         Some(self.0.pid())
     }
+
+    fn foreground_program(&self) -> Option<String> {
+        self.0.foreground_program()
+    }
 }
 
 impl RunDriver for PtyDriver {
@@ -71,6 +75,9 @@ impl RunDriver for PtyDriver {
     }
 }
 
+/// Variables that describe the terminal devdeck itself was started from.
+const LEFT_BEHIND: [&str; 5] = ["TMUX", "TMUX_PANE", "VTE_VERSION", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
+
 /// A run's whole environment: the toolbox's variables, the app's PATH, the launch's own
 /// variables, then the terminal's. A later value replaces an earlier one of the same name.
 fn run_vars(toolbox: &Toolbox, launch: &Launch) -> Vec<(String, String)> {
@@ -78,6 +85,10 @@ fn run_vars(toolbox: &Toolbox, launch: &Launch) -> Vec<(String, String)> {
     let terminal = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")].map(|(k, v)| (k.to_string(), v.to_string()));
     let own = std::iter::once(("PATH".to_string(), path.join(":"))).chain(launch.vars.iter().cloned()).chain(terminal);
     let mut vars = toolbox.vars.clone();
+    // A terminal's shell isn't inside the terminal devdeck was started from.
+    if launch.cmd.source() == "shell" {
+        vars.retain(|(n, _)| !LEFT_BEHIND.contains(&n.as_str()));
+    }
     for (name, value) in own {
         match vars.iter_mut().find(|(n, _)| *n == name) {
             Some(var) => var.1 = value,

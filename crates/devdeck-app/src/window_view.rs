@@ -486,6 +486,19 @@ impl WindowView {
         }
     }
 
+    /// A new terminal in the focused pane, in its active tab's app folder (or the
+    /// workspace's first folder), with the keys.
+    fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.focused_pane(cx) else { return };
+        self.deck.update(cx, |d, cx| {
+            let dir = d.terminal_folder(Some(pane), cx);
+            d.open_terminal(&dir, Some(pane), cx);
+        });
+        if let Some(f) = self.deck.read(cx).view_focus(pane) {
+            f.focus(window, cx);
+        }
+    }
+
     fn reattach(&mut self, cx: &mut Context<Self>) {
         let id = self.id;
         self.deck.update(cx, |d, cx| d.reattach(id, cx));
@@ -693,6 +706,7 @@ impl Render for WindowView {
                     l.close_tab(p, i).map(|_| ())
                 })
             }))
+            .on_action(cx.listener(|this, _: &NewTerminal, window, cx| this.new_terminal(window, cx)))
             .on_action(cx.listener(|this, _: &SplitRight, _, cx| this.with_focused(cx, |l, p| split_active(l, p, Edge::Right))))
             .on_action(cx.listener(|this, _: &SplitDown, _, cx| this.with_focused(cx, |l, p| split_active(l, p, Edge::Bottom))))
             .on_action(cx.listener(|this, _: &ToggleCollapse, _, cx| this.with_focused(cx, |l, p| l.toggle_collapse(p))))
@@ -770,6 +784,7 @@ impl Render for WindowView {
                     .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowLayouts, w, cx| this.show_activity(Activity::Layouts, w, cx)))
+                    .on_action(cx.listener(|this, _: &ShowTerminals, w, cx| this.show_activity(Activity::Terminals, w, cx)))
                     .on_action(cx.listener(|this, _: &SaveLayoutAs, w, cx| crate::layouts::open_save_as(this.deck.clone(), w, cx)))
                     .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {
                         let visible = this.active_sidebar().is_some_and(|s| s.read(cx).state.visible);

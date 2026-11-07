@@ -124,12 +124,19 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
     let message = |text: String, cx: &mut App| Built { view: cx.new(|_| Message(text.into())).into(), focus: None, save: None, missing: true };
     match (addr, ctx) {
         (ViewAddr::Other(_), ctx) => demo::build(r, ctx, cx),
+
         (_, None) => Built { missing: false, ..message("This view needs a workspace.".into(), cx) },
         (ViewAddr::App { app }, Some(ctx)) => {
             if ctx.services.read(cx).catalog.app(&app).is_none() {
                 return message(format!("{app} isn't an app of this workspace."), cx);
             }
             let v = cx.new(|cx| app_view::AppView::new(app, ctx.clone(), cx));
+            keeping(v, saved, ctx, cx)
+        }
+        (ViewAddr::Terminal { n, dir }, Some(ctx)) => {
+            let runner = ctx.services.read(cx).runner.clone();
+            let key = runner.update(cx, |r, _| r.open_terminal(n, std::path::Path::new(&dir)));
+            let v = cx.new(|cx| run_view::RunView::new(key.app, key.cmd, ctx.clone(), cx));
             keeping(v, saved, ctx, cx)
         }
         (ViewAddr::Run { app, cmd }, Some(ctx)) => {
@@ -195,6 +202,7 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Port { port } => format!(":{port}"),
         ViewAddr::Problems => "problems".into(),
         ViewAddr::Welcome => "welcome".into(),
+        ViewAddr::Terminal { dir, .. } => format!("terminal · {}", dir.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Other(_) => demo::title(r),
     }
 }

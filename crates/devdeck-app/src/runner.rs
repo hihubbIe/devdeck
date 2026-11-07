@@ -2,7 +2,9 @@
 //! [`RunDriver`] does the work: [`FakeDriver`](crate::fake_driver::FakeDriver) for the
 //! demo, real processes in a pseudo-terminal otherwise. A driver reports output bytes
 //! and the exit; the runner keeps one terminal per run, so output is kept whether or not
-//! a view shows it, and the state follows the real exit. Each command has its current
+//! a view shows it, and the state follows the real exit. Terminals are runs too: a shell
+//! in a folder, keyed apart from apps' commands, ending with a hang-up and announcing
+//! nothing ([`Runner::open_terminal`]). Each command has its current
 //! arguments (empty: none), added to its line by its toolchain when it starts; those used
 //! are remembered (`RecentArgs`) when the runner has a state folder.
 
@@ -32,7 +34,25 @@ impl RunKey {
     pub fn new(app: &str, cmd: &str) -> Self {
         Self { app: app.into(), cmd: cmd.into() }
     }
+
+    /// Terminal `n` of the workspace: keyed apart from every app's commands.
+    pub fn terminal(n: u32) -> Self {
+        Self { app: String::new(), cmd: format!("term/{n}") }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.terminal_number().is_some()
+    }
+
+    /// A terminal key's number.
+    pub fn terminal_number(&self) -> Option<u32> {
+        self.cmd.strip_prefix("term/").filter(|_| self.app.is_empty())?.parse().ok()
+    }
 }
+
+/// What a terminal's shell runs: interactive, not a login shell (the environment is the
+/// login shell's already).
+pub const SHELL_LINE: &str = r#"exec "${SHELL:-/bin/sh}" -i"#;
 
 /// One start of a run key. Drivers tag what they report with it, so a late event of an
 /// earlier start is ignored.
@@ -68,6 +88,11 @@ pub trait RunControl {
     fn stop(&self);
     /// The process id (also its process group id), when it's a real process.
     fn pid(&self) -> Option<u32> {
+        None
+    }
+    /// The program in its terminal's foreground when it isn't the process itself (a
+    /// shell running `vite`).
+    fn foreground_program(&self) -> Option<String> {
         None
     }
 }
@@ -145,13 +170,79 @@ pub struct Runner {
     args: BTreeMap<RunKey, String>,
     /// The arguments used before, per command (none: not kept).
     recent: Option<devdeck_core::recent_args::RecentArgs>,
+    /// The workspace's terminals: what each runs (its folder's app, and the shell).
+    terminals: BTreeMap<RunKey, (App, Command)>,
+    /// Terminals ending: forgotten once their shell is gone.
+    ending: std::collections::BTreeSet<RunKey>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), ending: Default::default() }
+    }
+
+    /// Makes terminal `n` known, a shell in `dir`, and returns its key; starting it is
+    /// the caller's. It runs as the folder's app when the folder is one (its Node first on
+    /// the PATH), else as a bare folder.
+    pub fn open_terminal(&mut self, n: u32, dir: &std::path::Path) -> RunKey {
+        let key = RunKey::terminal(n);
+        if !self.terminals.contains_key(&key) {
+            let app = self.catalog.apps.iter().find(|a| a.dir == dir).cloned().unwrap_or_else(|| App {
+                id: String::new(),
+                name: dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned()),
+                folder: shown(dir),
+                dir: dir.to_path_buf(),
+                kind: "shell".into(),
+                library: false,
+                facts: Default::default(),
+                commands: Vec::new(),
+                env: devdeck_core::apps::EnvApply::None,
+                urls: Vec::new(),
+            });
+            let cmd = Command {
+                id: format!("shell:{n}"),
+                line: SHELL_LINE.into(),
+                tier: devdeck_core::apps::Tier::Primary,
+                tools: Vec::new(),
+                from_install: Vec::new(),
+                setup: false,
+                ports: Vec::new(),
+            };
+            self.terminals.insert(key.clone(), (app, cmd));
+        }
+        key
+    }
+
+    /// Every terminal of the workspace with its folder, by number.
+    pub fn terminals(&self) -> Vec<(RunKey, std::path::PathBuf)> {
+        self.terminals.iter().map(|(k, (a, _))| (k.clone(), a.dir.clone())).collect()
+    }
+
+    /// Ends a terminal: its shell hangs up, then the terminal is forgotten.
+    pub fn end_terminal(&mut self, key: &RunKey, cx: &mut Context<Self>) {
+        if !self.terminals.contains_key(key) {
+            return;
+        }
+        if self.state(key).is_some_and(RunState::is_running) {
+            self.ending.insert(key.clone());
+            self.stop(key, cx);
+        } else {
+            self.terminals.remove(key);
+            self.runs.remove(key);
+            cx.notify();
+        }
+    }
+
+    /// The program running in a terminal (`vite`), when its shell runs one.
+    pub fn terminal_program(&self, key: &RunKey) -> Option<String> {
+        self.runs.get(key)?.control.as_ref()?.foreground_program()
+    }
+
+    /// Whether anything still runs, idle terminals included: quitting waits for them.
+    pub fn alive(&self) -> bool {
+        self.runs.values().any(|r| r.state.is_running())
     }
 
     /// Keeps the arguments used in `recent` (the state folder's).
@@ -217,13 +308,22 @@ impl Runner {
         self.runs.iter().any(|(k, r)| k.app == app && r.state.is_running())
     }
 
-    /// What runs, as titles, alphabetical (quit guard).
+    /// What runs, as titles, alphabetical (quit guard): a terminal while its shell runs
+    /// a program, with that program.
     pub fn running(&self) -> Vec<String> {
-        self.runs.iter().filter(|(_, r)| r.state.is_running()).map(|(k, _)| self.title(k)).collect()
+        let busy = |k: &RunKey| !k.is_terminal() || self.terminal_program(k).is_some();
+        let title = |k: &RunKey| match self.terminal_program(k) {
+            Some(program) if k.is_terminal() => format!("{} · {program}", self.title(k)),
+            _ => self.title(k),
+        };
+        self.runs.iter().filter(|(k, r)| r.state.is_running() && busy(k)).map(|(k, _)| title(k)).collect()
     }
 
-    /// `app · command`, with the app's display name.
+    /// `app · command`, with the app's display name; `terminal · ~/folder`.
     pub fn title(&self, key: &RunKey) -> String {
+        if let Some((app, _)) = self.terminals.get(key) {
+            return format!("terminal · {}", app.folder);
+        }
         match self.catalog.app(&key.app) {
             Some(app) => format!("{} · {}", app.name, devdeck_core::apps::name_of(&key.cmd)),
             None => format!("{} · {}", key.app, devdeck_core::apps::name_of(&key.cmd)),
@@ -243,6 +343,9 @@ impl Runner {
     }
 
     fn command(&self, key: &RunKey) -> Option<(&App, &Command)> {
+        if key.is_terminal() {
+            return self.terminals.get(key).map(|(a, c)| (a, c));
+        }
         let app = self.catalog.app(&key.app)?;
         Some((app, app.command(&key.cmd)?))
     }
@@ -332,8 +435,11 @@ impl Runner {
             let _ = recent.remember(&self.workspace, &key.app, &key.cmd, &args);
         }
         let run = self.runs.get_mut(key).expect("just set up");
-        let header = format!("── run {} · {}{} ──", run.runs, line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
-        note(&mut run.terminal, &header);
+        // A terminal is a shell, not a command run: no header.
+        if !key.is_terminal() {
+            let header = format!("── run {} · {}{} ──", run.runs, line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default());
+            note(&mut run.terminal, &header);
+        }
         let id = RunId { key: key.clone(), n: run.runs };
         let launch = Launch { id: id.clone(), app, cmd, line, vars: applied.vars, env, size };
         let driver = self.driver.clone();
@@ -484,16 +590,24 @@ impl Runner {
             }
         };
         run.state = state;
-        note(&mut run.terminal, &text);
+        // A shell's exit status is its last command's: nothing to announce.
+        let terminal = id.key.is_terminal();
+        note(&mut run.terminal, if terminal && state != RunState::NotStarted { "shell ended" } else { &text });
         let again = run.restart_after_stop.then(|| run.env.clone());
         run.restart_after_stop = false;
-        if let Some(code) = state.failed() {
+        if let Some(code) = state.failed().filter(|_| !terminal) {
             cx.emit(RunnerEvent::Failed { key: id.key.clone(), code });
         }
-        if state == RunState::Exited(0) {
+        if state == RunState::Exited(0) && !terminal {
             cx.emit(RunnerEvent::Succeeded { key: id.key.clone(), took });
         }
         cx.emit(RunnerEvent::Output { key: id.key.clone() });
+        if self.ending.remove(&id.key) {
+            self.terminals.remove(&id.key);
+            self.runs.remove(&id.key);
+            cx.notify();
+            return;
+        }
         if let Some(env) = again
             && let Err(why) = self.start(&id.key, env, cx)
             && let Some(run) = self.runs.get_mut(&id.key)
@@ -501,6 +615,18 @@ impl Runner {
             note(&mut run.terminal, &format!("couldn't restart: {why}"));
         }
         cx.notify();
+    }
+}
+
+/// `dir` as shown: `~` for the home folder.
+fn shown(dir: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if dir.starts_with(&home) && home.parent().is_some() => match dir.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => dir.display().to_string(),
+        },
+        _ => dir.display().to_string(),
     }
 }
 

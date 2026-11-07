@@ -8,6 +8,7 @@ use gpui::{Action, App, actions};
 actions!(
     devdeck,
     [
+        NewTerminal,
         FocusLeft,
         FocusRight,
         FocusUp,
@@ -45,6 +46,7 @@ actions!(
         SendPane,
         ContextMenu,
         ShowLayouts,
+        ShowTerminals,
         SaveLayoutAs,
     ]
 );

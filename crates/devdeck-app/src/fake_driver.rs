@@ -161,6 +161,10 @@ fn script(launch: &Launch) -> (Vec<String>, Option<i32>) {
     let env = launch.env.as_deref().unwrap_or("-");
     let port = cmd.ports.first().copied().unwrap_or(0);
     let server = cmd.tier == Tier::Primary;
+    // The demo has no machine to run a shell on: its terminals say so and stay open.
+    if cmd.source() == "shell" {
+        return (vec!["The demo has no shell: terminals run in a workspace from your config.".into()], None);
+    }
     let lines: Vec<String> = match (cmd.name(), server) {
         ("run", true) if cmd.line.starts_with("go") => vec![
             "go: downloading modules".into(),

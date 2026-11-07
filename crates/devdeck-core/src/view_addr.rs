@@ -16,6 +16,8 @@ pub enum ViewAddr {
     Problems,
     /// The first-run screen: no workspace configured.
     Welcome,
+    /// A shell in a folder: terminal `n` of the workspace.
+    Terminal { n: u32, dir: String },
     /// Anything else (demo views, refs from older versions).
     Other(String),
 }
@@ -40,6 +42,7 @@ impl ViewAddr {
             ViewAddr::Port { port } => format!("port/{}", esc(port)),
             ViewAddr::Problems => "problems".to_string(),
             ViewAddr::Welcome => "welcome".to_string(),
+            ViewAddr::Terminal { n, dir } => format!("term/{n}/{}", esc(dir)),
             ViewAddr::Other(s) => s.clone(),
         })
     }
@@ -58,6 +61,7 @@ impl ViewAddr {
             ["port", port] => ViewAddr::Port { port: port.to_string() },
             ["problems"] => ViewAddr::Problems,
             ["welcome"] => ViewAddr::Welcome,
+            ["term", n, dir] if n.parse::<u32>().is_ok() => ViewAddr::Terminal { n: n.parse().unwrap_or_default(), dir: dir.to_string() },
             _ => ViewAddr::Other(s.to_string()),
         }
     }
@@ -79,6 +83,7 @@ mod tests {
             ViewAddr::Matrix,
             ViewAddr::Port { port: "5800".into() },
             ViewAddr::Other("demo/logs".into()),
+            ViewAddr::Terminal { n: 3, dir: "/home/me/repos/a b%/c".into() },
         ];
         for a in all {
             assert_eq!(ViewAddr::parse(&a.to_ref()), a, "{:?}", a.to_ref());

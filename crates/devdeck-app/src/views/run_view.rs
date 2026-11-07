@@ -80,6 +80,14 @@ impl RunView {
     pub fn new(app: String, cmd: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
         let runner = ctx.services.read(cx).runner.clone();
         let key = RunKey::new(&app, &cmd);
+        let terminal = key.is_terminal();
+        if terminal {
+            // Once built: the tools may be known already, then nothing else would start it.
+            cx.spawn(async move |this, cx| {
+                let _ = this.update(cx, |v, cx| v.start_if_restoring(cx));
+            })
+            .detach();
+        }
         let me = cx.entity_id();
         let subs = vec![
             cx.observe(&runner, |this, _, cx| {
@@ -116,7 +124,8 @@ impl RunView {
             drawn: None,
             pending: None,
             typed: None,
-            restoring: false,
+            // A terminal's shell starts with its tab (opened or restored), once it can.
+            restoring: terminal,
             args_input: None,
             args_bounds: Rc::default(),
             links_on: false,
@@ -125,7 +134,11 @@ impl RunView {
     }
 
     /// The menu of arguments: the recent ones (the current one checked), none, new ones.
+    /// A terminal has none.
     pub fn choose_args(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.key.is_terminal() {
+            return;
+        }
         let runner = self.ctx.services.read(cx).runner.read(cx);
         let current = runner.args(&self.key).to_string();
         let mut recent = runner.recent_args(&self.key);
@@ -154,6 +167,9 @@ impl RunView {
 
     /// Shows the field as an input with the current arguments, focused.
     pub fn type_args(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.key.is_terminal() {
+            return;
+        }
         let current = self.ctx.services.read(cx).runner.read(cx).args(&self.key).to_string();
         let input = cx.new(|cx| {
             let mut input = TextInput::new("arguments", cx);
@@ -239,6 +255,9 @@ impl RunView {
 
     /// Runs with `args`: a restart when it runs, a start otherwise.
     pub fn use_args(&mut self, args: &str, cx: &mut Context<Self>) {
+        if self.key.is_terminal() {
+            return;
+        }
         let runner = self.ctx.services.read(cx).runner.clone();
         runner.update(cx, |r, cx| r.set_args(&self.key, args, cx));
         let running = runner.read(cx).state(&self.key).is_some_and(RunState::is_running);
@@ -280,13 +299,19 @@ impl RunView {
         }
     }
 
-    /// A run restored as running starts again as soon as it can (its tools may still be
-    /// being checked); if it can't run any more, it stays not started.
+    /// A run restored as running, or a terminal's shell with its tab, starts as soon as it
+    /// can (the tools may still be being checked); if it can't run any more, it stays not
+    /// started. A terminal the runner already ran (running, or ended by `exit`) isn't
+    /// started again by its tab: only ⏎ does that.
     fn start_if_restoring(&mut self, cx: &mut Context<Self>) {
         if !self.restoring {
             return;
         }
         let runner = self.ctx.services.read(cx).runner.read(cx);
+        if self.key.is_terminal() && runner.run(&self.key).is_some() {
+            self.restoring = false;
+            return;
+        }
         if runner.tools().pending {
             return;
         }
@@ -436,6 +461,9 @@ impl super::KeepsState for RunView {
 
     fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
         self.follow = state["follow"].as_bool().unwrap_or(true);
+        if self.key.is_terminal() {
+            return;
+        }
         if let Some(args) = state["args"].as_str().filter(|a| !a.is_empty()) {
             let runner = self.ctx.services.read(cx).runner.clone();
             runner.update(cx, |r, cx| r.set_args(&self.key, args, cx));
@@ -445,9 +473,10 @@ impl super::KeepsState for RunView {
     }
 }
 
+/// A terminal's tab gives its keys to the shell; a run's to its toolbar keys first.
 impl Focusable for RunView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
+        if self.key.is_terminal() { self.term_focus.clone() } else { self.focus.clone() }
     }
 }
 
@@ -514,9 +543,11 @@ impl Render for RunView {
             .gap_2()
             .child(div().flex_none().text_color(color).child(glyph))
             .child(div().id("title").min_w_0().tooltip(tip(runner.title(&self.key))).child(label(runner.title(&self.key)).text_color(t.hi)))
-            .when_some(env, |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
-            .child(div().id("line").flex_1().min_w_0().tooltip(tip(line.clone())).child(label(line).text_color(t.dim)))
-            .child(args_field)
+            .when_some(env.filter(|_| !self.key.is_terminal()), |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
+            .when(!self.key.is_terminal(), |d| {
+                d.child(div().id("line").flex_1().min_w_0().tooltip(tip(line.clone())).child(label(line).text_color(t.dim))).child(args_field)
+            })
+            .when(self.key.is_terminal(), |d| d.child(div().flex_1()))
             .child(
                 div()
                     .flex_none()

@@ -168,6 +168,10 @@ impl Ports {
     /// Reads `/proc`: on a start, not per frame.
     pub fn conflict(&mut self, key: &RunKey, declared: &[u16], runner: &Runner) -> Option<(u16, PortHolder)> {
         self.state_dir.as_ref()?;
+        // A terminal runs whatever is typed in it: no ports of its own to check.
+        if key.is_terminal() {
+            return None;
+        }
         let ports: BTreeSet<u16> = declared.iter().copied().chain(self.remembered(key)).collect();
         if ports.is_empty() {
             return None;
@@ -222,7 +226,8 @@ impl Ports {
         self.scans += 1;
         let ws = self.workspace.clone();
         let runner = self.runner.read(cx);
-        for (key, ports) in &found.listening {
+        // A terminal's ports are what it runs now, not its own to remember.
+        for (key, ports) in found.listening.iter().filter(|(k, _)| !k.is_terminal()) {
             let start = runner.run(key).map_or(0, |r| r.runs);
             let seen = self.seen.entry(key.clone()).or_default();
             if seen.0 != start {
@@ -230,7 +235,7 @@ impl Ports {
             }
             seen.1.extend(ports);
         }
-        let seen: Vec<(RunKey, Vec<u16>)> = found.listening.keys().map(|k| (k.clone(), self.seen[k].1.iter().copied().collect())).collect();
+        let seen: Vec<(RunKey, Vec<u16>)> = found.listening.keys().filter_map(|k| Some((k.clone(), self.seen.get(k)?.1.iter().copied().collect()))).collect();
         if let Some(memory) = self.memory() {
             for (key, ports) in &seen {
                 // Best effort: a memory that can't be saved only loses the warning.

@@ -269,7 +269,9 @@ impl Shell {
         }
         let running = self.running(cx);
         let Some(main) = self.main.filter(|_| !running.is_empty()) else {
-            self.quit_now(cx);
+            // Nothing to ask about; idle shells still get their hang-up (their history).
+            let alive = self.workspaces.iter().any(|w| w.services.read(cx).runner.read(cx).alive());
+            if alive { self.stop_all_and_quit(cx) } else { self.quit_now(cx) }
             return;
         };
         self.quit_state = QuitState::Asking;
@@ -307,7 +309,8 @@ impl Shell {
         self._stopping = Some(cx.spawn(async move |this, cx| {
             let mut waited = Duration::ZERO;
             loop {
-                let done = this.update(cx, |s, cx| s.running(cx).is_empty()).unwrap_or(true);
+                // Idle shells too: they get their hang-up's time.
+                let done = this.update(cx, |s, cx| !s.workspaces.iter().any(|w| w.services.read(cx).runner.read(cx).alive())).unwrap_or(true);
                 if done || waited >= timeout {
                     break;
                 }

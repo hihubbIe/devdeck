@@ -240,6 +240,34 @@ fn run_terminal(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<
     cx.update(|cx| v.update(cx, |v, cx| v.select((2, 4), (4, 30), cx)));
 }
 
+/// Two terminals: one in this layout's focused pane, one left in another layout.
+fn terminals(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.save_layout_as("other", cx).unwrap();
+            d.open_terminal(&home.join("Documents/repos"), None, cx);
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.switch_layout("default", cx).unwrap();
+            d.open_terminal(&home.join("Documents/private_repos/devdeck"), None, cx);
+        })
+    });
+    cx.advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    let _ = w;
+}
+
+fn terminals_list(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    terminals(cx, w, shell);
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Terminals, cx)));
+}
+
 /// mastertadaapp's dev server with shift held: its link underlined.
 fn run_links(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     let addr = ViewAddr::Run { app: "front-end/mastertadaapp".into(), cmd: "pnpm:start:dev".into() };
@@ -673,6 +701,8 @@ fn states() -> Vec<State> {
         w("75-run-not-started", "work", 1.0, Some(run_not_started)),
         w("76-run-terminal-focused", "work", 1.0, Some(run_terminal)),
         w("76b-run-links", "work", 1.0, Some(run_links)),
+        w("76c-terminal-tab", "work", 1.0, Some(terminals)),
+        w("64-terminals-list", "work", 1.0, Some(terminals_list)),
         w("77-run-args", "work", 1.0, Some(run_args)),
         w("78-run-args-menu", "work", 1.0, Some(run_args_menu)),
         w("79-run-args-typing", "work", 1.0, Some(run_args_typing)),
