@@ -257,3 +257,32 @@ switching keeps each workspace's layout and views alive; detached windows close/
 on switch; every quit path shows the guard when something runs and quits directly
 otherwise; "Cancel" keeps the app; ctrl+alt+N switches; debounced save writes once after
 a burst of changes; stress cycles include workspace switches (leak check).
+
+### Step 3 review and assessment
+
+1. Five direct quit paths. All go through `Shell::request_quit`; Deck never handles the
+   main window; ctrl+q bound at app level so it works from detached windows; the
+   last-window observer stays as a fallback that flushes saves; stress mode keeps
+   bypassing the guard (documented). **Accepted.**
+2. Main window `on_window_should_close` returns false and defers `request_quit`;
+   `on_app_quit` only flushes saves. **Accepted.**
+3. Deferred window open must check the deck is still active. **Accepted.**
+4. `forget_layer` on window close; overlay layer count joins the leak check. **Accepted.**
+5. Per-workspace theme: **resolved by the user, the theme is global** (already built).
+6. One `WindowView` type with a role; main swaps its deck and subscription when the
+   active workspace changes; pane tree wrapped in a per-workspace element id.
+   **Accepted.**
+7. Focus remembered per workspace with fallback to the panes; drags carry their deck
+   id and drops from another deck are ignored. **Accepted.**
+8. Detached window sizes stored in the model (serde default, survives restart), updated
+   from bounds changes; main window size in `app.json`; never positions. **Accepted.**
+9. Persistence details: shared `write_atomic` with unique temp name; unreadable or
+   unsupported files renamed to `.bad` before falling back; a failing save reported
+   once; detached windows restored only for the active workspace; folder layout ready
+   for pins and saved layouts. Writing on the background executor and fsync: **accepted
+   for the write; fsync of file and folder added.** **Accepted.**
+10. Quit seam on Shell for tests (test platform can't quit); listed tests added.
+    **Accepted.**
+11. "Stop all" is asynchronous (stopping state, then quit) so M2's process-group kill
+    fits; ctrl+alt+N follows the alphabetical order of workspaces. **Accepted.**
+12. Detached-gone/back checked with GPUI asserts rather than snapshots. **Accepted.**
