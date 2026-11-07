@@ -184,6 +184,120 @@ the step (subagent) and assessment:
   start, to name the holder. The first discovery stays on the UI thread (88 ms): the
   views restored with the window need their apps.
 - **Added (user)**: the Apps list is a tree that keeps the folders.
+- **Commands that work (user feedback after trying real apps)**:
+  - Projects inside plain folders are found, down to 3 levels (`vhult/graph`,
+    `tangine/*`).
+  - Cargo: `cargo run` was offered for workspaces with several binaries, where cargo
+    can't choose; now one command per binary, with `-p` when two packages share a name
+    and the features a binary requires.
+  - Node: a script's programs that aren't in any `node_modules/.bin` above the app and
+    not on the PATH make the command say "vite isn't installed: run npm install"; the
+    project gets an install command; an install made elsewhere is seen (its
+    `node_modules/.bin` is watched). The list's ⚠ ignores the install command.
+  - `engines.node` chooses the Node when there's no `.nvmrc`: the default when it
+    fits, else the newest install that does.
+  - Audit on the real workspaces: `personal` 35 apps in 2–22 ms, 125 of 134 visible
+    commands ready (9 not installed). `tadaweb` 449 apps (272 in `dupes/`, two copies of
+    `front-end`) in 160–230 ms, 2048 of 2844 ready: 782 not installed, 14 on Node 14.
+    The first discovery is on the UI thread: 160–230 ms at start now.
+  - Not checkable without running them: Makefile and Taskfile targets' own needs,
+    compose (the docker daemon), launch.json's pre-launch tasks.
+
+## Toolchains and command arguments: plan (user, 2026-11-07)
+
+After the user tried real apps: everything about one language or toolchain lives in its
+own module behind one generic interface, so adding one (Python later) is a new folder
+and one line in a list. Today Node is spread over discovery, `environment.rs`
+(installs, aliases, `.nvmrc`, `NODE_TOOLS`), `apps.rs` (`App::node`, `App::engines`)
+and the discovery cache; Go's precedence rule sits in the generic app assembly.
+
+**Part A: toolchains** (`devdeck-core/src/toolchains/`)
+
+- `mod.rs`: the `Toolchain` trait and `ALL`, the list of toolchains; nothing
+  language-specific. A toolchain:
+  - `sources()`: the command sources it owns (`npm`, `pnpm`, `yarn`; `cargo`; `go`…),
+    so a command finds its toolchain from its id.
+  - `reads(name)` and `concerns(path)`: which changes can change what it finds (the
+    watcher asks every toolchain; Node also watches `node_modules/.bin`).
+  - `scan(dir, listing, parent, cx)`: its part of a project folder: commands, kind,
+    whether it has something to run, the shell text its commands run, the facts it
+    keeps about the app, and package globs for a monorepo root (the generic walk
+    expands them and scans each package with the same toolchain, `parent` being the
+    root's facts).
+  - `covered(runs)`: its commands another toolchain already runs (Go: `go:run` when a
+    Taskfile runs the main); default none.
+  - `front(app, machine)`: folders to put first on a run's PATH (Node: the app's Node),
+    or why it can't run; default none.
+  - `installed(app, cmd, path)`: why the project isn't installed for this command
+    ("vite isn't installed: run pnpm install"); default fine.
+- Per-toolchain data in one place each: `Facts` (on `App`, one optional field per
+  toolchain that keeps facts: Node's `.nvmrc`, `engines.node`) and `Machine` (in the
+  toolbox: Node's installs, nvm aliases, the default Node). `App::node` and
+  `App::engines` go.
+- `shell.rs`: reading a script into the programs it runs (quotes, redirections,
+  keywords, builtins), shared by toolchains.
+- `node/`: `mod.rs` (package.json, manager, scripts with their deps, install command,
+  monorepo globs), `versions.rs` (installs, aliases, `.nvmrc`, choosing by
+  `engines.node`), `semver.rs` (npm ranges; an unreadable range lets the default Node
+  run), `installed.rs` (what `node_modules/.bin` from the package up provides).
+- `cargo/`: a manifest model (root package, members, default members, each package's
+  binaries) read from the files, then a pure function from the model to run commands:
+  bare `cargo run` runs what cargo picks by itself (one binary among the default
+  packages, or `default-run`), every other binary gets `cargo:run:<bin>`, with `-p`
+  outside the default packages or when two packages share the name, and the features
+  it requires; a `"."` member isn't counted twice.
+- `go.rs`, `make.rs`, `taskfile.rs`, `compose.rs`, `vscode.rs`: moved as they are.
+- `discovery/`: only the generic walk (workspace folders, nested folders, monorepo
+  packages, duplicate ids, assembling an app from the toolchains' parts, folders to
+  watch) and globbing. A per-pass memo in `Cx` (by type and folder) replaces the
+  Node-specific cache.
+- `environment.rs`: only the login shell's variables, the PATH and `which`. The tool
+  check becomes generic: each toolchain with facts on the app gives its PATH front
+  (the command's own toolchain failing makes the command refused), then the
+  command's programs are looked up, then its toolchain's `installed`.
+- Tests move with their code: each toolchain tests itself on fixture trees (the fixture
+  helper moves to `testing`); `discovery/tests.rs` keeps the walk's own.
+- App side: the tool check runs once per change of apps or tools (`Services` keeps why
+  each app can't be used); the sidebar reads that instead of checking every app on
+  every render. When the watcher starts watching new folders after a rescan, it
+  rescans once more (an install that finished in between is seen).
+- Dropped: the Yarn Plug'n'Play case (not used).
+
+Review of the plan (subagent) and assessment, all **accepted**:
+- The tool check keeps today's rule: a command is refused when it needs a program a
+  toolchain provides (`provides`: Node's `node`, `npm`, `pnpm`…) and that toolchain's
+  PATH front failed, whatever the command's source (VS Code launches, config tools).
+  Programs are looked up on the run's real PATH (fronts, then the base): a change for
+  non-Node programs, tested.
+- `.nvmrc` counts for every app, not only those with a `package.json`: after the parts
+  are assembled, each toolchain completes its facts for any app folder.
+- Machine data has a load step from `machine.toml`; the `node_dirs` key stays.
+- The walk asks the toolchains which folders to skip and what a monorepo package is;
+  every toolchain scans a package (a package can have its own Taskfile), with the
+  root's facts (Node's manager, `engines.node`). A command fixing the project
+  (`install`) is marked as such, not recognized by name. `Command::deps` becomes a
+  generic "programs the project's install provides". `ALL`'s order decides an app's
+  kind. A command whose source no toolchain owns gets the generic check only.
+- Shared project-reading types (`Listing`, `Part`, quoting, YAML) live in
+  `toolchains/`; the walk's context (`Cx`) is shared with them.
+- Adding a toolchain is a folder, a line in `ALL`, and fields in `Facts`/`Machine` (and
+  a config key) when it keeps any: the compiler points at each.
+- Cargo: the default packages are `default-members`, else the root package when there
+  is one, else every member; `default-run` counts only with one default package;
+  `--features` comes with `-p` unless the binary's package is the only default one;
+  `workspace.exclude` is honoured.
+- Order: the current work is committed first; then shared types and `shell.rs`; the
+  trait and moved sources; facts and machine; the generic check (current tests kept
+  green, then moved); Cargo; the app side. A contract test checks `ALL` (sources
+  unique, `reads` covering each manifest).
+
+**Part B: arguments per command** (planned in detail after A, with snapshots, then a
+GO): commands stay the real distinct ones; each command gets arguments, chosen in the
+run tab from a dropdown of recent ones (per workspace, app and command, most recent
+first) or typed new; restart and reopen keep the last; each toolchain decides how they
+reach the program (`with_args`: `npm run dev -- --port 1`, `pnpm run dev --port 1`,
+`cargo run --bin x -- --flag`); the tab header shows the full line. Suggestions read
+from projects come later if recent ones aren't enough.
 
 ## States to check
 

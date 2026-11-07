@@ -8,7 +8,9 @@
 //! workspace folder; versions (`20`, `v20.11.1`, `lts/*`, `lts/iron`, using
 //! `~/.nvm/alias` for aliases) resolve against the installs found in the machine
 //! config's `node_dirs`; the chosen Node's `bin` goes first on the run's PATH, which
-//! also decides whether `pnpm` and `npm` exist for that app.
+//! also decides whether `pnpm` and `npm` exist for that app. Without an `.nvmrc`, an
+//! app's `engines.node` range (`>=22`, `^18.17 || 20`) keeps the default Node when it
+//! fits, else takes the newest install that does.
 
 use crate::apps::{App, Command};
 use std::io::Read;
@@ -49,6 +51,8 @@ pub struct Toolbox {
     pub node: Vec<NodeInstall>,
     /// Where nvm keeps aliases (`~/.nvm/alias`), when it exists.
     pub aliases: Option<PathBuf>,
+    /// The version of the Node first on the PATH, when it's one of `node`.
+    pub default_node: Option<String>,
 }
 
 impl Toolbox {
@@ -75,14 +79,34 @@ impl Toolbox {
             true => home.map(|h| vec![h.join(".nvm/versions/node")]).unwrap_or_default(),
             false => machine.node_dirs.clone(),
         };
-        Toolbox { vars, node: node_installs(&dirs), aliases }
+        Toolbox::new(vars, node_installs(&dirs), aliases)
+    }
+
+    fn new(vars: Vec<(String, String)>, node: Vec<NodeInstall>, aliases: Option<PathBuf>) -> Toolbox {
+        let mut tb = Toolbox { vars, node, aliases, default_node: None };
+        let first = which("node", &tb.base_path()).and_then(|n| n.parent().and_then(|b| std::fs::canonicalize(b).ok()));
+        tb.default_node = first.and_then(|bin| tb.node.iter().find(|n| std::fs::canonicalize(&n.bin).is_ok_and(|b| b == bin)).map(|n| n.version.clone()));
+        tb
     }
 
     /// The Node install for an app, or why there is none (`.nvmrc wants node 20, which
-    /// isn't installed`). `Ok(None)` when the app asks for no version.
+    /// isn't installed`). `Ok(None)`: the default Node (the app asks for no version, or
+    /// the default fits its `engines.node`, or which one is the default isn't known and
+    /// no install fits).
     pub fn node_for(&self, app: &App) -> Result<Option<&NodeInstall>, String> {
-        let Some(wanted) = app.node.as_deref().map(str::trim).filter(|w| !w.is_empty()) else { return Ok(None) };
-        self.resolve(wanted).map(Some).ok_or_else(|| format!(".nvmrc wants node {wanted}, which isn't installed"))
+        if let Some(wanted) = app.node.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            return self.resolve(wanted).map(Some).ok_or_else(|| format!(".nvmrc wants node {wanted}, which isn't installed"));
+        }
+        let Some(range) = app.engines.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return Ok(None) };
+        let fits = |v: &str| version_parts(v).is_some_and(|p| satisfies(&p, range));
+        if self.default_node.as_deref().is_some_and(fits) {
+            return Ok(None);
+        }
+        match self.node.iter().find(|n| fits(&n.version)) {
+            Some(n) => Ok(Some(n)),
+            None if self.default_node.is_none() => Ok(None),
+            None => Err(format!("package.json wants node {range}, which isn't installed")),
+        }
     }
 
     /// The PATH for a run of `app`: its Node first, then the base PATH.
@@ -91,7 +115,8 @@ impl Toolbox {
         node.into_iter().chain(self.base_path()).collect()
     }
 
-    /// Why `cmd` of `app` can't run (`go not found`, the Node reason), if it can't.
+    /// Why `cmd` of `app` can't run (`go not found`, the Node reason, `vite isn't
+    /// installed: run pnpm install`), if it can't.
     pub fn missing(&self, app: &App, cmd: &Command) -> Option<String> {
         let (mut node_path, mut base) = (None, None);
         for tool in &cmd.tools {
@@ -105,6 +130,13 @@ impl Toolbox {
             };
             if which(tool, path).is_none() {
                 return Some(format!("{tool} not found"));
+            }
+        }
+        if !cmd.deps.is_empty() {
+            let path = node_path.get_or_insert_with(|| self.path_for(app));
+            if let Some(dep) = cmd.deps.iter().find(|d| which(d, path).is_none()) {
+                let manager = cmd.tools.first().map_or("the project's", String::as_str);
+                return Some(format!("{dep} isn't installed: run {manager} install"));
             }
         }
         None
@@ -290,6 +322,81 @@ fn node_installs(dirs: &[PathBuf]) -> Vec<NodeInstall> {
 }
 
 /// `20`, `v20.11`, `20.11.1` as numbers (one to three parts); `None` for anything else.
+/// Whether `version` (1 to 3 parts) fits an npm semver range: alternatives joined by
+/// `||`, each a list of comparators (`>=18`, `<21`, `^18.17`, `~20.1`, `20.x`, `20`,
+/// `*`) or a hyphen range (`18 - 20`). An unreadable comparator fits nothing.
+fn satisfies(version: &[u64], range: &str) -> bool {
+    let v = [0, 1, 2].map(|i| version.get(i).copied().unwrap_or(0));
+    range.split("||").any(|alt| {
+        let alt = alt.trim();
+        if alt.is_empty() || alt == "*" || alt == "x" {
+            return true;
+        }
+        if let Some((lo, hi)) = alt.split_once(" - ") {
+            return compare(&v, ">=", lo.trim()) && compare(&v, "<=", hi.trim());
+        }
+        // `>= 18` is one comparator.
+        let mut comparators: Vec<String> = Vec::new();
+        for token in alt.split_whitespace() {
+            match comparators.last_mut() {
+                Some(last) if last.chars().all(|c| "<>=~^".contains(c)) => last.push_str(token),
+                _ => comparators.push(token.to_string()),
+            }
+        }
+        comparators.iter().all(|c| {
+            let op_len = c.find(|ch: char| !"<>=~^".contains(ch)).unwrap_or(c.len());
+            compare(&v, &c[..op_len], &c[op_len..])
+        })
+    })
+}
+
+/// `v op partial`, with npm's meaning for partial versions (`>1.2` is `>=1.3.0`).
+fn compare(v: &[u64; 3], op: &str, partial: &str) -> bool {
+    let partial = partial.strip_prefix('v').unwrap_or(partial);
+    let mut given: Vec<u64> = Vec::new();
+    for p in partial.split('.') {
+        match p {
+            "x" | "X" | "*" | "" => break,
+            p => match p.parse() {
+                Ok(n) => given.push(n),
+                Err(_) => return false,
+            },
+        }
+        if given.len() == 3 {
+            break;
+        }
+    }
+    let n = given.len();
+    let low = [0, 1, 2].map(|i| given.get(i).copied().unwrap_or(0));
+    // Just above every version starting with what's given (`1.2` → `1.3.0`).
+    let above = |upto: usize| {
+        let mut a = [0; 3];
+        a[..upto].copy_from_slice(&low[..upto]);
+        if upto > 0 {
+            a[upto - 1] += 1;
+        }
+        a
+    };
+    match op {
+        "" | "=" if n == 0 => true,
+        "" | "=" => v[..n] == low[..n],
+        ">=" => *v >= low,
+        ">" if n == 3 => *v > low,
+        ">" => n == 0 || *v >= above(n),
+        "<" => *v < low,
+        "<=" if n == 3 => *v <= low,
+        "<=" => n == 0 || *v < above(n),
+        "~" if n <= 1 => v[..n] == low[..n],
+        "~" => *v >= low && *v < above(2),
+        "^" if n == 0 => true,
+        "^" => {
+            let upto = if low[0] > 0 || n == 1 { 1 } else if low[1] > 0 || n == 2 { 2 } else { 3 };
+            *v >= low && *v < above(upto)
+        }
+        _ => false,
+    }
+}
+
 fn version_parts(s: &str) -> Option<Vec<u64>> {
     let s = s.strip_prefix('v').unwrap_or(s);
     let parts: Vec<u64> = s
@@ -347,6 +454,7 @@ mod tests {
             kind: "pnpm".into(),
             library: false,
             node: node.map(str::to_string),
+            engines: None,
             commands: vec![],
             env: EnvApply::None,
             urls: vec![],
@@ -354,13 +462,13 @@ mod tests {
     }
 
     fn cmd(tools: &[&str]) -> Command {
-        Command { id: "pnpm:dev".into(), line: "x".into(), tier: Tier::Primary, tools: tools.iter().map(|t| t.to_string()).collect(), ports: vec![] }
+        Command { id: "pnpm:dev".into(), line: "x".into(), tier: Tier::Primary, tools: tools.iter().map(|t| t.to_string()).collect(), deps: vec![], ports: vec![] }
     }
 
     fn toolbox(node_dirs: &[&Path], path: &[&Path], aliases: Option<PathBuf>) -> Toolbox {
         let node_dirs: Vec<PathBuf> = node_dirs.iter().map(|d| d.to_path_buf()).collect();
         let path = path.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(":");
-        Toolbox { vars: vec![("PATH".into(), path)], node: node_installs(&node_dirs), aliases }
+        Toolbox::new(vec![("PATH".into(), path)], node_installs(&node_dirs), aliases)
     }
 
     fn versions(tb: &Toolbox) -> Vec<&str> {
@@ -433,6 +541,75 @@ mod tests {
         assert!(wants(&tb, "../alias/default").is_err(), "stays in the alias folder");
         let without = toolbox(&[&installs], &[], None);
         assert!(wants(&without, "lts/iron").is_err(), "no alias folder");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn semver_ranges_as_npm_reads_them() {
+        let fits = |v: &str, r: &str| satisfies(&version_parts(v).unwrap(), r);
+        for (v, r) in [
+            ("22.1.0", ">=22.0.0"),
+            ("22.1.0", ">= 22"),
+            ("20.11.1", "^20.10"),
+            ("20.11.1", "~20.11.0"),
+            ("20.11.1", "20.x"),
+            ("20.11.1", "20"),
+            ("18.20.4", "^18.17.0 || >=20"),
+            ("20.11.1", ">=18 <21"),
+            ("20.11.1", "18 - 20"),
+            ("0.2.5", "^0.2.3"),
+            ("1.3.0", ">1.2"),
+            ("26.0.0", "*"),
+        ] {
+            assert!(fits(v, r), "{v} fits {r}");
+        }
+        for (v, r) in [
+            ("20.20.2", ">=22.0.0"),
+            ("21.0.0", "^20.10"),
+            ("20.12.0", "~20.11.0"),
+            ("21.0.0", ">=18 <21"),
+            ("21.0.0", "18 - 20"),
+            ("0.3.0", "^0.2.3"),
+            ("1.2.9", ">1.2"),
+            ("20.0.0", "lts/iron"),
+        ] {
+            assert!(!fits(v, r), "{v} doesn't fit {r}");
+        }
+    }
+
+    #[test]
+    fn engines_keep_the_default_node_when_it_fits() {
+        let d = tmp("engines");
+        let installs = d.join("node");
+        for v in ["20.20.2", "22.23.3", "26.0.0"] {
+            node(&installs, v, &[]);
+        }
+        let tb = toolbox(&[&installs], &[&installs.join("v20.20.2/bin")], None);
+        assert_eq!(tb.default_node.as_deref(), Some("20.20.2"), "the PATH's node is an install");
+        let engines = |r: &str| App { engines: Some(r.into()), ..app(None) };
+        let picked = |a: &App| tb.node_for(a).map(|n| n.map(|n| n.version.clone()));
+        assert_eq!(picked(&engines(">=18")), Ok(None), "the default fits");
+        assert_eq!(picked(&engines(">=22.0.0")), Ok(Some("26.0.0".into())), "the newest that fits");
+        assert_eq!(picked(&engines("^22")), Ok(Some("22.23.3".into())));
+        assert_eq!(picked(&engines(">=30")), Err("package.json wants node >=30, which isn't installed".into()));
+        assert_eq!(picked(&App { node: Some("22".into()), ..engines(">=26") }), Ok(Some("22.23.3".into())), ".nvmrc first");
+        let unknown = toolbox(&[&installs], &[], None);
+        assert_eq!(unknown.node_for(&engines(">=30")), Ok(None), "the default isn't known: let it try");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn programs_the_install_provides_say_to_install() {
+        let d = tmp("deps");
+        let bin = d.join("bin");
+        exe(&bin.join("npm"));
+        exe(&bin.join("node"));
+        exe(&bin.join("tsc"));
+        let tb = toolbox(&[], &[&bin], None);
+        let with = |deps: &[&str]| Command { deps: deps.iter().map(|d| d.to_string()).collect(), ..cmd(&["npm", "node"]) };
+        assert_eq!(tb.missing(&app(None), &with(&["vite"])).as_deref(), Some("vite isn't installed: run npm install"));
+        assert_eq!(tb.missing(&app(None), &with(&["tsc"])), None, "on the PATH (installed globally)");
+        assert_eq!(tb.missing(&app(None), &Command { tools: vec!["pnpm".into()], ..with(&["vite"]) }).as_deref(), Some("pnpm not found"), "tools first");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

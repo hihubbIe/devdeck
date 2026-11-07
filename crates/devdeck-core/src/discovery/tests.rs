@@ -72,22 +72,24 @@ fn package_scripts_run_with_the_projects_manager() {
         [
             ("pnpm:build", "pnpm run build"),
             ("pnpm:dev", "pnpm run dev"),
+            ("pnpm:install", "pnpm install"),
             ("pnpm:lint", "pnpm run lint"),
             ("pnpm:prebuild", "pnpm run prebuild"),
             ("pnpm:preview", "pnpm run preview"),
         ]
     );
     assert_eq!(web.commands[0].tools, ["pnpm", "node"]);
+    assert_eq!(tier(web, "pnpm:install"), Tier::Secondary);
     assert!(web.commands.iter().all(|c| c.ports.is_empty()));
     assert_eq!(tier(web, "pnpm:dev"), Tier::Primary);
     assert_eq!(tier(web, "pnpm:prebuild"), Tier::Hidden, "a hook of build");
     assert_eq!(tier(web, "pnpm:preview"), Tier::Secondary, "no `view` script");
     assert_eq!(tier(web, "pnpm:lint"), Tier::Hidden);
 
-    assert_eq!(lines(app(&found, "shop")), [("yarn:start", "yarn start")]);
+    assert_eq!(lines(app(&found, "shop")), [("yarn:install", "yarn install"), ("yarn:start", "yarn start")]);
     assert_eq!(app(&found, "shop").commands[0].tools, ["yarn", "node"]);
-    assert_eq!(lines(app(&found, "field")), [("pnpm:serve", "pnpm run serve")], "the packageManager field wins");
-    assert_eq!(lines(app(&found, "plain")), [("npm:start", "npm run start")], "npm by default; non-string scripts skipped");
+    assert_eq!(lines(app(&found, "field")), [("pnpm:install", "pnpm install"), ("pnpm:serve", "pnpm run serve")], "the packageManager field wins");
+    assert_eq!(lines(app(&found, "plain")), [("npm:install", "npm install"), ("npm:start", "npm run start")], "npm by default; non-string scripts skipped");
     assert!(app(&found, "utils").library, "no primary script");
 }
 
@@ -416,4 +418,122 @@ fn reads_names_the_files_discovery_reads() {
     for name in ["tsconfig.tsbuildinfo", "debug.log", ".env", "main_test.go", "docker-compose.override.yml", "README.md"] {
         assert!(!reads(name), "{name}");
     }
+}
+
+#[test]
+fn projects_inside_plain_folders_are_found_down_to_the_depth() {
+    let t = Tree::new("nested");
+    t.file("vhult/graph/package.json", r#"{"scripts": {"dev": "vite"}}"#);
+    t.file("games/2d/tetris/Makefile", "run:\n\ttrue\n");
+    t.file("deep/a/b/c/Makefile", "run:\n\ttrue\n");
+    t.file("api/Makefile", "run:\n\ttrue\n").file("api/tools/gen/Makefile", "gen:\n\ttrue\n");
+    t.dir("empty/nothing/here");
+    let found = t.scan();
+    assert_eq!(ids(&found), ["api", "games/2d/tetris", "vhult/graph"], "level 4 is too deep; inside a project is the project's");
+    assert_eq!(app(&found, "vhult/graph").name, "graph");
+    for dir in ["vhult", "games", "games/2d", "empty/nothing"] {
+        assert!(found.watch.contains(&t.path(dir)), "{dir} watched: a project added there is seen");
+    }
+    assert!(!found.watch.contains(&t.path("api/tools")), "a project's inside isn't walked");
+}
+
+#[test]
+fn cargo_runs_one_command_per_binary_when_cargo_run_cant_choose() {
+    let t = Tree::new("cargo-bins");
+    t.file("ws/Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n")
+        .file("ws/crates/core/Cargo.toml", "[package]\nname = \"core\"\n")
+        .file(
+            "ws/crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\n[[bin]]\nname = \"devdeck\"\npath = \"src/main.rs\"\n[[bin]]\nname = \"devdeck-snapshot\"\npath = \"src/bin/snapshot.rs\"\nrequired-features = [\"snapshot\"]\n",
+        )
+        .file("ws/crates/app/src/main.rs", "fn main() {}\n")
+        .file("ws/crates/tool/Cargo.toml", "[package]\nname = \"tool\"\n")
+        .file("ws/crates/tool/src/main.rs", "fn main() {}\n")
+        .file("ws/crates/extra/Cargo.toml", "[package]\nname = \"extra\"\n")
+        .file("ws/crates/extra/src/bin/tool.rs", "fn main() {}\n")
+        .file("ws/crates/extra/src/bin/gen/main.rs", "fn main() {}\n");
+    t.file("one/Cargo.toml", "[package]\nname = \"one\"\n[[bin]]\nname = \"one\"\npath = \"main.rs\"\nrequired-features = [\"cli\"]\n");
+    t.file("chosen/Cargo.toml", "[package]\nname = \"chosen\"\ndefault-run = \"a\"\n").file("chosen/src/bin/a.rs", "").file("chosen/src/bin/b.rs", "");
+    let found = t.scan();
+    assert!(found.problems.is_empty(), "{:?}", found.problems);
+    let runs = |id: &str| lines(app(&found, id)).into_iter().filter(|(c, _)| c.starts_with("cargo:run")).collect::<Vec<_>>();
+    assert_eq!(
+        runs("ws"),
+        [
+            ("cargo:run:devdeck", "cargo run --bin devdeck"),
+            ("cargo:run:devdeck-snapshot", "cargo run --bin devdeck-snapshot --features snapshot"),
+            ("cargo:run:extra:tool", "cargo run -p extra --bin tool"),
+            ("cargo:run:gen", "cargo run --bin gen"),
+            ("cargo:run:tool:tool", "cargo run -p tool --bin tool"),
+        ]
+    );
+    assert_eq!(tier(app(&found, "ws"), "cargo:run:devdeck"), Tier::Primary);
+    assert_eq!(runs("one"), [("cargo:run:one", "cargo run --bin one --features cli")], "a lone binary needing a feature");
+    assert_eq!(runs("chosen"), [("cargo:run", "cargo run")], "default-run chooses");
+}
+
+#[test]
+fn programs_a_script_runs_are_checked_against_the_install() {
+    let t = Tree::new("deps");
+    let scripts = r#"{"scripts": {"dev": "NODE_ENV=dev vite --port 3000", "build": "rimraf dist && tsc -b && vite build", "lint": "eslint . | tee out.txt", "gen": "./gen.sh; node x.js; echo done", "install": "make"}}"#;
+    t.file("web/package.json", scripts);
+    t.file("ready/package.json", scripts).file("ready/node_modules/.bin/vite", "").file("ready/node_modules/.bin/eslint", "");
+    // A monorepo's packages find what the root installed.
+    t.file("mono/package.json", r#"{"workspaces": ["packages/*"]}"#).file("mono/node_modules/.bin/tsc", "");
+    t.file("mono/packages/ui/package.json", r#"{"scripts": {"build": "tsc", "story": "storybook dev"}}"#);
+    let found = t.scan();
+    let deps = |id: &str, cmd: &str| app(&found, id).command(cmd).unwrap().deps.clone();
+    assert_eq!(deps("web", "npm:dev"), ["vite"], "assignments skipped");
+    assert_eq!(deps("web", "npm:build"), ["rimraf", "tsc", "vite"], "every command of the script");
+    assert_eq!(deps("web", "npm:lint"), ["eslint", "tee"], "pipes too (tee comes from the PATH)");
+    assert_eq!(deps("web", "npm:gen"), [] as [&str; 0], "paths, node and the shell's words aren't installed");
+    assert_eq!(deps("ready", "npm:dev"), [] as [&str; 0]);
+    assert_eq!(deps("ready", "npm:build"), ["rimraf", "tsc"]);
+    assert_eq!(deps("mono/packages/ui", "npm:build"), [] as [&str; 0]);
+    assert_eq!(deps("mono/packages/ui", "npm:story"), ["storybook"]);
+    assert_eq!(app(&found, "web").command("npm:install").unwrap().line, "npm run install", "a script named install is the project's");
+    assert!(app(&found, "mono").command("npm:install").is_some());
+    assert!(app(&found, "mono/packages/ui").command("npm:install").is_none(), "packages install with their monorepo");
+    for dir in ["web/node_modules", "web/node_modules/.bin", "mono/packages/ui/node_modules/.bin"] {
+        assert!(found.watch.contains(&t.path(dir)), "{dir} watched: an install is seen");
+    }
+}
+
+#[test]
+fn an_install_concerns_discovery_and_its_files_dont() {
+    let t = Tree::new("concerns");
+    t.dir("web/node_modules/.bin").dir("web/node_modules/vite");
+    assert!(concerns(&t.path("web/node_modules/.bin")), "the programs folder appears");
+    assert!(concerns(&t.path("web/node_modules/.bin/vite")), "a program is installed or removed");
+    assert!(!concerns(&t.path("web/node_modules/vite")), "a package's own folder");
+    assert!(concerns(&t.path("web/package.json")) && concerns(&t.path("web/node_modules")));
+    assert!(!concerns(&t.path("web/debug.log")));
+}
+
+#[test]
+fn engines_come_from_the_package_or_its_monorepo() {
+    let t = Tree::new("engines");
+    t.file("graph/package.json", r#"{"engines": {"node": ">=22.0.0"}, "scripts": {"dev": "vite"}}"#);
+    t.file("mono/package.json", r#"{"engines": {"node": "^20"}, "workspaces": ["packages/*"]}"#)
+        .file("mono/packages/a/package.json", r#"{"scripts": {"dev": "vite"}}"#)
+        .file("mono/packages/b/package.json", r#"{"engines": {"node": ">=22"}, "scripts": {"dev": "vite"}}"#);
+    let found = t.scan();
+    let engines = |id: &str| app(&found, id).engines.clone();
+    assert_eq!(engines("graph").as_deref(), Some(">=22.0.0"));
+    assert_eq!(engines("mono/packages/a").as_deref(), Some("^20"), "the root's");
+    assert_eq!(engines("mono/packages/b").as_deref(), Some(">=22"), "its own first");
+}
+
+#[test]
+fn a_scripts_programs_honour_quotes_redirections_and_keywords() {
+    let p = |s: &str| node::programs(s);
+    assert_eq!(p("tsc 2>&1 | tee log"), ["tsc", "tee"], "2>&1 isn't a separator");
+    assert_eq!(p("vite build >&2 && eslint . &> out.txt"), ["vite", "eslint"]);
+    assert_eq!(p("jest --testPathPattern='(a|b)'"), ["jest"], "quoted separators");
+    assert_eq!(p(r#"node -e "x && y" && grep -E "a|b" f"#), ["grep"]);
+    assert_eq!(p(r#"FOO="a b" BAR=1 vite"#), ["vite"], "quoted assignments");
+    assert_eq!(p("if [ -d dist ]; then rimraf dist; fi"), ["rimraf"], "after then");
+    assert_eq!(p("ulimit -n 4096; read x; : noop; > log vite"), ["vite"], "builtins and a leading redirection");
+    assert_eq!(p("cross-env NODE_ENV=production webpack"), ["cross-env"]);
+    assert_eq!(p("time exec tsx watch src"), ["tsx"]);
 }

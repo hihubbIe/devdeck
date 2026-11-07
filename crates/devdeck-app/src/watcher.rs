@@ -5,9 +5,9 @@
 //!   workspace's `Services::watch` folders, non-recursively, and the config folder and its
 //!   `workspaces/` folder. Access events are dropped (reading a file is not a change).
 //! - Changes are grouped ([`PAUSE`]). A change that can change what's found rescans that
-//!   workspace (in the background): a file discovery reads (`discovery::reads`), a
-//!   folder created or renamed, a watched folder removed. Logs and build files written
-//!   next to manifests don't. A changed workspace file reloads the configs and rescans
+//!   workspace (in the background): a file discovery reads, a folder created or
+//!   renamed, an install's programs (`discovery::concerns`), a watched folder removed.
+//!   Logs and build files written next to manifests don't. A changed workspace file reloads the configs and rescans
 //!   that workspace with its new config; `machine.toml` reloads the environment (unless
 //!   it can't be read: the current one stays, and a toast says why). The config files'
 //!   problems are read again each time. Adding or removing a workspace file needs a
@@ -185,18 +185,12 @@ fn rescan_concerned(shell: &Entity<Shell>, paths: &[PathBuf], cx: &mut App) {
         let concerned = {
             let s = s.read(cx);
             let watched = |p: &Path| s.watch.iter().any(|w| w == p);
-            s.config.is_some() && paths.iter().any(|p| watched(p) || (p.parent().is_some_and(watched) && can_change_apps(p)))
+            s.config.is_some() && paths.iter().any(|p| watched(p) || (p.parent().is_some_and(watched) && devdeck_core::discovery::concerns(p)))
         };
         if concerned {
             s.update(cx, |s, cx| s.rescan(None, cx));
         }
     }
-}
-
-/// A path in a watched folder whose change can change what's found: a file discovery
-/// reads, or a folder (a new project or package, a rename).
-fn can_change_apps(path: &Path) -> bool {
-    path.file_name().and_then(|n| n.to_str()).is_some_and(devdeck_core::discovery::reads) || path.is_dir()
 }
 
 /// The workspace files in the config folder, readable or not (`work` for `work.toml`;

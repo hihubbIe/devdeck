@@ -1,8 +1,10 @@
 //! Finding apps in a workspace's folders (R6.1, R6.2, R6.3), one file per source next
 //! to this one.
 //!
-//! Each child folder of a workspace folder is a project. Sources, each giving commands
-//! with ids `source:name`:
+//! Each child folder of a workspace folder is a project. A folder that isn't one is
+//! looked into for projects, down to [`NESTED_DEPTH`] levels under the workspace folder
+//! (`vhult/graph`); a project's own inside is its sources' business (monorepo packages).
+//! Sources, each giving commands with ids `source:name`:
 //! - `package.json` scripts (`npm:`, `pnpm:` or `yarn:` from the lockfile or the
 //!   `packageManager` field); pnpm and npm workspaces expand into one app per package
 //!   (never looking inside `node_modules`);
@@ -37,7 +39,8 @@
 //!   nothing runnable: no primary command, no Go main, no Cargo binary. Folders with
 //!   only a Taskfile, a Makefile or compose files are never libraries.
 //! - Watched besides the projects and packages: the folders monorepo globs list
-//!   (`apps` for `apps/*`, so new packages are noticed), `.vscode` and Go's `cmd`.
+//!   (`apps` for `apps/*`, so new packages are noticed), `.vscode` and Go's `cmd`, and
+//!   the folders looked into for nested projects.
 
 mod cargo;
 mod compose;
@@ -70,6 +73,10 @@ pub struct Found {
     pub watch: Vec<PathBuf>,
 }
 
+/// How many levels under a workspace folder projects are looked for: `a` is level 1,
+/// `a/b/c` level 3.
+pub const NESTED_DEPTH: usize = 3;
+
 /// Every app in `folders` (expanded paths).
 pub fn discover(folders: &[PathBuf]) -> Found {
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -88,9 +95,21 @@ pub fn reads(name: &str) -> bool {
         || name.strip_suffix(".go").is_some_and(|stem| !stem.ends_with("_test"))
 }
 
+/// Whether a change at `path`, in a watched folder, can change what's found: a file
+/// discovery reads, a folder (a new project or package, a rename), a project's
+/// `node_modules/.bin` appearing or the programs in it changing (an install).
+pub fn concerns(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    match path.parent().and_then(Path::file_name).and_then(|n| n.to_str()) {
+        Some("node_modules") => name == ".bin",
+        Some(".bin") => true,
+        _ => reads(name) || path.is_dir(),
+    }
+}
+
 /// [`discover`] with the home folder given (`~` in `App::folder` and problems).
 fn scan(folders: &[PathBuf], home: Option<&Path>) -> Found {
-    let mut cx = Cx { home, found: Found::default(), owners: BTreeMap::new() };
+    let mut cx = Cx { home, found: Found::default(), owners: BTreeMap::new(), bins: BTreeMap::new() };
     for ws in folders {
         cx.workspace_folder(ws);
     }
@@ -107,6 +126,8 @@ struct Cx<'a> {
     found: Found,
     /// The workspace folder each app id came from, to report duplicates.
     owners: BTreeMap<String, PathBuf>,
+    /// The programs in each `node_modules/.bin` read so far, by the folder holding it.
+    bins: BTreeMap<PathBuf, BTreeSet<String>>,
 }
 
 impl Cx<'_> {
@@ -117,6 +138,20 @@ impl Cx<'_> {
 
     fn watch(&mut self, dir: &Path) {
         self.found.watch.push(dir.to_path_buf());
+    }
+
+    /// Whether `program` is in a `node_modules/.bin` of `dir` or a folder above it: where
+    /// npm, pnpm and yarn look first when they run a script.
+    fn installed(&mut self, dir: &Path, program: &str) -> bool {
+        dir.ancestors().any(|d| {
+            self.bins
+                .entry(d.to_path_buf())
+                .or_insert_with(|| {
+                    let entries = fs::read_dir(d.join("node_modules/.bin")).into_iter().flatten().flatten();
+                    entries.filter_map(|e| e.file_name().into_string().ok()).collect()
+                })
+                .contains(program)
+        })
     }
 
     /// A file's text; `None` when it doesn't exist (quietly) or can't be read (a problem).
@@ -160,18 +195,27 @@ impl Cx<'_> {
                 self.problem(&dir, "symlink loop");
                 continue;
             }
-            self.project(ws, &dir, name);
+            self.project(ws, &dir, name, 1);
         }
     }
 
-    /// A project folder and, for a monorepo root, its packages.
-    fn project(&mut self, ws: &Path, dir: &Path, id: &str) {
+    /// A project folder and, for a monorepo root, its packages. A folder that isn't a
+    /// project is looked into, `depth` being its level under the workspace folder.
+    fn project(&mut self, ws: &Path, dir: &Path, id: &str, depth: usize) {
         self.watch(dir);
         let Some(listing) = self.listing(dir) else { return };
         let node = node::scan(dir, &listing, None, self);
-        let monorepo = node.as_ref().filter(|n| !n.workspaces.is_empty()).map(|n| (n.manager, n.workspaces.clone()));
-        self.app(ws, dir, id, &listing, node);
-        let Some((manager, patterns)) = monorepo else { return };
+        let monorepo = node.as_ref().filter(|n| !n.workspaces.is_empty()).map(|n| (n.manager, n.workspaces.clone(), n.engines.clone()));
+        if !self.app(ws, dir, id, &listing, node) {
+            if depth < NESTED_DEPTH {
+                let names: Vec<String> = listing.folders().map(String::from).collect();
+                for name in names {
+                    self.project(ws, &dir.join(&name), &format!("{id}/{name}"), depth + 1);
+                }
+            }
+            return;
+        }
+        let Some((manager, patterns, engines)) = monorepo else { return };
         let matches = glob::expand(dir, &patterns, self);
         for listed in &matches.listed {
             self.watch(listed);
@@ -183,13 +227,18 @@ impl Cx<'_> {
             }
             self.watch(&package);
             let Some(listing) = self.listing(&package) else { continue };
-            let node = node::scan(&package, &listing, Some(manager), self);
+            let mut node = node::scan(&package, &listing, Some(manager), self);
+            if let Some(n) = node.as_mut() {
+                n.engines = n.engines.take().or_else(|| engines.clone());
+            }
             self.app(ws, &package, &format!("{id}/{rel}"), &listing, node);
         }
     }
 
-    /// The app at `dir` from every source, when there is one.
-    fn app(&mut self, ws: &Path, dir: &Path, id: &str, listing: &Listing, node: Option<node::Node>) {
+    /// The app at `dir` from every source, when there is one; whether `dir` is a project
+    /// (even one skipped as a duplicate).
+    fn app(&mut self, ws: &Path, dir: &Path, id: &str, listing: &Listing, node: Option<node::Node>) -> bool {
+        let engines = node.as_ref().and_then(|n| n.engines.clone());
         let parts: Vec<Part> = [
             go::scan(dir, listing, self),
             cargo::scan(dir, listing, self),
@@ -202,11 +251,11 @@ impl Cx<'_> {
         .into_iter()
         .flatten()
         .collect();
-        let Some(kind) = parts.first().map(|p| p.kind) else { return };
+        let Some(kind) = parts.first().map(|p| p.kind) else { return false };
         if let Some(first) = self.owners.get(id) {
             let first = display(first, self.home);
             self.problem(dir, format!("`{id}` is also in {first}; skipped"));
-            return;
+            return true;
         }
         self.owners.insert(id.to_string(), ws.to_path_buf());
 
@@ -239,10 +288,12 @@ impl Cx<'_> {
             kind: kind.to_string(),
             library,
             node: nvmrc(dir, ws),
+            engines,
             commands,
             env: EnvApply::None,
             urls: Vec::new(),
         });
+        true
     }
 }
 
@@ -270,6 +321,7 @@ impl Part {
             line,
             tier: Tier::of(name, siblings),
             tools: tools.iter().map(|t| t.to_string()).collect(),
+            deps: Vec::new(),
             ports: Vec::new(),
         });
     }

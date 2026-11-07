@@ -183,6 +183,7 @@ fn apply_app(mut app: App, o: &AppOverride, warnings: &mut Vec<String>) -> Optio
                 line: line.to_string(),
                 tier: c.tier.unwrap_or_else(|| Tier::of(name_of(id), &siblings)),
                 tools: c.tools.clone(),
+                deps: Vec::new(),
                 ports: c.ports.clone().unwrap_or_default(),
             }
         })
@@ -642,7 +643,7 @@ env = { file = "config/local.yml" }
     }
 
     fn cmd(id: &str) -> Command {
-        Command { id: id.into(), line: format!("{id} line"), tier: Tier::Secondary, tools: vec!["tool".into()], ports: vec![1] }
+        Command { id: id.into(), line: format!("{id} line"), tier: Tier::Secondary, tools: vec!["tool".into()], deps: vec![], ports: vec![1] }
     }
 
     fn app(id: &str, commands: Vec<Command>) -> App {
@@ -654,6 +655,7 @@ env = { file = "config/local.yml" }
             kind: "go".into(),
             library: false,
             node: None,
+            engines: None,
             commands,
             env: EnvApply::None,
             urls: vec!["http://found".into()],
@@ -739,7 +741,7 @@ env = { file = "config/local.yml" }
         assert_eq!(tier("task:dev"), Tier::Primary, "the tier of its name");
         assert_eq!(tier("task:seed"), Tier::Primary, "the configured tier");
         let dev = a.command("task:dev").unwrap();
-        assert_eq!(dev, &Command { id: "task:dev".into(), line: "task dev".into(), tier: Tier::Primary, tools: vec!["task".into()], ports: vec![3000] });
+        assert_eq!(dev, &Command { id: "task:dev".into(), line: "task dev".into(), tier: Tier::Primary, tools: vec!["task".into()], deps: vec![], ports: vec![3000] });
         assert_eq!(a.command("task:seed").unwrap().ports, Vec::<u16>::new());
     }
 

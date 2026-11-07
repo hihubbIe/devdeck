@@ -21,7 +21,7 @@ pub fn catalog(workspace: &str) -> Catalog {
 /// `id` is `source:name` (`go:run`), as discovery makes them.
 fn command(id: &str, line: &str, tools: &[&str], ports: &[u16]) -> Command {
     let name = id.split_once(':').map_or(id, |(_, n)| n);
-    Command { id: id.into(), line: line.into(), tier: Tier::of(name, &[]), tools: tools.iter().map(|t| t.to_string()).collect(), ports: ports.to_vec() }
+    Command { id: id.into(), line: line.into(), tier: Tier::of(name, &[]), tools: tools.iter().map(|t| t.to_string()).collect(), deps: Vec::new(), ports: ports.to_vec() }
 }
 
 fn app(id: &str, folder: String, kind: &str, commands: Vec<Command>, env: EnvApply) -> App {
@@ -33,6 +33,7 @@ fn app(id: &str, folder: String, kind: &str, commands: Vec<Command>, env: EnvApp
         kind: kind.into(),
         library: false,
         node: None,
+        engines: None,
         commands,
         env,
         urls: Vec::new(),

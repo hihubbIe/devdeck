@@ -67,7 +67,7 @@ impl RunDriver for TestDriver {
 }
 
 fn command(id: &str, ports: &[u16]) -> Command {
-    Command { id: id.into(), line: format!("serve {id}"), tier: Tier::Primary, tools: Vec::new(), ports: ports.to_vec() }
+    Command { id: id.into(), line: format!("serve {id}"), tier: Tier::Primary, tools: Vec::new(), deps: Vec::new(), ports: ports.to_vec() }
 }
 
 fn catalog(commands: Vec<Command>) -> Catalog {
@@ -79,6 +79,7 @@ fn catalog(commands: Vec<Command>) -> Catalog {
         kind: "test".into(),
         library: false,
         node: None,
+        engines: None,
         commands,
         env: EnvApply::None,
         urls: Vec::new(),

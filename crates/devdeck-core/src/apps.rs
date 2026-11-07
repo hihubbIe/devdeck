@@ -50,6 +50,10 @@ pub struct Command {
     pub tier: Tier,
     /// Programs it needs on the PATH (R6.5).
     pub tools: Vec<String>,
+    /// Programs its script runs that an install of the project provides
+    /// (`node_modules/.bin`) and that weren't there when it was found: each must be on
+    /// the run's PATH, else the project isn't installed.
+    pub deps: Vec<String>,
     /// Ports it listens on when running (R6.9).
     pub ports: Vec<u16>,
 }
@@ -139,6 +143,9 @@ pub struct App {
     pub library: bool,
     /// The Node version its `.nvmrc` asks for (R6.8).
     pub node: Option<String>,
+    /// The Node versions its `package.json` accepts (`engines.node`, a semver range like
+    /// `>=22`), used when there's no `.nvmrc`; a monorepo's packages share the root's.
+    pub engines: Option<String>,
     pub commands: Vec<Command>,
     pub env: EnvApply,
     /// Links to open (R6.4).
@@ -191,9 +198,10 @@ impl Tools {
     }
 
     /// Why an app can't be used at all: none of its visible (not hidden) commands can
-    /// run; the reason of the first one.
+    /// run; the reason of the first one. Installing it is the remedy, not a use: it
+    /// doesn't count.
     pub fn unusable(&self, app: &App) -> Option<String> {
-        let visible: Vec<&Command> = app.commands.iter().filter(|c| c.tier != Tier::Hidden).collect();
+        let visible: Vec<&Command> = app.commands.iter().filter(|c| c.tier != Tier::Hidden && c.name() != "install").collect();
         if visible.is_empty() {
             return None;
         }
@@ -212,11 +220,11 @@ mod tests {
     use super::*;
 
     fn cmd(id: &str, tools: &[&str]) -> Command {
-        Command { id: id.into(), line: id.into(), tier: Tier::of(name_of(id), &[]), tools: tools.iter().map(|t| t.to_string()).collect(), ports: vec![] }
+        Command { id: id.into(), line: id.into(), tier: Tier::of(name_of(id), &[]), tools: tools.iter().map(|t| t.to_string()).collect(), deps: vec![], ports: vec![] }
     }
 
     fn app(kind: &str, commands: Vec<Command>, env: EnvApply) -> App {
-        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: kind.into(), library: false, node: None, commands, env, urls: vec![] }
+        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: kind.into(), library: false, node: None, engines: None, commands, env, urls: vec![] }
     }
 
     #[test]
@@ -233,6 +241,23 @@ mod tests {
         assert_eq!(Tier::of("postinstall", &scripts), Tier::Hidden);
         assert_eq!(Tier::of("preview", &scripts), Tier::Secondary, "no `view` script: not a hook");
         assert_eq!(Tier::of("pre", &scripts), Tier::Secondary, "not a pre-hook by itself");
+    }
+
+    #[test]
+    fn an_app_whose_install_alone_can_run_is_unusable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::testing::TempDir::new("unusable");
+        for p in ["npm", "node"] {
+            std::fs::write(dir.join(p), "").unwrap();
+            std::fs::set_permissions(dir.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let tb = crate::environment::Toolbox { vars: vec![("PATH".into(), dir.display().to_string())], ..Default::default() };
+        let tools = Tools { toolbox: Some(tb), ..Tools::default() };
+        let dev = Command { deps: vec!["vite".into()], ..cmd("npm:dev", &["npm", "node"]) };
+        let a = app("npm", vec![dev, cmd("npm:install", &["npm", "node"])], EnvApply::None);
+        assert_eq!(tools.unusable(&a).as_deref(), Some("vite isn't installed: run npm install"));
+        let installed = app("npm", vec![cmd("npm:dev", &["npm", "node"]), cmd("npm:install", &["npm", "node"])], EnvApply::None);
+        assert_eq!(tools.unusable(&installed), None);
     }
 
     #[test]
