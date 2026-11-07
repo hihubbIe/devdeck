@@ -3,7 +3,7 @@
 
 use super::ViewCx;
 use devdeck_core::config::{MACHINE_FILE, WORKSPACES_DIR};
-use devdeck_ui::{label, section, theme};
+use devdeck_ui::{Icon, icon, label, section, theme};
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, prelude::*};
 
 /// The workspace's problems and the machine's, live: fixing a manifest or a config file
@@ -31,7 +31,9 @@ impl Render for ProblemsView {
             div().text_color(t.mute).child(label("No problems."))
         } else {
             // Problems name files and reasons in full: they wrap rather than truncate.
-            div().flex().flex_col().gap_1().children(problems.into_iter().map(|p| div().text_color(t.warn).child(format!("⚠ {p}"))))
+            div().flex().flex_col().gap_1().children(problems.into_iter().map(|p| {
+                div().flex().items_start().gap_1().text_color(t.warn).child(div().flex_none().h(t.line_height).flex().items_center().child(icon(Icon::Warning, t.warn, &t))).child(div().min_w_0().child(p))
+            }))
         };
         div().id("problems").size_full().overflow_y_scroll().p_3().child(section("Problems", &t)).child(body)
     }

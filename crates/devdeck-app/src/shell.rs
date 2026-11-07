@@ -15,7 +15,7 @@ use devdeck_core::layout::Layout;
 use devdeck_core::layout_book::LayoutBook;
 use devdeck_core::state::{AppState, Loaded, SidebarState, StateStore};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
-use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, push_modal, theme, toasts};
+use devdeck_ui::{ModalFocus, ToastKind, button, dot, label, modal_frame, pop_modal, push_modal, theme, toasts};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Global, IntoElement, ParentElement, Render, Styled, Subscription,
     Task, WeakFocusHandle, Window, WindowHandle, actions, div, prelude::*,
@@ -510,7 +510,7 @@ impl Render for QuitGuard {
         for (ws, items) in &self.running {
             list = list.child(label(ws.clone()).text_color(t.hi));
             for item in items {
-                list = list.child(label(format!("  ● {item}")).text_color(t.warn));
+                list = list.child(div().pl_2().flex().items_center().gap_1().child(dot(t.warn, true, &t)).child(label(item.clone()).text_color(t.warn)));
             }
         }
         let buttons = if stopping {

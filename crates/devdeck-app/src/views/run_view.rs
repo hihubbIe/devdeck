@@ -16,12 +16,12 @@
 //! views show one run, the one focused last sizes its terminal. Output redraws at most
 //! every [`OUTPUT_FRAME`], except right after typing, so echo shows at once.
 
-use super::{ViewCx, run_glyph};
+use super::{ViewCx, run_mark};
 use crate::runner::{RunKey, RunnerEvent};
 use devdeck_core::runs::RunState;
 use devdeck_core::terminal::{Mods, TermSize, key_bytes, paste_bytes};
 use devdeck_ui::terminal::{self, Frame, Geometry, Scrollback};
-use devdeck_ui::{InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button};
+use devdeck_ui::{Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, action_button, icon, icon_text, label, open_menu, theme, tip, toasts, toggle_button};
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EntityId, FocusHandle, Focusable, Global, HitboxBehavior, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent,
@@ -226,7 +226,7 @@ impl RunView {
             .tooltip(tip(if empty { "arguments: recent ones, none, or new ones".to_string() } else { format!("arguments: {args}") }))
             .on_click(cx.listener(|this, _, window, cx| this.choose_args(window, cx)))
             .child(label(if empty { "args…".to_string() } else { args }).text_color(if empty { t.dim } else { t.fg }))
-            .child(div().flex_none().text_color(t.mute).child("▾"))
+            .child(icon(Icon::Open, t.mute, t))
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().size_full())
             .into_any_element()
     }
@@ -489,7 +489,6 @@ impl Render for RunView {
         let runner = services.runner.read(cx);
         let run = runner.run(&self.key);
         let state = run.map(|r| r.state);
-        let (glyph, color) = run_glyph(state, &t);
         let refusal = runner.refusal(&self.key).filter(|r| r != "already running");
         let env = run.and_then(|r| r.env.clone()).or(services.env.clone());
         let line = runner.line(&self.key, env.as_deref()).unwrap_or_default();
@@ -517,20 +516,8 @@ impl Render for RunView {
             self.selected_in = stamp;
         }
 
-        let button = |id: &'static str, glyph: &'static str, enabled: bool, tooltip: String| {
-            let hover = t.hover;
-            div()
-                .id(id)
-                .debug_selector(move || format!("run-{id}"))
-                .px_2()
-                .h(t.button_h)
-                .flex()
-                .items_center()
-                .rounded(t.radius_s)
-                .text_color(if enabled { t.fg } else { t.dim })
-                .when(enabled, |d| d.hover(move |s| s.bg(hover)).cursor_pointer())
-                .tooltip(tip(tooltip))
-                .child(glyph)
+        let button = |id: &'static str, i: Icon, enabled: bool, tooltip: String| {
+            action_button(id, i, enabled, tooltip, &t).debug_selector(move || format!("run-{id}"))
         };
         // What the run is takes the room left and shrinks (the line first, then the
         // arguments and the name; the state stays whole); the actions always stay visible.
@@ -541,7 +528,7 @@ impl Render for RunView {
             .flex()
             .items_center()
             .gap_2()
-            .child(div().flex_none().text_color(color).child(glyph))
+            .child(run_mark(state, "run-state", &t))
             .child(div().id("title").min_w_0().tooltip(tip(runner.title(&self.key))).child(label(runner.title(&self.key)).text_color(t.hi)))
             .when_some(env.filter(|_| !self.key.is_terminal()), |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
             .when(!self.key.is_terminal(), |d| {
@@ -555,7 +542,7 @@ impl Render for RunView {
                     .text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute })
                     .child(state_text),
             )
-            .when_some(refusal.clone(), |d, r| d.child(label(format!("⚠ {r}")).text_color(t.warn)));
+            .when_some(refusal.clone(), |d, r| d.child(icon_text(Icon::Warning, t.warn, r, &t)));
         let toolbar = div()
             .flex_none()
             .h(t.toolbar_h)
@@ -567,12 +554,12 @@ impl Render for RunView {
             .border_color(t.line_soft)
             .child(info)
             .child(
-                button("start", "▶", !running && refusal.is_none(), refusal.clone().map_or("run".into(), |r| format!("can't run: {r}")))
+                button("start", Icon::Run, !running && refusal.is_none(), refusal.clone().map_or("run".into(), |r| format!("can't run: {r}")))
                     .when(!running && refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("run", cx)))),
             )
-            .child(button("stop", "■", running, "stop".into()).when(running, |d| d.on_click(cx.listener(|this, _, _, cx| this.act("stop", cx)))))
+            .child(button("stop", Icon::Stop, running, "stop".into()).when(running, |d| d.on_click(cx.listener(|this, _, _, cx| this.act("stop", cx)))))
             .child(
-                button("restart", "↻", refusal.is_none(), "restart".into())
+                button("restart", Icon::Restart, refusal.is_none(), "restart".into())
                     .when(refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("restart", cx)))),
             )
             .child(
@@ -588,7 +575,12 @@ impl Render for RunView {
                 .items_center()
                 .justify_center()
                 .text_color(t.mute)
-                .child(label(refusal.map_or("Not started. ▶ runs it.".to_string(), |r| format!("Can't run: {r}."))))
+                .gap_1()
+                .child(match refusal {
+                    // "Not started. ▶ runs it.", with the button's icon.
+                    None => div().flex().items_center().gap_1().child("Not started.").child(icon(Icon::Run, t.mute, &t)).child("runs it.").into_any_element(),
+                    Some(r) => label(format!("Can't run: {r}.")).into_any_element(),
+                })
                 .into_any_element()
         } else {
             let pad = t.size(12.);

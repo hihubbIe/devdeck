@@ -6,7 +6,7 @@ use super::ViewCx;
 use crate::port_scan::{PortHolder, stop_holder};
 use crate::services::PortInfo;
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_ui::{button, label, theme, tip};
+use devdeck_ui::{button, dot, label, theme, tip};
 use gpui::{Context, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::*};
 
 pub struct PortView {
@@ -77,7 +77,7 @@ impl Render for PortView {
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().flex().items_center().gap_3().child(div().text_color(t.hi).child(format!(":{}", info.port))).child(div().text_color(t.ok).child("● listening")))
+            .child(div().flex().items_center().gap_3().child(div().text_color(t.hi).child(format!(":{}", info.port))).child(div().flex().items_center().gap_1().text_color(t.ok).child(dot(t.ok, true, &t)).child("listening")))
             .child(label(format!("held by {}", info.holder)).text_color(t.fg))
             .child(label(info.command.clone()).text_color(t.mute))
             .child(div().flex().gap_2().pt_2().child(stop).children(open_run))

@@ -13,8 +13,8 @@ use devdeck_core::cluster::{Deployment, Pod, PodPhase, Remote, Rollout, unlock_m
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
-    InputEvent, MenuItem, ModalFocus, TextInput, Theme, ToastKind, button, label, modal_frame, open_menu, pop_modal, push_modal, section,
-    theme, tip, toasts,
+    Icon, InputEvent, MenuItem, ModalFocus, TextInput, Theme, ToastKind, button, dot, icon, icon_button, icon_text, label, modal_frame, open_menu,
+    pop_modal, push_modal, section, theme, tip, toasts,
 };
 use gpui::{
     AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
@@ -286,7 +286,9 @@ impl Render for ServiceView {
         let message = |text: String, color: Hsla| div().flex_1().flex().items_center().justify_center().text_color(color).child(label(text));
         let d = match (&state, c.deployment(&self.env, &self.name)) {
             (Remote::Loading, _) => return root.child(message(format!("loading {}…", self.env), t.mute)),
-            (Remote::Error(e), _) => return root.child(message(format!("⚠ {e}"), t.warn)),
+            (Remote::Error(e), _) => {
+                return root.child(div().flex_1().flex().items_center().justify_center().child(icon_text(Icon::Warning, t.warn, e.to_string(), &t)));
+            }
             (Remote::Ready(_), None) => return root.child(message(format!("{} isn't deployed in {}.", self.name, self.env), t.mute)),
             (Remote::Ready(_), Some(d)) => d.clone(),
         };
@@ -297,11 +299,11 @@ impl Render for ServiceView {
         let k9s_missing = !self.ctx.services.read(cx).catalog.tools.found.contains("k9s");
         let dirty = self.dirty(cx);
         let blocked = self.save_blocked(cx);
-        let (status, status_color) = match &rollout {
-            Some(Rollout::Progressing { updated, of, .. }) => (format!("◐ rolling {updated}/{of}"), t.accent),
-            Some(Rollout::Failed { .. }) => ("✖ rollout failed".to_string(), t.err),
-            _ if d.ready == d.replicas => (format!("● ready {}/{}", d.ready, d.replicas), t.ok),
-            _ => (format!("⚠ ready {}/{}", d.ready, d.replicas), t.warn),
+        let (status_mark, status, status_color) = match &rollout {
+            Some(Rollout::Progressing { updated, of, .. }) => (icon(Icon::Busy, t.accent, &t).into_any_element(), format!("rolling {updated}/{of}"), t.accent),
+            Some(Rollout::Failed { .. }) => (icon(Icon::Error, t.err, &t).into_any_element(), "rollout failed".to_string(), t.err),
+            _ if d.ready == d.replicas => (dot(t.ok, true, &t).into_any_element(), format!("ready {}/{}", d.ready, d.replicas), t.ok),
+            _ => (icon(Icon::Warning, t.warn, &t).into_any_element(), format!("ready {}/{}", d.ready, d.replicas), t.warn),
         };
 
         let header = div()
@@ -314,11 +316,20 @@ impl Render for ServiceView {
             .border_b_1()
             .border_color(t.line_soft)
             .child(div().flex_none().text_color(t.hi).child(d.name.clone()))
-            .child(div().flex_none().text_color(if protected { t.err } else { t.env }).child(if protected { format!("⊘ @{}", self.env) } else { format!("@{}", self.env) }))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_color(if protected { t.err } else { t.env })
+                    .when(protected, |d| d.child(icon(Icon::Protected, t.err, &t)))
+                    .child(format!("@{}", self.env)),
+            )
             .when(protected, |h| {
                 h.child(div().flex_none().text_color(if self.unlocked { t.warn } else { t.mute }).child(if self.unlocked { "unlocked" } else { "locked" }))
             })
-            .child(div().flex_none().text_color(status_color).child(status))
+            .child(div().flex_none().flex().items_center().gap_1().text_color(status_color).child(status_mark).child(status))
             .child(label(format!("{} · since {}", d.tag, fmt_age(d.since_s))).text_color(t.mute).flex_1());
 
         let action = |id: &'static str, text: &'static str, why: Option<String>| {
@@ -365,12 +376,13 @@ impl Render for ServiceView {
             .child(div().w(t.size(260.)).debug_selector(|| "tag-editor".into()).child(self.tag.clone()))
             .child({
                 let me = me.clone();
-                button("suggest", "▾", &t).tooltip(tip("tags on other envs and history")).on_click(move |e, window, cx| {
+                icon_button("suggest", Icon::Open, "tags on other envs and history", &t).on_click(move |e, window, cx| {
                     let items = ServiceView::suggestions(&me, cx);
                     open_menu(e.position(), items, window, cx);
                 })
             })
-            .child(div().flex_none().text_color(if dirty { t.warn } else { t.bg }).child("● unsaved"))
+            // Kept in place when clean (hidden), so the row doesn't shift.
+            .child(div().flex_none().flex().items_center().gap_1().text_color(t.warn).when(!dirty, |d| d.invisible()).child(dot(t.warn, true, &t)).child("unsaved"))
             .child(
                 button("save", "save", &t)
                     .debug_selector(|| "tag-save".into())
@@ -381,10 +393,10 @@ impl Render for ServiceView {
             .child(label(d.repo.clone()).text_color(t.dim).flex_1());
 
         let rollout_line = rollout.map(|r| {
-            let (text, color, undo) = match &r {
-                Rollout::Progressing { from, to, updated, of } => (format!("◐ rolling out {from} → {to}: {updated}/{of} pods updated"), t.accent, false),
-                Rollout::Failed { to, reason, .. } => (format!("✖ rollout to {to} failed: {reason}"), t.err, true),
-                Rollout::Done { from, to } => (format!("✓ now running {to} (was {from})"), t.ok, true),
+            let (mark, text, color, undo) = match &r {
+                Rollout::Progressing { from, to, updated, of } => (Icon::Busy, format!("rolling out {from} → {to}: {updated}/{of} pods updated"), t.accent, false),
+                Rollout::Failed { to, reason, .. } => (Icon::Error, format!("rollout to {to} failed: {reason}"), t.err, true),
+                Rollout::Done { from, to } => (Icon::Ok, format!("now running {to} (was {from})"), t.ok, true),
             };
             div()
                 .flex_none()
@@ -393,7 +405,7 @@ impl Render for ServiceView {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(label(text).text_color(color).flex_1())
+                .child(icon_text(mark, color, text, &t).flex_1())
                 .when(undo, |d| {
                     d.child(button("undo", "undo", &t).debug_selector(|| "rollout-undo".into()).on_click(cx.listener(|this, _, _, cx| this.undo(cx))))
                 })
@@ -403,7 +415,7 @@ impl Render for ServiceView {
         let (cpu, mem) = pods.iter().filter(|p| p.ready).fold((0u32, 0u32), |(c, m), p| (c + p.usage.cpu_m, m + p.usage.mem_mi));
         let n = d.replicas.max(1);
         let metrics_el = match metrics {
-            Err(e) => div().child(label(format!("⚠ {e}")).text_color(t.warn)),
+            Err(e) => icon_text(Icon::Warning, t.warn, e, &t),
             Ok(()) => div()
                 .flex()
                 .flex_col()
@@ -483,7 +495,7 @@ impl Render for ServiceView {
                     .on_click(move |_, _, cx| ctx.open(addr.clone(), cx))
                     .child(col(300., p.name.clone(), t.fg))
                     .child(col(150., phase, if ok { t.ok } else { t.err }))
-                    .child(col(60., if p.ready { "✓".into() } else { "✗".into() }, if p.ready { t.ok } else { t.err }))
+                    .child(div().flex_none().w(t.size(60.)).child(if p.ready { icon(Icon::Check, t.ok, &t) } else { icon(Icon::Close, t.err, &t) }))
                     .child(col(70., p.restarts.to_string(), if p.restarts > 3 { t.warn } else { t.mute }))
                     .child(col(50., fmt_age(p.age_s), t.mute))
                     .child(col(60., format!("{}m", p.usage.cpu_m), t.mute))
@@ -597,7 +609,7 @@ impl Render for ConfirmDeploy {
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &ConfirmModal, window, cx| this.confirm(window, cx)))
             .child(div().text_color(t.hi).child(format!("Deploy {} on {}?", self.name, self.env)))
-            .child(div().flex().gap_2().child(label(self.from.clone()).text_color(t.mute)).child("→").child(label(self.to.clone()).text_color(t.hi)))
+            .child(div().flex().items_center().gap_2().child(label(self.from.clone()).text_color(t.mute)).child(icon(Icon::To, t.mute, &t)).child(label(self.to.clone()).text_color(t.hi)))
             .child(label("Runs:").text_color(t.mute))
             // The one place text wraps (R4.4 allows a view to opt in): the command is
             // shown whole, so the tag being deployed is always visible.
@@ -685,7 +697,7 @@ impl Render for UnlockEnv {
             .on_action(cx.listener(|this, _: &ModalNext, window, cx| this.focus.cycle(1, window, cx)))
             .on_action(cx.listener(|this, _: &ModalPrev, window, cx| this.focus.cycle(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
-            .child(div().text_color(t.err).child(format!("⊘ {} is protected", self.env)))
+            .child(icon_text(Icon::Protected, t.err, format!("{} is protected", self.env), &t))
             .child(label(format!("Type {} to allow writes from this view until it closes.", self.env)).text_color(t.mute))
             .child(div().w(t.size(320.)).child(self.input.clone()))
             .children(self.error.clone().map(|e| label(e).text_color(t.err)))

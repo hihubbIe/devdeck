@@ -32,7 +32,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    gpui_platform::application().run(move |cx: &mut App| {
+    gpui_platform::application().with_assets(devdeck_ui::Assets).run(move |cx: &mut App| {
         devdeck_app::init(cx);
         // Fallback only (windows closed from outside): every normal quit goes through the
         // shell's guard. Nothing it started outlives it (R8.2).

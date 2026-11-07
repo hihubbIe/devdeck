@@ -2,11 +2,11 @@
 //! applies, missing tools named, then commands by tier with their run state and
 //! actions. Keys (`AppView`): ↑↓ select, ⏎ run, s stop, r restart, o output, h hidden.
 
-use super::{ViewCx, run_glyph};
+use super::{ViewCx, run_mark};
 use crate::runner::RunKey;
 use devdeck_core::apps::{Command, Tier};
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_ui::{Theme, ToastKind, label, section, theme, tip, toasts};
+use devdeck_ui::{Icon, ToastKind, action_button, icon, icon_text, label, section, theme, toasts};
 use gpui::{
     App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
@@ -136,24 +136,6 @@ impl Focusable for AppView {
     }
 }
 
-/// A small action button; disabled ones are dim and say why on hover.
-fn act(id: (&'static str, usize), glyph: &'static str, enabled: bool, tooltip: String, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    let hover = t.hover;
-    div()
-        .id(id)
-        .flex_none()
-        .w(t.icon_button)
-        .h(t.icon_button)
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(t.radius_s)
-        .text_color(if enabled { t.fg } else { t.dim })
-        .when(enabled, |d| d.hover(move |s| s.bg(hover)).cursor_pointer())
-        .tooltip(tip(tooltip))
-        .child(glyph)
-}
-
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
@@ -194,7 +176,7 @@ impl Render for AppView {
                     .child(label(app.folder.clone()).text_color(t.dim).min_w_0()),
             )
             .child(env_line)
-            .children(missing.iter().map(|m| label(format!("⚠ {m}")).text_color(t.warn)));
+            .children(missing.iter().map(|m| icon_text(Icon::Warning, t.warn, m.clone(), &t)));
 
         let mut body = div().id("app-commands").flex_1().min_h_0().overflow_y_scroll().px_3().pb_2().flex().flex_col();
         for tier in Tier::ALL {
@@ -203,8 +185,14 @@ impl Render for AppView {
                 continue;
             }
             let collapsed = tier == Tier::Hidden && !self.show_hidden;
-            let heading = format!("{} · {}{}", tier.title(), cmds.len(), if tier == Tier::Hidden { if collapsed { "  ▸" } else { "  ▾" } } else { "" });
-            let mut head = div().id(("tier", tier as usize)).child(section(heading, &t));
+            let heading = format!("{} · {}", tier.title(), cmds.len());
+            // Hidden ones fold: open or not, after the heading.
+            let heading = section(heading, &t)
+                .flex()
+                .items_center()
+                .gap_1()
+                .when(tier == Tier::Hidden, |d| d.child(icon(if collapsed { Icon::Expand } else { Icon::Open }, t.mute, &t)));
+            let mut head = div().id(("tier", tier as usize)).child(heading);
             if tier == Tier::Hidden {
                 head = head.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
                     this.show_hidden = !this.show_hidden;
@@ -218,7 +206,6 @@ impl Render for AppView {
             for (i, c) in cmds.iter().enumerate() {
                 let key = RunKey::new(&app.id, &c.id);
                 let state = runner.state(&key);
-                let (glyph, color) = run_glyph(state, &t);
                 let refusal = tools.missing(&app, c);
                 let running = state.is_some_and(|s| s.is_running());
                 let selected = self.selected.as_deref() == Some(c.id.as_str());
@@ -255,22 +242,25 @@ impl Render for AppView {
                             }
                             cx.notify();
                         }))
-                        .child(div().flex_none().min_w(t.size(28.)).text_color(if refusal.is_some() { t.warn } else { color }).child(if refusal.is_some() { "⚠".to_string() } else { glyph }))
+                        .child(div().flex_none().min_w(t.size(28.)).flex().items_center().child(match refusal {
+                            Some(_) => icon(Icon::Warning, t.warn, &t).into_any_element(),
+                            None => run_mark(state, ("cmd-state", n), &t),
+                        }))
                         .child(div().flex_none().w(t.size(110.)).truncate().text_color(if refusal.is_some() { t.dim } else { t.fg }).child(row_label))
                         .child(label(c.line.clone()).flex_1().min_w_0().text_color(t.dim))
                         .when(!c.ports.is_empty(), |d| {
                             d.child(div().flex_none().text_color(t.mute).child(c.ports.iter().map(|p| format!(":{p}")).collect::<Vec<_>>().join(" ")))
                         })
                         .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(r)))
-                        .child(act(("run", n), "▶", can_run, run_tip, &t).when(can_run, |d| d.on_click(cx.listener(move |this, _, _, cx| this.run(&r2, cx)))))
-                        .child(act(("stop", n), "■", running, "stop".into(), &t).when(running, |d| d.on_click(cx.listener(move |this, _, _, cx| this.stop(&r3, cx)))))
+                        .child(action_button(("run", n), Icon::Run, can_run, run_tip, &t).when(can_run, |d| d.on_click(cx.listener(move |this, _, _, cx| this.run(&r2, cx)))))
+                        .child(action_button(("stop", n), Icon::Stop, running, "stop", &t).when(running, |d| d.on_click(cx.listener(move |this, _, _, cx| this.stop(&r3, cx)))))
                         .child(
-                            act(("restart", n), "↻", refusal.is_none(), "restart".into(), &t)
+                            action_button(("restart", n), Icon::Restart, refusal.is_none(), "restart", &t)
                                 .when(refusal.is_none(), |d| d.on_click(cx.listener(move |this, _, _, cx| this.restart(&r4, cx)))),
                         )
                         .child({
                             let id = c.id.clone();
-                            act(("output", n), "≡", true, "output".into(), &t).on_click(cx.listener(move |this, _, _, cx| this.open_output(&id, cx)))
+                            action_button(("output", n), Icon::Output, true, "output", &t).on_click(cx.listener(move |this, _, _, cx| this.open_output(&id, cx)))
                         }),
                 );
             }

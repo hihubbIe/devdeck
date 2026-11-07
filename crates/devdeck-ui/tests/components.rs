@@ -59,7 +59,7 @@ fn a_toggle_button_clicks_whatever_its_state(cx: &mut TestAppContext) {
 fn an_icon_button_shows_its_tooltip_on_hover(cx: &mut TestAppContext) {
     let window = host(cx, |_, cx| {
         let t = devdeck_ui::theme(cx).clone();
-        div().p(logical(40.)).child(icon_button("i", "×", "close", &t).debug_selector(|| "i".into())).into_any_element()
+        div().p(logical(40.)).child(icon_button("i", devdeck_ui::Icon::Close, "close", &t).debug_selector(|| "i".into())).into_any_element()
     });
     let mut vcx = VisualTestContext::from_window(window, cx);
     let b = vcx.debug_bounds("i").expect("drawn");

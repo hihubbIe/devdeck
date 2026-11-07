@@ -31,9 +31,14 @@ The interactive HTML prototype that was approved is the visual reference
 - Monospace everywhere (JetBrains Mono, bundled so the look is the same on every machine).
 - 13 px text, 24 px rows, 32 px tab strips, 1 px dividers, no shadows except floating
   menus, no rounded cards except a few grouped blocks.
-- Color carries state only and is always paired with a glyph:
-  `●` running/ready (green), `✖ n` failed with exit code (red), `⚠` missing tool or
-  warning (amber), `◐` in progress (blue), `○` idle (muted), `⊘` protected (red).
+- Color carries state only and is always paired with a mark: a filled dot running or
+  ready (green), the error icon and the exit code when failed (red), the warning
+  triangle for a missing tool or a warning (amber), the turning loader while a run
+  stops (a static one for longer things in progress: a rollout, loading), a ring when
+  idle (muted), a lock for a protected env (red), a check for a success.
+- Icons are Lucide's outline set (R9.5), drawn in one theme color at `t.icon` (14 px
+  before the UI scale); buttons brighten their icon on hover. Status dots are shapes,
+  not icons.
 - Envs use a distinct violet chip so the target env is always visible in labels:
   `start:dev @dev35`.
 - Text truncates, never wraps (R4.4). Middle truncation for paths and image names.
@@ -172,6 +177,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 | kubernetes | kube + k8s-openapi | native watch, exec, port-forward, logs | needs tokio |
 | config | serde + toml | | |
 | file watching | notify 8.2 + notify-debouncer-full | discover new folders | non-recursive watches; drop access events |
+| icons | Lucide (lucide-static 1.61.0, ISC), only the icons used, in `devdeck-ui/assets/icons` | consistent outline set; what Zed and gpui-component start from | built in (`Icon` enum, `include_bytes!`), served by `devdeck_ui::Assets`; adding one = its SVG from the same release + a variant |
 
 ## Settings and scaling
 
@@ -242,6 +248,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   look for every terminal (`core::terminal::set_look`, set by the view): the theme and
   the UI scale are global, and a restarted run's fresh terminal answers right away.
 - 2026-11-07 When several views show one run, the one focused last sizes its terminal.
+- 2026-11-07 Icons replace font glyphs (R9.5): Lucide over Tabler (same style, far more
+  than needed), Phosphor (rounder) and Codicons (CC BY, few icons); vendored rather
+  than `gpui-component-assets` (tied to another GPUI and component library). Lucide's
+  default 2 px stroke kept: at 14 px it matches JetBrains Mono's weight in the
+  before/after snapshots. A spinner turns only for a run stopping (it redraws while
+  shown); a rollout or a load shows the loader still.
 
 ## Open questions
 

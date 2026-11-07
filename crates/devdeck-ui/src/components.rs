@@ -1,11 +1,15 @@
 //! Shared components (R9.3). Views compose these instead of styling raw elements, so
 //! the look stays identical everywhere and follows the theme and UI scale.
 
+use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
-    AnyView, App, AppContext, Context, ElementId, IntoElement, MouseButton, ParentElement, Render, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Window, div, prelude::*,
+    AnyView, App, AppContext, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Render, SharedString,
+    Stateful, StatefulInteractiveElement, Styled, Svg, Window, div, prelude::*,
 };
+
+/// The hover group of [`button`] and [`icon_button`]: their icons brighten with them.
+const BUTTON: &str = "button";
 
 /// Tooltip with the full text of a truncated label (R4.4).
 pub struct Tip(pub SharedString);
@@ -72,23 +76,34 @@ pub fn label(text: impl Into<SharedString>) -> gpui::Div {
 }
 
 /// Text button for title bars and toolbars. Mouse-down doesn't reach the parent, so a
-/// button inside a draggable title bar doesn't start a window move.
+/// button inside a draggable title bar doesn't start a window move. Icons go in with
+/// [`button_icon`].
 pub fn button(id: impl Into<ElementId>, text: impl Into<SharedString>, t: &Theme) -> Stateful<gpui::Div> {
+    button_frame(id, t).child(text.into())
+}
+
+/// A [`button`] whose icon comes before its text.
+pub fn labeled_button(id: impl Into<ElementId>, i: Icon, text: impl Into<SharedString>, t: &Theme) -> Stateful<gpui::Div> {
+    button_frame(id, t).child(button_icon(i, t)).child(text.into())
+}
+
+fn button_frame(id: impl Into<ElementId>, t: &Theme) -> Stateful<gpui::Div> {
     let (hover, fg) = (t.hover, t.fg);
     div()
         .id(id)
+        .group(BUTTON)
         .px_2()
         .h(t.button_h)
         .flex()
         .flex_none()
         .items_center()
+        .gap_1()
         .rounded(t.radius_m)
         .text_color(t.mute)
         .cursor_pointer()
         .whitespace_nowrap()
         .hover(move |s| s.bg(hover).text_color(fg))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(text.into())
 }
 
 /// A button showing it is the selected option of a group.
@@ -101,11 +116,19 @@ pub fn toggle_button(id: impl Into<ElementId>, text: impl Into<SharedString>, on
     }
 }
 
+/// An icon in a [`button`] (before or after its text, or alone): muted, bright with
+/// the button under the pointer.
+pub fn button_icon(i: Icon, t: &Theme) -> Svg {
+    let fg = t.fg;
+    icon(i, t.mute, t).group_hover(BUTTON, move |s| s.text_color(fg))
+}
+
 /// Square icon-sized button with a tooltip.
-pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, tooltip: &'static str, t: &Theme) -> Stateful<gpui::Div> {
-    let (hover, fg) = (t.hover, t.fg);
+pub fn icon_button(id: impl Into<ElementId>, i: Icon, tooltip: &'static str, t: &Theme) -> Stateful<gpui::Div> {
+    let hover = t.hover;
     div()
         .id(id)
+        .group(BUTTON)
         .w(t.icon_button)
         .h(t.icon_button)
         .flex()
@@ -113,11 +136,41 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: &'static str, tooltip: &'sta
         .items_center()
         .justify_center()
         .rounded(t.radius_s)
-        .text_color(t.mute)
         .cursor_pointer()
-        .hover(move |s| s.bg(hover).text_color(fg))
+        .hover(move |s| s.bg(hover))
         .tooltip(tip(tooltip))
-        .child(glyph)
+        .child(button_icon(i, t))
+}
+
+/// An action's icon button: bright when it can be used, dim when not (its tooltip says
+/// why). The caller adds the click when enabled.
+pub fn action_button(id: impl Into<ElementId>, i: Icon, enabled: bool, tooltip: impl Into<SharedString>, t: &Theme) -> Stateful<gpui::Div> {
+    let hover = t.hover;
+    div()
+        .id(id)
+        .flex_none()
+        .w(t.icon_button)
+        .h(t.icon_button)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(t.radius_s)
+        .when(enabled, |d| d.hover(move |s| s.bg(hover)).cursor_pointer())
+        .tooltip(tip(tooltip))
+        .child(icon(i, if enabled { t.fg } else { t.dim }, t))
+}
+
+/// A status dot (running, ready, unsaved…), filled or a ring, in a cell the size of an
+/// icon so it lines up with them.
+pub fn dot(color: Hsla, filled: bool, t: &Theme) -> gpui::Div {
+    let d = div().size(t.size(7.)).rounded_full();
+    let d = if filled { d.bg(color) } else { d.border_1().border_color(color) };
+    div().size(t.icon).flex_none().flex().items_center().justify_center().child(d)
+}
+
+/// A message line: an icon, then the text, both in `color`.
+pub fn icon_text(i: Icon, color: Hsla, text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
+    div().flex().items_center().gap_1().min_w_0().text_color(color).child(icon(i, color, t)).child(label(text))
 }
 
 /// How far each level of a tree is indented (logical pixels, before the UI scale).
@@ -151,7 +204,7 @@ pub fn tree_row(
                 cx.stop_propagation();
                 on_toggle(window, cx);
             })
-            .child(if open { "▾" } else { "▸" }),
+            .child(icon(if open { Icon::Open } else { Icon::Expand }, t.dim, t).size(t.size(TREE_INDENT))),
         None => chevron,
     };
     div()

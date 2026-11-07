@@ -151,9 +151,10 @@ fn the_cluster_list_follows_a_rollout(cx: &mut TestAppContext) {
     advance(cx, LOAD_DELAY);
     cx.update(|cx| c.update(cx, |c, cx| c.set_image("dev35", "proxyapi", "lan-190", false, cx))).unwrap();
     cx.run_until_parked();
-    let detail = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "proxyapi").unwrap().detail);
-    assert!(detail(cx).starts_with('◐'), "rolling: {}", detail(cx));
+    let item = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "proxyapi").unwrap());
+    assert!(item(cx).busy, "rolling");
     let replicas = cx.read(|cx| c.read(cx).deployment("dev35", "proxyapi").unwrap().replicas);
     advance(cx, ROLLOUT_STEP * replicas);
-    assert_eq!(detail(cx), "lan-190");
+    assert!(!item(cx).busy, "done");
+    assert_eq!(item(cx).detail, "lan-190");
 }

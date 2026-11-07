@@ -18,6 +18,8 @@ pub struct ListItem {
     /// Dim text on the right (a port, a tag, a ready count).
     pub detail: String,
     pub running: bool,
+    /// Something in progress on it (a rollout): drawn before its detail.
+    pub busy: bool,
     /// Why it can't be used (a missing tool): drawn with ⚠ instead of the state glyph.
     pub warning: Option<String>,
     /// Where it sits in the tree (`/`-separated); `None`: at the top.
@@ -28,7 +30,7 @@ pub struct ListItem {
 
 impl ListItem {
     pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, warning: None, path: None, dim: false }
+        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, busy: false, warning: None, path: None, dim: false }
     }
 
     pub fn path(mut self, p: impl Into<String>) -> Self {
@@ -48,6 +50,11 @@ impl ListItem {
 
     pub fn running(mut self, on: bool) -> Self {
         self.running = on;
+        self
+    }
+
+    pub fn busy(mut self, on: bool) -> Self {
+        self.busy = on;
         self
     }
 

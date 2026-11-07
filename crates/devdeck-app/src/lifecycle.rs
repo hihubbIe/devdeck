@@ -17,7 +17,7 @@ use crate::shell::{Shell, focus_button};
 use devdeck_core::process::{GroupLog, kill_all};
 use std::time::Duration;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
-use devdeck_ui::{ModalFocus, label, modal_frame, pop_modal, push_modal, theme};
+use devdeck_ui::{ModalFocus, dot, label, modal_frame, pop_modal, push_modal, theme};
 use gpui::{App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, actions, div, prelude::*};
 use std::io::{Read, Seek, Write};
 use std::path::Path;
@@ -151,7 +151,9 @@ impl Render for Leftovers {
         let t = theme(cx).clone();
         let n = self.processes.len();
         let title = if n == 1 { "1 process left by a previous devdeck".to_string() } else { format!("{n} processes left by a previous devdeck") };
-        let list = div().flex().flex_col().gap_1().children(self.processes.iter().map(|(pid, cmd)| label(format!("● {cmd} (pid {pid})")).text_color(t.warn)));
+        let list = div().flex().flex_col().gap_1().children(
+            self.processes.iter().map(|(pid, cmd)| div().flex().items_center().gap_1().child(dot(t.warn, true, &t)).child(label(format!("{cmd} (pid {pid})")).text_color(t.warn))),
+        );
         let buttons = div()
             .flex()
             .justify_end()

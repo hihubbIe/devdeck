@@ -2,7 +2,7 @@
 //! of the product; kept to exercise the pane engine and for the manual test.
 
 use crate::kube_feed::{self, KubeState};
-use devdeck_ui::{label, theme};
+use devdeck_ui::{Icon, dot, icon_text, label, theme};
 use devdeck_core::layout::ViewRef;
 use gpui::{
     AnyView, App, AppContext, Context, FocusHandle, Focusable, IntoElement, ListHorizontalSizingBehavior, ParentElement, Render, SharedString,
@@ -172,8 +172,12 @@ impl Render for LogsView {
                         div()
                             .id("follow")
                             .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .text_color(if follow { accent } else { mute })
-                            .child(if follow { "● following" } else { "○ follow" })
+                            .child(dot(if follow { accent } else { mute }, follow, t))
+                            .child(if follow { "following" } else { "follow" })
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))),
                     ),
             )
@@ -278,8 +282,8 @@ impl Render for DeploymentsView {
                 label("Cluster not configured. Set DEVDECK_KUBECONFIG, DEVDECK_KUBE_CONTEXT and DEVDECK_KUBE_NAMESPACE.")
                     .debug_selector(|| "kube-message".into()),
             ),
-            KubeState::Loading => body.text_color(t.mute).child(label("◐ loading deployments…")),
-            KubeState::Error(e) => body.text_color(t.err).child(label(format!("✖ {e}"))),
+            KubeState::Loading => body.child(icon_text(Icon::Busy, t.mute, "loading deployments…", t)),
+            KubeState::Error(e) => body.child(icon_text(Icon::Error, t.err, e.clone(), t)),
             KubeState::Ready(rows) => {
                 let (name_w, ready_w, row_h) = (t.size(300.), t.size(80.), t.row_h);
                 body

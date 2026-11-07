@@ -51,6 +51,8 @@ pub struct Theme {
     pub toolbar_h: Pixels,
     pub button_h: Pixels,
     pub icon_button: Pixels,
+    /// An icon's side, in a button or beside text.
+    pub icon: Pixels,
     pub grip_w: Pixels,
     pub tab_min_w: Pixels,
     pub tab_max_w: Pixels,
@@ -115,6 +117,7 @@ impl Theme {
             toolbar_h: s(28.),
             button_h: s(24.),
             icon_button: s(22.),
+            icon: s(14.),
             grip_w: s(18.),
             tab_min_w: s(60.),
             tab_max_w: s(280.),

@@ -22,9 +22,9 @@ use crate::services::Services;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::runs::RunState;
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_ui::{Theme, label, theme};
+use devdeck_ui::{Icon, Theme, dot, icon, label, spinner, theme};
 use gpui::{
-    AnyView, App, AppContext, Entity, FocusHandle, Focusable, Hsla, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity,
+    AnyElement, AnyView, App, AppContext, ElementId, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity,
     Window, div,
 };
 
@@ -207,14 +207,18 @@ pub fn title(r: &ViewRef) -> String {
     }
 }
 
-/// Glyph and color of a run state (DESIGN visual language).
-pub fn run_glyph(state: Option<RunState>, t: &Theme) -> (String, Hsla) {
+/// The mark of a run state (DESIGN visual language): a dot while running, a ring when
+/// stopped or never run, turning while stopping, a check for a success, a cross and the
+/// code for a failure. `id` is the stopping spinner's.
+pub fn run_mark(state: Option<RunState>, id: impl Into<ElementId>, t: &Theme) -> AnyElement {
     match state {
-        Some(RunState::Running) => ("●".into(), t.ok),
-        Some(RunState::Stopping) => ("◌".into(), t.warn),
-        Some(RunState::Exited(0)) => ("✓".into(), t.ok),
-        Some(s @ (RunState::Exited(_) | RunState::Killed(_) | RunState::NotStarted)) => (format!("✖ {}", s.failed().unwrap_or(1)), t.err),
-        Some(RunState::Stopped) | None => ("○".into(), t.dim),
+        Some(RunState::Running) => dot(t.ok, true, t).into_any_element(),
+        Some(RunState::Stopping) => spinner(id, t.warn, t).into_any_element(),
+        Some(RunState::Exited(0)) => icon(Icon::Check, t.ok, t).into_any_element(),
+        Some(s @ (RunState::Exited(_) | RunState::Killed(_) | RunState::NotStarted)) => {
+            div().flex().items_center().gap_1().text_color(t.err).child(icon(Icon::Error, t.err, t)).child(s.failed().unwrap_or(1).to_string()).into_any_element()
+        }
+        Some(RunState::Stopped) | None => dot(t.dim, false, t).into_any_element(),
     }
 }
 

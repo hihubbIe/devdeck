@@ -13,9 +13,10 @@
 //!   stays at zero.
 
 use crate::components::label;
+use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
-    Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global,
+    Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global, Hsla,
     Pixels, Point, Render, ScrollHandle, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
     deferred, div, point, prelude::*, px,
 };
@@ -46,6 +47,8 @@ pub struct MenuItem {
     /// Why the item can't be used; shown inline when selected (R5.5).
     pub disabled: Option<SharedString>,
     pub separator: bool,
+    /// Shown before the label (a protected env's lock…).
+    pub icon: Option<(Icon, Hsla)>,
     pub run: Option<MenuAction>,
     /// Shown beside it on rest or →: other ways to do it (other places).
     pub submenu: Vec<MenuItem>,
@@ -53,14 +56,18 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<SharedString>, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), hint: None, checked: false, disabled: None, separator: false, run: Some(Rc::new(run)), submenu: Vec::new() }
+        Self { label: label.into(), hint: None, checked: false, disabled: None, separator: false, icon: None, run: Some(Rc::new(run)), submenu: Vec::new() }
     }
     pub fn separator() -> Self {
-        Self { label: "".into(), hint: None, checked: false, disabled: None, separator: true, run: None, submenu: Vec::new() }
+        Self { label: "".into(), hint: None, checked: false, disabled: None, separator: true, icon: None, run: None, submenu: Vec::new() }
     }
     /// Other ways to do it, in a submenu; clicking the item itself still does its own.
     pub fn submenu(mut self, items: Vec<MenuItem>) -> Self {
         self.submenu = items;
+        self
+    }
+    pub fn icon(mut self, icon: Icon, color: Hsla) -> Self {
+        self.icon = Some((icon, color));
         self
     }
     pub fn hint(mut self, hint: impl Into<SharedString>) -> Self {
@@ -327,11 +334,12 @@ impl Render for Menu {
                 .when(item.disabled.is_some(), |d| d.text_color(t.dim))
                 .on_mouse_move(cx.listener(move |this, _, _, cx| this.hover(i, cx)))
                 .on_click(cx.listener(move |this, _, window, cx| this.run(i, window, cx)))
-                .child(div().w(t.size(14.)).flex_none().text_color(t.accent).child(if item.checked { "✓" } else { "" }))
+                .child(div().size(t.icon).flex_none().when(item.checked, |d| d.child(icon(Icon::Check, if item.disabled.is_some() { t.dim } else { t.accent }, &t))))
+                .when_some(item.icon, |d, (i, c)| d.child(icon(i, if item.disabled.is_some() { t.dim } else { c }, &t)))
                 .child(label(item.label.clone()).flex_1())
                 .when_some(reason, |d, r| d.child(label(r).text_color(t.warn).max_w(t.size(200.))))
                 .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h)))
-                .when(!item.submenu.is_empty(), |d| d.child(div().flex_none().text_color(t.mute).child("›")))
+                .when(!item.submenu.is_empty(), |d| d.child(icon(Icon::Submenu, t.mute, &t)))
                 .child(gpui::canvas(move |b, _, _| rows.borrow_mut().insert(i, b), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
             list = list.child(row);
         }
@@ -372,7 +380,8 @@ impl Render for Menu {
                         .when(item.disabled.is_some(), |d| d.text_color(t.dim))
                         .on_mouse_move(cx.listener(move |this, _, _, cx| this.hover_sub(j, cx)))
                         .on_click(cx.listener(move |this, _, window, cx| this.run_sub(j, window, cx)))
-                        .child(div().w(t.size(14.)).flex_none().text_color(t.accent).child(if item.checked { "✓" } else { "" }))
+                        .child(div().size(t.icon).flex_none().when(item.checked, |d| d.child(icon(Icon::Check, if item.disabled.is_some() { t.dim } else { t.accent }, &t))))
+                        .when_some(item.icon, |d, (i, c)| d.child(icon(i, if item.disabled.is_some() { t.dim } else { c }, &t)))
                         .child(label(item.label.clone()).flex_1())
                         .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h))),
                 );
@@ -670,11 +679,11 @@ impl Render for Toasts {
         let viewport = window.viewport_size();
         let mut stack = div().flex().flex_col().items_end().gap_2().font_family(t.font.clone()).text_size(t.text);
         for toast in self.queue.items.clone() {
-            let (glyph, color, border) = match toast.kind {
-                ToastKind::Info => ("●", t.accent, t.line),
-                ToastKind::Ok => ("✓", t.ok, t.line),
-                ToastKind::Warn => ("⚠", t.warn, t.warn),
-                ToastKind::Err => ("✖", t.err, t.err),
+            let (kind, color, border) = match toast.kind {
+                ToastKind::Info => (Icon::Info, t.accent, t.line),
+                ToastKind::Ok => (Icon::Ok, t.ok, t.line),
+                ToastKind::Warn => (Icon::Warning, t.warn, t.warn),
+                ToastKind::Err => (Icon::Error, t.err, t.err),
             };
             let id = toast.id;
             let mut row = div()
@@ -690,7 +699,7 @@ impl Render for Toasts {
                 .border_color(border)
                 .rounded(t.radius_m)
                 .occlude()
-                .child(div().flex_none().text_color(color).child(glyph))
+                .child(icon(kind, color, &t))
                 .child(label(toast.text.clone()).text_color(t.fg));
             for (i, (name, run)) in toast.actions.iter().enumerate() {
                 let run = run.clone();
@@ -704,7 +713,9 @@ impl Render for Toasts {
                 );
             }
             row = row.child(
-                crate::components::button(("toast-close", id as usize), "×", &t)
+                // As tall as an action's button: every toast row has the same height.
+                crate::components::icon_button(("toast-close", id as usize), Icon::Close, "dismiss", &t)
+                    .h(t.button_h)
                     .on_click(cx.listener(move |this, _, _, cx| this.dismiss(id, cx))),
             );
             stack = stack.child(row);

@@ -3,6 +3,7 @@
 #![allow(clippy::disallowed_methods)]
 
 pub mod components;
+pub mod icons;
 pub mod overlay;
 pub mod terminal;
 pub mod text_buffer;
@@ -10,6 +11,7 @@ pub mod text_input;
 pub mod theme;
 
 pub use components::*;
+pub use icons::{Assets, Icon, icon, spinner};
 pub use overlay::{MenuItem, ModalFocus, ToastKind, modal_frame, open_menu, pop_modal, push_modal, render_layer, toasts};
 pub use text_input::{InputEvent, TextInput};
 

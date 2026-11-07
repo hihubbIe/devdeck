@@ -3,7 +3,7 @@
 
 use crate::app_settings::{self, AppSettings};
 use devdeck_core::settings::SCALE_STEPS;
-use devdeck_ui::{button, label, section, theme, toggle_button};
+use devdeck_ui::{Icon, button, icon_button, label, section, theme, toggle_button};
 use gpui::{
     Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     Subscription, Window, div, prelude::*,
@@ -115,9 +115,9 @@ impl Render for SettingsView {
                     .items_center()
                     .gap_2()
                     .child(div().w(label_w).flex_none().child("UI scale"))
-                    .child(button("scale-down", "−", &t).debug_selector(|| "scale-down".into()).on_click(|_, _, cx| app_settings::decrease(cx)))
+                    .child(icon_button("scale-down", Icon::Minus, "smaller", &t).debug_selector(|| "scale-down".into()).on_click(|_, _, cx| app_settings::decrease(cx)))
                     .child(div().w(t.size(64.)).flex_none().text_color(t.hi).child(percent(scale)))
-                    .child(button("scale-up", "+", &t).debug_selector(|| "scale-up".into()).on_click(|_, _, cx| app_settings::increase(cx)))
+                    .child(icon_button("scale-up", Icon::Plus, "larger", &t).debug_selector(|| "scale-up".into()).on_click(|_, _, cx| app_settings::increase(cx)))
                     .child(div().w(t.size(16.)).flex_none())
                     .child(presets),
             )

@@ -21,7 +21,7 @@ use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, Result as LayoutResult, ViewRef};
 use devdeck_core::list::{self, Kids, ListItem, Row, Section};
 use devdeck_core::state::{SidebarState, StateStore};
-use devdeck_ui::{DragGhost, InputEvent, MenuItem, TextInput, Theme, ToastKind, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
+use devdeck_ui::{DragGhost, Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, dot, icon, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, Focusable, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
@@ -93,13 +93,13 @@ impl Activity {
         }
     }
 
-    pub fn glyph(self) -> &'static str {
+    pub fn icon(self) -> Icon {
         match self {
-            Activity::Apps => "≡",
-            Activity::Cluster => "◈",
-            Activity::Ports => "⊡",
-            Activity::Layouts => "◫",
-            Activity::Terminals => "❯",
+            Activity::Apps => Icon::Apps,
+            Activity::Cluster => Icon::Cluster,
+            Activity::Ports => Icon::Ports,
+            Activity::Layouts => Icon::Layouts,
+            Activity::Terminals => Icon::Terminals,
         }
     }
 }
@@ -278,8 +278,7 @@ impl Sidebar {
                             deps.iter()
                                 .map(|d| {
                                     let rolling = c.rollout(env, &d.name).is_some_and(|r| matches!(r, devdeck_core::cluster::Rollout::Progressing { .. }));
-                                    let detail = if rolling { format!("◐ {}", d.tag) } else { d.tag.clone() };
-                                    ListItem::new(d.name.clone(), d.name.clone()).detail(detail).running(d.ready == d.replicas)
+                                    ListItem::new(d.name.clone(), d.name.clone()).detail(d.tag.clone()).busy(rolling).running(d.ready == d.replicas)
                                 })
                                 .collect()
                         })
@@ -659,12 +658,13 @@ impl Sidebar {
     pub fn env_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
         let s = this.read(cx);
         let current = s.state.env.clone();
+        let err = theme(cx).err;
         s.envs(cx)
             .iter()
             .map(|e| {
                 let (sidebar, name) = (this.clone(), e.name.clone());
-                let label = if e.protected { format!("⊘ {}", e.name) } else { e.name.clone() };
-                MenuItem::new(label, move |_, cx| sidebar.update(cx, |s, cx| s.set_env(&name, cx))).checked(current.as_deref() == Some(&e.name))
+                let item = MenuItem::new(e.name.clone(), move |_, cx| sidebar.update(cx, |s, cx| s.set_env(&name, cx))).checked(current.as_deref() == Some(&e.name));
+                if e.protected { item.icon(Icon::Protected, err) } else { item }
             })
             .collect()
     }
@@ -946,11 +946,12 @@ fn render_row(
                 })
                 .when_some(drag, |el, drag| el.on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone()))))
                 .child(match &item.warning {
-                    Some(_) => div().flex_none().text_color(t.warn).child("⚠"),
-                    None => div().flex_none().text_color(if item.running { t.ok } else { t.dim }).child(if item.running { "●" } else { "○" }),
+                    Some(_) => icon(Icon::Warning, t.warn, t).into_any_element(),
+                    None => dot(if item.running { t.ok } else { t.dim }, item.running, t).into_any_element(),
                 })
                 .child(div().flex_1().min_w_0().truncate().text_color(text_color).child(label_text))
                 .when_some(kids.filter(|k| !k.open), |d, k| d.child(holds(k, t)))
+                .when(item.busy, |d| d.child(icon(Icon::Busy, t.accent, t)))
                 .when_some(item.warning.clone().or((!item.detail.is_empty()).then(|| item.detail.clone())), |d, detail| {
                     let color = if item.warning.is_some() { t.warn } else { t.dim };
                     d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(color).child(detail))
@@ -967,7 +968,8 @@ fn holds(kids: Kids, t: &Theme) -> gpui::Div {
         .flex()
         .gap_1()
         .text_size(t.text_small)
-        .when(kids.running, |d| d.child(div().text_color(t.ok).child("●")))
-        .when(kids.warning, |d| d.child(div().text_color(t.warn).child("⚠")))
+        .items_center()
+        .when(kids.running, |d| d.child(dot(t.ok, true, t)))
+        .when(kids.warning, |d| d.child(icon(Icon::Warning, t.warn, t)))
         .child(div().text_color(t.dim).child(kids.count.to_string()))
 }

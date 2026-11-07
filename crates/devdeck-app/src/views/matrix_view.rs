@@ -7,7 +7,7 @@ use super::ViewCx;
 use crate::cluster::Cluster;
 use devdeck_core::cluster::Remote;
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_ui::{label, theme, tip};
+use devdeck_ui::{Icon, icon, label, theme, tip};
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
     Styled, Subscription, Window, actions, div, prelude::*,
@@ -57,13 +57,20 @@ impl Render for MatrixView {
         let (name_w, cell_w) = (t.size(220.), t.size(96.));
         let mut header = div().flex().h(t.row_h).items_center().child(div().flex_none().w(name_w).text_color(t.dim).child("service"));
         for e in &envs {
-            let state = match c.peek(&e.name) {
-                Remote::Loading => " …",
-                Remote::Error(_) => " ⚠",
-                Remote::Ready(_) => "",
-            };
-            let text = format!("{}{}{state}", if e.protected { "⊘ " } else { "" }, e.name);
-            header = header.child(div().flex_none().w(cell_w).truncate().text_color(if e.protected { t.err } else { t.env }).child(text));
+            let color = if e.protected { t.err } else { t.env };
+            let loading = matches!(c.peek(&e.name), Remote::Loading);
+            let cell = div()
+                .flex_none()
+                .w(cell_w)
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_color(color)
+                .when(e.protected, |d| d.child(icon(Icon::Protected, color, &t)))
+                .child(label(format!("{}{}", e.name, if loading { " …" } else { "" })))
+                .when(matches!(c.peek(&e.name), Remote::Error(_)), |d| d.child(icon(Icon::Warning, t.warn, &t)));
+            header = header.child(cell);
         }
         let mut grid = div().flex().flex_col().child(header);
         for (r, s) in services.iter().enumerate() {

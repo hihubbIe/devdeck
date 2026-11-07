@@ -731,10 +731,7 @@ fn click_close(vcx: &mut VisualTestContext, from_bottom: usize, t: &Theme) {
 
 /// Clicks the action button just left of the close button of the newest toast.
 fn click_action(vcx: &mut VisualTestContext, t: &Theme) {
-    let close_w = vcx.update(|window, _| {
-        let run = window.text_style().to_run("×".len());
-        window.text_system().layout_line("×", t.text, &[run], None).width
-    }) + t.size(16.);
+    let close_w = t.icon_button;
     let (right, y) = close_button(0, t);
     let action_right = right - close_w - t.size(12.);
     vcx.simulate_click(point(action_right - t.size(3.), y), Modifiers::none());

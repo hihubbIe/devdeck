@@ -756,7 +756,7 @@ fn main() -> Result<(), String> {
     // Removed when dropped, on every way out (`?` included).
     let config = devdeck_core::testing::TempDir::new("snapshot");
     let text = gpui_platform::current_platform(true).text_system();
-    let mut cx = HeadlessAppContext::with_platform(text, Arc::new(()), gpui_platform::current_headless_renderer);
+    let mut cx = HeadlessAppContext::with_platform(text, Arc::new(devdeck_ui::Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     for state in states().into_iter().filter(|s| filter.as_ref().is_none_or(|f| f.split(',').any(|part| s.name.contains(part)))) {
         cx.update(|cx| {

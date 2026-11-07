@@ -14,7 +14,7 @@ use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
-use devdeck_ui::{DragGhost, Empty, MenuItem, Theme, apply_window_scale, button, icon_button, label, logical, open_menu, theme, tip};
+use devdeck_ui::{DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
@@ -589,7 +589,8 @@ impl Render for WindowView {
             .child(div().text_color(t.hi).child("devdeck"))
             .when_some(menu_shell, |d, shell| {
                 d.child(
-                    button("workspace", format!("{ws_name} ▾"), &t)
+                    button("workspace", ws_name.clone(), &t)
+                        .child(button_icon(Icon::Open, &t))
                         .debug_selector(|| "workspace-button".into())
                         .tooltip(tip("switch workspace"))
                         .on_click({
@@ -607,10 +608,13 @@ impl Render for WindowView {
             })
             .when_some(env, |d, env| {
                 let sidebar = sidebar.clone();
-                let text = if env.protected { format!("⊘ @{} ▾", env.name) } else { format!("@{} ▾", env.name) };
+                let color = if env.protected { t.err } else { t.env };
                 d.child(
-                    button("env", text, &t)
-                        .text_color(if env.protected { t.err } else { t.env })
+                    button("env", format!("@{}", env.name), &t)
+                        // Protected: changes there ask first.
+                        .when(env.protected, |b| b.child(icon(Icon::Protected, color, &t)))
+                        .child(icon(Icon::Open, color, &t))
+                        .text_color(color)
                         .debug_selector(|| "env-button".into())
                         .tooltip(tip("env for runs and the cluster list"))
                         .on_click({
@@ -632,7 +636,8 @@ impl Render for WindowView {
                 let deck = self.deck.clone();
                 let current = deck.read(cx).book.current.clone();
                 d.child(
-                    button("layout", format!("{current} ▾"), &t)
+                    button("layout", current, &t)
+                        .child(button_icon(Icon::Open, &t))
                         .debug_selector(|| "layout-button".into())
                         .tooltip(tip("layouts"))
                         .on_click(move |e, window, cx| {
@@ -657,21 +662,24 @@ impl Render for WindowView {
             })
             .when(is_main, |d| {
                 d.child(
-                    button("settings", if settings_open { "⚙ settings ✓" } else { "⚙ settings" }, &t)
+                    labeled_button("settings", Icon::Settings, "settings", &t)
+                        .when(settings_open, |b| b.child(icon(Icon::Check, t.accent, &t)))
                         .tooltip(tip("settings"))
                         .on_click(cx.listener(move |this, _, window, cx| this.set_settings_open(!settings_open, window, cx))),
                 )
             })
             .when(!is_main, |d| {
                 d.child(
-                    button("reattach", "⇲", &t)
-                        .tooltip(tip("send back to the main window"))
+                    icon_button("reattach", Icon::Reattach, "send back to the main window", &t)
                         .on_click(cx.listener(|this, _, _, cx| this.reattach(cx))),
                 )
             })
-            .child(button("min", "—", &t).on_click(|_, window, _| window.minimize_window()))
-            .child(button("max", "□", &t).on_click(|_, window, _| window.zoom_window()))
-            .child(button("close", "×", &t).on_click(move |_, _, cx| {
+            .child(icon_button("min", Icon::WindowMinimize, "minimize", &t).on_click(|_, window, _| window.minimize_window()))
+            .child(
+                icon_button("max", if window.is_maximized() { Icon::WindowRestore } else { Icon::WindowMaximize }, "maximize or restore", &t)
+                    .on_click(|_, window, _| window.zoom_window()),
+            )
+            .child(icon_button("close", Icon::Close, "close", &t).on_click(move |_, _, cx| {
                 if id == MAIN_WINDOW {
                     shell::request_quit(cx);
                 } else {
@@ -847,8 +855,6 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(t.size(18.))
-                .text_color(if on { t.hi } else { t.mute })
                 .when(on, |d| d.border_l_2().border_color(t.accent))
                 .hover(move |s| s.bg(hover))
                 .cursor_pointer()
@@ -871,7 +877,7 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                         open_menu(e.position, items, window, cx);
                     }
                 })
-                .child(a.glyph()),
+                .child(icon(a.icon(), if on { t.hi } else { t.mute }, t).size(t.size(18.))),
         );
     }
     bar
@@ -1231,7 +1237,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 let label: SharedString = format!("pane: {}", d.title).into();
                 cx.new(|_| DragGhost(label))
             })
-            .child("⠿"),
+            .child(icon(Icon::Grip, t.dim, t)),
     );
 
     // Tabs keep priority over the pane buttons when the pane is narrow.
@@ -1313,13 +1319,13 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                         .flex_none()
                         .px_1()
                         .rounded(t.radius_s)
-                        .text_color(t.dim)
-                        .hover(move |s| s.bg(line).text_color(fg))
+                        .group("tab-close")
+                        .hover(move |s| s.bg(line))
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
                             apply_on(&d_close, cx, |l| l.close_tab(pane, i).map(|_| ()));
                         })
-                        .child("×"),
+                        .child(icon(Icon::Close, t.dim, t).size(t.size(12.)).group_hover("tab-close", move |s| s.text_color(fg))),
                 ),
         );
     }
@@ -1341,25 +1347,25 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             .px_1()
             .when(!is_detached, |d| {
                 d.child(
-                    icon_button(("collapse", pane.0), if p.collapsed { "▾" } else { "▴" }, "collapse or expand", t)
+                    icon_button(("collapse", pane.0), if p.collapsed { Icon::Open } else { Icon::Collapse }, "collapse or expand", t)
                         .on_click(move |_, _, cx| apply_on(&d_col, cx, |l| l.toggle_collapse(pane))),
                 )
                 .child(
-                    icon_button(("maximize", pane.0), if maximized { "◱" } else { "□" }, "maximize or restore", t)
+                    icon_button(("maximize", pane.0), if maximized { Icon::Restore } else { Icon::Maximize }, "maximize or restore", t)
                         .on_click(move |_, _, cx| apply_on(&d_max, cx, |l| l.toggle_maximize(pane))),
                 )
             })
             .when(!p.tabs.is_empty(), |d| {
                 let deck = f.deck.clone();
                 d.child(
-                    icon_button(("send", pane.0), "⇢", "send this pane's tabs to another pane", t).on_click(move |_, window, cx| {
+                    icon_button(("send", pane.0), Icon::Send, "send this pane's tabs to another pane", t).on_click(move |_, window, cx| {
                         crate::send_to::open(deck.clone(), SendSource::Pane(pane), window, cx);
                     }),
                 )
             })
             .when(can_detach, |d| {
                 d.child(
-                    icon_button(("detach", pane.0), "⇱", "detach tab to its own window", t)
+                    icon_button(("detach", pane.0), Icon::Detach, "detach tab to its own window", t)
                         .on_click(move |_, _, cx| apply_on(&d_det, cx, |l| l.detach(pane, active).map(|_| ()))),
                 )
             }),

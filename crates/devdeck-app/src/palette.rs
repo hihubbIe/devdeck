@@ -12,7 +12,7 @@ use crate::shell::{self, Shell};
 use devdeck_core::apps::Tier;
 use devdeck_core::fuzzy;
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_ui::{InputEvent, TextInput, ToastKind, label, modal_frame, pop_modal, push_modal, theme, toasts};
+use devdeck_ui::{Icon, InputEvent, TextInput, ToastKind, dot, icon_text, label, modal_frame, pop_modal, push_modal, theme, toasts};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
     SharedString, StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*,
@@ -38,6 +38,8 @@ pub enum Item {
 pub struct Entry {
     pub label: String,
     pub detail: String,
+    /// A command that runs: a dot before its detail.
+    pub running: bool,
     pub item: Item,
     pub disabled: Option<String>,
 }
@@ -117,7 +119,8 @@ impl Palette {
             let running = runner.state(&key).is_some_and(|s| s.is_running());
             Entry {
                 label: format!("{app} › {}", cmd.name()),
-                detail: format!("{}{}{}", if running { "● " } else { "" }, cmd.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default()),
+                detail: format!("{}{}", cmd.line, env.as_deref().map(|e| format!(" · @{e}")).unwrap_or_default()),
+                running,
                 item: Item::Command { app: app.into(), cmd: cmd.id.clone() },
                 disabled: runner.refusal(&key),
             }
@@ -130,6 +133,7 @@ impl Palette {
         }
         for app in &services.catalog.apps {
             out.push(Entry {
+                running: false,
                 label: app.name.clone(),
                 detail: format!("app · {}", app.kind),
                 item: Item::App(app.id.clone()),
@@ -141,22 +145,24 @@ impl Palette {
         }
         if let (Some(cluster), Some(env)) = (services.cluster.as_ref(), services.env.as_ref()) {
             for d in cluster.read(cx).peek(env).ready().cloned().unwrap_or_default() {
-                out.push(Entry { label: d.name.clone(), detail: format!("service on {env} · {}", d.tag), item: Item::Service(d.name), disabled: None });
+                out.push(Entry { running: false, label: d.name.clone(), detail: format!("service on {env} · {}", d.tag), item: Item::Service(d.name), disabled: None });
             }
             for e in &services.catalog.envs {
                 out.push(Entry {
+                    running: false,
                     label: format!("@{}", e.name),
                     detail: format!("switch env{}", if e.protected { " · protected" } else { "" }),
                     item: Item::Env(e.name.clone()),
                     disabled: None,
                 });
             }
-            out.push(Entry { label: "branch matrix".into(), detail: "view".into(), item: Item::View(ViewAddr::Matrix), disabled: None });
+            out.push(Entry { running: false, label: "branch matrix".into(), detail: "view".into(), item: Item::View(ViewAddr::Matrix), disabled: None });
         }
         let book = &ws.deck.read(cx).book;
         for name in book.names() {
             let current = name == book.current;
             out.push(Entry {
+                running: false,
                 label: format!("layout {name}"),
                 detail: if current { "current".into() } else { "switch layout".into() },
                 item: Item::Layout(name),
@@ -165,6 +171,7 @@ impl Palette {
         }
         for (i, w) in s.workspaces.iter().enumerate() {
             out.push(Entry {
+                running: false,
                 label: format!("workspace {}", w.name),
                 detail: if i == s.active { "current".into() } else { "switch".into() },
                 item: Item::Workspace(i),
@@ -182,6 +189,7 @@ impl Palette {
                 continue;
             }
             out.push(Entry {
+                running: false,
                 label: spec.label.to_string(),
                 detail: spec.group.to_lowercase(),
                 item: Item::Action(spec.id),
@@ -345,7 +353,17 @@ impl Render for Palette {
                                 this.run_selected(window, cx);
                             }))
                             .child(div().flex_none().max_w(gpui::relative(0.55)).truncate().text_color(if e.disabled.is_some() { t.dim } else { t.fg }).child(label_text))
-                            .child(label(e.disabled.clone().map(|d| format!("⚠ {d}")).unwrap_or(e.detail.clone())).flex_1().text_color(if e.disabled.is_some() { t.warn } else { t.mute }))
+                            .child(match e.disabled.clone() {
+                                Some(d) => icon_text(Icon::Warning, t.warn, d, &t).flex_1(),
+                                None => div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .when(e.running, |d| d.child(dot(t.ok, true, &t)))
+                                    .child(label(e.detail.clone()).text_color(t.mute)),
+                            })
                     })
                     .collect()
             }),

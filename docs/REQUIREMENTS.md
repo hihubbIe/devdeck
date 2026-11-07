@@ -85,10 +85,11 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 9. Look and themes
 
-- [~] **R9.1** Dark, dense, flat look of the approved prototype: 24 px rows, hairline dividers, color only for state and always paired with a glyph.
+- [~] **R9.1** Dark, dense, flat look of the approved prototype: 24 px rows, hairline dividers, color only for state and always paired with an icon or a status dot.
 - [ ] **R9.2** Themes are data files of color tokens. One theme ships for now: the prototype's dark theme with slightly more contrast.
 - [~] **R9.3** A shared component library (rows, tabs, buttons, inputs, menus, badges, key hints, text view, terminal view…) is the only way views draw UI, for visual parity.
 
+- [~] **R9.5** Buttons, marks and messages use real icons (one outline set, drawn in the theme's colors and sized by the UI scale), never font glyphs; status dots are drawn shapes (decided 2026-11-07).
 - [~] **R9.4** A Settings button in the title bar opens settings as a full-window view (not a tab). It holds global, per-machine choices: UI scale (for example 90–150 %, on top of the desktop's own scaling) and theme, and later more. Every size in the UI derives from the UI scale. Settings are saved to the config folder and apply immediately.
 
 ## 10. Configuration and setup
