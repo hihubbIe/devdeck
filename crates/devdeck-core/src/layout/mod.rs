@@ -382,6 +382,28 @@ impl Layout {
         Ok(view)
     }
 
+    /// Moves tab `idx` of `from` into `to`'s tabs at `at`, counted before it leaves (it
+    /// lands before the tab now at `at`; the tab count puts it last): a reorder within a
+    /// pane, or a move to a place in another. It becomes the active tab, focused.
+    pub fn move_tab_to(&mut self, from: PaneId, idx: usize, to: PaneId, at: usize) -> Result<()> {
+        if idx >= self.pane(from)?.tabs.len() || at > self.pane(to)?.tabs.len() {
+            return Err(LayoutError::TabOutOfRange);
+        }
+        if from == to && (at == idx || at == idx + 1) {
+            return self.activate(from, idx);
+        }
+        let view = self.take_tab(from, idx)?;
+        let at = if from == to && idx < at { at - 1 } else { at };
+        let p = self.pane_mut(to)?;
+        p.tabs.insert(at, view);
+        p.active = at;
+        p.collapsed = false;
+        self.remove_pane_if_empty(from)?;
+        self.focus(to)?;
+        self.repair();
+        Ok(())
+    }
+
     /// Moves one tab into a pane or onto a pane's edge.
     pub fn move_tab(&mut self, from: PaneId, idx: usize, drop: Drop) -> Result<()> {
         let drop = self.land_in_empty(drop)?;

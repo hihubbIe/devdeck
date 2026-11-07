@@ -249,3 +249,32 @@ fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut Tes
     assert_eq!(take(&log, "demo/notes"), [true], "the other layout's tab comes on screen");
     assert!(take(&log, "demo/deployments").is_empty(), "the kept view never left the screen");
 }
+
+#[gpui::test]
+fn a_tab_dragged_along_its_strip_lands_where_it_is_dropped(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, VisualTestContext, point};
+    let deck = setup(cx);
+    let (pane, before) = cx.read(|cx| {
+        let l = deck.read(cx).layout();
+        let p = l.main().focused;
+        (p, l.pane(p).unwrap().tabs.clone())
+    });
+    assert!(before.len() >= 3, "{before:?}");
+    let window = cx.read(|cx| cx.windows()[0]);
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    // Selectors are 'static: a test can leak its few.
+    let tab = |vcx: &mut VisualTestContext, i: usize| vcx.debug_bounds(Box::leak(format!("tab-{}-{i}", pane.0).into_boxed_str())).expect("a tab");
+    let (first, third) = (tab(&mut vcx, 0), tab(&mut vcx, 2));
+    let target = point(third.center().x - third.size.width * 0.3, third.center().y);
+    vcx.simulate_mouse_down(first.center(), MouseButton::Left, Modifiers::none());
+    vcx.simulate_mouse_move(first.center() + point(devdeck_ui::logical(20.), devdeck_ui::logical(0.)), MouseButton::Left, Modifiers::none());
+    vcx.simulate_mouse_move(target, MouseButton::Left, Modifiers::none());
+    vcx.simulate_mouse_move(target, MouseButton::Left, Modifiers::none());
+    vcx.simulate_mouse_up(target, MouseButton::Left, Modifiers::none());
+    vcx.run_until_parked();
+    let after = vcx.read(|cx| deck.read(cx).layout().pane(pane).unwrap().tabs.clone());
+    let mut expected = before.clone();
+    let moved = expected.remove(0);
+    expected.insert(1, moved);
+    assert_eq!(after, expected, "before the third tab (its left half), not at the end");
+}

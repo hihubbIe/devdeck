@@ -63,6 +63,8 @@ pub struct WindowView {
     settings: Option<Entity<SettingsView>>,
     /// Main window: where focus was in each workspace, restored on switching back.
     remembered: HashMap<EntityId, WeakFocusHandle>,
+    /// While a tab is dragged over a tab strip: the pane and the place it would land at.
+    tab_insert: Rc<Cell<Option<(PaneId, usize)>>>,
     /// Where focus was when Settings opened.
     before_settings: Option<WeakFocusHandle>,
     deck_sub: Subscription,
@@ -141,6 +143,7 @@ struct Frame<'a> {
     deck: &'a Entity<Deck>,
     t: &'a Theme,
     dragging: bool,
+    tab_insert: &'a Rc<Cell<Option<(PaneId, usize)>>>,
 }
 
 impl WindowView {
@@ -213,6 +216,7 @@ impl WindowView {
             panes_focus,
             settings: None,
             remembered: HashMap::new(),
+            tab_insert: Rc::default(),
             before_settings: None,
             deck_sub,
             sidebar: None,
@@ -535,7 +539,7 @@ impl Render for WindowView {
             let d = self.deck.read(cx);
             layout.panes.keys().map(|p| (*p, d.view_focus(*p).unwrap_or_else(|| self.panes_focus.clone()))).collect()
         };
-        let frame = Frame { layout: &layout, numbers: &numbers, view_focus: &view_focus, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag() };
+        let frame = Frame { layout: &layout, numbers: &numbers, view_focus: &view_focus, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag(), tab_insert: &self.tab_insert };
         let deck_id = self.deck.entity_id();
         let workspace = self.deck.read(cx).workspace.clone();
         let shell = self.shell.as_ref().and_then(WeakEntity::upgrade);
@@ -1165,10 +1169,14 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 open_menu(e.position, pane_menu(&deck, pane, &layout), window, cx);
             }
         })
-        .on_drop(move |tab: &DraggedTab, _, cx| {
-            if tab.deck == deck_id {
-                let tab = tab.clone();
-                apply_on(&strip_deck, cx, |l| l.move_tab(tab.pane, tab.index, Drop::Into(pane)));
+        .on_drop({
+            let insert = f.tab_insert.clone();
+            move |tab: &DraggedTab, _, cx| {
+                insert.set(None);
+                if tab.deck == deck_id {
+                    let tab = tab.clone();
+                    apply_on(&strip_deck, cx, |l| l.move_tab(tab.pane, tab.index, Drop::Into(pane)));
+                }
             }
         });
 
@@ -1199,10 +1207,14 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         let active = i == p.active;
         let (d_click, d_mid, d_close) = (f.deck.clone(), f.deck.clone(), f.deck.clone());
         let full = title.clone();
-        let (hover, line, fg) = (t.hover, t.line, t.fg);
+        let (hover, line, fg, accent) = (t.hover, t.line, t.fg, t.accent);
+        // Dragged over, a tab is a place: its left half before it, its right half after.
+        let (moving, showing, dropping) = (f.tab_insert.clone(), f.tab_insert.clone(), f.tab_insert.clone());
+        let d_drop = f.deck.clone();
         tabs = tabs.child(
             div()
                 .id(eid("tab", pane.0, i))
+                .debug_selector(move || format!("tab-{}-{i}", pane.0))
                 .flex()
                 .flex_shrink(1.)
                 .min_w(t.tab_min_w)
@@ -1238,6 +1250,28 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 })
                 .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| {
                     cx.new(|_| DragGhost(d.title.clone()))
+                })
+                .on_drag_move::<DraggedTab>(move |e, window, _| {
+                    if !e.bounds.contains(&e.event.position) {
+                        return;
+                    }
+                    let at = if e.event.position.x < e.bounds.center().x { i } else { i + 1 };
+                    if moving.get() != Some((pane, at)) {
+                        moving.set(Some((pane, at)));
+                        window.refresh();
+                    }
+                })
+                .drag_over::<DraggedTab>(move |s, _, _, _| match showing.get() {
+                    Some((p, at)) if p == pane && at == i => s.border_l_2().border_color(accent),
+                    Some((p, at)) if p == pane && at == i + 1 => s.border_r_2().border_color(accent),
+                    _ => s,
+                })
+                .on_drop(move |tab: &DraggedTab, _, cx| {
+                    let at = dropping.take().filter(|(p, _)| *p == pane).map_or(i, |(_, at)| at);
+                    if tab.deck == deck_id {
+                        let tab = tab.clone();
+                        apply_on(&d_drop, cx, |l| l.move_tab_to(tab.pane, tab.index, pane, at));
+                    }
                 })
                 .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
                 .child(

@@ -618,3 +618,28 @@ fn send_tab_and_pane_into_panes_and_new_windows() {
     assert_eq!(l.pane(a).unwrap().tabs.len(), 3);
     ok(&l);
 }
+
+#[test]
+fn tabs_reorder_within_a_pane_and_land_at_a_place_in_another() {
+    let (mut l, p) = with_tabs(&["a", "b", "c", "d"]);
+    let names = |l: &Layout, p: PaneId| l.pane(p).unwrap().tabs.iter().map(|r| r.as_str().to_string()).collect::<Vec<_>>();
+    l.move_tab_to(p, 0, p, 3).unwrap();
+    assert_eq!(names(&l, p), ["b", "c", "a", "d"], "before the tab at 3 (d)");
+    assert_eq!(l.pane(p).unwrap().active, 2, "the moved one is active");
+    l.move_tab_to(p, 3, p, 0).unwrap();
+    assert_eq!(names(&l, p), ["d", "b", "c", "a"]);
+    l.move_tab_to(p, 1, p, 4).unwrap();
+    assert_eq!(names(&l, p), ["d", "c", "a", "b"], "the count puts it last");
+    l.move_tab_to(p, 1, p, 2).unwrap();
+    assert_eq!(names(&l, p), ["d", "c", "a", "b"], "onto itself: no move");
+    assert_eq!(l.pane(p).unwrap().active, 1);
+    ok(&l);
+    // "b" goes to a pane of its own on the right; then "d" lands before it there.
+    l.move_tab(p, 3, Drop::Edge(p, Edge::Right)).unwrap();
+    let q = l.main().focused;
+    l.move_tab_to(p, 0, q, 0).unwrap();
+    assert_eq!(names(&l, q), ["d", "b"], "first in the other pane");
+    assert_eq!(l.main().focused, q);
+    assert!(l.move_tab_to(p, 9, q, 0).is_err() && l.move_tab_to(p, 0, q, 9).is_err());
+    ok(&l);
+}
