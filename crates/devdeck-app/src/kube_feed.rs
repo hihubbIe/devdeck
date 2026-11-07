@@ -57,6 +57,12 @@ pub fn start() -> Option<async_channel::Receiver<KubeState>> {
                         Ok(rows) => KubeState::Ready(rows),
                         Err(e) => KubeState::Error(e),
                     };
+                    if std::env::var_os("DEVDECK_STATS").is_some() {
+                        match &state {
+                            KubeState::Ready(rows) => eprintln!("devdeck-kube ok deployments={}", rows.len()),
+                            other => eprintln!("devdeck-kube {other:?}"),
+                        }
+                    }
                     if tx.send(state).await.is_err() {
                         break;
                     }

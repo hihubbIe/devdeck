@@ -162,6 +162,21 @@ Workspaces, config files, real views, palette, menus, theme files, processes.
 16. DESIGN.md out of date; fractional scaling; log demo is not the terminal grid.
     **Accepted.**
 
+## Outcome
+
+**Go: keep GPUI.** Every threshold passed (docs/perf/M0.md). Deviations from the plan:
+
+- Visual checks use `devdeck-snapshot`, which renders states offscreen through GPUI's
+  headless wgpu renderer with the real text system. GNOME refuses silent screenshots and
+  computer use was not available. Caught two layout bugs (fixed).
+- The kube probe became a demo view, as the review suggested; 67 deployments listed on
+  dev35, and a 403 shows as a message.
+- Cross-window tab drag: impossible on Wayland, unverified on X11 (see perf notes).
+  Proposed R3.8 amendment pending the user's decision.
+- Not done in M0, moved to M1: real-text-system truncation tests, the "keep in every
+  layout" flag, layouts per workspace, tooltips on hover checked visually (they exist
+  but snapshots can't show hover).
+
 ## Go/no-go thresholds
 
 | metric | threshold |

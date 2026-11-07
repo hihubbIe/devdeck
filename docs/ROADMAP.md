@@ -2,7 +2,7 @@
 
 Each milestone ends with a manual test by the user.
 
-## M0 · Spike: prove the foundation
+## M0 · Spike: prove the foundation — done 2026-11-07, waiting for the user's manual test
 - Cargo workspace, pinned GPUI.
 - A window with a split tree of panes rendered from the pure layout model.
 - Collapse a pane, maximize a pane, resize dividers.

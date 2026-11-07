@@ -7,12 +7,12 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 1. Product
 
-- [ ] **R1.1** Native desktop app written in Rust, shipped as a single executable.
+- [~] **R1.1** Native desktop app written in Rust, shipped as a single executable.
 - [ ] **R1.2** Linux first (Wayland and X11). Wide desktop screens (1920×1080 and up). No mobile or narrow layouts.
-- [ ] **R1.3** As fast as possible and as cheap as possible: GPU-rendered text, near-zero CPU when idle, minimal RAM. Only visible content is drawn; long lists and logs are virtualized.
+- [~] **R1.3** As fast as possible and as cheap as possible: GPU-rendered text, near-zero CPU when idle, minimal RAM. Only visible content is drawn; long lists and logs are virtualized.
 - [ ] **R1.4** Self-contained. No dependency on the author's own scripts or tools (`cs`, `f`, the project daemon, aliases). External programs (pnpm, go, kubectl, k9s, docker…) are optional capabilities, detected at runtime.
 - [ ] **R1.5** Shareable. Nothing about one machine is hard-coded: paths, envs, clusters, kubeconfigs, folders and tools all come from config.
-- [ ] **R1.6** Monospace font everywhere.
+- [~] **R1.6** Monospace font everywhere.
 
 ## 2. Workspaces
 
@@ -22,15 +22,15 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 3. Layout engine (panes, tabs, windows)
 
-- [ ] **R3.1** The window body is one tree of splits. Every leaf is a pane. There are no special docks: any pane can sit anywhere.
-- [ ] **R3.2** A pane is a generic container of tabs. A tab shows exactly one view. Any view type can open in any pane.
-- [ ] **R3.3** Views are implemented once and registered natively (examples: command output, app details, service inspector, pod, logs, text or config file, branch matrix, ports). Adding a view type must not require touching the layout engine.
-- [ ] **R3.4** Tabs move by drag and drop: into another pane's tab strip, or onto a pane edge to split it. Panes move the same way (drag the pane by its tab strip handle).
-- [ ] **R3.5** Dividers are resizable by dragging.
-- [ ] **R3.6** A pane can collapse to only its tab strip, giving its space to its neighbours. Clicking a tab (or a key) expands it again.
-- [ ] **R3.7** A pane can be maximized and restored.
-- [ ] **R3.8** A tab can be detached into its own OS window. That window contains a single pane (it can receive more tabs), nothing else of the app. It is owned by the main process: closing the main app closes it. A tab can be re-attached by dragging it back or from its menu.
-- [ ] **R3.9** Panes never overlap. Each pane clips its own content; content wider than the pane scrolls inside it.
+- [~] **R3.1** The window body is one tree of splits. Every leaf is a pane. There are no special docks: any pane can sit anywhere.
+- [~] **R3.2** A pane is a generic container of tabs. A tab shows exactly one view. Any view type can open in any pane.
+- [~] **R3.3** Views are implemented once and registered natively (examples: command output, app details, service inspector, pod, logs, text or config file, branch matrix, ports). Adding a view type must not require touching the layout engine.
+- [~] **R3.4** Tabs move by drag and drop: into another pane's tab strip, or onto a pane edge to split it. Panes move the same way (drag the pane by its tab strip handle).
+- [~] **R3.5** Dividers are resizable by dragging.
+- [~] **R3.6** A pane can collapse to only its tab strip, giving its space to its neighbours. Clicking a tab (or a key) expands it again.
+- [~] **R3.7** A pane can be maximized and restored.
+- [~] **R3.8** A tab can be detached into its own OS window. That window contains a single pane (it can receive more tabs), nothing else of the app. It is owned by the main process: closing the main app closes it. A tab can be re-attached by dragging it back or from its menu.
+- [~] **R3.9** Panes never overlap. Each pane clips its own content; content wider than the pane scrolls inside it.
 - [ ] **R3.10** Named layouts per workspace: save the current arrangement, switch between layouts. A view can be marked "keep in every layout".
 
 ## 4. Lists and text
@@ -38,12 +38,12 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [ ] **R4.1** Every list is sorted alphabetically.
 - [ ] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
 - [ ] **R4.3** No "mine" grouping and no recency-ordered sections. Running state is shown as an indicator on the row, with a "running only" filter.
-- [ ] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover.
-- [ ] **R4.5** Status markers and glyphs never shrink or move to another line; the label truncates instead.
+- [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover.
+- [~] **R4.5** Status markers and glyphs never shrink or move to another line; the label truncates instead.
 
 ## 5. Interaction
 
-- [ ] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts.
+- [~] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts.
 - [ ] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
 - [ ] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
 - [ ] **R5.4** k9s-inspired single-key shortcuts, a context-sensitive hint bar, and a searchable cheat sheet (`?`).
@@ -71,7 +71,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [ ] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, pause, follow, find), open k9s scoped to the env.
 - [ ] **R7.6** Protected envs (declared in config) refuse writes until unlocked by typing the env name.
 - [ ] **R7.7** Branch matrix: services × envs with the image tag in each cell; highlight a tag.
-- [ ] **R7.8** Works with what the user's access allows; missing permissions are explained, not hidden.
+- [~] **R7.8** Works with what the user's access allows; missing permissions are explained, not hidden.
 
 ## 8. Lifecycle
 
@@ -80,7 +80,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 9. Look and themes
 
-- [ ] **R9.1** Dark, dense, flat look of the approved prototype: 24 px rows, hairline dividers, color only for state and always paired with a glyph.
+- [~] **R9.1** Dark, dense, flat look of the approved prototype: 24 px rows, hairline dividers, color only for state and always paired with a glyph.
 - [ ] **R9.2** Themes are data files of color tokens. One theme ships for now: the prototype's dark theme with slightly more contrast.
 - [ ] **R9.3** A shared component library (rows, tabs, buttons, inputs, menus, badges, key hints, text view, terminal view…) is the only way views draw UI, for visual parity.
 
@@ -92,8 +92,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 11. Engineering
 
-- [ ] **R11.1** Work proceeds in steps: plan, review the plan with a subagent, assess, build, check visually across states, run tests, commit.
-- [ ] **R11.2** Unit tests for every feature; the whole suite runs before every commit so nothing regresses.
-- [ ] **R11.3** Dependencies are chosen deliberately (modern, fast, maintained) and pinned.
-- [ ] **R11.4** Performance is measured at every milestone, not assumed: memory at idle and under load, CPU at idle and under load, input latency, binary size, and a leak test (repeated open/close cycles must plateau). Results go in `docs/perf/<milestone>.md` and regressions are fixed before the milestone closes.
-- [ ] **R11.5** Development stops at the end of every milestone for the user's manual test.
+- [~] **R11.1** Work proceeds in steps: plan, review the plan with a subagent, assess, build, check visually across states, run tests, commit.
+- [~] **R11.2** Unit tests for every feature; the whole suite runs before every commit so nothing regresses.
+- [~] **R11.3** Dependencies are chosen deliberately (modern, fast, maintained) and pinned.
+- [~] **R11.4** Performance is measured at every milestone, not assumed: memory at idle and under load, CPU at idle and under load, input latency, binary size, and a leak test (repeated open/close cycles must plateau). Results go in `docs/perf/<milestone>.md` and regressions are fixed before the milestone closes.
+- [~] **R11.5** Development stops at the end of every milestone for the user's manual test.

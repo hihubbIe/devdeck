@@ -28,10 +28,47 @@ fn main() {
         if let Some(secs) = env_u64("DEVDECK_STATS") {
             spawn_stats_printer(deck.clone(), Duration::from_secs(secs.max(1)), cx);
         }
+        #[cfg(feature = "profile")]
+        if std::env::var("DEVDECK_LATENCY").is_ok() {
+            spawn_latency_printer(cx);
+        }
         if let Some(cycles) = env_u64("DEVDECK_STRESS") {
             spawn_stress(deck, cycles, cx);
         }
     });
+}
+
+/// Prints input-to-frame latency from GPUI's profiler every 5 s (profile builds).
+/// Excludes compositor and scanout time.
+#[cfg(feature = "profile")]
+fn spawn_latency_printer(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
+            let lines = cx.update(|cx| {
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|w| w.update(cx, |_, window, _| window.input_latency_snapshot()).ok())
+                    .map(|s| {
+                        let h = &s.latency_histogram;
+                        let ms = |ns: u64| ns as f64 / 1e6;
+                        format!(
+                            "devdeck-latency samples={} p50_ms={:.2} p95_ms={:.2} p99_ms={:.2} max_ms={:.2}",
+                            h.len(),
+                            ms(h.value_at_quantile(0.5)),
+                            ms(h.value_at_quantile(0.95)),
+                            ms(h.value_at_quantile(0.99)),
+                            ms(h.max())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            for l in lines {
+                eprintln!("{l}");
+            }
+        }
+    })
+    .detach();
 }
 
 fn spawn_stats_printer(deck: Entity<Deck>, every: Duration, cx: &mut App) {
@@ -41,9 +78,12 @@ fn spawn_stats_printer(deck: Entity<Deck>, every: Duration, cx: &mut App) {
             cx.background_executor().timer(every).await;
             let now = stats::renders();
             let m = stats::memory();
-            let views = cx.update(|cx| deck.read(cx).live_views());
+            let (views, windows) = cx.update(|cx| {
+                let d = deck.read(cx);
+                (d.live_views(), d.layout.windows.len())
+            });
             eprintln!(
-                "devdeck-stats renders_delta={} rss_kb={} pss_kb={} uss_kb={} views={views}",
+                "devdeck-stats renders_delta={} rss_kb={} pss_kb={} uss_kb={} views={views} windows={windows}",
                 now - last,
                 m.rss,
                 m.pss,

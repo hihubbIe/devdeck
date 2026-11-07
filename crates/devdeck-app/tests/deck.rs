@@ -88,6 +88,24 @@ fn closed_views_are_released(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn keyboard_shortcuts_reach_the_layout(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let main = cx.windows()[0];
+    let panes = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout.panes_in(MAIN_WINDOW).unwrap().len());
+    assert_eq!(panes(cx), 3);
+    // The focused pane starts as the logs pane, which has two tabs: split it.
+    cx.simulate_keystrokes(main, "ctrl-\\");
+    cx.run_until_parked();
+    assert_eq!(panes(cx), 4, "ctrl-\\ splits the focused pane");
+    // Focus followed the moved tab into the new pane; detach it to a window.
+    cx.simulate_keystrokes(main, "ctrl-shift-d");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| deck.read(cx).layout.windows.len()), 2, "ctrl-shift-d detaches");
+    assert_eq!(cx.windows().len(), 2);
+    assert_eq!(panes(cx), 3, "the emptied pane is removed");
+}
+
+#[gpui::test]
 fn invalid_operations_report_an_error_instead_of_changing_layout(cx: &mut TestAppContext) {
     let deck = setup(cx);
     let before = cx.read(|cx| deck.read(cx).layout.clone());
