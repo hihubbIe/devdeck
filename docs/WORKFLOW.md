@@ -32,8 +32,9 @@
 
 Measured 2026-11-07 after a one-file edit in `devdeck-app`: `cargo check -p devdeck-app`
 0.8 s, clippy on the workspace 1.1 s, building the tests 4.4 s, running them 6 s.
-Linking is not a cost (rustc links with lld). Rendering every snapshot takes about
-2 minutes (90 % is PNG compression in the debug build); two snapshots take 3 s.
+Linking is not a cost (rustc links with lld). Rendering every snapshot takes 45 s (it
+was 133 s before the PNG crates were optimized in debug builds, see `Cargo.toml`); two
+snapshots take about 3 s.
 
 - **While building:** `cargo check -p <crate>` and the test file of the area being changed
   (`cargo test -p devdeck-app --test deck`).
