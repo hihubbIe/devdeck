@@ -30,12 +30,28 @@
 
 ## Keep the step loop fast
 
-- A step's checks run in seconds to a minute: the tests of the crate being changed while
-  building, then the whole suite and clippy once before the commit.
-- Snapshots: render the states the step adds or touches (the snapshot tool takes a name
-  filter), not the whole set.
-- Anything long (stress and leak runs of thousands of cycles, long settle times, release
-  builds for measurements) runs once at the end of the milestone, never per step.
+Measured 2026-11-07 after a one-file edit in `devdeck-app`: `cargo check -p devdeck-app`
+0.8 s, clippy on the workspace 1.1 s, building the tests 4.4 s, running them 6 s.
+Linking is not a cost (rustc links with lld). Rendering every snapshot takes about
+2 minutes (90 % is PNG compression in the debug build); two snapshots take 3 s.
+
+- **While building:** `cargo check -p <crate>` and the test file of the area being changed
+  (`cargo test -p devdeck-app --test deck`).
+- **Before the commit:** clippy and the whole suite once (about 10 s), and the snapshots of
+  the states the step adds or touches (the snapshot tool takes a name filter:
+  `-- <out-dir> 01-,20-`).
+- **End of the milestone only:** every snapshot, release builds, measurements, stress and
+  leak runs.
+- **Reviews:** the plan is reviewed before any code, by a reviewer who reads the GPUI source
+  where the behaviour depends on it; then one review of the diff. Reviewers run in the
+  same turn as the build, so one approval covers the step: build, review, fixing what the
+  review finds within the step's scope, commit. Findings outside the scope wait for the
+  user.
+- **Parallel builders:** when a step splits into modules on separate files, the plan fixes
+  their interfaces first; then one subagent builds each module with its tests, in this
+  checkout (a worktree would need its own cold GPUI build), never two on the same file.
+  Builders run `cargo check` and their own tests; the lead runs the combined build, the
+  review and the commit.
 
 ## A milestone, start to finish
 
