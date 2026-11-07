@@ -19,7 +19,7 @@ use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Nod
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
     FocusHandle, Focusable, Hitbox, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Point, Render, ResizeEdge, SharedString, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
+    Point, Render, ResizeEdge, SharedString, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
     WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, relative,
     size,
 };
@@ -75,6 +75,8 @@ pub struct WindowView {
     last_hints: Vec<(String, &'static str)>,
     /// A frame has been drawn (GPUI's focus path needs one).
     drawn: bool,
+    /// Focus the hint bar was computed for.
+    hints_for: Option<(Option<FocusHandle>, bool)>,
     /// Focused pane and its active view when keys last moved to a view.
     view_target: Option<(PaneId, Option<devdeck_core::layout::ViewRef>)>,
     _observe: Vec<Subscription>,
@@ -190,6 +192,7 @@ impl WindowView {
             panes_origin: Rc::new(Cell::new(Point::default())),
             last_hints: Vec::new(),
             drawn: false,
+            hints_for: None,
             _observe: observe,
         };
         this.sync_view_focus(window, cx);
@@ -501,13 +504,24 @@ impl Render for WindowView {
         let _ = live;
         // The focus path comes from the last drawn frame; there is none before the first.
         // The first render is part of drawing the first frame; every later one has a frame.
-        let hints = if self.drawn { hint_bar_items(window, cx) } else { Vec::new() };
+        // Recomputed when focus moved (or settings opened): it walks the whole
+        // registry, too much for every frame of a streaming view.
+        let focus_key = (window.focused(cx), settings_open);
+        let hints = if !self.drawn {
+            Vec::new()
+        } else if self.hints_for.as_ref() == Some(&focus_key) {
+            self.last_hints.clone()
+        } else {
+            self.hints_for = Some(focus_key);
+            hint_bar_items(window, cx)
+        };
         let first = !self.drawn;
         self.drawn = true;
         if first || hints != self.last_hints {
             // Built from the last frame's focus path: draw once more so a modal or a view
             // that just appeared shows its own keys.
             self.last_hints = hints.clone();
+            self.hints_for = None;
             cx.on_next_frame(window, |_, _, cx| cx.notify());
         }
         let env_text = self.active_sidebar().and_then(|s| s.read(cx).env(cx)).map(|e| format!(" · @{}", e.name)).unwrap_or_default();
@@ -719,7 +733,11 @@ impl Render for WindowView {
                         .min_w_0()
                         .flex()
                         .child(activity_bar(&sidebar, &t, cx))
-                        .when(visible, |d| d.child(sidebar.clone()))
+                        .when(visible, |d| {
+                            // Redrawn only when the sidebar itself changes, not on every
+                            // frame of a streaming view next to it.
+                            d.child(sidebar.clone().cached(StyleRefinement::default().flex_none().w(t.sidebar_w).h_full()))
+                        })
                         .child(panes)
                         .into_any_element()
                 }
@@ -1336,7 +1354,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             }
         })
         .child(match f.views.get(&pane) {
-            Some(v) => div().size_full().child(v.clone()).into_any_element(),
+            // Each view is redrawn only when it changes (or on a theme/scale refresh).
+            Some(v) => div().size_full().child(v.clone().cached(StyleRefinement::default().size_full())).into_any_element(),
             None => div()
                 .size_full()
                 .flex()

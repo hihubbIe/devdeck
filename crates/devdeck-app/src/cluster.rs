@@ -305,6 +305,11 @@ impl Cluster {
         handle
     }
 
+    /// Live sampling handles (the leak run checks they go back to zero).
+    pub fn samplers(&self) -> usize {
+        Rc::strong_count(&self.samplers) - 1
+    }
+
     pub fn is_sampling(&self) -> bool {
         self.sampling.is_some()
     }

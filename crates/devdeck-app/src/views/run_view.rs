@@ -4,7 +4,7 @@
 //! Keys (`RunView`): ⏎ run, s stop, r restart; alt+f follow.
 
 use super::{ViewCx, run_glyph};
-use crate::runner::RunKey;
+use crate::runner::{RunKey, RunnerEvent};
 use devdeck_core::runs::{Level, RunState};
 use devdeck_ui::{ToastKind, label, theme, tip, toasts, toggle_button};
 use gpui::{
@@ -22,14 +22,24 @@ pub struct RunView {
     pub follow: bool,
     scroll: UniformListScrollHandle,
     seen: usize,
-    _observe: Subscription,
+    _subs: Vec<Subscription>,
 }
 
 impl RunView {
     pub fn new(app: String, cmd: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
         let runner = ctx.services.read(cx).runner.clone();
-        let observe = cx.observe(&runner, |this, _, cx| this.changed(cx));
-        Self { key: RunKey::new(&app, &cmd), ctx, focus: cx.focus_handle(), follow: true, scroll: UniformListScrollHandle::new(), seen: 0, _observe: observe }
+        let key = RunKey::new(&app, &cmd);
+        let subs = vec![
+            cx.observe(&runner, |this, _, cx| this.changed(cx)),
+            cx.subscribe(&runner, |this, _, e: &RunnerEvent, cx| {
+                if let RunnerEvent::Output { key } = e
+                    && *key == this.key
+                {
+                    this.changed(cx);
+                }
+            }),
+        ];
+        Self { key, ctx, focus: cx.focus_handle(), follow: true, scroll: UniformListScrollHandle::new(), seen: 0, _subs: subs }
     }
 
     /// Re-renders only when this run changed, and keeps the end in view while following.

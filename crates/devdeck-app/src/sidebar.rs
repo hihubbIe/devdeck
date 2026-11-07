@@ -146,6 +146,8 @@ impl Sidebar {
         state.env = services.read(cx).env.clone();
         let filter = cx.new(|cx| TextInput::new("filter", cx));
         let subs = vec![
+            // The Layouts list reads the deck's book.
+            cx.observe(&deck, |_, _, cx| cx.notify()),
             cx.observe(&services, |this, _, cx| {
                 this.drop_hidden_selection(cx);
                 cx.notify();

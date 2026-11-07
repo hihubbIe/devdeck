@@ -49,6 +49,9 @@ pub struct Run {
 pub enum RunnerEvent {
     /// A run ended on its own with a non-zero code.
     Failed { key: RunKey, code: i32 },
+    /// New output for a run. Lines are events, not notifications, so only views
+    /// showing that run redraw; state changes notify.
+    Output { key: RunKey },
 }
 
 /// Starts the work of a run. The driver reports back through [`Runner::line`] and
@@ -210,7 +213,7 @@ impl Runner {
             && r.state == RunState::Running
         {
             r.output.push(text);
-            cx.notify();
+            cx.emit(RunnerEvent::Output { key: key.clone() });
         }
     }
 

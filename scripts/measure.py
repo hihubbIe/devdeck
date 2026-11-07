@@ -19,6 +19,8 @@ Options
 
 import argparse
 import os
+import shutil
+import tempfile
 import re
 import subprocess
 import sys
@@ -48,8 +50,21 @@ def uses_vulkan(pid):
         return any("libvulkan" in l for l in f)
 
 
+def isolated_env(env):
+    """Fresh state and config folders: never the user's saved layouts or settings, and
+    the same starting point (default layout, 100 % scale) every run."""
+    for var in ("DEVDECK_STATE_DIR", "DEVDECK_CONFIG_DIR"):
+        d = tempfile.mkdtemp(prefix="devdeck-measure-")
+        TEMP_DIRS.append(d)
+        env[var] = d
+    return env
+
+
+TEMP_DIRS = []
+
+
 def start(args, env_extra=None):
-    env = dict(os.environ)
+    env = isolated_env(dict(os.environ))
     env.pop("ZED_HEADLESS", None)
     if args.x11:
         env.pop("WAYLAND_DISPLAY", None)
@@ -134,12 +149,12 @@ def scenario_latency(args):
 
 def scenario_leak(args):
     env = {"DEVDECK_STRESS": str(args.cycles)}
-    env_all = dict(os.environ)
+    env_all = isolated_env(dict(os.environ))
     env_all.update(env)
     if args.x11:
         env_all.pop("WAYLAND_DISPLAY", None)
     with open(args.log, "w") as log:
-        subprocess.run([args.bin], env=env_all, stdout=log, stderr=subprocess.STDOUT, timeout=args.cycles * 0.5 + 120)
+        subprocess.run([args.bin], env=env_all, stdout=log, stderr=subprocess.STDOUT, timeout=args.cycles * 1.0 + 120)
     with open(args.log) as f:
         rows = [l.strip() for l in f if l.startswith("devdeck-stress")]
     for r in rows:
@@ -174,6 +189,8 @@ def main():
         scenario_latency(args)
     else:
         scenario_leak(args)
+    for d in TEMP_DIRS:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

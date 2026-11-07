@@ -335,7 +335,7 @@ fn watch_failures(index: usize, w: &Workspace, cx: &mut App) {
     let (name, deck) = (w.name.clone(), w.deck.downgrade());
     let services = w.services.clone();
     cx.subscribe(&runner, move |_, event: &RunnerEvent, cx| {
-        let RunnerEvent::Failed { key, code } = event;
+        let RunnerEvent::Failed { key, code } = event else { return };
         let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
         let ctx = ViewCx { services: services.clone(), deck: deck.clone() };
         let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(move |_, cx| {
