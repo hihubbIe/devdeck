@@ -31,16 +31,18 @@ pub enum Activity {
     Apps,
     Cluster,
     Ports,
+    Layouts,
 }
 
 impl Activity {
-    pub const ALL: [Activity; 3] = [Activity::Apps, Activity::Cluster, Activity::Ports];
+    pub const ALL: [Activity; 4] = [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts];
 
     pub fn id(self) -> &'static str {
         match self {
             Activity::Apps => "apps",
             Activity::Cluster => "cluster",
             Activity::Ports => "ports",
+            Activity::Layouts => "layouts",
         }
     }
 
@@ -54,6 +56,7 @@ impl Activity {
             Activity::Apps => "apps",
             Activity::Cluster => "deployments",
             Activity::Ports => "ports",
+            Activity::Layouts => "layouts",
         }
     }
 
@@ -62,6 +65,7 @@ impl Activity {
             Activity::Apps => "Apps",
             Activity::Cluster => "Cluster",
             Activity::Ports => "Ports",
+            Activity::Layouts => "Layouts",
         }
     }
 
@@ -70,6 +74,7 @@ impl Activity {
             Activity::Apps => "≡",
             Activity::Cluster => "◈",
             Activity::Ports => "⊡",
+            Activity::Layouts => "◫",
         }
     }
 
@@ -78,6 +83,7 @@ impl Activity {
             Activity::Apps => "ctrl 1",
             Activity::Cluster => "ctrl 2",
             Activity::Ports => "ctrl 3",
+            Activity::Layouts => "ctrl 4",
         }
     }
 }
@@ -257,6 +263,16 @@ impl Sidebar {
                 .into_iter()
                 .map(|p| ListItem::new(p.port.to_string(), format!(":{}", p.port)).detail(p.holder).running(true))
                 .collect(),
+            Activity::Layouts => {
+                let book = &self.deck.read(cx).book;
+                book.names()
+                    .into_iter()
+                    .map(|n| {
+                        let current = n == book.current;
+                        ListItem::new(n.clone(), n).detail(if current { "current" } else { "" }).running(current)
+                    })
+                    .collect()
+            }
         }
     }
 
@@ -307,18 +323,26 @@ impl Sidebar {
     }
 
     /// The view address an item opens as.
-    pub fn view_ref(&self, key: &str, cx: &App) -> ViewRef {
-        match self.activity() {
+    /// The view an item opens as (`None` for layouts: they switch instead).
+    pub fn view_ref(&self, key: &str, cx: &App) -> Option<ViewRef> {
+        Some(match self.activity() {
             Activity::Apps => ViewAddr::App { app: key.into() },
             Activity::Cluster => ViewAddr::Svc { env: self.services.read(cx).env.clone().unwrap_or_default(), name: key.into() },
             Activity::Ports => ViewAddr::Port { port: key.into() },
+            Activity::Layouts => return None,
         }
-        .to_ref()
+        .to_ref())
     }
 
     /// Opens an item in the main window's focused pane; an open one is activated.
     pub fn open(&mut self, key: &str, cx: &mut Context<Self>) {
-        let view = self.view_ref(key, cx);
+        let Some(view) = self.view_ref(key, cx) else {
+            let key = key.to_string();
+            self.deck.update(cx, |d, cx| {
+                let _ = d.switch_layout(&key, cx);
+            });
+            return;
+        };
         self.deck.update(cx, |d, cx| {
             d.apply(cx, |l| {
                 let p = l.main().focused;
@@ -430,7 +454,31 @@ impl Sidebar {
         .detach();
     }
 
-    pub fn item_menu(this: &Entity<Self>, key: &str, pinned: bool) -> Vec<MenuItem> {
+    pub fn item_menu(this: &Entity<Self>, key: &str, pinned: bool, cx: &App) -> Vec<MenuItem> {
+        if this.read(cx).activity() == Activity::Layouts {
+            let deck = this.read(cx).deck.clone();
+            let current = deck.read(cx).book.current == key;
+            let (d1, d2, d3) = (deck.clone(), deck.clone(), deck);
+            let (k1, k2, k3) = (key.to_string(), key.to_string(), key.to_string());
+            let mut delete = MenuItem::new("Delete", move |_, cx| {
+                d3.update(cx, |d, cx| {
+                    let _ = d.delete_layout(&k3, cx);
+                })
+            });
+            if current {
+                delete = delete.disabled("switch to another layout first");
+            }
+            return vec![
+                MenuItem::new("Switch to it", move |_, cx| {
+                    d1.update(cx, |d, cx| {
+                        let _ = d.switch_layout(&k1, cx);
+                    })
+                })
+                .hint("⏎"),
+                MenuItem::new("Rename…", move |window, cx| crate::layouts::open_rename(d2.clone(), k2.clone(), window, cx)),
+                delete,
+            ];
+        }
         let (open, pin) = (this.clone(), this.clone());
         let (k1, k2) = (key.to_string(), key.to_string());
         vec![
@@ -526,7 +574,7 @@ impl Render for Sidebar {
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
                     .map(|(i, row)| {
                         let view_ref = match &row {
-                            Row::Item { index, .. } => Some(this.view_ref(&items[*index].key, cx)),
+                            Row::Item { index, .. } => this.view_ref(&items[*index].key, cx),
                             _ => None,
                         };
                         render_row(&me, &this.deck, &items, &rows, i, row, selected == Some(i), focused, filtered, running_only, &t, status.clone(), view_ref)
@@ -643,14 +691,7 @@ fn render_row(
             let (k_click, k_menu) = (key.clone(), key.clone());
             let (m_click, m_menu) = (me.clone(), me.clone());
             let label_text: SharedString = item.label.clone().into();
-            let drag = DraggedListItem {
-                sidebar: sidebar_id,
-                deck: deck.entity_id(),
-                key: key.clone(),
-                label: label_text.clone(),
-                pinned,
-                view: view_ref.expect("item rows have a view"),
-            };
+            let drag = view_ref.map(|view| DraggedListItem { sidebar: sidebar_id, deck: deck.entity_id(), key: key.clone(), label: label_text.clone(), pinned, view });
             let hover = t.hover;
             let selector = format!("row-{key}");
             let el = base
@@ -676,10 +717,10 @@ fn render_row(
                         s.selected = Some(k_menu.clone());
                         cx.notify();
                     });
-                    let items = Sidebar::item_menu(&m_menu, &k_menu, pinned);
+                    let items = Sidebar::item_menu(&m_menu, &k_menu, pinned, cx);
                     open_menu(e.position, items, window, cx);
                 })
-                .on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone())))
+                .when_some(drag, |el, drag| el.on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone()))))
                 .child(match &item.warning {
                     Some(_) => div().flex_none().text_color(t.warn).child("⚠"),
                     None => div().flex_none().text_color(if item.running { t.ok } else { t.dim }).child(if item.running { "●" } else { "○" }),

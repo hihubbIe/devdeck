@@ -32,7 +32,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R3.8** A tab can be detached into its own OS window. That window contains a single pane (it can receive more tabs), nothing else of the app. It is owned by the main process: closing the main app closes it. The detached window's title bar has a re-attach button (⇲) next to close (×): ⇲ sends its tabs back to the main window, × closes the window and its tabs. Dragging tabs between windows is not required (decided 2026-11-07: GPUI can't do it on Wayland; "Send to…" covers it).
 - [x] **R3.11** "Send to…" on a tab and on a pane (menu, pane button, key): every pane of every window shows a number and is listed by its active tab and position, plus "new window". Pick by number key, by clicking the list, or by clicking the pane. Esc cancels. Sending a pane moves all its tabs.
 - [~] **R3.9** Panes never overlap. Each pane clips its own content; content wider than the pane scrolls inside it.
-- [ ] **R3.10** Named layouts per workspace: save the current arrangement, switch between layouts. A view can be marked "keep in every layout".
+- [x] **R3.10** Named layouts per workspace: save the current arrangement, switch between layouts. A view can be marked "keep in every layout".
 
 ## 4. Lists and text
 

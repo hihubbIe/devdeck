@@ -165,6 +165,33 @@ impl StateStore {
         write_atomic(&self.sidebar_path(workspace), &serde_json::to_string_pretty(state).map_err(|e| e.to_string())?)
     }
 
+    fn book_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join("workspaces").join(safe_id(workspace)).join("layouts.json")
+    }
+
+    pub fn load_book(&self, workspace: &str) -> Loaded<crate::layout_book::LayoutBook> {
+        let path = self.book_path(workspace);
+        match read(&path) {
+            Loaded::Ok(t) => match serde_json::from_str::<crate::layout_book::LayoutBook>(&t) {
+                Ok(b) if b.layouts.values().all(|l| l.validate().is_ok()) => Loaded::Ok(b),
+                Ok(_) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: a saved layout is invalid (kept as layouts.json.bad)", path.display()))
+                }
+                Err(e) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: {e} (kept as layouts.json.bad)", path.display()))
+                }
+            },
+            Loaded::Missing => Loaded::Missing,
+            Loaded::Broken(e) => Loaded::Broken(e),
+        }
+    }
+
+    pub fn save_book(&self, workspace: &str, book: &crate::layout_book::LayoutBook) -> Result<(), String> {
+        write_atomic(&self.book_path(workspace), &book.to_json())
+    }
+
     pub fn load_app(&self) -> Loaded<AppState> {
         let path = self.dir.join("app.json");
         match read(&path) {
@@ -229,6 +256,19 @@ mod tests {
         std::fs::write(s.dir.join("workspaces/work/sidebar.json"), "[").unwrap();
         assert!(matches!(s.load_sidebar("work"), Loaded::Broken(_)));
         assert!(s.dir.join("workspaces/work/sidebar.json.bad").exists());
+    }
+
+    #[test]
+    fn layout_book_round_trip_and_broken() {
+        let s = store("book");
+        assert_eq!(s.load_book("work"), Loaded::Missing);
+        let mut book = crate::layout_book::LayoutBook::default();
+        book.save_as("triage", &Layout::new()).unwrap();
+        s.save_book("work", &book).unwrap();
+        assert_eq!(s.load_book("work"), Loaded::Ok(book));
+        std::fs::write(s.dir.join("workspaces/work/layouts.json"), "{oops").unwrap();
+        assert!(matches!(s.load_book("work"), Loaded::Broken(_)));
+        assert!(s.dir.join("workspaces/work/layouts.json.bad").exists());
     }
 
     #[test]

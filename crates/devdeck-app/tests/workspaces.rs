@@ -260,3 +260,103 @@ fn overlay_layers_are_freed_with_their_window(cx: &mut TestAppContext) {
     assert_eq!(cx.windows().len(), 1);
     assert_eq!(cx.read(layer_count), before, "the closed window's layer is gone");
 }
+
+// ------------------------------------------------------------------ named layouts (step 7)
+
+fn notes_only() -> Layout {
+    let mut l = Layout::new();
+    let p = l.main().focused;
+    l.open(ViewRef::new("demo/notes"), p).unwrap();
+    l
+}
+
+#[gpui::test]
+fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
+    let dir = temp("layouts");
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "layouts");
+    let work = deck(&shell, cx, "work");
+    let main = main_window(&shell, cx);
+    // Save the demo arrangement as "triage", then make a sparse one as "focus".
+    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("triage", cx))).unwrap();
+    let logs = ViewRef::new("demo/logs");
+    let logs_view = cx.read(|cx| work.read(cx).view(&logs).unwrap());
+    cx.update(|cx| work.update(cx, |d, cx| d.toggle_keep(&logs, cx)));
+    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("focus", cx))).unwrap();
+    cx.update(|cx| {
+        work.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                *l = notes_only();
+                Ok(())
+            });
+        })
+    });
+    cx.run_until_parked();
+    assert!(cx.read(|cx| work.read(cx).book.keep.is_empty()), "closing a kept tab clears its mark");
+    cx.update(|cx| work.update(cx, |d, cx| d.toggle_keep(&ViewRef::new("demo/notes"), cx)));
+    // Switch to triage: its tabs come back, the kept notes tab follows.
+    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("Triage", cx))).unwrap();
+    cx.run_until_parked();
+    let l = cx.read(|cx| work.read(cx).layout.clone());
+    assert!(l.find_view(&logs).is_some() && l.find_view(&ViewRef::new("demo/notes")).is_some());
+    assert!(!cx.read(|cx| work.read(cx).view(&logs).unwrap().entity_id() == logs_view.entity_id()), "logs closed in between: a new instance");
+    // Written at once: both files agree.
+    let store = StateStore::new(dir.clone());
+    assert_eq!(store.load_layout("work"), Loaded::Ok(l.clone()), "layout.json holds the new tree right away");
+    let Loaded::Ok(book) = store.load_book("work") else { panic!("layouts.json") };
+    assert_eq!(book.current, "triage");
+    assert_eq!(book.layouts["focus"], notes_only(), "the layout left behind is stored under its name");
+    // Switching to the current one does nothing.
+    let saves = cx.read(|cx| work.read(cx).saves);
+    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("triage", cx))).unwrap();
+    assert_eq!(cx.read(|cx| work.read(cx).saves), saves);
+    // Unknown names are refused with the reason.
+    let err = cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("nope", cx))).unwrap_err();
+    assert_eq!(err.to_string(), "no layout called nope");
+    let _ = main;
+}
+
+#[gpui::test]
+fn a_switch_replaces_detached_windows_even_with_colliding_ids(cx: &mut TestAppContext) {
+    let shell = demo(cx, "layout-windows");
+    let work = deck(&shell, cx, "work");
+    // "a": notes detached. "b": long detached (same window id in both layouts).
+    detach_notes(&work, cx);
+    let wa = cx.read(|cx| work.read(cx).layout.windows[1].id);
+    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("a", cx))).unwrap();
+    // Save as "b" (a copy, now current), then change b.
+    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
+    // "b": the same window (same id) now holds long; notes went back to the main window.
+    cx.update(|cx| {
+        work.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let detached = l.windows[1].focused;
+                let main = l.main().focused;
+                l.send_tab(&ViewRef::new("demo/long"), Some(detached))?;
+                l.send_tab(&ViewRef::new("demo/notes"), Some(main))
+            });
+        })
+    });
+    cx.run_until_parked();
+    let wb = cx.read(|cx| work.read(cx).layout.windows[1].id);
+    assert_eq!(wa, wb, "the two layouts use the same detached window id");
+    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("a", cx))).unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 2);
+    let detached_view = cx.read(|cx| {
+        let l = &work.read(cx).layout;
+        l.pane(l.windows[1].focused).unwrap().active_view().cloned()
+    });
+    assert_eq!(detached_view, Some(ViewRef::new("demo/notes")), "a's detached window shows a's tab");
+    // A layout without detached windows closes them.
+    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("plain", cx))).unwrap();
+    cx.update(|cx| {
+        work.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                *l = notes_only();
+                Ok(())
+            });
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), 1);
+}

@@ -15,7 +15,7 @@ use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
 use devdeck_ui::{DragGhost, Empty, MenuItem, Theme, apply_window_scale, button, icon_button, label, logical, open_menu, theme, tip};
-use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, WindowId};
+use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
     FocusHandle, Focusable, Hitbox, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
@@ -212,7 +212,8 @@ impl WindowView {
         }
         self.view_target = target.clone();
         let Some((pane, _)) = target else { return };
-        if !self.panes_focus.contains_focused(window, cx) {
+        // Only when focus is in the pane area, or nowhere (its view just closed).
+        if !self.panes_focus.contains_focused(window, cx) && window.focused(cx).is_some() {
             return;
         }
         match self.deck.read(cx).view_focus(pane) {
@@ -294,7 +295,7 @@ impl WindowView {
             let s = sidebar.read(cx);
             if let Some(key) = s.selected.clone() {
                 let pinned = s.state.pins.values().any(|p| p.contains(&key));
-                let items = Sidebar::item_menu(&sidebar, &key, pinned);
+                let items = Sidebar::item_menu(&sidebar, &key, pinned, cx);
                 open_menu(point(t.activity_w + t.size(40.), t.title_h + t.size(90.)), items, window, cx);
             }
             return;
@@ -308,7 +309,9 @@ impl WindowView {
         };
         let origin = self.panes_origin.get();
         let at = rect.map_or(origin, |r| point(origin.x + logical(r.x) + t.size(24.), origin.y + logical(r.y) + t.tab_h));
-        open_menu(at, tab_menu(&self.deck, p, active, self.id, &self.deck.read(cx).layout), window, cx);
+        let d = self.deck.read(cx);
+        let items = tab_menu(&self.deck, p, active, self.id, &d.layout, &d.book.keep);
+        open_menu(at, items, window, cx);
     }
 
     /// ctrl+k: the palette opens in the main window (brought forward from a detached one).
@@ -575,6 +578,19 @@ impl Render for WindowView {
                         }),
                 )
             })
+            .when(is_main, |d| {
+                let deck = self.deck.clone();
+                let current = deck.read(cx).book.current.clone();
+                d.child(
+                    button("layout", format!("{current} ▾"), &t)
+                        .debug_selector(|| "layout-button".into())
+                        .tooltip(tip(format!("layouts ({})", registry::key_for("sidebar.layouts"))))
+                        .on_click(move |e, window, cx| {
+                            let items = crate::layouts::menu(&deck, cx);
+                            open_menu(e.position(), items, window, cx);
+                        }),
+                )
+            })
             .when(!is_main, |d| d.child(div().text_color(t.mute).child(format!("{ws_name} · detached window"))))
             .child(div().flex_1())
             .when(is_main, |d| {
@@ -741,6 +757,8 @@ impl Render for WindowView {
                 d.on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
+                    .on_action(cx.listener(|this, _: &ShowLayouts, w, cx| this.show_activity(Activity::Layouts, w, cx)))
+                    .on_action(cx.listener(|this, _: &SaveLayoutAs, w, cx| crate::layouts::open_save_as(this.deck.clone(), w, cx)))
                     .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {
                         let visible = this.active_sidebar().is_some_and(|s| s.read(cx).state.visible);
                         this.set_sidebar_visible(!visible, w, cx);
@@ -1040,13 +1058,15 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
 }
 
 /// The menu of a tab (right-click, shift+F10).
-fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout) -> Vec<MenuItem> {
+fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout, keep: &std::collections::BTreeSet<ViewRef>) -> Vec<MenuItem> {
     let Some(view) = layout.pane(pane).ok().and_then(|p| p.tabs.get(idx).cloned()) else { return Vec::new() };
     let alone = layout.is_detached(window) && layout.pane(pane).is_ok_and(|p| p.tabs.len() == 1);
     let maximized = layout.window(window).is_ok_and(|w| w.maximized == Some(pane));
     let d = |deck: &Entity<Deck>| deck.clone();
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
-    let (v1, v2) = (view.clone(), view.clone());
+    let (v1, v2, v3) = (view.clone(), view.clone(), view.clone());
+    let kept = keep.contains(&view);
+    let d7 = deck.clone();
     let mut detach = MenuItem::new("Detach to a window", move |_, cx| apply_on(&d3, cx, |l| l.detach(pane, idx).map(|_| ()))).hint(registry::key_for("pane.detach"));
     if alone {
         detach = detach.disabled("already alone in its window");
@@ -1068,6 +1088,13 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
         MenuItem::separator(),
         MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized).hint(registry::key_for("pane.maximize")),
         MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))).hint(registry::key_for("pane.collapse")),
+        MenuItem::separator(),
+        MenuItem::new("Keep in every layout", move |_, cx| {
+            d7.update(cx, |d, cx| {
+                d.toggle_keep(&v3, cx);
+            })
+        })
+        .checked(kept),
     ]
 }
 
@@ -1221,8 +1248,9 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     let (deck, window_id) = (f.deck.clone(), f.window);
                     move |e, window, cx| {
                         cx.stop_propagation();
-                        let layout = deck.read(cx).layout.clone();
-                        open_menu(e.position, tab_menu(&deck, pane, i, window_id, &layout), window, cx);
+                        let d = deck.read(cx);
+                        let items = tab_menu(&deck, pane, i, window_id, &d.layout, &d.book.keep);
+                        open_menu(e.position, items, window, cx);
                     }
                 })
                 .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| {

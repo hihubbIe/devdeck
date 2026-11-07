@@ -44,6 +44,8 @@ actions!(
         SendTab,
         SendPane,
         ContextMenu,
+        ShowLayouts,
+        SaveLayoutAs,
     ]
 );
 

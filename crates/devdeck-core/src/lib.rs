@@ -6,6 +6,7 @@ pub mod cluster;
 pub mod demo;
 pub mod fuzzy;
 pub mod layout;
+pub mod layout_book;
 pub mod list;
 pub mod runs;
 pub mod settings;

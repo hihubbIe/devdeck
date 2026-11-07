@@ -13,6 +13,7 @@ use crate::views::ViewCx;
 use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::Layout;
+use devdeck_core::layout_book::LayoutBook;
 use devdeck_core::state::{AppState, Loaded, SidebarState, StateStore};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, push_modal, theme, toasts};
@@ -126,9 +127,17 @@ impl Shell {
                 let services = Services::demo(&spec.id, &spec.name, sidebar_state.env.clone(), cx);
                 let deck_store = store.clone();
                 let deck_services = services.clone();
+                let book = match store.as_ref().map(|s| s.load_book(&spec.id)) {
+                    Some(Loaded::Ok(b)) => b,
+                    Some(Loaded::Broken(e)) => {
+                        problems.push(e);
+                        LayoutBook::default()
+                    }
+                    _ => LayoutBook::default(),
+                };
                 let deck = cx.new(|cx| {
                     let ctx = ViewCx { services: deck_services, deck: cx.weak_entity() };
-                    Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_ctx(ctx)
+                    Deck::new(layout).in_workspace(spec.id.clone(), deck_store, i == active).with_ctx(ctx).with_book(book)
                 });
                 let (ws, sidebar_deck, sidebar_store) = (spec.id.clone(), deck.clone(), store.clone());
                 let sidebar_services = services.clone();

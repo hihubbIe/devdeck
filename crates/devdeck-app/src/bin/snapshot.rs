@@ -144,7 +144,7 @@ fn row_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shel
     apps_pinned(cx, w, shell);
     let s = sidebar(cx, shell);
     let _ = cx.update_window(w, |_, window, cx| {
-        let items = Sidebar::item_menu(&s, "boardservice", false);
+        let items = Sidebar::item_menu(&s, "boardservice", false, cx);
         open_menu(point(logical(160.), logical(200.)), items, window, cx);
     });
 }
@@ -424,6 +424,61 @@ fn send_to(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell
     let _ = cx.update_window(w, |_, window, cx| devdeck_app::send_to::open(deck.clone(), source, window, cx));
 }
 
+fn with_layouts(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<devdeck_app::deck::Deck> {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.save_layout_as("triage", cx).unwrap();
+            d.save_layout_as("incident dev35 long name for truncation", cx).unwrap();
+            d.save_layout_as("focus", cx).unwrap();
+        })
+    });
+    deck
+}
+
+fn layout_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = with_layouts(cx, shell);
+    let _ = cx.update_window(w, |_, window, cx| {
+        let items = devdeck_app::layouts::menu(&deck, cx);
+        open_menu(point(logical(260.), logical(34.)), items, window, cx);
+    });
+}
+
+fn layouts_list(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    with_layouts(cx, shell);
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Layouts, cx)));
+}
+
+fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = with_layouts(cx, shell);
+    let _ = cx.update_window(w, |_, window, cx| devdeck_app::layouts::open_save_as(deck.clone(), window, cx));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let layer = devdeck_ui::overlay::layer(w, cx);
+        let modal = layer.read(cx).modals.last().cloned().unwrap();
+        let m = modal.downcast::<devdeck_app::layouts::NameLayout>().unwrap();
+        let input = m.read(cx).input.clone();
+        input.update(cx, |i, cx| i.set_text("Triage", cx));
+        m.update(cx, |m, cx| {
+            m.error = Some("a layout called triage exists".into());
+            cx.notify();
+        });
+    });
+}
+
+fn keep_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = with_layouts(cx, shell);
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.toggle_keep(&ViewRef::new("demo/logs"), cx);
+            let _ = d.switch_layout("triage", cx);
+        })
+    });
+    cx.run_until_parked();
+    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::actions::ContextMenu), cx));
+}
+
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
     l.find_view(&ViewRef::new(v)).expect("view open").0
 }
@@ -559,6 +614,10 @@ fn states() -> Vec<State> {
         w("A6-tab-menu", "work", 1.0, Some(tab_menu)),
         w("A7-send-to", "work", 1.0, Some(send_to)),
         w("A8-palette-150", "work", 1.5, Some(palette_matches)),
+        w("B0-layout-menu", "work", 1.0, Some(layout_menu)),
+        w("B1-layouts-list", "work", 1.0, Some(layouts_list)),
+        w("B2-layout-save-error", "work", 1.0, Some(layout_save_error)),
+        w("B3-keep-in-every-layout", "work", 1.0, Some(keep_menu)),
     ]
 }
 

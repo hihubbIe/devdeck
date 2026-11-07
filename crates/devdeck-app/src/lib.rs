@@ -8,6 +8,7 @@ pub mod cluster;
 pub mod deck;
 pub mod gallery;
 pub mod kube_feed;
+pub mod layouts;
 pub mod palette;
 pub mod registry;
 pub mod runner;

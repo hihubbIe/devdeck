@@ -67,10 +67,10 @@ fn list_focused(s: &Entity<Sidebar>, w: AnyWindowHandle, cx: &mut TestAppContext
 fn cluster_and_env_only_where_configured(cx: &mut TestAppContext) {
     let shell = start(cx, None, "r23");
     let work = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Apps, Activity::Cluster, Activity::Ports]);
+    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts]);
     switch_to(&shell, cx, "personal");
     let personal = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Apps, Activity::Ports]);
+    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Apps, Activity::Ports, Activity::Layouts]);
     assert!(cx.read(|cx| personal.read(cx).env(cx).is_none()), "no env button without envs");
     let main = main_window(&shell, cx);
     cx.simulate_keystrokes(main, "ctrl-2");
@@ -210,7 +210,7 @@ fn env_menu_changes_the_cluster_list(cx: &mut TestAppContext) {
     let after = cx.read(|cx| s.read(cx).items(cx));
     assert_eq!(cx.read(|cx| s.read(cx).state.env.clone()).as_deref(), Some("dev31"));
     assert_ne!(before, after, "another env, other tags");
-    assert_eq!(cx.read(|cx| s.read(cx).view_ref("tadawebapi", cx)), ViewRef::new("svc/dev31/tadawebapi"));
+    assert_eq!(cx.read(|cx| s.read(cx).view_ref("tadawebapi", cx)), Some(ViewRef::new("svc/dev31/tadawebapi")));
 }
 
 #[gpui::test]

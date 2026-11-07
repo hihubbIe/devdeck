@@ -12,6 +12,7 @@
 use crate::views::{self, ViewCx};
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, PaneId, ViewRef, WindowId};
+use devdeck_core::layout_book::{BookError, LayoutBook};
 use devdeck_core::state::StateStore;
 use devdeck_ui::{ToastKind, toasts};
 use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, FocusHandle, Task, WindowHandle};
@@ -44,6 +45,8 @@ pub struct Deck {
     pub saves: usize,
     /// A "Send to…" pick in progress (R3.11).
     pub send: Option<SendSource>,
+    /// Named layouts of the workspace (R3.10).
+    pub book: LayoutBook,
 }
 
 /// What a "Send to…" pick moves.
@@ -73,6 +76,7 @@ impl Deck {
             save_failed: false,
             saves: 0,
             send: None,
+            book: LayoutBook::default(),
         }
     }
 
@@ -122,6 +126,13 @@ impl Deck {
             Ok(v) => {
                 self.last_error = None;
                 self.changed(cx);
+                // A kept view whose tab closed isn't kept any more.
+                let before = self.book.keep.len();
+                let layout = &self.layout;
+                self.book.keep.retain(|v| layout.find_view(v).is_some());
+                if self.book.keep.len() != before {
+                    self.save_book(cx);
+                }
                 Some(v)
             }
             Err(e) => {
@@ -174,6 +185,83 @@ impl Deck {
         if !same && self.layout.set_window_size(id, size).is_ok() {
             self.changed(cx);
         }
+    }
+
+    pub fn with_book(mut self, book: LayoutBook) -> Self {
+        self.book = book;
+        self
+    }
+
+    // ------------------------------------------------------------------ named layouts
+
+    pub fn save_layout_as(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        let live = self.layout.clone();
+        self.book.save_as(name, &live)?;
+        self.save_book(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Shows another named layout: tabs that aren't in it close (their runs go on),
+    /// kept views follow, detached windows follow the layout.
+    pub fn switch_layout(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        if self.book.current.eq_ignore_ascii_case(name) {
+            return Ok(());
+        }
+        let live = self.layout.clone();
+        let target = self.book.switch(name, &live)?;
+        self.send = None;
+        // Ids repeat across stored layouts: drop every detached OS window so the
+        // target's open fresh instead of reusing one with the same id.
+        for (_, h) in self.os_windows.drain() {
+            if let Some(h) = h {
+                cx.defer(move |cx| {
+                    let _ = h.update(cx, |_, window, _| window.remove_window());
+                });
+            }
+        }
+        self.apply(cx, |l| {
+            *l = target;
+            Ok(())
+        });
+        // Both files at once, so they never disagree about which tree is current.
+        if self.store.is_some() {
+            self.save_task = None;
+            if let Some((store, ws, layout)) = self.take_save() {
+                let result = store.save_layout(&ws, &layout);
+                self.saved(result, cx);
+            }
+            self.save_book(cx);
+        }
+        Ok(())
+    }
+
+    pub fn rename_layout(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        self.book.rename(from, to)?;
+        self.save_book(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn delete_layout(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        self.book.delete(name)?;
+        self.save_book(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn toggle_keep(&mut self, view: &ViewRef, cx: &mut Context<Self>) -> bool {
+        let kept = self.book.toggle_keep(view);
+        self.save_book(cx);
+        cx.notify();
+        kept
+    }
+
+    /// Writes the book now: a small file, changed rarely, and writes stay in order.
+    fn save_book(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else { return };
+        let result = store.save_book(&self.workspace, &self.book);
+        self.saved(result, cx);
     }
 
     /// Starts a pick: badges appear on every pane of the workspace.

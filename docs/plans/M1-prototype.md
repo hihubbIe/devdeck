@@ -704,3 +704,21 @@ flat), binary size. Results in `docs/perf/M1.md`, compared with M0.
 10. Tests added: a switch inside the save debounce writes the right trees once, a
     detached window absent from the target closes, switching to the current layout does
     nothing. **Accepted.**
+
+### Step 7 outcome (layouts)
+
+Built as assessed:
+- `core::layout_book`: book, names, keep merge;
+- the state store gains `layouts.json`;
+- the Deck switches through `apply` and writes `layout.json` and `layouts.json` at once;
+- `layouts.rs` holds the menu and the name modal.
+
+The Layouts activity is on ctrl+4. "Keep in every layout" is in the tab menu. The palette lists layouts and "save layout as…".
+
+Found while checking:
+- Queued background writes of the book could land after the switch's write and overwrite it with an older book. Book writes are now synchronous: they're small, rare, and stay in order.
+
+Checks:
+- 2 tests in `tests/workspaces.rs` and 1 in `tests/actions.rs`.
+- 4 core tests, including the keep merge not taking the active tab.
+- Snapshots B0–B3.

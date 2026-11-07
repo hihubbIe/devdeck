@@ -30,6 +30,7 @@ pub enum Item {
     Service(String),
     Env(String),
     Workspace(usize),
+    Layout(String),
     View(ViewAddr),
 }
 
@@ -152,6 +153,16 @@ impl Palette {
             }
             out.push(Entry { label: "branch matrix".into(), detail: "view".into(), item: Item::View(ViewAddr::Matrix), disabled: None });
         }
+        let book = &ws.deck.read(cx).book;
+        for name in book.names() {
+            let current = name == book.current;
+            out.push(Entry {
+                label: format!("layout {name}"),
+                detail: if current { "current".into() } else { "switch layout".into() },
+                item: Item::Layout(name),
+                disabled: None,
+            });
+        }
         for (i, w) in s.workspaces.iter().enumerate() {
             out.push(Entry {
                 label: format!("workspace {}", w.name),
@@ -187,7 +198,8 @@ impl Palette {
         if q.is_empty() && self.drill.is_none() {
             let recent = cx.try_global::<Recent>().map(|r| r.0.clone()).unwrap_or_default();
             let mut first: Vec<Entry> = recent.iter().filter_map(|l| all.iter().find(|e| &e.label == l).cloned()).collect();
-            let mut rest: Vec<Entry> = all.into_iter().filter(|e| matches!(e.item, Item::Action(_) | Item::Workspace(_)) && !recent.contains(&e.label)).collect();
+            let mut rest: Vec<Entry> =
+                all.into_iter().filter(|e| matches!(e.item, Item::Action(_) | Item::Workspace(_) | Item::Layout(_)) && !recent.contains(&e.label)).collect();
             rest.sort_by_key(|e| e.label.to_lowercase());
             first.extend(rest);
             return first;
@@ -279,6 +291,11 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
         }
         Item::Env(env) => sidebar.update(cx, |s, cx| s.set_env(&env, cx)),
         Item::Workspace(i) => shell.update(cx, |s, cx| s.switch(i, cx)),
+        Item::Layout(name) => {
+            if let Err(e) = deck.update(cx, |d, cx| d.switch_layout(&name, cx)) {
+                toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e.to_string(), vec![], cx));
+            }
+        }
         Item::Command { app, cmd } => {
             let (runner, env) = {
                 let s = services.read(cx);
