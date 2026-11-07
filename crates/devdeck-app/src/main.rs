@@ -20,24 +20,37 @@ fn env_u64(name: &str) -> Option<u64> {
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    let demo = std::env::args().any(|a| a == "--demo") || std::env::var("DEVDECK_STRESS").is_ok();
+    // The demo keeps its own state, apart from the real workspaces' layouts and pins.
+    let state_dir = if demo { default_state_dir().join("demo") } else { default_state_dir() };
+    // One devdeck per state folder. Held by `main` itself: the closure given to `run` is
+    // dropped once the app is set up, while `run` blocks until devdeck quits.
+    let _lock = match devdeck_app::lifecycle::claim(&state_dir) {
+        Ok(lock) => lock,
+        Err(why) => {
+            eprintln!("devdeck: {why}");
+            std::process::exit(1);
+        }
+    };
+    gpui_platform::application().run(move |cx: &mut App| {
         devdeck_app::init(cx);
-        // Fallback only: every normal quit goes through the shell's guard.
+        // Fallback only (windows closed from outside): every normal quit goes through the
+        // shell's guard. Nothing it started outlives it (R8.2).
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 if let Some(s) = try_shell(cx) {
-                    s.update(cx, |s, cx| s.flush(cx));
+                    s.update(cx, |s, cx| {
+                        s.kill_everything(cx);
+                        s.flush(cx);
+                    });
                 }
                 cx.quit();
             }
         })
         .detach();
 
-        let demo = std::env::args().any(|a| a == "--demo") || std::env::var("DEVDECK_STRESS").is_ok();
         let shell = if demo {
-            // The demo keeps its own state, apart from the real workspaces' layouts and pins.
-            let store = StateStore::new(default_state_dir().join("demo"));
-            Shell::start(devdeck_app::demo_workspaces(), "work", Some(store), cx)
+            Shell::start(devdeck_app::demo_workspaces(), "work", Some(StateStore::new(state_dir.clone())), cx)
         } else {
             let dir = default_config_dir();
             let (configs, mut errors) = load_workspaces(&dir);
@@ -51,7 +64,8 @@ fn main() {
             }
             let first = specs.iter().map(|s| s.name.to_lowercase()).min().unwrap_or_default();
             let first = specs.iter().find(|s| s.name.to_lowercase() == first).map(|s| s.id.clone()).unwrap_or_default();
-            let shell = Shell::start(specs, &first, Some(StateStore::new(default_state_dir())), cx);
+            let shell = Shell::start(specs, &first, Some(StateStore::new(state_dir.clone())), cx);
+            devdeck_app::lifecycle::install(&shell, devdeck_core::process::GroupLog::new(&state_dir), cx);
             if let Some(w) = devdeck_app::watcher::start(&shell, dir, cx) {
                 devdeck_app::watcher::keep(w, cx);
             }

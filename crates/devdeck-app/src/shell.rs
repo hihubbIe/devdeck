@@ -62,8 +62,11 @@ pub enum QuitState {
     Stopping,
 }
 
-/// How long "Stop all" waits before quitting anyway.
+/// How long "Stop all" waits for the demo's runs, and at least, before killing what's
+/// left and quitting; real processes get their stop sequence's length (see
+/// `Runner::longest_stop`) plus [`STOP_MARGIN`].
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const STOP_MARGIN: Duration = Duration::from_secs(1);
 const STOP_POLL: Duration = Duration::from_millis(50);
 
 pub struct Shell {
@@ -80,6 +83,8 @@ pub struct Shell {
     pub quits: usize,
     app_save_failed: bool,
     _stopping: Option<Task<()>>,
+    /// Process groups this devdeck started (none for the demo and tests).
+    pub log: Option<devdeck_core::process::GroupLog>,
 }
 
 struct ShellHandle(Entity<Shell>);
@@ -179,6 +184,7 @@ impl Shell {
             quits: 0,
             app_save_failed: false,
             _stopping: None,
+            log: None,
         });
         cx.set_global(ShellHandle(shell.clone()));
         // Every workspace's views start now (they keep running in the background); only
@@ -293,18 +299,35 @@ impl Shell {
             runner.update(cx, |r, cx| r.stop_all(cx));
         }
         cx.notify();
+        let longest = self.workspaces.iter().map(|w| w.services.read(cx).runner.read(cx).longest_stop()).max().unwrap_or_default();
+        let timeout = STOP_TIMEOUT.max(longest + STOP_MARGIN);
         self._stopping = Some(cx.spawn(async move |this, cx| {
             let mut waited = Duration::ZERO;
             loop {
                 let done = this.update(cx, |s, cx| s.running(cx).is_empty()).unwrap_or(true);
-                if done || waited >= STOP_TIMEOUT {
+                if done || waited >= timeout {
                     break;
                 }
                 cx.background_executor().timer(STOP_POLL).await;
                 waited += STOP_POLL;
             }
-            let _ = this.update(cx, |s, cx| s.quit_now(cx));
+            let _ = this.update(cx, |s, cx| {
+                s.kill_everything(cx);
+                s.quit_now(cx);
+            });
         }));
+    }
+
+    /// Kills, now, every process this devdeck started that may still run: the runs' and
+    /// what the group log recorded (R8.2).
+    pub fn kill_everything(&self, cx: &App) {
+        let mut pids: Vec<u32> = self.workspaces.iter().flat_map(|w| w.services.read(cx).runner.read(cx).pids()).map(|(_, p)| p).collect();
+        pids.extend(self.log.iter().flat_map(|l| l.live()));
+        pids.sort_unstable();
+        pids.dedup();
+        if !pids.is_empty() {
+            devdeck_core::process::kill_all(&pids);
+        }
     }
 
     /// Saves everything pending and quits.
@@ -452,7 +475,7 @@ impl QuitGuard {
     }
 }
 
-fn focus_button(id: &'static str, text: &'static str, handle: &FocusHandle, t: &devdeck_ui::Theme) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn focus_button(id: &'static str, text: &'static str, handle: &FocusHandle, t: &devdeck_ui::Theme) -> gpui::Stateful<gpui::Div> {
     let ring = t.focus;
     button(id, text, t).border_1().border_color(t.line).track_focus(handle).focus(move |s| s.border_color(ring))
 }

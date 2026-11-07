@@ -1418,7 +1418,9 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "notify-debouncer-full",
+ "rustix",
  "serde_json",
+ "signal-hook",
  "tokio",
 ]
 

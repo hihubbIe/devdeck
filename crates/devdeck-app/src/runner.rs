@@ -340,6 +340,17 @@ impl Runner {
         self.state(key).is_some_and(RunState::is_running) || self.stopped_to_quit.contains(key)
     }
 
+    /// How long the slowest stop sequence of the real processes running now takes (zero
+    /// when none run): quitting waits that long before killing what's left.
+    pub fn longest_stop(&self) -> std::time::Duration {
+        self.runs
+            .iter()
+            .filter(|(_, r)| r.state.is_running() && r.control.as_ref().is_some_and(|c| c.pid().is_some()))
+            .filter_map(|(k, _)| Some(devdeck_core::process::StopKind::of(self.command(k)?.1).total()))
+            .max()
+            .unwrap_or_default()
+    }
+
     /// The process ids of the runs that have one (port scans, quitting).
     pub fn pids(&self) -> Vec<(RunKey, u32)> {
         self.runs.iter().filter_map(|(k, r)| Some((k.clone(), r.control.as_ref()?.pid()?))).collect()

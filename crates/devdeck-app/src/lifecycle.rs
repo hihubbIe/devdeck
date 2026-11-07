@@ -1,35 +1,171 @@
-//! Lifecycle of real processes (R8.1, R8.2). Builder R3 of M2 step 3 implements this
-//! file (and owns the quit code in `shell.rs` and `main.rs`'s window-close fallback
-//! during step 3); the interface is fixed here.
+//! Lifecycle of real processes (R8.1, R8.2).
 //!
 //! - One devdeck at a time: a lock in the state folder; a second devdeck says one is
 //!   already running and exits (and so never mistakes the first one's runs for
-//!   leftovers).
+//!   leftovers). The demo has its own state folder, so its own lock.
 //! - At start, groups a previous devdeck left running (`GroupLog::leftovers`) are offered
 //!   in a dialog: "N processes left by a previous devdeck: Kill / Leave".
-//! - SIGTERM, SIGHUP and SIGINT to devdeck: signal-hook's thread kills every live group
-//!   (`process::kill_all(GroupLog::live())`), then asks the app to quit.
-//! - Quitting with runs ("Stop all and quit", and the window-close fallback) stops them,
-//!   waits for the longest stop sequence of what runs (`StopKind::total`), then kills
-//!   what's left before quitting.
+//! - SIGTERM, SIGHUP and SIGINT to devdeck: a thread kills every recorded live group
+//!   (`process::kill_all(GroupLog::live())`), then the app saves and quits. The runs
+//!   still count as running, so they start again when devdeck reopens.
+//! - Quitting with runs waits for their stop sequence, then kills what's left
+//!   (`Shell::stop_all_and_quit`, `Shell::kill_everything`).
 
-use crate::shell::Shell;
-use devdeck_core::process::GroupLog;
-use gpui::{App, Entity};
+use crate::shell::{Shell, focus_button};
+use devdeck_core::process::{GroupLog, kill_all};
+use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
+use devdeck_ui::{ModalFocus, label, modal_frame, pop_modal, push_modal, theme};
+use gpui::{App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, actions, div, prelude::*};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
-/// Held while this devdeck runs; released when dropped.
+actions!(lifecycle, [KillLeftovers]);
+
+/// Held while this devdeck runs; the lock goes with the process.
 pub struct InstanceLock {
-    _private: (),
+    _file: std::fs::File,
 }
 
-/// Claims the state folder for this devdeck, or says another one has it.
+/// Claims the state folder for this devdeck, or says which devdeck has it.
 pub fn claim(state_dir: &Path) -> Result<InstanceLock, String> {
-    let _ = state_dir;
-    Ok(InstanceLock { _private: () })
+    use rustix::fs::{FlockOperation, flock};
+    std::fs::create_dir_all(state_dir).map_err(|e| format!("{}: {e}", state_dir.display()))?;
+    let path = state_dir.join("devdeck.lock");
+    let mut file =
+        std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if flock(&file, FlockOperation::NonBlockingLockExclusive).is_err() {
+        let mut pid = String::new();
+        let _ = file.read_to_string(&mut pid);
+        return Err(format!("devdeck is already running (pid {})", pid.trim()));
+    }
+    // Who holds it, for the message a second devdeck shows.
+    let _ = file.set_len(0).and_then(|_| file.rewind()).and_then(|_| write!(file, "{}", std::process::id()));
+    Ok(InstanceLock { _file: file })
 }
 
-/// Signal handling and the leftovers dialog, once the shell is up.
+/// Once the shell is up: the leftovers dialog, and stopping everything on a signal.
 pub fn install(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
-    let _ = (shell, log, cx);
+    shell.update(cx, |s, _| s.log = Some(log.clone()));
+    offer_leftovers(shell, &log, cx);
+    watch_signals(shell, log, cx);
+}
+
+/// The leftovers dialog in the main window, when a previous devdeck left processes.
+pub fn offer_leftovers(shell: &Entity<Shell>, log: &GroupLog, cx: &mut App) {
+    let leftovers = log.leftovers();
+    if !leftovers.is_empty()
+        && let Some(main) = shell.read(cx).main_window()
+    {
+        cx.defer(move |cx| {
+            let _ = main.update(cx, |_, window, cx| open_leftovers(leftovers, window, cx));
+        });
+    }
+}
+
+/// SIGTERM, SIGHUP or SIGINT: every recorded group is killed on the signal thread at
+/// once (it reads `/proc`, so not in a signal handler), then the app saves and quits.
+fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else { return };
+    let (tx, rx) = async_channel::bounded::<()>(1);
+    let spawned = std::thread::Builder::new().name("devdeck signals".into()).spawn(move || {
+        if signals.forever().next().is_some() {
+            kill_all(&log.live());
+            let _ = tx.send_blocking(());
+        }
+    });
+    if spawned.is_err() {
+        return;
+    }
+    let shell = shell.downgrade();
+    cx.spawn(async move |cx| {
+        if rx.recv().await.is_ok() {
+            cx.update(|cx| {
+                if let Some(s) = shell.upgrade() {
+                    s.update(cx, |s, cx| {
+                        s.kill_everything(cx);
+                        s.flush(cx);
+                    });
+                }
+                cx.quit();
+            });
+        }
+    })
+    .detach();
+}
+
+fn open_leftovers(pids: Vec<u32>, window: &mut Window, cx: &mut App) {
+    let dialog = cx.new(|cx| Leftovers::new(pids, cx));
+    push_modal(dialog.clone().into(), window, cx);
+    let first = dialog.read(cx).focus.0[0].clone();
+    first.focus(window, cx);
+}
+
+/// "N processes left by a previous devdeck" with their commands: Kill (Enter) or Leave
+/// (Esc).
+pub struct Leftovers {
+    /// Process id and command line.
+    pub processes: Vec<(u32, String)>,
+    pub focus: ModalFocus,
+}
+
+impl Leftovers {
+    fn new(pids: Vec<u32>, cx: &mut Context<Self>) -> Self {
+        let processes = pids.into_iter().map(|p| (p, command_of(p))).collect();
+        Self { processes, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]) }
+    }
+
+    fn kill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pids: Vec<u32> = self.processes.iter().map(|(p, _)| *p).collect();
+        kill_all(&pids);
+        pop_modal(window, cx);
+    }
+
+    fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        pop_modal(window, cx);
+    }
+
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus.0[1].is_focused(window) { self.leave(window, cx) } else { self.kill(window, cx) }
+    }
+}
+
+impl Render for Leftovers {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme(cx).clone();
+        let n = self.processes.len();
+        let title = if n == 1 { "1 process left by a previous devdeck".to_string() } else { format!("{n} processes left by a previous devdeck") };
+        let list = div().flex().flex_col().gap_1().children(self.processes.iter().map(|(pid, cmd)| label(format!("● {cmd} (pid {pid})")).text_color(t.warn)));
+        let buttons = div()
+            .flex()
+            .justify_end()
+            .gap_2()
+            .child(focus_button("leftovers-leave", "Leave", &self.focus.0[1], &t).on_click(cx.listener(|this, _, w, cx| this.leave(w, cx))))
+            .child(
+                focus_button("leftovers-kill", "Kill", &self.focus.0[0], &t)
+                    .debug_selector(|| "leftovers-kill".into())
+                    .on_click(cx.listener(|this, _, w, cx| this.kill(w, cx))),
+            );
+        let content = div()
+            .key_context("Modal Leftovers")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .on_action(cx.listener(|this, _: &ModalNext, window, cx| this.focus.cycle(1, window, cx)))
+            .on_action(cx.listener(|this, _: &ModalPrev, window, cx| this.focus.cycle(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.leave(window, cx)))
+            .on_action(cx.listener(|this, _: &KillLeftovers, window, cx| this.confirm(window, cx)))
+            .child(div().text_color(t.hi).child(title))
+            .child(label("devdeck didn't stop them (it was killed or crashed). They may hold ports.").text_color(t.mute))
+            .child(list)
+            .child(buttons);
+        modal_frame(content.into_any_element(), window, &t)
+    }
+}
+
+/// A process's command line, as `ps` shows it.
+fn command_of(pid: u32) -> String {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|b| b.split(|c| *c == 0).filter(|s| !s.is_empty()).map(String::from_utf8_lossy).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
 }
