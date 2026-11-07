@@ -6,9 +6,11 @@
 //! none, or new ones typed in the field (⏎ uses them, esc cancels); choosing starts the
 //! run with them, or restarts it when it runs. The tab keeps its arguments.
 //! Keys (`RunView`): ⏎ run, s stop, r restart, i types into the terminal; alt+f follow.
-//! In the terminal (`Terminal`, focused by a click or i) keys go to the process except
-//! alt+… and ctrl+shift+…: ctrl+shift+⏎/x/r run, stop and restart, ctrl+shift+c/v copy
-//! and paste, ctrl+shift+esc leaves it. Dragging selects; the wheel scrolls. With shift
+//! In the terminal (`Terminal`, focused by a press in the output or i) keys go to the
+//! process except alt+… and ctrl+shift+…: ctrl+shift+⏎/x/r run, stop and restart,
+//! ctrl+shift+v pastes, ctrl+shift+esc leaves it. Copying the selection: ctrl+shift+c
+//! anywhere in the tab, and ctrl+c when something is selected, clearing it (otherwise
+//! ctrl+c goes to the process). Dragging selects; the wheel scrolls. With shift
 //! held over the output, its links are underlined and shift+click opens one in the
 //! browser (`http`, `https` and `file` only). When several
 //! views show one run, the one focused last sizes its terminal. Output redraws at most
@@ -369,6 +371,16 @@ impl RunView {
     }
 
     fn key_down(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // ctrl+c copies a selection rather than interrupting the process, and clears it:
+        // the next ctrl+c interrupts.
+        let m = &e.keystroke.modifiers;
+        if e.keystroke.key == "c" && m.control && !m.shift && !m.alt && !m.platform && self.selected_text(cx).is_some() {
+            cx.stop_propagation();
+            self.copy(cx);
+            self.scrollback.clear();
+            cx.notify();
+            return;
+        }
         // Once the process ended, keys are the run view's again (⏎ runs it, r restarts).
         let Some(modes) = self.ctx.services.read(cx).runner.read(cx).run(&self.key).filter(|r| r.state.is_running()).map(|r| r.terminal.modes()) else { return };
         if let Some(bytes) = terminal::keystroke_bytes(&e.keystroke, modes.app_cursor) {
@@ -638,6 +650,8 @@ impl Render for RunView {
                         if hit.is_hovered(window) {
                             let _ = down.update(cx, |this, cx| {
                                 this.scrollback.press(g.at(e.position));
+                                // A press in the output is where keys go next: copy included.
+                                this.term_focus.focus(window, cx);
                                 cx.notify();
                             });
                         }
@@ -676,7 +690,6 @@ impl Render for RunView {
                 .min_h_0()
                 .px(pad)
                 .on_key_down(cx.listener(Self::key_down))
-                .on_action(cx.listener(|this, _: &terminal::Copy, _, cx| this.copy(cx)))
                 .on_action(cx.listener(|this, _: &terminal::Paste, _, cx| this.paste(cx)))
                 .on_action(cx.listener(|this, _: &LeaveTerminal, window, cx| this.focus.focus(window, cx)))
                 .child(area)
@@ -692,6 +705,7 @@ impl Render for RunView {
             .flex_col()
             .on_modifiers_changed(cx.listener(|this, e: &gpui::ModifiersChangedEvent, _, cx| this.show_links(e.modifiers.shift, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
+            .on_action(cx.listener(|this, _: &terminal::Copy, _, cx| this.copy(cx)))
             .on_action(cx.listener(|this, _: &RunAgain, _, cx| this.act("run", cx)))
             .on_action(cx.listener(|this, _: &Stop, _, cx| this.act("stop", cx)))
             .on_action(cx.listener(|this, _: &Restart, _, cx| this.act("restart", cx)))

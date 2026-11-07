@@ -148,7 +148,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("run.terminal", "type into the terminal", "Run output", Some("RunView && !TextInput"), ["i"], rv::FocusTerminal),
         spec!("run.args", "arguments", "Run output", Some("RunView && !TextInput"), ["a", "ctrl-shift-a"], rv::ChooseArgs),
         // Terminal
-        spec!("term.copy", "copy", "Terminal", Some("Terminal"), ["ctrl-shift-c"], term::Copy),
+        spec!("term.copy", "copy the selection", "Run output", Some("RunView && !TextInput"), ["ctrl-shift-c", "ctrl-c"], term::Copy),
         spec!("term.paste", "paste", "Terminal", Some("Terminal"), ["ctrl-shift-v"], term::Paste),
         spec!("term.leave", "leave the terminal", "Terminal", Some("Terminal"), ["ctrl-shift-escape"], rv::LeaveTerminal),
         // Service

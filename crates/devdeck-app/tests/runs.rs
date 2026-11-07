@@ -478,3 +478,41 @@ fn shift_shows_the_outputs_links_and_shift_click_opens_one(cx: &mut TestAppConte
     vcx.simulate_modifiers_change(Modifiers::none());
     assert!(!vcx.read(|cx| view.read(cx).links_shown()));
 }
+
+#[gpui::test]
+fn a_selection_copies_with_either_key_while_running_or_after(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, VisualTestContext};
+    let shell = start(cx, "copy");
+    let addr = ViewAddr::Run { app: "entityservice".into(), cmd: "go:run".into() };
+    open(&shell, cx, addr.clone());
+    advance(cx, LINE_GAP * 4);
+    let main = main_window(&shell, cx);
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let view = cx.read(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<RunView>().unwrap());
+    let runner = runner_of(&shell, cx);
+    let key = RunKey::new("entityservice", "go:run");
+    let row = lines(&runner, &key, cx).iter().position(|l| l.contains("connected to mongodb")).expect("output");
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    // A press in the output focuses the terminal.
+    let at = vcx.read(|cx| view.read(cx).cell_center(row, 2)).expect("drawn");
+    vcx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+    vcx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    assert!(vcx.update(|window, cx| view.read(cx).terminal_focused(window)), "the press focused the terminal");
+    let clipboard = |vcx: &mut VisualTestContext| vcx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()));
+    vcx.update(|_, cx| view.update(cx, |v, cx| v.select((row, 4), (row, 12), cx)));
+    vcx.simulate_keystrokes("ctrl-shift-c");
+    assert_eq!(clipboard(&mut vcx).as_deref(), Some("connected"));
+    vcx.update(|_, cx| view.update(cx, |v, cx| v.select((row, 17), (row, 23), cx)));
+    vcx.simulate_keystrokes("ctrl-c");
+    assert_eq!(clipboard(&mut vcx).as_deref(), Some("mongodb"), "ctrl+c copies a selection");
+    assert_eq!(vcx.read(|cx| view.read(cx).selected_text(cx)), None, "and clears it: the next ctrl+c interrupts");
+    // After the process ended, copying still works from the tab.
+    vcx.update(|_, cx| runner.update(cx, |r, cx| r.stop(&key, cx)));
+    vcx.executor().advance_clock(STOP_DELAY * 2);
+    vcx.run_until_parked();
+    vcx.update(|window, cx| gpui::Focusable::focus_handle(view.read(cx), cx).focus(window, cx));
+    vcx.update(|_, cx| view.update(cx, |v, cx| v.select((row, 4), (row, 12), cx)));
+    vcx.simulate_keystrokes("ctrl-shift-c");
+    assert_eq!(clipboard(&mut vcx).as_deref(), Some("connected"), "stopped: still copies");
+}
