@@ -563,3 +563,304 @@ pub fn settings_get(_: &CallCx, _: NoParams, app: &mut App) -> Result<Settings, 
     let s = crate::app_settings::settings(app).read(app);
     Ok(Settings { scale: s.store.settings.scale(), theme: s.store.settings.theme.clone() })
 }
+
+// ---- Reading output, the screen, notes and files (R13.9) ----
+
+use devdeck_core::terminal::{ReadFrom, Terminal as CoreTerminal, cut_line};
+
+/// Lines one answer holds at most, and bytes of their JSON: small enough for a model's
+/// budget once a client wraps it (Claude Code cuts tool results near 25 000 tokens).
+const MAX_LINES: usize = 2000;
+const MAX_BYTES: usize = 32 * 1024;
+/// A line longer than this is cut (a minified file, a progress bar's line).
+const LINE_CAP: usize = 2000;
+const DEFAULT_TAIL: usize = 100;
+const MAX_CONTEXT: usize = 5;
+const DEFAULT_MATCHES: usize = 50;
+const MAX_MATCHES: usize = 200;
+/// Files larger than this aren't read through the API (it reads on the UI thread).
+const MAX_FILE: u64 = 2 * 1024 * 1024;
+const DEFAULT_FILE_LINES: usize = 400;
+
+/// Bytes `text` takes in an answer (JSON-escaped, quotes and a comma).
+fn json_len(text: &str) -> usize {
+    serde_json::to_string(text).map_or(text.len(), |s| s.len()) + 1
+}
+
+/// What a place in some output holds for: this devdeck, this run or terminal, this start
+/// of it, this size, the normal screen. Anything else makes it `expired`.
+struct Epoch {
+    instance: String,
+    target: u64,
+    starts: u32,
+    cols: u16,
+    rows: u16,
+}
+
+impl Epoch {
+    fn of(cx: &CallCx, target: &str, t: &CoreTerminal, starts: u32) -> Self {
+        let size = t.size();
+        Self { instance: cx.instance.to_string(), target: devdeck_core::fnv1a(target.as_bytes()), starts, cols: size.cols, rows: size.rows }
+    }
+
+    fn cursor(&self, at: u64, print: Option<u64>) -> String {
+        format!("2.{}.{:x}.{}.{}.{}.{at}.{:x}", self.instance, self.target, self.starts, self.cols, self.rows, print.unwrap_or(0))
+    }
+
+    /// The place in `since`, and the fingerprint of the row before it.
+    fn place(&self, since: &str) -> Result<(u64, u64), ApiError> {
+        let bad = || ApiError::invalid("since: not a cursor this devdeck gave");
+        let p: Vec<&str> = since.split('.').collect();
+        let [v, inst, target, starts, cols, rows, at, print] = p.as_slice() else { return Err(bad()) };
+        if *v != "2" {
+            return Err(bad());
+        }
+        let at: u64 = at.parse().map_err(|_| bad())?;
+        let print = u64::from_str_radix(print, 16).map_err(|_| bad())?;
+        let same = *inst == self.instance
+            && u64::from_str_radix(target, 16).ok() == Some(self.target)
+            && starts.parse::<u32>().ok() == Some(self.starts)
+            && cols.parse::<u16>().ok() == Some(self.cols)
+            && rows.parse::<u16>().ok() == Some(self.rows);
+        if !same {
+            return Err(expired());
+        }
+        Ok((at, print))
+    }
+}
+
+fn expired() -> ApiError {
+    ApiError::new(devdeck_api::ErrorKind::Expired, "it restarted, its terminal was resized, or devdeck restarted since: read the last lines again")
+}
+
+fn output_of(cx: &CallCx, target: &str, t: &CoreTerminal, starts: u32, tail: Option<u32>, since: Option<&str>) -> Result<Output, ApiError> {
+    let epoch = Epoch::of(cx, target, t, starts);
+    let alt = t.modes().alt_screen;
+    let from = match since {
+        // A full-screen program's screen has no history to go on from.
+        Some(_) if alt => return Err(expired()),
+        Some(s) => {
+            let (at, print) = epoch.place(s)?;
+            // The row before the place must still be the one it was (else the count drifted).
+            if print != 0 && at > t.dropped() && t.row_print(at - 1).is_some_and(|p| p != print) {
+                return Err(expired());
+            }
+            ReadFrom::Since(at)
+        }
+        None => ReadFrom::Tail(tail.map_or(DEFAULT_TAIL, |n| n as usize)),
+    };
+    let s = t.read(from, MAX_LINES, MAX_BYTES, LINE_CAP);
+    let next = if alt { String::new() } else { epoch.cursor(s.next, s.next.checked_sub(1).and_then(|r| t.row_print(r))) };
+    Ok(Output { lines: s.lines.into_iter().map(Untrusted).collect(), next, truncated: s.truncated, missed: s.missed, partial: s.partial, alt_screen: alt })
+}
+
+fn search_in(t: &CoreTerminal, pattern: &str, context: Option<u32>, max: Option<u32>) -> Result<Matches, ApiError> {
+    let re = regex::RegexBuilder::new(pattern).size_limit(1 << 20).dfa_size_limit(1 << 20).build().map_err(|e| ApiError::invalid(format!("pattern: {e}")))?;
+    let context = context.map_or(0, |c| c as usize).min(MAX_CONTEXT);
+    let max = max.map_or(DEFAULT_MATCHES, |m| m as usize).clamp(1, MAX_MATCHES);
+    let lines: Vec<String> = t.logical_lines().into_iter().map(|(_, l)| cut_line(&l, LINE_CAP)).collect();
+    let mut matches = Vec::new();
+    let mut bytes = 0;
+    let mut truncated = false;
+    for (i, line) in lines.iter().enumerate().filter(|(_, l)| re.is_match(l)) {
+        let before: Vec<Untrusted> = lines[i.saturating_sub(context)..i].iter().map(|l| l.as_str().into()).collect();
+        let after: Vec<Untrusted> = lines[i + 1..(i + 1 + context).min(lines.len())].iter().map(|l| l.as_str().into()).collect();
+        let size = json_len(line) + before.iter().chain(&after).map(|l| json_len(&l.0)).sum::<usize>();
+        if matches.len() >= max || bytes + size > MAX_BYTES {
+            truncated = true;
+            break;
+        }
+        bytes += size;
+        matches.push(Match { text: line.as_str().into(), before, after });
+    }
+    Ok(Matches { matches, truncated })
+}
+
+/// A run's terminal (a command, never a shell), its start count, and what names it.
+fn with_run<T>(cx: &CallCx, ws: Option<&str>, app: &str, cmd: &str, a: &App, f: impl FnOnce(&CoreTerminal, u32, &str) -> Result<T, ApiError>) -> Result<T, ApiError> {
+    let w = workspace(cx, ws, a)?;
+    let key = RunKey::new(app, cmd);
+    let runner = w.services.read(a).runner.read(a);
+    let r = runner.run(&key).filter(|_| !key.is_terminal()).ok_or_else(|| ApiError::not_found(format!("no run of {app} {cmd}")))?;
+    f(&r.terminal, r.runs, &format!("run/{app}/{cmd}"))
+}
+
+/// Terminal `n`'s terminal, its shell's start count and its uid: the caller's own
+/// terminal only (the user's shells hold what the user typed and printed).
+fn with_terminal<T>(cx: &CallCx, ws: Option<&str>, n: u32, a: &App, f: impl FnOnce(&CoreTerminal, u32, &str) -> Result<T, ApiError>) -> Result<T, ApiError> {
+    let w = workspace(cx, ws, a)?;
+    let key = RunKey::terminal(n);
+    let runner = w.services.read(a).runner.read(a);
+    let r = runner.run(&key).ok_or_else(|| ApiError::not_found(format!("no terminal {n}")))?;
+    let mine = matches!(cx.who, Who::Terminal { workspace, n: own, .. } if *workspace == w.id && *own == n);
+    if !mine {
+        return Err(later(format!("terminal {n} is the user's")));
+    }
+    let uid = runner.terminal_uid(&key).unwrap_or_default().to_string();
+    f(&r.terminal, r.runs, &uid)
+}
+
+pub fn run_output(cx: &CallCx, p: OutputParams, app: &mut App) -> Result<Output, ApiError> {
+    with_run(cx, p.workspace.as_deref(), &p.app, &p.cmd, app, |t, starts, target| output_of(cx, target, t, starts, p.tail, p.since.as_deref()))
+}
+
+pub fn run_search(cx: &CallCx, p: SearchParams, app: &mut App) -> Result<Matches, ApiError> {
+    with_run(cx, p.workspace.as_deref(), &p.app, &p.cmd, app, |t, _, _| search_in(t, &p.pattern, p.context, p.max))
+}
+
+pub fn terminal_output(cx: &CallCx, p: TerminalOutputParams, app: &mut App) -> Result<Output, ApiError> {
+    with_terminal(cx, p.workspace.as_deref(), p.n, app, |t, starts, target| output_of(cx, target, t, starts, p.tail, p.since.as_deref()))
+}
+
+pub fn terminal_search(cx: &CallCx, p: TerminalSearchParams, app: &mut App) -> Result<Matches, ApiError> {
+    with_terminal(cx, p.workspace.as_deref(), p.n, app, |t, _, _| search_in(t, &p.pattern, p.context, p.max))
+}
+
+pub fn terminal_screen(cx: &CallCx, p: TerminalParams, app: &mut App) -> Result<Screen, ApiError> {
+    with_terminal(cx, p.workspace.as_deref(), p.n, app, |t, _, _| {
+        let (rows, (row, col)) = t.screen();
+        Ok(Screen { rows: rows.into_iter().map(|r| Untrusted(cut_line(&r, LINE_CAP))).collect(), cursor_row: row as u32, cursor_col: col as u32 })
+    })
+}
+
+pub fn note_read(cx: &CallCx, p: IdParams, app: &mut App) -> Result<NoteText, ApiError> {
+    let w = workspace(cx, p.workspace.as_deref(), app)?;
+    let notes = w.services.read(app).notes.clone();
+    if notes.read(app).meta(&p.id).is_none() {
+        return Err(ApiError::not_found(format!("no note {}", p.id)));
+    }
+    let text = notes.update(app, |n, _| n.text(&p.id));
+    if let Some(why) = notes.read(app).unreadable(&p.id) {
+        return Err(ApiError::new(devdeck_api::ErrorKind::Refused, format!("the note can't be read: {why}")));
+    }
+    // Cut to the budget, at a character's edge (escaping counted).
+    let mut end = text.len();
+    while json_len(&text[..end]) > MAX_BYTES {
+        end = (end * 3 / 4).min(end.saturating_sub(1));
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
+    Ok(NoteText { id: p.id, truncated: end < text.len(), text: text[..end].into() })
+}
+
+/// Names of files never read through the API, whatever folder (secrets; Claude Code's
+/// own rules don't reach what devdeck reads for it).
+fn secret(path: &std::path::Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let sample = [".example", ".sample", ".template", ".dist"].iter().any(|s| name.ends_with(s));
+    let env = name == ".env" || (name.starts_with(".env.") && !sample);
+    let keys = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kubeconfig"].iter().any(|e| name.ends_with(e));
+    let files = [".npmrc", ".netrc", ".pgpass", ".git-credentials", "credentials", "credentials.json", "kubeconfig", ".htpasswd"].contains(&name.as_str());
+    let ssh = ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"].iter().any(|k| name.starts_with(k));
+    let dirs = path.components().any(|c| [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".password-store"].contains(&c.as_os_str().to_string_lossy().as_ref()));
+    env || keys || files || ssh || dirs
+}
+
+/// devdeck's own folders (config, notes, state, its sockets): never read through the
+/// API (other workspaces' notes, the audit).
+fn devdecks_own() -> Vec<std::path::PathBuf> {
+    let mut out = vec![devdeck_core::settings::default_config_dir(), devdeck_core::notes::default_data_dir(), devdeck_core::state::default_state_dir()];
+    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
+        out.push(std::path::PathBuf::from(rt).join("devdeck"));
+    }
+    out.into_iter().filter_map(|p| p.canonicalize().ok()).collect()
+}
+
+/// Where `file.read` may read: the workspace's apps' folders (not hidden ones), never
+/// `/`, the home folder or one above it.
+fn file_roots(s: &Services) -> Vec<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from).and_then(|h| h.canonicalize().ok());
+    let hidden = |id: &str| s.config.as_ref().is_some_and(|c| c.apps.get(id).is_some_and(|o| o.hidden));
+    s.catalog
+        .apps
+        .iter()
+        .filter(|a| !a.id.is_empty() && !hidden(&a.id))
+        .filter_map(|a| a.dir.canonicalize().ok())
+        .filter(|d| d.parent().is_some() && home.as_ref().is_none_or(|h| !h.starts_with(d)))
+        .collect()
+}
+
+/// May `path` (links resolved) be read?
+fn readable(path: &std::path::Path, roots: &[std::path::PathBuf], own: &[std::path::PathBuf]) -> Result<(), ApiError> {
+    let denied = |why: &str| Err(ApiError::new(devdeck_api::ErrorKind::PermissionDenied, format!("{}: {why}", path.display())));
+    if own.iter().any(|o| path.starts_with(o)) {
+        return denied("devdeck's own files");
+    }
+    if !roots.iter().any(|r| path.starts_with(r)) {
+        return denied("not in one of the workspace's apps");
+    }
+    if secret(path) {
+        return denied("it may hold secrets");
+    }
+    Ok(())
+}
+
+pub fn file_read(cx: &CallCx, p: FileParams, app: &mut App) -> Result<FileLines, ApiError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let w = workspace(cx, p.workspace.as_deref(), app)?;
+    let roots = file_roots(w.services.read(app));
+    let own = devdecks_own();
+    let asked = std::path::Path::new(&p.path);
+    if !asked.is_absolute() {
+        return Err(ApiError::invalid("path: absolute"));
+    }
+    // Links and `..` resolved: what's checked is where the file really is.
+    let path = asked.canonicalize().map_err(|e| ApiError::not_found(format!("{}: {e}", p.path)))?;
+    readable(&path, &roots, &own)?;
+    // Without blocking (a FIFO), without following a link swapped in since.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, format!("{}: {e}", path.display())))?;
+    let meta = file.metadata().map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, e.to_string()))?;
+    if !meta.is_file() {
+        return Err(ApiError::new(devdeck_api::ErrorKind::Refused, format!("{}: not a regular file", path.display())));
+    }
+    // The file opened is the one checked.
+    let opened = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, e.to_string()))?;
+    readable(&opened, &roots, &own)?;
+    if meta.len() > MAX_FILE {
+        return Err(ApiError::new(devdeck_api::ErrorKind::Refused, format!("{} is {} bytes: more than the API reads ({MAX_FILE})", path.display(), meta.len())));
+    }
+    let mut bytes = Vec::new();
+    file.by_ref().take(MAX_FILE).read_to_end(&mut bytes).map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, e.to_string()))?;
+    if bytes.contains(&0) {
+        return Err(ApiError::new(devdeck_api::ErrorKind::Refused, format!("{}: not text", path.display())));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| ApiError::new(devdeck_api::ErrorKind::Refused, format!("{}: not UTF-8 text", path.display())))?;
+    let all: Vec<&str> = text.lines().collect();
+    let first = p.from_line.unwrap_or(1).max(1) as usize;
+    let want = p.lines.map_or(DEFAULT_FILE_LINES, |n| n as usize).min(MAX_LINES);
+    let mut lines = Vec::new();
+    let mut size = 0;
+    for l in all.iter().skip(first - 1).take(want) {
+        let l = cut_line(l, LINE_CAP);
+        size += json_len(&l);
+        if size > MAX_BYTES {
+            break;
+        }
+        lines.push(Untrusted(l));
+    }
+    let truncated = first - 1 + lines.len() < all.len();
+    Ok(FileLines { path: path.display().to_string().into(), first_line: first as u32, lines, total_lines: all.len() as u32, truncated })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secret;
+    use std::path::Path;
+
+    #[test]
+    fn secret_files_are_known_by_name() {
+        for p in ["/w/a/.env", "/w/a/.env.local", "/w/a/server.pem", "/w/a/tls.key", "/w/a/.npmrc", "/home/u/.ssh/config", "/w/a/id_ed25519.pub", "/w/a/.kube/config"] {
+            assert!(secret(Path::new(p)), "{p}");
+        }
+        for p in ["/w/a/.env.example", "/w/a/src/main.rs", "/w/a/keys.ts", "/w/a/environment.md"] {
+            assert!(!secret(Path::new(p)), "{p}");
+        }
+    }
+}

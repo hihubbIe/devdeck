@@ -67,6 +67,13 @@ handlers! {
     RunStart => h::run_start,
     RunStop => h::run_stop,
     RunRestart => h::run_restart,
+    RunOutput => h::run_output,
+    RunSearch => h::run_search,
+    TerminalOutput => h::terminal_output,
+    TerminalSearch => h::terminal_search,
+    TerminalScreen => h::terminal_screen,
+    NoteRead => h::note_read,
+    FileRead => h::file_read,
 }
 
 static HANDLERS: LazyLock<BTreeMap<&'static str, Handler>> = LazyLock::new(table);

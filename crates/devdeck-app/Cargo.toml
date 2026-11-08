@@ -38,6 +38,7 @@ futures-lite.workspace = true
 devdeck-kube.workspace = true
 devdeck-api.workspace = true
 libc.workspace = true
+regex.workspace = true
 uuid.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 

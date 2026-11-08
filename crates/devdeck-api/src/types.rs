@@ -474,6 +474,139 @@ pub struct RunStartParams {
     pub env: Option<String>,
 }
 
+/// Output of a run or a terminal: the last lines (`tail`, 100 when left out), or what
+/// came after `since` (the `next` of an earlier answer).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub app: String,
+    pub cmd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+}
+
+/// [`OutputParams`] for terminal `n`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalOutputParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub n: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Output {
+    /// Plain text (no colours), wrapped rows joined: one entry per line written.
+    pub lines: Vec<Untrusted>,
+    /// Give it as `since` to read what comes after.
+    pub next: String,
+    /// More lines were there than one answer holds: read on with `next`.
+    pub truncated: bool,
+    /// Rows (not lines) that fell off the history since `since`, never read.
+    pub missed: u64,
+    /// The last line isn't finished yet; the next read gives it again.
+    pub partial: bool,
+    /// A full-screen program shows (htop, k9s): these are its screen's lines, `next` is
+    /// empty; terminal.screen shows it as laid out.
+    #[serde(default)]
+    pub alt_screen: bool,
+}
+
+/// A search in a run's output (a regular expression, `context` lines around each
+/// match, at most `max` matches).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub app: String,
+    pub cmd: String,
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+}
+
+/// [`SearchParams`] for terminal `n`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalSearchParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub n: u32,
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Match {
+    pub text: Untrusted,
+    pub before: Vec<Untrusted>,
+    pub after: Vec<Untrusted>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Matches {
+    /// Oldest first.
+    pub matches: Vec<Match>,
+    /// More matched than `max`, or the answer's size, let through.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Screen {
+    /// Every row as shown, top to bottom (a full-screen program's: htop, k9s).
+    pub rows: Vec<Untrusted>,
+    pub cursor_row: u32,
+    pub cursor_col: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NoteText {
+    pub id: String,
+    pub text: Untrusted,
+    /// Longer than one answer holds.
+    pub truncated: bool,
+}
+
+/// A text file in one of the workspace's folders: `lines` lines (400 when left out)
+/// from line `from_line` (1 when left out).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Absolute.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FileLines {
+    /// The path, links resolved.
+    pub path: Untrusted,
+    pub first_line: u32,
+    pub lines: Vec<Untrusted>,
+    pub total_lines: u32,
+    /// Lines after these: ask from `first_line + lines.len()`.
+    pub truncated: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RunSummary {
     pub app: String,

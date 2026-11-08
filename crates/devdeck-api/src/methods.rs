@@ -104,6 +104,20 @@ methods! {
         "Stops a run the caller started (the user's runs need the user's approval).", since 2;
     RunRestart = "run.restart", Run, RunStartParams => Run,
         "Restarts a run the caller started, or starts it when it isn't running.", since 2;
+    RunOutput = "run.output", Read, OutputParams => Output,
+        "A run's output as lines: the last ones, or what came after `since` (the `next` of an earlier answer).", since 3;
+    RunSearch = "run.search", Read, SearchParams => Matches,
+        "Lines of a run's output matching a regular expression, with context.", since 3;
+    TerminalOutput = "terminal.output", Read, TerminalOutputParams => Output,
+        "A terminal's output as lines: the last ones, or what came after `since`.", since 3;
+    TerminalSearch = "terminal.search", Read, TerminalSearchParams => Matches,
+        "Lines of a terminal's output matching a regular expression, with context.", since 3;
+    TerminalScreen = "terminal.screen", Read, TerminalParams => Screen,
+        "A terminal's screen as shown (a full-screen program's), and its cursor.", since 3;
+    NoteRead = "note.read", Read, IdParams => NoteText,
+        "A note's text (Markdown).", since 3;
+    FileRead = "file.read", Read, FileParams => FileLines,
+        "Lines of a text file in one of the workspace's folders.", since 3;
 }
 
 /// A method as the catalog lists it.
@@ -180,8 +194,13 @@ mod tests {
     #[test]
     fn methods_look_or_run_and_levels_say_when() {
         for m in catalog() {
-            assert!(matches!(m.class, Class::Observe | Class::Run) && m.escalates_to.is_empty(), "{}", m.name);
-            assert_eq!(m.since, if m.class == Class::Run { 2 } else { 1 }, "{}", m.name);
+            assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read) && m.escalates_to.is_empty(), "{}", m.name);
+            let since = match m.class {
+                Class::Run => 2,
+                Class::Read => 3,
+                _ => 1,
+            };
+            assert_eq!(m.since, since, "{}", m.name);
         }
     }
 }

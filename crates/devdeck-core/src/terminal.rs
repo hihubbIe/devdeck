@@ -201,6 +201,29 @@ impl EventListener for Replies {
     }
 }
 
+/// Where a read starts: the last lines, or after a place an earlier read gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadFrom {
+    Tail(usize),
+    Since(u64),
+}
+
+/// What [`Terminal::read`] gives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Slice {
+    pub lines: Vec<String>,
+    /// The place of the first line given.
+    pub first: u64,
+    /// Where the next read goes on: after the last finished line given.
+    pub next: u64,
+    /// More lines were there than the bounds let through.
+    pub truncated: bool,
+    /// Rows that fell off the history since the place asked for, never read.
+    pub missed: u64,
+    /// The last line isn't finished yet (it's read again next time).
+    pub partial: bool,
+}
+
 pub struct Terminal {
     term: Term<Replies>,
     parser: ansi::Processor,
@@ -208,6 +231,8 @@ pub struct Terminal {
     size: TermSize,
     /// Rows that fell off the top of the history so far.
     dropped: u64,
+    /// The history's length in rows.
+    scrollback: usize,
 }
 
 impl Terminal {
@@ -216,7 +241,7 @@ impl Terminal {
         let size = TermSize { cols: size.cols.max(2), rows: size.rows.max(1) };
         let replies = Replies::default();
         let config = Config { scrolling_history: scrollback, ..Default::default() };
-        Self { term: Term::new(config, &size, replies.clone()), parser: ansi::Processor::new(), replies, size, dropped: 0 }
+        Self { term: Term::new(config, &size, replies.clone()), parser: ansi::Processor::new(), replies, size, dropped: 0, scrollback }
     }
 
     pub fn size(&self) -> TermSize {
@@ -225,10 +250,18 @@ impl Terminal {
 
     /// Output of the process.
     pub fn feed(&mut self, bytes: &[u8]) {
+        // In pieces no longer than the history: a byte makes one row at most, so no piece
+        // scrolls more rows than the history holds and the count stays exact.
+        for piece in bytes.chunks(self.scrollback.max(1)) {
+            self.feed_piece(piece);
+        }
+    }
+
+    fn feed_piece(&mut self, bytes: &[u8]) {
         // Counts the rows that scroll into the history, to know how many fell off its top:
         // alacritty keeps a scrolled-back display on its rows by moving it up as rows
-        // arrive, so a display one row up measures them. Exact unless one chunk scrolls
-        // more rows than the history holds.
+        // arrive, so a display one row up measures them. Exact unless one piece scrolls
+        // more rows than the history holds ([`Terminal::feed`] sees to it).
         let (alt, before) = (self.modes().alt_screen, self.history());
         let mut offset = self.term.grid().display_offset();
         if !alt && offset == 0 && before > 0 {
@@ -406,6 +439,113 @@ impl Terminal {
         (0..self.rows()).map(|i| self.row(i).text).collect()
     }
 
+    /// Whether row `i` runs on into the next (it wrapped).
+    pub fn wraps(&self, i: usize) -> bool {
+        let cols = self.term.grid().columns();
+        self.line(i).is_some_and(|cells| cells[Column(cols - 1)].flags.contains(Flags::WRAPLINE))
+    }
+
+    /// The text as lines (wrapped rows joined), each with its first row: what was
+    /// written, not how it's laid out. The cursor's blank row after a finished line isn't
+    /// one.
+    pub fn logical_lines(&self) -> Vec<(usize, String)> {
+        self.lines_and_end().0
+    }
+
+    /// [`Terminal::logical_lines`], and the row the next line will start on.
+    fn lines_and_end(&self) -> (Vec<(usize, String)>, usize) {
+        let rows = self.rows();
+        let mut out: Vec<(usize, String)> = Vec::new();
+        let mut joining = false;
+        for i in 0..rows {
+            // A row that runs on keeps its trailing blanks: they're part of the line.
+            let text = if self.wraps(i) { self.full_row(i) } else { self.row(i).text };
+            match out.last_mut() {
+                Some((_, line)) if joining => line.push_str(&text),
+                _ => out.push((i, text)),
+            }
+            joining = self.wraps(i);
+        }
+        if self.at_line_start() && out.last().is_some_and(|(first, l)| l.is_empty() && *first + 1 == rows) {
+            out.pop();
+            return (out, rows - 1);
+        }
+        (out, rows)
+    }
+
+    /// Every cell of row `i`, trailing blanks included.
+    fn full_row(&self, i: usize) -> String {
+        let mut out = String::new();
+        if let Some(cells) = self.line(i) {
+            for c in 0..self.term.grid().columns() {
+                push_cell(&mut out, &cells[Column(c)]);
+            }
+        }
+        out
+    }
+
+    /// A fingerprint of row `at` (counted from the first row ever written): a later read
+    /// checks the row before its place is still the one it was.
+    pub fn row_print(&self, at: u64) -> Option<u64> {
+        let i = usize::try_from(at.checked_sub(self.dropped)?).ok()?;
+        (i < self.rows()).then(|| crate::fnv1a(self.row(i).text.as_bytes()))
+    }
+
+    /// Some of the text as lines (see [`Terminal::logical_lines`]): the last lines, or
+    /// those after a place an earlier read gave ([`Slice::next`]). Bounded by `max_lines`,
+    /// and by `max_bytes` of their JSON (what an answer carries); a line longer than
+    /// `line_cap` bytes is cut, ending with `…`. Places count rows from the first ever
+    /// written ([`Terminal::dropped`]), so they hold while output arrives; a resize
+    /// rewraps the rows and makes them meaningless (the caller tells it).
+    pub fn read(&self, from: ReadFrom, max_lines: usize, max_bytes: usize, line_cap: usize) -> Slice {
+        let (lines, end) = self.lines_and_end();
+        let dropped = self.dropped;
+        // An unfinished last line (no newline yet) is read again next time.
+        let partial = !self.at_line_start() && !lines.is_empty();
+        let end_row = match (partial, lines.last()) {
+            (true, Some((first, _))) => *first,
+            _ => end,
+        };
+        let (start, missed) = match from {
+            ReadFrom::Tail(n) => (lines.len().saturating_sub(n.min(max_lines)), 0),
+            ReadFrom::Since(at) => {
+                let missed = dropped.saturating_sub(at);
+                let row = at.saturating_sub(dropped) as usize;
+                (lines.iter().position(|(first, _)| *first >= row).unwrap_or(lines.len()), missed)
+            }
+        };
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        let mut truncated = false;
+        let mut next = dropped + end_row as u64;
+        for (i, (first, text)) in lines.iter().enumerate().skip(start) {
+            let text = cut_line(text, line_cap);
+            let size = serde_json::to_string(&text).map_or(text.len(), |s| s.len()) + 1;
+            if out.len() >= max_lines || bytes + size > max_bytes {
+                truncated = true;
+                next = dropped + *first as u64;
+                break;
+            }
+            bytes += size;
+            out.push(text);
+            if partial && i + 1 == lines.len() {
+                next = dropped + *first as u64;
+            }
+        }
+        let first = lines.get(start).map_or(next, |(r, _)| dropped + *r as u64);
+        Slice { lines: out, first, next, truncated, missed, partial }
+    }
+
+    /// The screen as shown (a full-screen program's, htop, k9s), every row, and where the
+    /// cursor is on it (row, column).
+    pub fn screen(&self) -> (Vec<String>, (usize, usize)) {
+        let grid = self.term.grid();
+        let history = self.history();
+        let rows = (0..grid.screen_lines()).map(|l| self.row(history + l).text).collect();
+        let point = grid.cursor.point;
+        (rows, (point.line.0.max(0) as usize, point.column.0))
+    }
+
     /// The links on rows `rows` (numbered as [`Terminal::row`]): addresses a program
     /// marked (OSC 8), and `http://`, `https://` and `file://` addresses in the text. A
     /// link can run on over rows that wrapped; one starting above `rows` counts.
@@ -521,6 +661,18 @@ fn text_links(text: &str, cells: &[(usize, usize)]) -> Vec<Link> {
 }
 
 /// The second half of a wide character, or the gap a wide one left at a row's end.
+/// `line` cut to at most `cap` bytes at a character's edge, ending with `…` when cut.
+pub fn cut_line(line: &str, cap: usize) -> String {
+    if line.len() <= cap {
+        return line.to_string();
+    }
+    let mut end = cap;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &line[..end])
+}
+
 fn is_spacer(cell: &Cell) -> bool {
     cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
 }
@@ -718,6 +870,79 @@ mod tests {
 
     fn term(cols: u16, rows: u16) -> Terminal {
         Terminal::new(TermSize { cols, rows }, 100)
+    }
+
+    #[test]
+    fn reads_go_on_where_the_last_stopped() {
+        let mut t = term(20, 5);
+        t.feed(b"one\r\ntwo\r\nthree\r\n");
+        let s = t.read(ReadFrom::Tail(2), 100, 10_000, 1000);
+        assert_eq!(s.lines, ["two", "three"]);
+        assert!(!s.partial && !s.truncated);
+        t.feed(b"four\r\nfive (no newline)");
+        let s2 = t.read(ReadFrom::Since(s.next), 100, 10_000, 1000);
+        assert_eq!(s2.lines, ["four", "five (no newline)"]);
+        assert!(s2.partial, "the last line isn't finished");
+        t.feed(b" done\r\n");
+        let s3 = t.read(ReadFrom::Since(s2.next), 100, 10_000, 1000);
+        assert_eq!(s3.lines, ["five (no newline) done"], "read again, finished");
+        assert_eq!(t.read(ReadFrom::Since(s3.next), 100, 10_000, 1000).lines, Vec::<String>::new(), "nothing new");
+    }
+
+    #[test]
+    fn wrapped_rows_are_one_line_and_reads_are_bounded() {
+        let mut t = term(10, 5);
+        t.feed(b"abcdefghijklmnopqrstuvwxyz\r\nshort\r\n");
+        assert_eq!(t.logical_lines().into_iter().map(|(_, l)| l).collect::<Vec<_>>(), ["abcdefghijklmnopqrstuvwxyz", "short"]);
+        let s = t.read(ReadFrom::Since(0), 1, 10_000, 1000);
+        assert_eq!((s.lines.len(), s.truncated), (1, true));
+        assert_eq!(t.read(ReadFrom::Since(s.next), 10, 10_000, 1000).lines, ["short"], "the next read goes on from there");
+        let s = t.read(ReadFrom::Since(0), 10, 8, 1000);
+        assert!(s.truncated && s.lines.is_empty(), "bytes bound the answer too");
+    }
+
+    #[test]
+    fn lines_gone_from_the_history_are_counted() {
+        let mut t = Terminal::new(TermSize { cols: 20, rows: 3 }, 5);
+        t.feed(b"a\r\n");
+        let s = t.read(ReadFrom::Tail(10), 100, 10_000, 1000);
+        for i in 0..20 {
+            t.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let s2 = t.read(ReadFrom::Since(s.next), 100, 10_000, 1000);
+        assert!(s2.missed > 0, "{s2:?}");
+        assert_eq!(s2.lines.last().map(String::as_str), Some("line 19"));
+    }
+
+    #[test]
+    fn a_line_wrapping_at_a_space_keeps_it_and_long_lines_are_cut() {
+        let mut t = term(10, 5);
+        t.feed(b"hello wor ld and more\r\n");
+        assert_eq!(t.logical_lines()[0].1, "hello wor ld and more");
+        let s = t.read(ReadFrom::Tail(1), 10, 10_000, 5);
+        assert_eq!(s.lines, ["hello…"]);
+    }
+
+    #[test]
+    fn one_chunk_longer_than_the_history_is_counted_exactly() {
+        let mut t = Terminal::new(TermSize { cols: 20, rows: 3 }, 5);
+        let all: String = (0..40).map(|i| format!("l{i}\r\n")).collect();
+        t.feed(all.as_bytes());
+        // 40 lines, then the cursor's row: 3 on screen, 5 in the history.
+        let rows = t.rows() as u64;
+        assert_eq!(t.dropped() + rows, 41, "dropped {} rows {rows}", t.dropped());
+        let s = t.read(ReadFrom::Tail(1), 10, 10_000, 100);
+        assert_eq!(s.lines, ["l39"]);
+        assert_eq!(t.row_print(s.next - 1), Some(crate::fnv1a(b"l39")));
+    }
+
+    #[test]
+    fn the_screen_is_every_row_shown() {
+        let mut t = term(10, 3);
+        t.feed(b"top\r\nmid");
+        let (rows, cursor) = t.screen();
+        assert_eq!(rows, ["top", "mid", ""]);
+        assert_eq!(cursor, (1, 3));
     }
 
     #[test]

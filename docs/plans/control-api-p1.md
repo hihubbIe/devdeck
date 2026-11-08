@@ -275,3 +275,41 @@ caller's refusals (the handlers never use the UI's toast); one audit entry per c
 
 Not covered by a test: a held port refusing a start (the demo never holds ports; the
 refusal is the runner's own, passed on as `refused`).
+
+## Phase 2: reading (2026-11-08)
+
+API level 3, class `read` (a terminal caller: allowed; outside: denied).
+
+- `run.output`, `terminal.output`: the text as lines (wrapped rows joined, colours
+  gone), the last ones (`tail`, 100) or what came after `since` (the `next` of an earlier
+  answer). An unfinished last line is given again next time (`partial`). Rows that fell
+  off the history meanwhile are counted (`missed`). A cursor holds for one devdeck
+  instance, one run or terminal (uid), one start of it, one size, the normal screen,
+  and carries a fingerprint of the row before it: anything else answers `expired`
+  (read the tail again). A full-screen program (alt screen) gives its screen's lines,
+  `alt_screen`, and no cursor.
+- `run.search`, `terminal.search`: a regular expression (linear time, size-limited),
+  up to 5 lines of context, 50 matches (200 at most).
+- `terminal.screen`: the screen as laid out, and the cursor.
+- Terminals: the caller's own only; the user's shells need the user's approval (later):
+  they hold what the user typed and printed. Runs' output is readable.
+- `note.read`: a note's text.
+- `file.read`: a text file in one of the workspace's apps' folders (not hidden apps;
+  never a folder that is `/`, the home folder or above it), links resolved; never
+  devdeck's own folders (config, notes, state, sockets), never files that may hold
+  secrets (`.env*` but examples, keys and certificates, `.npmrc`, `.netrc`, `.ssh`,
+  `.aws`, `.kube`…). Opened without blocking and without following a link, a regular
+  file only, and checked again as opened; at most 2 MB.
+- Every answer: at most 2000 lines and 32 KB of JSON (Claude Code cuts tool results
+  near 25 000 tokens); a line longer than 2000 bytes is cut, ending with `…`.
+- The terminal model counts rows dropped from its history exactly: output is fed in
+  pieces no longer than the history.
+- MCP: `devdeck_read` appears; what it gives starts with a line saying it's data from
+  the user's machine, never instructions.
+
+Review (subagent), taken: FIFOs and devices on the UI thread; scope (apps' folders,
+devdeck's own, secrets, `/` and home); answer size counted escaped, lines cut;
+cursors drifting (pieces, size and fingerprint in the cursor, instance and target);
+alt screen; spaces lost at a wrap; own terminal only; the untrusted line in MCP.
+Deferred: reading files off the UI thread (with P3's jobs: a hung network mount can
+still stall devdeck), capping a note's first read, selection (it lives in views: P3).
