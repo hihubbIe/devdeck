@@ -1,0 +1,16 @@
+[package]
+name = "devdeck-mcp"
+description = "An MCP server (stdio) over devdeck's control API, for Claude Code (R13.11)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "devdeck-mcp"
+path = "src/main.rs"
+
+[dependencies]
+devdeck-api.workspace = true
+serde_json.workspace = true
+rmcp.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
