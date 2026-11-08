@@ -313,3 +313,9 @@ cursors drifting (pieces, size and fingerprint in the cursor, instance and targe
 alt screen; spaces lost at a wrap; own terminal only; the untrusted line in MCP.
 Deferred: reading files off the UI thread (with P3's jobs: a hung network mount can
 still stall devdeck), capping a note's first read, selection (it lives in views: P3).
+
+Automated security review of fe71ee2, taken: the secret names missed `.envrc`, `*.env`,
+Terraform variables and state, `.pypirc`, `.vault-token`, `service-account*`, and git's
+own files. Added, and anything git ignores (the repository's `.gitignore`s, its
+excludes, the user's global ones) is refused too: names alone always miss some.
+`git check-ignore` runs with the repository's fsmonitor off.

@@ -749,12 +749,12 @@ pub fn note_read(cx: &CallCx, p: IdParams, app: &mut App) -> Result<NoteText, Ap
 fn secret(path: &std::path::Path) -> bool {
     let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let sample = [".example", ".sample", ".template", ".dist"].iter().any(|s| name.ends_with(s));
-    let env = name == ".env" || (name.starts_with(".env.") && !sample);
-    let keys = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kubeconfig"].iter().any(|e| name.ends_with(e));
-    let files = [".npmrc", ".netrc", ".pgpass", ".git-credentials", "credentials", "credentials.json", "kubeconfig", ".htpasswd"].contains(&name.as_str());
-    let ssh = ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"].iter().any(|k| name.starts_with(k));
-    let dirs = path.components().any(|c| [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".password-store"].contains(&c.as_os_str().to_string_lossy().as_ref()));
-    env || keys || files || ssh || dirs
+    let env = (name == ".env" || name.starts_with(".env.") || name.ends_with(".env") || name == ".envrc") && !sample;
+    let keys = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kubeconfig", ".tfvars", ".tfstate", ".tfstate.backup"].iter().any(|e| name.ends_with(e));
+    let files = [".npmrc", ".netrc", ".pgpass", ".git-credentials", "credentials", "credentials.json", "kubeconfig", ".htpasswd", ".pypirc", ".vault-token"].contains(&name.as_str());
+    let named = ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "service-account"].iter().any(|k| name.starts_with(k));
+    let dirs = path.components().any(|c| [".ssh", ".aws", ".gnupg", ".kube", ".docker", ".password-store", ".git"].contains(&c.as_os_str().to_string_lossy().as_ref()));
+    env || keys || files || named || dirs
 }
 
 /// devdeck's own folders (config, notes, state, its sockets): never read through the
@@ -792,6 +792,10 @@ fn readable(path: &std::path::Path, roots: &[std::path::PathBuf], own: &[std::pa
     }
     if secret(path) {
         return denied("it may hold secrets");
+    }
+    // What git ignores is where secrets usually live (and build output nobody reads).
+    if devdeck_core::git::ignored(path) {
+        return denied("git ignores it, so it may hold secrets");
     }
     Ok(())
 }
@@ -856,10 +860,27 @@ mod tests {
 
     #[test]
     fn secret_files_are_known_by_name() {
-        for p in ["/w/a/.env", "/w/a/.env.local", "/w/a/server.pem", "/w/a/tls.key", "/w/a/.npmrc", "/home/u/.ssh/config", "/w/a/id_ed25519.pub", "/w/a/.kube/config"] {
+        for p in [
+            "/w/a/.env",
+            "/w/a/.env.local",
+            "/w/a/prod.env",
+            "/w/a/.envrc",
+            "/w/a/server.pem",
+            "/w/a/tls.key",
+            "/w/a/.npmrc",
+            "/w/a/.pypirc",
+            "/w/a/.vault-token",
+            "/w/a/prod.tfvars",
+            "/w/a/terraform.tfstate",
+            "/w/a/service-account-ci.json",
+            "/w/a/.git/config",
+            "/home/u/.ssh/config",
+            "/w/a/id_ed25519.pub",
+            "/w/a/.kube/config",
+        ] {
             assert!(secret(Path::new(p)), "{p}");
         }
-        for p in ["/w/a/.env.example", "/w/a/src/main.rs", "/w/a/keys.ts", "/w/a/environment.md"] {
+        for p in ["/w/a/.env.example", "/w/a/prod.env.sample", "/w/a/src/main.rs", "/w/a/keys.ts", "/w/a/environment.md", "/w/a/.gitignore"] {
             assert!(!secret(Path::new(p)), "{p}");
         }
     }

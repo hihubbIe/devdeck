@@ -902,6 +902,22 @@ fn change(xy: &str, path: &str, from: Option<String>) -> Change {
 /// goes to the branch of the same name, so these can't be written by devdeck.
 pub const NEVER_PUSHED: [&str; 2] = ["main", "master"];
 
+/// Whether git ignores `path` (its repository's `.gitignore`s, `.git/info/exclude`, the
+/// user's global excludes): where secrets usually live. False outside a repository or
+/// when git can't tell. The repository's fsmonitor is off: nothing of it runs.
+pub fn ignored(path: &Path) -> bool {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return false };
+    std::process::Command::new("git")
+        .args(["-c", "core.fsmonitor=false", "check-ignore", "-q", "--"])
+        .arg(name)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.code() == Some(0))
+}
+
 /// Refuses `main` and `master` (any case).
 pub fn never_pushed(branch: &str) -> Result<(), String> {
     if NEVER_PUSHED.iter().any(|b| branch.eq_ignore_ascii_case(b)) {

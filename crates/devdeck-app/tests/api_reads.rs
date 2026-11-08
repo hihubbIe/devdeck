@@ -162,4 +162,12 @@ fn files_only_inside_the_workspaces_folders(cx: &mut TestAppContext) {
     assert_eq!(kind(path(&inside.join(".env")), cx), ErrorKind::PermissionDenied, "secrets");
     let ex: FileLines = call("file.read", json!({ "path": path(&inside.join(".env.example")) }), cx).unwrap();
     assert_eq!(ex.lines.len(), 1);
+    // What git ignores in the app's repository.
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&inside).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap().status.success());
+    git(&["init", "-q"]);
+    std::fs::write(inside.join(".gitignore"), "local.json\n").unwrap();
+    std::fs::write(inside.join("local.json"), "{\"token\": 1}").unwrap();
+    assert_eq!(kind(path(&inside.join("local.json")), cx), ErrorKind::PermissionDenied, "ignored by git");
+    let _: FileLines = call("file.read", json!({ "path": path(&inside.join("a.txt")) }), cx).unwrap();
+    assert_eq!(kind(path(&inside.join(".git/config")), cx), ErrorKind::PermissionDenied, "git's own files");
 }
