@@ -39,8 +39,10 @@ pub enum Who {
         workspace: String,
         n: u32,
         uid: String,
-        /// The shell's pid and its run's start count: when either changes, it's gone.
+        /// The shell's pid, its start time and its run's start count: when any changes,
+        /// it's gone.
         shell: u32,
+        shell_start: u64,
         starts: u32,
     },
     Outside { pid: Option<u32>, program: String },
@@ -215,6 +217,14 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         _inbox: tx,
     });
     cx.set_global(ApiHandle(state.clone()));
+    let quitting = state.downgrade();
+    cx.on_app_quit(move |cx| {
+        if let Some(s) = quitting.upgrade() {
+            s.update(cx, |s, _| s.close());
+        }
+        async {}
+    })
+    .detach();
     let weak = state.downgrade();
     cx.spawn(async move |cx| {
         while let Ok(msg) = rx.recv().await {
@@ -243,7 +253,12 @@ fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
                 cx.notify();
             }
         }),
-        ToUi::Refused(why) => state.update(cx, |s, cx| s.record(audit::Entry::new("?".into(), audit::Event::Refused, None, Some(why)), cx)),
+        ToUi::Refused(why) => state.update(cx, |s, cx| {
+            // Once a minute per reason: a client connecting in a loop doesn't fill the audit.
+            if s.first_in_a_while(format!("refused: {why}")) {
+                s.record(audit::Entry::new("?".into(), audit::Event::Refused, None, Some(why)), cx);
+            }
+        }),
     }
 }
 
@@ -285,26 +300,28 @@ pub fn call(state: &Entity<ApiState>, conn: u64, method: &str, params: Value, cx
 pub fn identify(peer: &Peer, cx: &App) -> Who {
     let outside = Who::Outside { pid: peer.pid, program: peer.program.clone() };
     let Some(shell) = crate::shell::try_shell(cx) else { return outside };
-    let mut shells: HashMap<u32, Who> = HashMap::new();
+    let mut shells: HashMap<(u32, u64), Who> = HashMap::new();
     for w in &shell.read(cx).workspaces {
         let runner = w.services.read(cx).runner.read(cx);
-        for (key, pid) in runner.pids() {
+        for (key, pid, start) in runner.processes() {
             let (Some(n), Some(uid), Some(run)) = (key.terminal_number(), runner.terminal_uid(&key), runner.run(&key)) else { continue };
-            shells.insert(pid, Who::Terminal { workspace: w.id.clone(), n, uid: uid.to_string(), shell: pid, starts: run.runs });
+            shells.insert((pid, start), Who::Terminal { workspace: w.id.clone(), n, uid: uid.to_string(), shell: pid, shell_start: start, starts: run.runs });
         }
     }
+    // Pid and start time: a pid the kernel gave again before the runner heard its shell
+    // end isn't that shell.
     peer.chain.iter().find_map(|p| shells.get(p).cloned()).unwrap_or(outside)
 }
 
 /// Whether the caller is still there: a terminal's shell instance still runs.
 pub fn alive(who: &Who, cx: &App) -> bool {
-    let Who::Terminal { workspace, n, shell, starts, .. } = who else { return true };
+    let Who::Terminal { workspace, n, shell, shell_start, starts, .. } = who else { return true };
     let Some(sh) = crate::shell::try_shell(cx) else { return false };
     let Some(w) = sh.read(cx).workspaces.iter().find(|w| &w.id == workspace) else { return false };
     let runner = w.services.read(cx).runner.read(cx);
     let key = crate::runner::RunKey::terminal(*n);
     let running = runner.run(&key).is_some_and(|r| r.runs == *starts && r.state.is_running());
-    running && runner.pids().iter().any(|(k, p)| *k == key && p == shell)
+    running && runner.processes().iter().any(|(k, p, s)| *k == key && p == shell && s == shell_start)
 }
 
 impl ApiState {
@@ -313,14 +330,32 @@ impl ApiState {
         self.next += 1;
         let outside = who.is_outside();
         let label = who.label();
-        let now = Instant::now();
-        if self.connects.get(&label).is_none_or(|t| now.duration_since(*t) >= CONNECT_AUDIT_EVERY) {
-            self.connects.insert(label.clone(), now);
+        if self.first_in_a_while(label.clone()) {
             self.record(audit::Entry::new(label, audit::Event::Connected, None, None), cx);
         }
         self.connections.insert(id, Connection { who, since: SystemTime::now(), calls: 0 });
         cx.notify();
         Opened { id, outside }
+    }
+
+    /// Stops serving and removes the socket (devdeck quitting).
+    fn close(&mut self) {
+        if let Some((bound, mut stop)) = self._serving.take() {
+            stop.stop();
+            bound.remove();
+        }
+    }
+
+    /// Whether `key` wasn't seen within [`CONNECT_AUDIT_EVERY`]; forgets keys older than
+    /// that (callers' labels hold pids, so they'd pile up).
+    fn first_in_a_while(&mut self, key: String) -> bool {
+        let now = Instant::now();
+        self.connects.retain(|_, t| now.duration_since(*t) < CONNECT_AUDIT_EVERY);
+        if self.connects.contains_key(&key) {
+            return false;
+        }
+        self.connects.insert(key, now);
+        true
     }
 
     fn record(&mut self, e: audit::Entry, cx: &mut Context<Self>) {

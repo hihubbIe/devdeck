@@ -12,12 +12,16 @@ use std::collections::BTreeSet;
 use std::io::{BufReader, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 
 /// Connections at most, of which outside callers.
 pub const MAX_CONNECTIONS: usize = 32;
 pub const MAX_OUTSIDE: usize = 8;
+/// The longest method name a notification is recorded with.
+const MAX_NAME: usize = 128;
+/// After a failed accept (out of descriptors…), the wait before the next.
+const ACCEPT_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// A connection, as the sink took it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +35,8 @@ pub trait Sink: Send + Sync + 'static {
     /// A new connection; None refuses it.
     fn open(&self, peer: Peer) -> Option<Opened>;
     fn call(&self, conn: u64, method: String, params: Value) -> Result<Value, ApiError>;
-    /// A message without an id: never answered.
+    /// A message without an id: never answered. Told once per connection, its name cut
+    /// to [`MAX_NAME`].
     fn notification(&self, conn: u64, method: String);
     fn close(&self, conn: u64);
     /// A connection refused before it was opened (another user, too many).
@@ -39,11 +44,12 @@ pub trait Sink: Send + Sync + 'static {
 }
 
 /// Stops accepting when dropped or stopped (connections left end with their clients).
-pub struct Stop(Option<OwnedFd>);
+pub struct Stop(Option<OwnedFd>, Arc<AtomicBool>);
 
 impl Stop {
     pub fn stop(&mut self) {
         if let Some(fd) = self.0.take() {
+            self.1.store(true, Ordering::SeqCst);
             let _ = rustix::net::shutdown(&fd, rustix::net::Shutdown::Both);
         }
     }
@@ -60,21 +66,30 @@ static METHODS: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| devdeck_api:
 /// Serves `listener` on its own thread.
 pub fn serve(listener: UnixListener, sink: Arc<dyn Sink>) -> std::io::Result<Stop> {
     let stop = listener.as_fd().try_clone_to_owned()?;
+    let stopped = Arc::new(AtomicBool::new(false));
     let counts = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+    let done = stopped.clone();
     std::thread::Builder::new().name("devdeck-api".into()).spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { break };
-            let (sink, counts) = (sink.clone(), counts.clone());
-            let _ = std::thread::Builder::new().name("devdeck-api-conn".into()).spawn(move || connection(stream, &*sink, &counts));
+            match stream {
+                Ok(stream) => {
+                    let (sink, counts) = (sink.clone(), counts.clone());
+                    let _ = std::thread::Builder::new().name("devdeck-api-conn".into()).spawn(move || connection(stream, &*sink, &counts));
+                }
+                Err(_) if done.load(Ordering::SeqCst) => break,
+                // Out of descriptors or memory, an aborted connection: keep serving.
+                Err(_) => std::thread::sleep(ACCEPT_RETRY),
+            }
         }
     })?;
-    Ok(Stop(Some(stop)))
+    Ok(Stop(Some(stop), stopped))
 }
 
 fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, AtomicUsize)) {
     let (all, outside) = counts;
     if all.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
         all.fetch_sub(1, Ordering::SeqCst);
+        busy(stream, "too many connections");
         sink.refused("too many connections".into());
         return;
     }
@@ -91,6 +106,7 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
         if within {
             serve_connection(stream, sink, o.id);
         } else {
+            busy(stream, "too many outside connections");
             sink.refused("too many outside connections".into());
         }
         sink.close(o.id);
@@ -101,19 +117,34 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
     all.fetch_sub(1, Ordering::SeqCst);
 }
 
+/// Tells a connection refused why (it isn't served), so it doesn't read as devdeck gone.
+fn busy(mut stream: UnixStream, why: &str) {
+    if let Ok(mut line) = serde_json::to_vec(&Response::err(Value::Null, ApiError::new(ErrorKind::Busy, why).to_rpc())) {
+        line.push(b'\n');
+        let _ = stream.write_all(&line);
+    }
+}
+
 fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
     let Ok(read) = stream.try_clone() else { return };
     let mut reader = BufReader::new(read);
     let mut writer = stream;
     let mut buf = Vec::new();
+    let mut told = false;
     loop {
         let (answer, close) = match read_message(&mut reader, &mut buf) {
             Ok(false) | Err(_) if buf.is_empty() => return,
             Err(e) => (Some(Response::err(Value::Null, ApiError::invalid(e.to_string()).to_rpc_with(rpc::INVALID_REQUEST))), true),
-            Ok(_) => answer(&buf, sink, conn),
+            Ok(_) => answer(&buf, sink, conn, &mut told),
         };
         if let Some(a) = answer {
             let Ok(mut line) = serde_json::to_vec(&a) else { return };
+            // Clients read at most MAX_MESSAGE: a bigger answer is an error they can read.
+            if line.len() >= devdeck_api::MAX_MESSAGE {
+                let e = ApiError::unavailable(format!("the answer is too large ({} bytes)", line.len()));
+                let Ok(l) = serde_json::to_vec(&Response::err(a.id, e.to_rpc())) else { return };
+                line = l;
+            }
             line.push(b'\n');
             if writer.write_all(&line).is_err() {
                 return;
@@ -126,7 +157,8 @@ fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
 }
 
 /// The answer to one message (None for a notification), and whether to close after it.
-fn answer(msg: &[u8], sink: &dyn Sink, conn: u64) -> (Option<Response>, bool) {
+/// `told`: a notification of this connection was told to the sink already.
+fn answer(msg: &[u8], sink: &dyn Sink, conn: u64, told: &mut bool) -> (Option<Response>, bool) {
     let fail = |id: Value, code: i64, kind: ErrorKind, m: &str| (Some(Response::err(id, ApiError::new(kind, m).to_rpc_with(code))), false);
     let value: Value = match serde_json::from_slice(msg) {
         Ok(v) => v,
@@ -140,7 +172,9 @@ fn answer(msg: &[u8], sink: &dyn Sink, conn: u64) -> (Option<Response>, bool) {
         Err(e) => return fail(Value::Null, rpc::INVALID_REQUEST, ErrorKind::Invalid, &e.to_string()),
     };
     let Some(id) = req.id else {
-        sink.notification(conn, req.method);
+        if !std::mem::replace(told, true) {
+            sink.notification(conn, req.method.chars().take(MAX_NAME).collect());
+        }
         return (None, false);
     };
     if req.jsonrpc != rpc::VERSION {
@@ -189,6 +223,7 @@ mod tests {
         fn call(&self, _: u64, method: String, params: Value) -> Result<Value, ApiError> {
             match method.as_str() {
                 "session.whoami" => Err(ApiError::new(ErrorKind::Expired, "the shell ended")),
+                "devdeck.problems" => Ok(json!({ "problems": ["x".repeat(devdeck_api::MAX_MESSAGE)] })),
                 _ => Ok(json!({ "method": method, "params": params })),
             }
         }
@@ -260,6 +295,29 @@ mod tests {
     }
 
     #[test]
+    fn notifications_are_told_once_per_connection_and_names_are_cut() {
+        let (_d, path, stub, _stop) = start(Stub::default());
+        let long = "n".repeat(10_000);
+        let line = format!(r#"{{"jsonrpc":"2.0","method":"{long}"}}"#);
+        let many: Vec<&str> = std::iter::repeat_n(line.as_str(), 50).chain([r#"{"jsonrpc":"2.0","id":1,"method":"run.list"}"#]).collect();
+        raw(&path, &many, 1);
+        let told: Vec<String> = stub.log.lock().unwrap().iter().filter(|l| l.starts_with("notification")).cloned().collect();
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].len(), "notification ".len() + MAX_NAME);
+    }
+
+    #[test]
+    fn an_answer_too_large_to_read_becomes_an_error() {
+        let (_d, path, _stub, _stop) = start(Stub::default());
+        let mut c = Client::connect(&path).unwrap();
+        match c.call_raw("devdeck.problems", json!({})) {
+            Err(ClientError::Api(e)) => assert!(e.kind == ErrorKind::Unavailable && e.message.contains("too large"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(c.call_raw("run.list", json!({})).is_ok(), "the connection goes on");
+    }
+
+    #[test]
     fn an_oversized_message_closes_the_connection() {
         let (_d, path, _stub, _stop) = start(Stub::default());
         let mut s = UnixStream::connect(&path).unwrap();
@@ -295,7 +353,10 @@ mod tests {
             std::thread::yield_now();
         }
         let mut one_more = Client::connect(&path).unwrap();
-        assert!(one_more.call_raw("run.list", json!({})).is_err());
+        match one_more.call_raw("run.list", json!({})) {
+            Err(ClientError::Api(e)) => assert_eq!(e.kind, ErrorKind::Busy, "told why, not dropped"),
+            other => panic!("{other:?}"),
+        }
         assert!(stub.log.lock().unwrap().iter().any(|l| l == "refused too many outside connections"));
         drop(held);
     }

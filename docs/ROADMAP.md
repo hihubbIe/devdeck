@@ -48,7 +48,8 @@ A generic API for everything devdeck shows and does (R13); a CLI and an MCP serv
 Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), decided
 2026-11-08. Phases, one at a time:
 0. Decisions, requirements, design — done 2026-11-08.
-1. API crate, socket, identity, audit, observe methods, CLI, first MCP.
+1. API crate, socket, identity, audit, observe methods, CLI, first MCP — done 2026-11-08,
+   waiting for the user's manual test ([plans/control-api-p1.md](plans/control-api-p1.md)).
 2. Bounded reads: output, screen, search, notes, files.
 3. Operations layer, approvals core, events, jobs, waits; present, run, organize.
 4. Approval card; type, remote and destructive methods.

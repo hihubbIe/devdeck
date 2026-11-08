@@ -27,7 +27,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     exit 0
 fi
 
-cargo build --release -p devdeck-app --bin devdeck -p devdeck-ctl -p devdeck-mcp --manifest-path "$repo/Cargo.toml"
+# Every binary by name: with one `--bin`, cargo builds only the binaries named.
+cargo build --release -p devdeck-app -p devdeck-ctl -p devdeck-mcp --bin devdeck --bin devdeck-ctl --bin devdeck-mcp --manifest-path "$repo/Cargo.toml"
 
 # A copy, not a link into target/: a rebuild or `cargo clean` never breaks it. Written
 # beside and renamed over, so a running devdeck keeps its file.

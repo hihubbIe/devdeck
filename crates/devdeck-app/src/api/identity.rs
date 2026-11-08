@@ -22,8 +22,8 @@ const MAX_CHAIN: usize = 64;
 pub struct Peer {
     /// None: it couldn't be pinned (it's then outside, whatever its ancestors).
     pub pid: Option<u32>,
-    /// The process, then its parent, and so on.
-    pub chain: Vec<u32>,
+    /// The process, then its parent, and so on, each with its start time.
+    pub chain: Vec<(u32, u64)>,
     /// Its name, untrusted.
     pub program: String,
 }
@@ -51,18 +51,18 @@ pub fn peer(stream: &UnixStream) -> Result<Peer, String> {
     Ok(Peer { pid: Some(pid), chain, program })
 }
 
-/// `pid` and its ancestors, from `stat` (`(parent, start)`), while each parent started no
-/// later than its child.
-pub fn chain(pid: u32, stat: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<u32> {
+/// `pid` and its ancestors with their start times, from `stat` (`(parent, start)`),
+/// while each parent started no later than its child.
+pub fn chain(pid: u32, stat: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<(u32, u64)> {
     let mut out = Vec::new();
     let Some((mut parent, mut start)) = stat(pid) else { return out };
-    out.push(pid);
+    out.push((pid, start));
     while parent > 1 && out.len() < MAX_CHAIN {
         let Some((grand, parent_start)) = stat(parent) else { break };
         if parent_start > start {
             break;
         }
-        out.push(parent);
+        out.push((parent, parent_start));
         (parent, start) = (grand, parent_start);
     }
     out
@@ -105,15 +105,15 @@ mod tests {
     #[test]
     fn a_chain_goes_up_to_init() {
         let stat = procs(&[(40, 30, 400), (30, 20, 300), (20, 1, 200)]);
-        assert_eq!(chain(40, stat), vec![40, 30, 20]);
+        assert_eq!(chain(40, stat), vec![(40, 400), (30, 300), (20, 200)]);
     }
 
     #[test]
     fn a_chain_stops_at_a_pid_used_again() {
         // 30 died and a later process took its number: it started after 40.
         let stat = procs(&[(40, 30, 400), (30, 20, 500), (20, 1, 200)]);
-        assert_eq!(chain(40, stat), vec![40]);
-        assert_eq!(chain(99, procs(&[])), Vec::<u32>::new(), "a process gone");
+        assert_eq!(chain(40, stat), vec![(40, 400)]);
+        assert_eq!(chain(99, procs(&[])), Vec::<(u32, u64)>::new(), "a process gone");
     }
 
     #[test]
@@ -121,7 +121,7 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         let p = peer(&a).unwrap();
         assert_eq!(p.pid, Some(std::process::id()));
-        assert_eq!(p.chain.first(), Some(&std::process::id()));
+        assert_eq!(p.chain.first().map(|c| c.0), Some(std::process::id()));
         assert!(p.chain.len() >= 2);
         drop(b);
     }

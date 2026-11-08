@@ -351,7 +351,24 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 ## Control API
 
-Planned (R13, `plans/control-api.md`); nothing built yet.
+R13, `plans/control-api.md`; phase 1 built (`plans/control-api-p1.md`): the observe
+methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
+
+- Socket names follow the state folder: `main.sock` for the default one, `demo.sock`
+  for the demo's, else `s-<hash>.sock`; each guarded by its own lock, so a second devdeck
+  never takes over a socket a first one serves.
+- The socket's threads hold the channel to the UI thread weakly; `ApiState` holds it,
+  so it closes on the UI thread (GPUI's test scheduler refuses wake-ups from other
+  threads). For the same reason the tests drive the UI side (`api::open`, `api::call`)
+  directly, and the transport's tests use a real socket with a stub sink.
+- A caller is fixed when it connects and checked on every call: a terminal caller's
+  shell must still be the same run (pid and start count), else `expired` and the
+  connection closes.
+- Outside callers reach `api.describe`, `devdeck.info`, `session.hello` and
+  `session.whoami` only, until the user can raise one (phase 4).
+- `devdeck-mcp`: rmcp 3.9.0 with a hand-written handler (no macros); one tool per class
+  the caller may use, built from `api.describe`, or from the catalog compiled in when
+  devdeck is down.
 
 - Pieces: `devdeck-api` holds the protocol only (types with serde and schemars schemas,
   the catalog, errors, ids, a small client) and depends on nothing of devdeck.

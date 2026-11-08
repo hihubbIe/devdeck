@@ -34,6 +34,15 @@ pub struct Bound {
     _lock: File,
 }
 
+impl Bound {
+    /// Removes the socket and its lock file (devdeck quitting): nothing is left in the
+    /// runtime folder, whatever the state folder's name.
+    pub fn remove(self) {
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(self.path.with_extension("lock"));
+    }
+}
+
 /// Makes or checks the folder, takes the name's lock, binds the socket.
 pub fn bind(runtime: &Path, name: &str) -> Result<Bound, String> {
     let dir = runtime.join("devdeck");
@@ -113,5 +122,7 @@ mod tests {
         assert!(path.exists(), "a socket left behind");
         let again = bind(&rt, "t").expect("taken over once the lock is free");
         assert!(std::os::unix::net::UnixStream::connect(&again.path).is_ok());
+        again.remove();
+        assert_eq!(std::fs::read_dir(rt.join("devdeck")).unwrap().count(), 0, "nothing left");
     }
 }

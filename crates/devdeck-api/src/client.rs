@@ -75,6 +75,12 @@ impl Client {
         Ok(Self { reader: BufReader::new(writer.try_clone()?), writer, next: 1 })
     }
 
+    /// How long to wait for an answer (none: as long as it takes); past it, the call
+    /// fails as a broken connection.
+    pub fn set_timeout(&mut self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.writer.set_read_timeout(timeout)
+    }
+
     pub fn call<M: Method>(&mut self, params: &M::Params) -> Result<M::Result, ClientError> {
         let params = serde_json::to_value(params).map_err(|e| ClientError::Protocol(e.to_string()))?;
         let result = self.call_raw(M::NAME, params)?;

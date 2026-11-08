@@ -8,7 +8,9 @@
 //! the tool hints (read only, destructive) only follow the class.
 //!
 //! devdeck down: the tools are still listed (from the catalog compiled in) and answer
-//! `unavailable`; the next call connects again.
+//! `unavailable`; the next call connects again. A call that broke the connection is made
+//! again on a new one only for the classes that only look (`observe`, `read`): another
+//! might already have run.
 
 use devdeck_api::client::ClientError;
 use devdeck_api::types::{ClientInfo, Describe, HelloParams, MethodEntry};
@@ -17,6 +19,10 @@ use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool, ToolAnnotation
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
+
+/// How long a call waits for devdeck's answer.
+const ANSWER_WITHIN: Duration = Duration::from_secs(60);
 
 pub const INSTRUCTIONS: &str = "devdeck (Kugelblitz) is the developer cockpit this session may run in: \
 workspaces of apps, runs (commands started), terminals (shells), windows with panes, tabs and layouts, notes, envs. \
@@ -99,48 +105,70 @@ pub fn fallback() -> Vec<MethodEntry> {
         .collect()
 }
 
-/// The connection to devdeck, made when needed and made again after it broke.
+/// The connection to devdeck, made when needed and made again after it broke, and what
+/// the caller may call (asked once per connection).
 pub struct Bridge {
     socket: Option<PathBuf>,
     client: Mutex<Option<Client>>,
+    methods: Mutex<Option<Vec<MethodEntry>>>,
 }
 
 impl Bridge {
     pub fn new(socket: Option<PathBuf>) -> Self {
-        Self { socket, client: Mutex::new(None) }
+        Self { socket, client: Mutex::new(None), methods: Mutex::new(None) }
     }
 
     fn connect(&self) -> Result<Client, ClientError> {
         let path = self.socket.as_ref().ok_or_else(|| ClientError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no socket (DEVDECK_SOCKET, XDG_RUNTIME_DIR)")))?;
         let mut c = Client::connect(path)?;
+        c.set_timeout(Some(ANSWER_WITHIN))?;
         let hello = HelloParams { client: ClientInfo { name: "devdeck-mcp".into(), version: env!("CARGO_PKG_VERSION").into() }, api_level_min: None };
         c.call::<devdeck_api::methods::SessionHello>(&hello)?;
         Ok(c)
     }
 
-    /// A call on the connection; a broken one is made again once.
-    pub fn call_raw(&self, method: &str, params: Value) -> Result<Value, ClientError> {
+    /// A call on the connection. A broken connection is dropped (and what the caller may
+    /// call forgotten: a new one may be another caller); with `again`, the call is made
+    /// once more on a new one.
+    pub fn call_raw(&self, method: &str, params: Value, again: bool) -> Result<Value, ClientError> {
         let mut slot = self.client.lock().unwrap_or_else(|e| e.into_inner());
-        for attempt in 0..2 {
+        let mut attempt = 0;
+        loop {
             if slot.is_none() {
                 *slot = Some(self.connect()?);
             }
-            match slot.as_mut().expect("connected").call_raw(method, params.clone()) {
-                Err(ClientError::Io(e)) => {
-                    *slot = None;
-                    if attempt == 1 {
-                        return Err(ClientError::Io(e));
-                    }
-                }
-                other => return other,
+            let r = slot.as_mut().expect("connected").call_raw(method, params.clone());
+            let broken = match &r {
+                Err(ClientError::Io(_)) => true,
+                // devdeck closed it: the caller's shell ended.
+                Err(ClientError::Api(e)) => e.kind == devdeck_api::ErrorKind::Expired,
+                _ => false,
+            };
+            if !broken {
+                return r;
+            }
+            *slot = None;
+            *self.methods.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            attempt += 1;
+            if !again || attempt == 2 || !matches!(r, Err(ClientError::Io(_))) {
+                return r;
             }
         }
-        unreachable!("two attempts")
     }
 
-    /// What the caller may call (devdeck's word), else the compiled-in catalog.
+    /// What the caller may call (devdeck's word, kept for the connection), else the
+    /// catalog compiled in.
     pub fn methods(&self) -> Vec<MethodEntry> {
-        self.call_raw("api.describe", json!({})).ok().and_then(|v| serde_json::from_value::<Describe>(v).ok()).map_or_else(fallback, |d| d.methods)
+        if let Some(m) = self.methods.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return m;
+        }
+        match self.call_raw("api.describe", json!({}), true).ok().and_then(|v| serde_json::from_value::<Describe>(v).ok()) {
+            Some(d) => {
+                *self.methods.lock().unwrap_or_else(|e| e.into_inner()) = Some(d.methods.clone());
+                d.methods
+            }
+            None => fallback(),
+        }
     }
 
     /// A tool call: its method must be of the tool's class.
@@ -155,7 +183,8 @@ impl Bridge {
             Some(c) if c != class => return fail(format!("invalid: {method} is called through {}", tool_name(c))),
             Some(_) => {}
         }
-        match self.call_raw(method, params) {
+        let again = matches!(class, Class::Observe | Class::Read);
+        match self.call_raw(method, params, again) {
             Ok(v) => CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&v).unwrap_or_default())]),
             Err(ClientError::Api(e)) => fail(e.to_string()),
             Err(e) => fail(format!("unavailable: devdeck isn't reachable ({e})")),

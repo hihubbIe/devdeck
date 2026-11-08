@@ -971,7 +971,7 @@ fn api_callers(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell
             let now = std::time::SystemTime::now();
             s.status = Status::On("/run/user/1000/devdeck/main.sock".into());
             s.audit_path = Some("/home/u/.local/state/devdeck/api-audit.jsonl".into());
-            let terminal = Who::Terminal { workspace: "work".into(), n: 3, uid: "u".into(), shell: 1, starts: 1 };
+            let terminal = Who::Terminal { workspace: "work".into(), n: 3, uid: "u".into(), shell: 1, shell_start: 1, starts: 1 };
             let long = Who::Outside { pid: Some(4242), program: "a-program-whose-name-is-long-enough-to-be-cut-short-at-the-end-of-the-settings-page-row-when-it-is-narrow".into() };
             s.connections.insert(1, Connection { who: terminal.clone(), since: now, calls: 12 });
             s.connections.insert(2, Connection { who: long, since: now, calls: 1 });

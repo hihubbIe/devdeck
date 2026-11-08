@@ -213,6 +213,11 @@ impl Process {
         self.tree.pid
     }
 
+    /// Its start time (clock ticks since boot): with the pid, names this process only.
+    pub fn start(&self) -> u64 {
+        self.tree.start
+    }
+
     pub fn write(&self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;

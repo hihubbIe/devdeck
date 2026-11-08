@@ -60,6 +60,10 @@ impl RunControl for PtyControl {
         Some(self.0.pid())
     }
 
+    fn start_time(&self) -> Option<u64> {
+        Some(self.0.start())
+    }
+
     fn foreground_program(&self) -> Option<String> {
         self.0.foreground_program()
     }

@@ -21,7 +21,7 @@ fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
 }
 
 fn terminal(n: u32) -> Who {
-    Who::Terminal { workspace: "work".into(), n, uid: "uid-1".into(), shell: 1, starts: 1 }
+    Who::Terminal { workspace: "work".into(), n, uid: "uid-1".into(), shell: 1, shell_start: 1, starts: 1 }
 }
 
 fn outside() -> Who {
@@ -96,7 +96,7 @@ fn the_api_serves_a_socket_and_audits_its_callers(cx: &mut TestAppContext) {
     assert_eq!(cx.read(api::socket_path), Some(path.clone()));
     // What the socket's threads hand over (the transport's own tests use a real socket;
     // GPUI's test scheduler refuses wake-ups from other threads).
-    let peer = Peer { pid: Some(std::process::id()), chain: vec![std::process::id()], program: "devdeck-ctl".into() };
+    let peer = Peer { pid: Some(std::process::id()), chain: vec![(std::process::id(), 1)], program: "devdeck-ctl".into() };
     let opened = cx.update(|cx| api::open(&api, &peer, cx));
     assert!(opened.outside, "the test process isn't below a devdeck shell");
     let info = cx.update(|cx| api::call(&api, opened.id, "devdeck.info", json!({}), cx)).unwrap();

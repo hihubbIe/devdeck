@@ -57,7 +57,7 @@ mod tests {
 
     #[test]
     fn outside_never_gets_more_than_a_terminal() {
-        let t = Who::Terminal { workspace: "w".into(), n: 1, uid: "u".into(), shell: 1, starts: 1 };
+        let t = Who::Terminal { workspace: "w".into(), n: 1, uid: "u".into(), shell: 1, shell_start: 1, starts: 1 };
         let o = Who::Outside { pid: Some(9), program: "x".into() };
         for m in devdeck_api::catalog() {
             assert!(rank(of(&o, &m)) <= rank(of(&t, &m)), "{}", m.name);
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn the_permission_matrix() {
         // Every method of the catalog against each kind of caller.
-        let t = Who::Terminal { workspace: "w".into(), n: 1, uid: "u".into(), shell: 1, starts: 1 };
+        let t = Who::Terminal { workspace: "w".into(), n: 1, uid: "u".into(), shell: 1, shell_start: 1, starts: 1 };
         let o = Who::Outside { pid: None, program: "?".into() };
         for m in devdeck_api::catalog() {
             assert_eq!(of(&t, &m), terminal(m.class), "{}", m.name);

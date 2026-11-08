@@ -90,6 +90,11 @@ pub trait RunControl {
     fn pid(&self) -> Option<u32> {
         None
     }
+    /// The process's start time (clock ticks since boot), when it's a real process: with
+    /// the pid, it names this process and no later one given the same pid.
+    fn start_time(&self) -> Option<u64> {
+        None
+    }
     /// The program in its terminal's foreground when it isn't the process itself (a
     /// shell running `vite`).
     fn foreground_program(&self) -> Option<String> {
@@ -549,6 +554,11 @@ impl Runner {
     /// The process ids of the runs that have one (port scans, quitting).
     pub fn pids(&self) -> Vec<(RunKey, u32)> {
         self.runs.iter().filter_map(|(k, r)| Some((k.clone(), r.control.as_ref()?.pid()?))).collect()
+    }
+
+    /// The runs' processes with their start times (the control API's callers).
+    pub fn processes(&self) -> Vec<(RunKey, u32, u64)> {
+        self.runs.iter().filter_map(|(k, r)| r.control.as_ref().and_then(|c| Some((k.clone(), c.pid()?, c.start_time()?)))).collect()
     }
 
     /// Input typed into a run's terminal.

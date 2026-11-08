@@ -182,3 +182,62 @@ States checked by snapshot: API off, no callers, several callers, a long program
 - `run_vars`: shells get the variables, app runs don't; `scrub_env`.
 - CLI and MCP against a stub server (`DEVDECK_SOCKET` cleared for their processes).
 - Perf: idle CPU and memory with the server listening, before and after.
+
+## Diff review (subagent), assessed
+
+All taken:
+1. `install.sh` named one `--bin`, so cargo built only that one: the clients were never
+   built. Every binary is now named.
+2. Notifications reached the UI thread unchecked, unbounded (1 MB names, any caller):
+   now told once per connection, names cut to 128 characters; refusals audited once a
+   minute per reason; the connect-audit memory forgets keys after a minute.
+3. One failed `accept` (out of descriptors) ended the API silently: it now waits 200 ms
+   and goes on; only a stop ends it.
+4. Shells were matched by pid alone: now pid and start time (the runner's process
+   carries it), so a pid reused before the runner hears its shell end isn't that shell.
+5. The MCP client made any call again after a broken connection: now only the classes
+   that only look; `expired` drops the connection; the method list is kept per
+   connection; answers are waited for 60 s at most.
+6. A refused connection read as "devdeck is down": it gets a `busy` answer first.
+7. Answers had no size bound: one too large for a client becomes an `unavailable` error.
+8. `devdeck-ctl call M '[1]'` exited 1: non-object params are a usage mistake (64).
+
+Found while checking by hand: a devdeck with its own state folder (`measure.py`) left its
+socket and lock in the runtime folder; devdeck now removes both when it quits (checked:
+SIGTERM, then the folder is empty). Checked end to end on the release build: the CLI as
+an outside caller gets `devdeck.info`, is refused `app.list` (exit 1), and the audit file
+has the entries.
+
+## Perf (release build, 2026-11-08)
+
+`scripts/measure.py idle` on Wayland, the API listening: idle CPU 0.10 %, renders while
+idle 0 (as M1 and M2: the accept thread and connection threads block, nothing polls);
+memory at start 132 MB RSS / 122 MB PSS. Binary 66 725 032 bytes (+0.98 MB over
+23f30f8); `devdeck-ctl` 0.6 MB, `devdeck-mcp` 3.2 MB.
+
+## Manual test
+
+1. `scripts/install.sh`, then restart Kugelblitz.
+2. In a devdeck terminal: `echo $DEVDECK_SOCKET $DEVDECK_TERMINAL` (the socket, and
+   `<workspace>/<n>`).
+3. Who you are and what you may call: `devdeck-ctl whoami`, `devdeck-ctl describe`,
+   `devdeck-ctl describe run.get` (one method's schemas).
+4. Look around (`--json` for raw output):
+   - `devdeck-ctl call workspace.get`, `devdeck-ctl call app.list`,
+     `devdeck-ctl call app.get '{"app":"<id from app.list>"}'`
+   - `devdeck-ctl call run.list`,
+     `devdeck-ctl call run.get '{"app":"<app>","cmd":"<cmd id>"}'`
+   - `devdeck-ctl call terminal.list`, `devdeck-ctl call terminal.get '{"n":1}'`
+   - `devdeck-ctl call ui.get`, `devdeck-ctl call layout.list`
+   - `devdeck-ctl call note.list`, `devdeck-ctl call env.list`,
+     `devdeck-ctl call editmode.get`, `devdeck-ctl call settings.get`,
+     `devdeck-ctl call devdeck.problems`
+   - Another workspace answers `not_found`: `devdeck-ctl call app.list '{"workspace":"<other>"}'`.
+5. From a terminal app outside devdeck: `devdeck-ctl whoami` says outside;
+   `devdeck-ctl call app.list` is refused (`permission_denied`, exit 1).
+6. Settings → API: the socket, who connected, the audit (also in
+   `~/.local/state/devdeck/api-audit.jsonl`).
+7. Claude: `claude mcp add --scope user devdeck -- ~/.local/bin/devdeck-mcp`, then start
+   `claude` in a devdeck terminal: `/mcp` lists devdeck with `devdeck_observe`; ask it what
+   runs, which terminal it's in, what's on screen. (Claude's own Bash may not reach the
+   socket if its sandbox blocks Unix sockets; MCP does.)

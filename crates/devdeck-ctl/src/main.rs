@@ -56,6 +56,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
                 Some(p) => serde_json::from_str(&p).map_err(|e| format!("params: {e}"))?,
                 None => Value::Object(Default::default()),
             };
+            if !params.is_object() {
+                return Err("params: a JSON object ({} when none)".into());
+            }
             if rest.next().is_some() {
                 return Err("call takes a method and one JSON object".into());
             }
@@ -173,6 +176,7 @@ mod tests {
         assert_eq!(p(&["call", "app.list"]).unwrap().command, Command::Call("app.list".into(), serde_json::json!({})));
         assert!(p(&["call"]).is_err());
         assert!(p(&["call", "x", "{bad"]).unwrap_err().starts_with("params"));
+        assert!(p(&["call", "x", "[1]"]).unwrap_err().starts_with("params"), "an object only");
         assert!(p(&["whoami", "extra"]).is_err());
         assert!(p(&["--socket"]).is_err());
     }
