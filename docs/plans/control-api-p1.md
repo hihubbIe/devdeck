@@ -318,4 +318,7 @@ Automated security review of fe71ee2, taken: the secret names missed `.envrc`, `
 Terraform variables and state, `.pypirc`, `.vault-token`, `service-account*`, and git's
 own files. Added, and anything git ignores (the repository's `.gitignore`s, its
 excludes, the user's global ones) is refused too: names alone always miss some.
-`git check-ignore` runs with the repository's fsmonitor off.
+`git check-ignore` runs with the repository's fsmonitor off, through core's git runner
+(its own session, `GIT_DIR` and the like removed) within 2 s; a file is read only when
+git says it isn't ignored or there's no repository: a failure or a timeout refuses it
+(second automated review).

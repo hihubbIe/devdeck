@@ -630,6 +630,8 @@ struct RemoteCommit {
 enum Mode {
     /// Changes nothing: no optional locks, [`READ_LIMIT`].
     Read,
+    /// [`Mode::Read`] within a shorter limit.
+    ReadWithin(Duration),
     /// Talks to a remote, touches no working tree: stopped after the limit.
     Network(Duration),
     /// Touches the working tree or refs: never stopped (a half switched tree is worse);
@@ -692,7 +694,7 @@ fn exec(dir: &Path, vars: &[(String, String)], ceiling: Option<&Path>, args: &[&
     if let Some(ceiling) = ceiling {
         cmd.env("GIT_CEILING_DIRECTORIES", ceiling);
     }
-    if let Mode::Read = mode {
+    if let Mode::Read | Mode::ReadWithin(_) = mode {
         cmd.env("GIT_OPTIONAL_LOCKS", "0");
     }
     cmd.stdin(Stdio::null());
@@ -710,6 +712,7 @@ fn exec(dir: &Path, vars: &[(String, String)], ceiling: Option<&Path>, args: &[&
     let stderr = drain(child.stderr.take().expect("stderr is piped"), tx);
     let deadline = match mode {
         Mode::Read => Some(Instant::now() + limit(READ_LIMIT)),
+        Mode::ReadWithin(d) => Some(Instant::now() + limit(d)),
         Mode::Network(d) => Some(Instant::now() + limit(d)),
         Mode::Tree => None,
     };
@@ -902,20 +905,35 @@ fn change(xy: &str, path: &str, from: Option<String>) -> Change {
 /// goes to the branch of the same name, so these can't be written by devdeck.
 pub const NEVER_PUSHED: [&str; 2] = ["main", "master"];
 
+/// What git says of a path ([`ignored`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ignored {
+    Yes,
+    /// Not ignored, or not in a repository.
+    No,
+    /// git couldn't tell (it failed, or took too long): why.
+    Unknown(String),
+}
+
+/// How long [`ignored`] waits for git (it's asked on the UI thread).
+const IGNORED_LIMIT: Duration = Duration::from_secs(2);
+
 /// Whether git ignores `path` (its repository's `.gitignore`s, `.git/info/exclude`, the
-/// user's global excludes): where secrets usually live. False outside a repository or
-/// when git can't tell. The repository's fsmonitor is off: nothing of it runs.
-pub fn ignored(path: &Path) -> bool {
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return false };
-    std::process::Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "check-ignore", "-q", "--"])
-        .arg(name)
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.code() == Some(0))
+/// user's global excludes): where secrets usually live. Run as every git devdeck runs
+/// (its own session, `GIT_DIR` and the like removed), the repository's fsmonitor off
+/// (nothing of it runs), for [`IGNORED_LIMIT`] at most.
+pub fn ignored(path: &Path) -> Ignored {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return Ignored::Unknown(format!("{}: no file name", path.display()));
+    };
+    let args = ["-c", "core.fsmonitor=false", "check-ignore", "-q", "--", name];
+    match exec(dir, &[], None, &args, Mode::ReadWithin(IGNORED_LIMIT)) {
+        Err(why) => Ignored::Unknown(why),
+        Ok(o) if o.code == Some(0) => Ignored::Yes,
+        Ok(o) if o.code == Some(1) => Ignored::No,
+        Ok(o) if String::from_utf8_lossy(&o.stderr).contains("not a git repository") => Ignored::No,
+        Ok(o) => Ignored::Unknown(o.failure(&args)),
+    }
 }
 
 /// Refuses `main` and `master` (any case).
@@ -1003,5 +1021,22 @@ mod tests {
         assert!(out.as_ref().is_ok_and(|o| o.contains("hook done")), "{out:?}");
         assert!(start.elapsed() >= Duration::from_secs(1));
         assert_eq!(git.head(), Ok(Head::Branch("slow".into())));
+    }
+
+    #[test]
+    fn ignored_files_by_git_and_not_outside_a_repository() {
+        let (dir, _vars) = repo("git-ignored", &[]);
+        std::fs::write(dir.join(".gitignore"), "local.json\n").unwrap();
+        std::fs::write(dir.join("local.json"), "{}").unwrap();
+        std::fs::write(dir.join("main.rs"), "").unwrap();
+        assert_eq!(ignored(&dir.join("local.json")), Ignored::Yes);
+        assert_eq!(ignored(&dir.join("main.rs")), Ignored::No);
+        let plain = TempDir::new("git-not-repo");
+        std::fs::write(plain.join("a.txt"), "").unwrap();
+        // A temporary folder may sit inside a repository on some machines; here it doesn't.
+        if !std::env::temp_dir().ancestors().any(|a| a.join(".git").exists()) {
+            assert_eq!(ignored(&plain.join("a.txt")), Ignored::No);
+        }
+        assert!(matches!(ignored(Path::new("/")), Ignored::Unknown(_)), "no file name: refused");
     }
 }

@@ -794,10 +794,12 @@ fn readable(path: &std::path::Path, roots: &[std::path::PathBuf], own: &[std::pa
         return denied("it may hold secrets");
     }
     // What git ignores is where secrets usually live (and build output nobody reads).
-    if devdeck_core::git::ignored(path) {
-        return denied("git ignores it, so it may hold secrets");
+    // When git can't tell, it isn't read.
+    match devdeck_core::git::ignored(path) {
+        devdeck_core::git::Ignored::No => Ok(()),
+        devdeck_core::git::Ignored::Yes => denied("git ignores it, so it may hold secrets"),
+        devdeck_core::git::Ignored::Unknown(why) => denied(&format!("git couldn't tell whether it's ignored ({why})")),
     }
-    Ok(())
 }
 
 pub fn file_read(cx: &CallCx, p: FileParams, app: &mut App) -> Result<FileLines, ApiError> {
