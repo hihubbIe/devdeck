@@ -12,7 +12,7 @@ use super::{KeepsState, Live, ToggleRendered, ViewAction, ViewCx};
 use crate::open_file::OpenFile;
 use devdeck_core::files::{FileText, read_text};
 use devdeck_ui::code::{self, Code};
-use devdeck_ui::{Icon, Scrolls, label, markdown_view, theme};
+use devdeck_ui::{Icon, Rendered, Scrolls, label, theme};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled,
     Subscription, Task, Window, div, point, prelude::FluentBuilder,
@@ -35,9 +35,12 @@ pub enum Shown {
 
 pub struct FileView {
     pub path: PathBuf,
+    ctx: ViewCx,
     file: Entity<OpenFile>,
     /// The editor, made on the first draw (it needs a window).
     pub code: Option<Entity<Code>>,
+    /// The rendered Markdown, made when first shown.
+    pub rendered_view: Option<Entity<Rendered>>,
     /// Text to put in the editor at the next draw: its language, and a scroll to restore.
     pending: Option<(SharedString, &'static str, Option<Point<Pixels>>)>,
     /// The text when it's shown (for the rendered view).
@@ -71,8 +74,10 @@ impl FileView {
         }));
         let mut view = Self {
             path,
+            ctx,
             file,
             code: None,
+            rendered_view: None,
             pending: None,
             text: SharedString::default(),
             shown: Shown::Loading,
@@ -217,6 +222,9 @@ impl FileView {
             Some(c) => c.clone(),
             None => {
                 let c = cx.new(|cx| Code::viewer(window, cx));
+                // Right-click and the menu key: Copy, Share with… for the selection (R5.7).
+                let menu = crate::context_menu::text_menu(&self.ctx);
+                c.update(cx, |c, _| c.set_menu(menu));
                 self.code = Some(c.clone());
                 c
             }
@@ -230,6 +238,40 @@ impl FileView {
             });
         }
         code
+    }
+
+    /// The rendered Markdown, made now if it isn't yet, showing the text.
+    fn rendered_view(&mut self, cx: &mut Context<Self>) -> Entity<Rendered> {
+        let text = self.text.clone();
+        match &self.rendered_view {
+            Some(r) => {
+                r.update(cx, |r, cx| r.set_text(&text, cx));
+                r.clone()
+            }
+            None => {
+                let menu = crate::context_menu::text_menu(&self.ctx);
+                let r = cx.new(|cx| {
+                    let mut r = Rendered::new(&text, cx);
+                    r.set_menu(menu);
+                    r
+                });
+                self.rendered_view = Some(r.clone());
+                r
+            }
+        }
+    }
+
+    /// The menu key (R5.7): the menu for the selection, else the key goes on (the tab's
+    /// menu).
+    fn menu_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opened = match (&self.code, &self.rendered_view) {
+            (_, Some(r)) if self.markdown && self.rendered => Rendered::menu_key(r, window, cx),
+            (Some(c), _) if !(self.markdown && self.rendered) => Code::menu_key(c, window, cx),
+            _ => false,
+        };
+        if !opened {
+            cx.propagate();
+        }
     }
 }
 
@@ -253,7 +295,8 @@ impl Render for FileView {
             .flex_col()
             .key_context("FileView")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ToggleRendered, window, cx| this.toggle_rendered(window, cx)));
+            .on_action(cx.listener(|this, _: &ToggleRendered, window, cx| this.toggle_rendered(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::actions::ContextMenu, window, cx| this.menu_key(window, cx)));
         match &self.shown {
             Shown::Loading => root.into_any_element(),
             Shown::Problem(why) => root
@@ -263,8 +306,9 @@ impl Render for FileView {
                 .debug_selector(|| "file-problem".into())
                 .child(div().w_full().min_w_0().flex().justify_center().child(label(why.clone()).min_w_0()))
                 .into_any_element(),
-            Shown::Text { .. } if self.markdown && self.rendered => root
-                .child(
+            Shown::Text { .. } if self.markdown && self.rendered => {
+                let rendered = self.rendered_view(cx);
+                root.child(
                     div()
                         .id("rendered")
                         .debug_selector(|| "file-rendered".into())
@@ -273,9 +317,10 @@ impl Render for FileView {
                         .scroll_y()
                         .px_3()
                         .py_2()
-                        .child(markdown_view("file-md", self.text.clone(), &t)),
+                        .child(rendered),
                 )
-                .into_any_element(),
+                .into_any_element()
+            }
             Shown::Text { .. } => root
                 .when_some(self.plain_reason(), |d, why| {
                     d.child(

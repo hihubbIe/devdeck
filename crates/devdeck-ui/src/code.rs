@@ -1,6 +1,6 @@
 //! Code and notes (R12): a read-only code view and the note editor, both gpui-component's
 //! `Editor` with tree-sitter highlighting, and the rendered Markdown view. gpui-component
-//! stays inside this module (R9.3): views use [`Code`] and [`markdown_view`].
+//! stays inside this module (R9.3): views use [`Code`] and [`Rendered`].
 //!
 //! [`init`] runs gpui-component's init (its input's own is private to it), drops its only
 //! global key (the inspector's, debug builds) and copies our theme into its theme;
@@ -15,8 +15,8 @@
 
 use crate::{MenuItem, Theme, open_menu, theme};
 use gpui::{
-    App, AppContext, ClipboardItem, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Keystroke, MouseButton, OngoingScroll,
-    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, SharedString, Styled, Subscription, Window, canvas, div,
+    App, AppContext, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Keystroke, MouseButton, OngoingScroll,
+    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, SharedString, Styled, Subscription, Window, canvas, div, point,
 };
 use gpui_component::input::{Editor, EditorState, InputEvent};
 use std::cell::Cell;
@@ -25,6 +25,8 @@ use std::rc::Rc;
 
 /// Esc in the editor, when it doesn't use it itself (a view leaves the editor on it).
 pub use gpui_component::input::Escape as EditorEscape;
+/// The editor's Select all (tests select with it).
+pub use gpui_component::input::SelectAll as EditorSelectAll;
 
 /// The key context of gpui-component's text fields: both editors and their find field.
 pub const EDITOR_CONTEXT: &str = "Input";
@@ -147,7 +149,9 @@ pub fn editor_takes(key: &'static str) -> bool {
     let Ok(k) = Keystroke::parse(key) else { return false };
     let m = k.modifiers;
     if !m.control && !m.alt && !m.platform && !m.function {
-        return true;
+        // Not the keys no text field uses: F1–F24, the menu key (R5.7).
+        let function = k.key.len() > 1 && k.key.starts_with('f') && k.key[1..].parse::<u8>().is_ok();
+        return !function && k.key != "menu";
     }
     EDITOR_KEYS.contains(&key)
 }
@@ -186,8 +190,10 @@ pub enum CodeEvent {
     Changed,
 }
 
-/// Extra right-click items given the selected text (`None` without a selection).
-pub type MenuFn = Rc<dyn Fn(Option<String>, &mut Window, &mut App) -> Vec<MenuItem>>;
+/// A view's right-click menu (R5.7): opened at a point with the selected text (`None`
+/// without one) and the text field's own items (a note's Cut and Paste, Select all); the
+/// view adds Copy, Share with… for the selection.
+pub type MenuOpener = Rc<dyn Fn(Point<Pixels>, Option<String>, Vec<MenuItem>, &mut Window, &mut App)>;
 
 /// A code view (read only) or a note editor, over gpui-component's editor.
 pub struct Code {
@@ -196,7 +202,9 @@ pub struct Code {
     /// Set while devdeck itself changes the text, so only the user's edits report.
     quiet: Rc<Cell<bool>>,
     scroll: OngoingScroll,
-    menu: Option<MenuFn>,
+    menu: Option<MenuOpener>,
+    /// Its top left on screen (where the menu key opens the menu without a caret).
+    origin: Rc<Cell<Point<Pixels>>>,
     _subs: Vec<Subscription>,
 }
 
@@ -227,7 +235,7 @@ impl Code {
                 cx.emit(CodeEvent::Changed);
             }
         })];
-        Self { state, editable, quiet, scroll: OngoingScroll::default(), menu: None, _subs: subs }
+        Self { state, editable, quiet, scroll: OngoingScroll::default(), menu: None, origin: Rc::default(), _subs: subs }
     }
 
     /// Replaces the text and its language (`text` for none), keeping the scroll.
@@ -263,41 +271,52 @@ impl Code {
         self.state.update(cx, |s, cx| s.set_scroll_offset(offset, cx));
     }
 
-    /// Items the view adds to the right-click menu, after Copy (and the note's edits).
-    pub fn set_menu(&mut self, menu: impl Fn(Option<String>, &mut Window, &mut App) -> Vec<MenuItem> + 'static) {
-        self.menu = Some(Rc::new(menu));
+    /// The view opens the right-click menu from now on ([`MenuOpener`]).
+    pub fn set_menu(&mut self, menu: MenuOpener) {
+        self.menu = Some(menu);
     }
 
-    /// Opens the right-click menu at `position`.
+    /// Opens the right-click menu at `position`: the view's when it gave one, else Copy
+    /// and the editor's own items.
     pub fn open_menu(this: &Entity<Self>, position: Point<Pixels>, window: &mut Window, cx: &mut App) {
         let c = this.read(cx);
         let (selected, editable, state, menu) = (c.selected_text(cx), c.editable, c.state.clone(), c.menu.clone());
-        let mut items = Vec::new();
+        let mut own = Vec::new();
         if editable {
-            items.push(dispatch("Cut", Box::new(gpui_component::input::Cut), &state));
+            own.push(dispatch("Cut", Box::new(gpui_component::input::Cut), &state));
+            own.push(dispatch("Paste", Box::new(gpui_component::input::Paste), &state));
         }
-        let copy = selected.clone();
-        let mut copy_item = MenuItem::new("Copy", move |_, cx| {
-            if let Some(s) = &copy {
-                cx.write_to_clipboard(ClipboardItem::new_string(s.clone()));
+        own.push(dispatch("Select all", Box::new(gpui_component::input::SelectAll), &state));
+        match menu {
+            Some(open) => open(position, selected, own, window, cx),
+            None => {
+                let mut items = Vec::new();
+                let copy = selected.clone();
+                let mut copy_item = MenuItem::new("Copy", move |_, cx| {
+                    if let Some(s) = &copy {
+                        cx.write_to_clipboard(ClipboardItem::new_string(s.clone()));
+                    }
+                });
+                if selected.is_none() {
+                    copy_item.disabled = Some("nothing selected".into());
+                }
+                items.push(copy_item);
+                items.extend(own);
+                open_menu(position, items, window, cx);
             }
-        });
-        if selected.is_none() {
-            copy_item.disabled = Some("nothing selected".into());
         }
-        items.push(copy_item);
-        if editable {
-            items.push(dispatch("Paste", Box::new(gpui_component::input::Paste), &state));
+    }
+
+    /// The menu key (R5.7): the right-click menu at the caret, when text is selected.
+    /// Whether it opened (else the key goes on: the tab's menu).
+    pub fn menu_key(this: &Entity<Self>, window: &mut Window, cx: &mut App) -> bool {
+        let c = this.read(cx);
+        if c.selected_text(cx).is_none() {
+            return false;
         }
-        items.push(dispatch("Select all", Box::new(gpui_component::input::SelectAll), &state));
-        if let Some(menu) = menu {
-            let extra = menu(selected, window, cx);
-            if !extra.is_empty() {
-                items.push(MenuItem::separator());
-                items.extend(extra);
-            }
-        }
-        open_menu(position, items, window, cx);
+        let at = c.state.read(cx).prepaint_caret_geometry().map(|g| g.cursor_bounds().bottom_left()).unwrap_or_else(|| c.origin.get() + point(theme(cx).size(24.), theme(cx).size(24.)));
+        Code::open_menu(this, at, window, cx);
+        true
     }
 
     /// Moves the editor by a wheel event, on one axis for a gesture (R9.6).
@@ -332,10 +351,14 @@ impl Render for Code {
         let t = theme(cx);
         let me = cx.entity().downgrade();
         let (wheel, menu) = (me.clone(), me);
+        let origin = self.origin.clone();
         // Wheel and right-click are taken before the editor sees them (capture phase), when
         // nothing covers it (a menu, the palette, a modal).
         let catcher = canvas(
-            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |bounds, window, _| {
+                origin.set(bounds.origin);
+                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+            },
             move |_, hitbox, window, _| {
                 let wheel = wheel.clone();
                 let over = hitbox.clone();
@@ -371,7 +394,93 @@ impl Render for Code {
     }
 }
 
-/// `text` rendered as Markdown, in our font, wrapping (prose, R4.4).
-pub fn markdown_view(id: impl Into<ElementId>, text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
-    div().size_full().font_family(t.font.clone()).text_size(t.text).text_color(t.fg).child(gpui_component::text::TextView::markdown(id, text).selectable(true))
+/// Markdown rendered, in our font, wrapping (prose, R4.4), its text selectable; right-click
+/// and the menu key open the view's menu for the selection, as in [`Code`].
+pub struct Rendered {
+    state: Entity<gpui_component::text::TextViewState>,
+    menu: Option<MenuOpener>,
+    origin: Rc<Cell<Point<Pixels>>>,
+}
+
+impl Rendered {
+    pub fn new(text: &str, cx: &mut Context<Self>) -> Self {
+        let state = cx.new(|cx| gpui_component::text::TextViewState::markdown(text, cx));
+        Self { state, menu: None, origin: Rc::default() }
+    }
+
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| s.set_text(text, cx));
+    }
+
+    /// The selected text, if any.
+    pub fn selected_text(&self, cx: &App) -> Option<String> {
+        let s = self.state.read(cx).selected_text();
+        (!s.is_empty()).then_some(s)
+    }
+
+    /// The view opens the right-click menu ([`MenuOpener`], no items of its own).
+    pub fn set_menu(&mut self, menu: MenuOpener) {
+        self.menu = Some(menu);
+    }
+
+    pub fn open_menu(this: &Entity<Self>, position: Point<Pixels>, window: &mut Window, cx: &mut App) {
+        let r = this.read(cx);
+        let (selected, menu) = (r.selected_text(cx), r.menu.clone());
+        match menu {
+            Some(open) => open(position, selected, Vec::new(), window, cx),
+            None => {
+                if let Some(s) = selected {
+                    open_menu(position, vec![MenuItem::new("Copy", move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(s.clone())))], window, cx);
+                }
+            }
+        }
+    }
+
+    /// The menu key (R5.7): the menu near the view's top left, when text is selected.
+    pub fn menu_key(this: &Entity<Self>, window: &mut Window, cx: &mut App) -> bool {
+        if this.read(cx).selected_text(cx).is_none() {
+            return false;
+        }
+        let at = this.read(cx).origin.get() + point(theme(cx).size(24.), theme(cx).size(24.));
+        Rendered::open_menu(this, at, window, cx);
+        true
+    }
+}
+
+impl Render for Rendered {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme(cx);
+        let menu = cx.entity().downgrade();
+        let origin = self.origin.clone();
+        // Right-click is taken before the text sees it, when nothing covers it.
+        let catcher = canvas(
+            move |bounds, window, _| {
+                origin.set(bounds.origin);
+                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+            },
+            move |_, hitbox, window, _| {
+                window.on_mouse_event(move |e: &gpui::MouseDownEvent, phase, window, cx| {
+                    if phase == gpui::DispatchPhase::Capture && e.button == MouseButton::Right && hitbox.is_hovered(window) {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        if let Some(r) = menu.upgrade() {
+                            Rendered::open_menu(&r, e.position, window, cx);
+                        }
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        div()
+            .relative()
+            .w_full()
+            .font_family(t.font.clone())
+            .text_size(t.text)
+            .text_color(t.fg)
+            .child(gpui_component::text::TextView::new(&self.state).selectable(true))
+            .child(catcher)
+    }
 }

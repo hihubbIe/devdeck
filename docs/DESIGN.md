@@ -297,8 +297,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Highlighting is most of the memory (a 10 MB file: 567 MB highlighted, 163 MB plain), so
   only files up to 1 MB with lines under 5 000 characters are highlighted.
 - The editor adds both axes of every wheel event; the wrapper takes the wheel first and
-  locks the axis (R9.6), as the terminal does. Right-click opens our menu (Copy; the
-  note's Cut, Paste; Select all; then what the view adds).
+  locks the axis (R9.6), as the terminal does. Right-click (and the menu key, at the
+  caret) opens the view's menu: the editor gives its own items (the note's Cut, Paste;
+  Select all) and the selection, and the file and note views open the shared
+  `context_menu` with them, so Copy and Share with… work as from a terminal (R5.7). The
+  rendered Markdown (`Rendered`, over gpui-component's `TextViewState`) does the same with
+  its selection.
 - Keys: the note editor's key context is `NoteEditor`. A devdeck binding whose key it uses
   (`code::editor_takes`: no modifier but shift, or one of its own ctrl/alt keys, checked
   against its keymap by a test) is off inside it, as for terminals; ctrl+w, ctrl+tab,

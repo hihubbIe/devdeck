@@ -10,7 +10,7 @@ use super::{KeepsState, Live, ToggleRendered, ViewAction, ViewCx};
 use crate::notes::{NoteDeleted, Notes};
 use devdeck_ui::code::{Code, CodeEvent};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
-use devdeck_ui::{Icon, ModalFocus, Scrolls, button, label, markdown_view, modal_frame, pop_modal, push_modal, theme};
+use devdeck_ui::{Icon, ModalFocus, Rendered, Scrolls, button, label, modal_frame, pop_modal, push_modal, theme};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
     Subscription, WeakFocusHandle, Window, actions, div,
@@ -20,9 +20,12 @@ actions!(note_view, [ConfirmDeleteNote]);
 
 pub struct NoteView {
     pub id: String,
+    ctx: ViewCx,
     notes: Entity<Notes>,
     /// The editor, made on the first draw of the source (it needs a window).
     pub code: Option<Entity<Code>>,
+    /// The rendered note, made when first shown.
+    pub rendered_view: Option<Entity<Rendered>>,
     pub rendered: bool,
     focus: FocusHandle,
     /// Esc in the editor gives the keys back to the view: focus stays here then.
@@ -36,6 +39,7 @@ impl NoteView {
         let rendered = !notes.update(cx, |n, _| n.text(&id)).trim().is_empty();
         let mine = id.clone();
         let (deck, me) = (ctx.deck.clone(), ctx.view.clone());
+        let keep = ctx.clone();
         let subs = vec![
             cx.observe(&notes, |_, _, cx| cx.notify()),
             cx.subscribe(&notes, move |_, _, e: &NoteDeleted, cx| {
@@ -45,7 +49,7 @@ impl NoteView {
                 }
             }),
         ];
-        Self { id, notes, code: None, rendered, focus: cx.focus_handle(), leaving: false, _subs: subs }
+        Self { id, ctx: keep, notes, code: None, rendered_view: None, rendered, focus: cx.focus_handle(), leaving: false, _subs: subs }
     }
 
     /// The editor, made now if it isn't yet, holding the note's text. Focus on the view
@@ -56,7 +60,12 @@ impl NoteView {
         }
         let text = self.notes.update(cx, |n, _| n.text(&self.id));
         let code = cx.new(|cx| Code::note(window, cx));
-        code.update(cx, |c, cx| c.set_text(&text, "markdown", window, cx));
+        // Right-click and the menu key: Cut, Copy, Paste, Share with… (R5.7).
+        let menu = crate::context_menu::text_menu(&self.ctx);
+        code.update(cx, |c, cx| {
+            c.set_text(&text, "markdown", window, cx);
+            c.set_menu(menu);
+        });
         let (notes, id) = (self.notes.clone(), self.id.clone());
         self._subs.push(cx.subscribe(&code, move |_, code, _: &CodeEvent, cx| {
             let text = code.read(cx).text(cx).to_string();
@@ -67,6 +76,39 @@ impl NoteView {
         self._subs.push(cx.on_blur(&self.focus, window, |this, _, _| this.leaving = false));
         self.code = Some(code.clone());
         code
+    }
+
+    /// The rendered note, made now if it isn't yet, showing `text`.
+    fn rendered_view(&mut self, text: &str, cx: &mut Context<Self>) -> Entity<Rendered> {
+        match &self.rendered_view {
+            Some(r) => {
+                r.update(cx, |r, cx| r.set_text(text, cx));
+                r.clone()
+            }
+            None => {
+                let menu = crate::context_menu::text_menu(&self.ctx);
+                let r = cx.new(|cx| {
+                    let mut r = Rendered::new(text, cx);
+                    r.set_menu(menu);
+                    r
+                });
+                self.rendered_view = Some(r.clone());
+                r
+            }
+        }
+    }
+
+    /// The menu key (R5.7): the menu for the selection, else the key goes on (the tab's
+    /// menu).
+    fn menu_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opened = match (&self.code, &self.rendered_view) {
+            (_, Some(r)) if self.rendered => Rendered::menu_key(r, window, cx),
+            (Some(c), _) if !self.rendered => Code::menu_key(c, window, cx),
+            _ => false,
+        };
+        if !opened {
+            cx.propagate();
+        }
     }
 
     pub fn toggle_rendered(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -135,7 +177,8 @@ impl Render for NoteView {
             .key_context("NoteView")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &ToggleRendered, window, cx| this.toggle_rendered(window, cx)))
-            .on_action(cx.listener(|this, _: &devdeck_ui::code::EditorEscape, window, cx| this.leave_editor(window, cx)));
+            .on_action(cx.listener(|this, _: &devdeck_ui::code::EditorEscape, window, cx| this.leave_editor(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::actions::ContextMenu, window, cx| this.menu_key(window, cx)));
         // A file another program wrote, not as text: said, never edited (it would be
         // written over).
         if let Some(why) = self.notes.read(cx).unreadable(&self.id) {
@@ -152,7 +195,7 @@ impl Render for NoteView {
             let body = if text.trim().is_empty() {
                 div().text_color(t.mute).child(label("Empty note. ctrl shift e to write.")).into_any_element()
             } else {
-                markdown_view("note-md", text, &t).into_any_element()
+                self.rendered_view(&text, cx).into_any_element()
             };
             return root
                 .child(div().id("note-rendered").debug_selector(|| "note-rendered".into()).flex_1().min_h_0().scroll_y().px_3().py_2().child(body))

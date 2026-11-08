@@ -1,6 +1,7 @@
-//! The right-click menu (R5.7): a terminal's selection offers Copy and Share with, which
-//! pastes it as it is into another terminal of the workspace that takes pastes safely,
-//! and shows that terminal. A recording driver stands in for the shells.
+//! The right-click menu (R5.7): a terminal's, a file's or a note's selection offers Copy
+//! and Share with, which pastes it as it is into another terminal of the workspace that
+//! takes pastes safely, and shows that terminal. A recording driver stands in for the
+//! shells.
 
 use devdeck_app::context_menu::{self, Content, Origin};
 use devdeck_app::deck::Deck;
@@ -275,4 +276,97 @@ fn a_right_click_opens_the_menu_with_what_applies(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(s.window, cx).read(cx).menu.clone().unwrap());
     assert!(vcx.read(|cx| labels(menu.read(cx).items())).contains(&"Close".to_string()), "the tab menu");
+}
+
+/// Opens `addr` in the focused pane and returns that pane's body center.
+fn open_here(s: &Setup, addr: ViewAddr, vcx: &mut VisualTestContext) -> gpui::Point<gpui::Pixels> {
+    let r = addr.to_ref();
+    vcx.update(|_, cx| s.deck.update(cx, |d, cx| d.apply(cx, |l| { let p = l.main().focused; l.open(r.clone(), p).map(|_| ()) })));
+    vcx.run_until_parked();
+    let pane = vcx.read(|cx| s.deck.read(cx).layout().main().focused);
+    vcx.debug_bounds(Box::leak(format!("pane-body-{}", pane.0).into_boxed_str())).expect("its body").center()
+}
+
+fn menu_labels(s: &Setup, vcx: &mut VisualTestContext) -> Vec<String> {
+    let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(s.window, cx).read(cx).menu.clone().expect("a menu"));
+    vcx.read(|cx| labels(menu.read(cx).items()))
+}
+
+fn select_all(vcx: &mut VisualTestContext, code: &Entity<devdeck_ui::Code>) {
+    vcx.update(|window, cx| {
+        let f = gpui::Focusable::focus_handle(code.read(cx), cx);
+        f.focus(window, cx);
+        window.dispatch_action(Box::new(devdeck_ui::code::EditorSelectAll), cx);
+    });
+    vcx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_files_selection_offers_copy_and_share_with(cx: &mut TestAppContext) {
+    let s = setup(cx, "file-share", &["graphservice"]);
+    s.takes_pastes(0, cx);
+    let dir = cx.update(|cx| devdeck_app::test_dir("file-share-files", cx));
+    let path = dir.join("build.log");
+    std::fs::write(&path, "error: the build failed\n").unwrap();
+    let mut vcx = VisualTestContext::from_window(s.window, cx);
+    let at = open_here(&s, ViewAddr::File { path: path.to_string_lossy().into_owned() }, &mut vcx);
+    let view = vcx.read(|cx| s.deck.read(cx).view(&ViewAddr::File { path: path.to_string_lossy().into_owned() }.to_ref()).unwrap().downcast::<devdeck_app::views::file_view::FileView>().unwrap());
+    let code = vcx.read(|cx| view.read(cx).code.clone()).expect("drawn");
+    // Nothing selected: the editor's own item only.
+    vcx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(menu_labels(&s, &mut vcx), ["Select all"]);
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    // A selection: Copy and Share with, which pastes it into the terminal.
+    select_all(&mut vcx, &code);
+    vcx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(menu_labels(&s, &mut vcx), ["Select all", "", "Copy", "Share with"]);
+    let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(s.window, cx).read(cx).menu.clone().unwrap());
+    let run = vcx.read(|cx| menu.read(cx).items()[3].run.clone()).unwrap();
+    vcx.update(|window, cx| run(window, cx));
+    vcx.run_until_parked();
+    assert_eq!(s.input(0), "\x1b[200~error: the build failed\r\x1b[201~");
+}
+
+#[gpui::test]
+fn the_menu_key_in_a_file_opens_the_menu_for_the_selection(cx: &mut TestAppContext) {
+    let s = setup(cx, "file-menu-key", &["graphservice"]);
+    let dir = cx.update(|cx| devdeck_app::test_dir("file-menu-key-files", cx));
+    let path = dir.join("a.rs");
+    std::fs::write(&path, "fn main() {}\n").unwrap();
+    let mut vcx = VisualTestContext::from_window(s.window, cx);
+    open_here(&s, ViewAddr::File { path: path.to_string_lossy().into_owned() }, &mut vcx);
+    let view = vcx.read(|cx| s.deck.read(cx).view(&ViewAddr::File { path: path.to_string_lossy().into_owned() }.to_ref()).unwrap().downcast::<devdeck_app::views::file_view::FileView>().unwrap());
+    let code = vcx.read(|cx| view.read(cx).code.clone()).expect("drawn");
+    select_all(&mut vcx, &code);
+    vcx.simulate_keystrokes("shift-f10");
+    vcx.run_until_parked();
+    assert!(menu_labels(&s, &mut vcx).contains(&"Copy".to_string()), "the selection's menu");
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    // Without a selection: the tab's menu, as in a terminal.
+    vcx.simulate_keystrokes("right");
+    vcx.simulate_keystrokes("shift-f10");
+    vcx.run_until_parked();
+    assert!(menu_labels(&s, &mut vcx).contains(&"Close".to_string()), "the tab menu");
+}
+
+#[gpui::test]
+fn a_notes_selection_offers_its_edits_copy_and_share_with(cx: &mut TestAppContext) {
+    let s = setup(cx, "note-share", &["graphservice"]);
+    s.takes_pastes(0, cx);
+    let notes = cx.read(|cx| s.services.read(cx).notes.clone());
+    let id = cx.update(|cx| notes.update(cx, |n, cx| n.create("graphservice", "todo", cx))).unwrap();
+    let mut vcx = VisualTestContext::from_window(s.window, cx);
+    let at = open_here(&s, ViewAddr::Note { id: id.clone() }, &mut vcx);
+    let view = vcx.read(|cx| s.deck.read(cx).view(&ViewAddr::Note { id: id.clone() }.to_ref()).unwrap().downcast::<devdeck_app::views::note_view::NoteView>().unwrap());
+    vcx.simulate_input("fix the zoom");
+    vcx.run_until_parked();
+    let code = vcx.read(|cx| view.read(cx).code.clone()).expect("the editor");
+    select_all(&mut vcx, &code);
+    vcx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(menu_labels(&s, &mut vcx), ["Cut", "Paste", "Select all", "", "Copy", "Share with"]);
 }

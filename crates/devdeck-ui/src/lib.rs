@@ -12,7 +12,7 @@ pub mod text_buffer;
 pub mod text_input;
 pub mod theme;
 
-pub use code::{Code, CodeEvent, markdown_view};
+pub use code::{Code, CodeEvent, MenuOpener, Rendered};
 pub use components::*;
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};
 pub use scroll::{Scrolls, scroll_list};

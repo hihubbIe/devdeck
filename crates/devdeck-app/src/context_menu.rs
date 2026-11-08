@@ -1,8 +1,8 @@
 //! The right-click menu (R5.7): a view gives its own items and what was right-clicked
 //! ([`Content`]); every action that can take that content adds itself, so an action
-//! shows only where it applies. Content so far: text selected in a terminal. Actions:
-//! Copy, and Share with, which pastes the text into another terminal of the workspace
-//! (Claude Code running there, for one), as it is.
+//! shows only where it applies. Content so far: text selected in a terminal, a file or a
+//! note (source or rendered). Actions: Copy, and Share with, which pastes the text into
+//! another terminal of the workspace (Claude Code running there, for one), as it is.
 
 use crate::deck::{Deck, TerminalTabs};
 use crate::places;
@@ -46,6 +46,19 @@ pub fn items(own: Vec<MenuItem>, content: Option<&Content>, origin: &Origin, cx:
     }
     all.extend(offered);
     all
+}
+
+/// The menu of a view showing text in gpui-component's fields (a file, a note): their
+/// own items, then what takes the selection. `ctx` is the view's.
+pub fn text_menu(ctx: &crate::views::ViewCx) -> devdeck_ui::MenuOpener {
+    let ctx = ctx.clone();
+    std::rc::Rc::new(move |at, selected, own, window, cx| {
+        let Some(deck) = ctx.deck.upgrade() else { return };
+        let l = deck.read(cx).layout();
+        let Some(here) = l.find_view(&ctx.view).and_then(|(p, _)| l.window_of(p).ok()) else { return };
+        let origin = Origin { deck: ctx.deck.clone(), services: ctx.services.clone(), window: here, source: None };
+        open(at, own, selected.map(Content::Text), &origin, window, cx);
+    })
 }
 
 /// Opens the menu at `at`; nothing opens when there's nothing to offer. Returns whether
