@@ -135,6 +135,14 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   The highlight is `Layout::preview`, the drop done on a copy, so it is the real result.
 - Removing the last tab removes the pane and collapses the split (except the last pane
   of a window).
+- A pane that goes away gives its space whole to one sibling, so merging and splitting
+  use the exact space (user, 2026-11-08): the sibling holding the pane it merged into or
+  lands beside (when expanded), else the expanded one before it, else after, else any.
+  Beside a whole split, or closed: the one before. A collapsed pane a merge opens takes
+  the space instead of adding to it. A pane moved beside a pane of its own split, along
+  it, only changes place, with its own size. Limits: the freed divider (and a collapsed
+  pane's rail) is shared by the siblings, as weights know no pixels; a collapsed pane
+  opened by a merge inside a nested split keeps its old share there.
 - A pane with one tab or none has a header instead of a tab strip (R3.12): same 32 px,
   same `bar`, so bodies stay aligned. Grip, the view's title (fg, truncated, no tab
   shape), the pane buttons, then a 1 px `line` and × (its own box: a narrow pane clips

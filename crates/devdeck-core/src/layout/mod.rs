@@ -449,7 +449,7 @@ impl Layout {
 
     pub fn close_tab(&mut self, pane: PaneId, idx: usize) -> Result<ViewRef> {
         let view = self.take_tab(pane, idx)?;
-        self.remove_pane_if_empty(pane)?;
+        self.remove_pane_if_empty(pane, None)?;
         self.repair();
         Ok(view)
     }
@@ -484,13 +484,14 @@ impl Layout {
         if from == to && (at == idx || at == idx + 1) {
             return self.activate(from, idx);
         }
+        let receiver = self.receiver(to, true);
         let view = self.take_tab(from, idx)?;
         let at = if from == to && idx < at { at - 1 } else { at };
         let p = self.pane_mut(to)?;
         p.tabs.insert(at, view);
         p.active = at;
         p.collapsed = false;
-        self.remove_pane_if_empty(from)?;
+        self.remove_pane_if_empty(from, receiver)?;
         self.focus(to)?;
         self.repair();
         Ok(())
@@ -520,6 +521,10 @@ impl Layout {
         if drop == Drop::Into(from) {
             return Ok(());
         }
+        let receiver = match drop {
+            Drop::Into(t) => self.receiver(t, true),
+            _ => None,
+        };
         let view = self.take_tab(from, idx)?;
         let shown = match drop {
             Drop::Into(t) => {
@@ -535,7 +540,7 @@ impl Layout {
                 np
             }
         };
-        self.remove_pane_if_empty(from)?;
+        self.remove_pane_if_empty(from, receiver)?;
         self.focus(shown)?;
         self.repair();
         Ok(())
@@ -557,6 +562,7 @@ impl Layout {
         }
         match drop {
             Drop::Into(t) => {
+                let receiver = self.receiver(t, true);
                 let tabs = std::mem::take(&mut self.pane_mut(pane)?.tabs);
                 let p = self.pane_mut(t)?;
                 if !tabs.is_empty() {
@@ -564,11 +570,21 @@ impl Layout {
                 }
                 p.tabs.extend(tabs);
                 p.collapsed = false;
-                self.remove_pane_if_empty(pane)?;
+                self.remove_pane_if_empty(pane, receiver)?;
                 self.focus(t)?;
             }
+            Drop::Edge(t, edge) if self.reorder(pane, t, edge)? => {
+                self.pane_mut(pane)?.collapsed = false;
+                self.focus(pane)?;
+            }
             Drop::Edge(..) | Drop::Around(..) => {
-                self.detach_node(from_window, pane)?;
+                // Beside a pane: that pane takes its space first. Beside a split: the
+                // one before it, as when it closes.
+                let receiver = match drop {
+                    Drop::Edge(t, _) => self.receiver(t, false),
+                    _ => None,
+                };
+                self.detach_node(from_window, pane, receiver)?;
                 self.place_beside(target_window, drop, pane)?;
                 self.pane_mut(pane)?.collapsed = false;
                 self.focus(pane)?;
@@ -586,23 +602,50 @@ impl Layout {
         })
     }
 
-    /// Removes a pane's node from its window tree without deleting the pane.
-    /// A detached window losing its only pane is removed.
-    fn detach_node(&mut self, window: WindowId, pane: PaneId) -> Result<()> {
+    /// Removes a pane's node from its window tree without deleting the pane, its space
+    /// going to `receiver`'s side (see [`remove_pane_node`]). A detached window losing
+    /// its only pane is removed.
+    fn detach_node(&mut self, window: WindowId, pane: PaneId, receiver: Option<Receiver>) -> Result<()> {
         if self.is_detached(window) {
             self.windows.retain(|w| w.id != window);
             return Ok(());
         }
+        let collapsed = self.collapsed();
         let w = self.window_mut(window)?;
         if matches!(w.root, Node::Pane(p) if p == pane) {
             return Err(LayoutError::MainWindowLastPane);
         }
-        remove_pane_node(&mut w.root, pane);
+        remove_pane_node(&mut w.root, pane, receiver, &|n| !matches!(n, Node::Pane(p) if collapsed.contains(p)));
         Ok(())
     }
 
-    /// Drops an empty pane, unless it is the main window's last one.
-    fn remove_pane_if_empty(&mut self, pane: PaneId) -> Result<()> {
+    fn collapsed(&self) -> BTreeSet<PaneId> {
+        self.panes.iter().filter(|(_, p)| p.collapsed).map(|(id, _)| *id).collect()
+    }
+
+    /// The pane another's space goes towards: one it merges into (`opens`: the merge
+    /// expands it), or one it lands beside. Read before the move changes it.
+    fn receiver(&self, pane: PaneId, opens: bool) -> Option<Receiver> {
+        self.pane(pane).ok().map(|p| Receiver { pane, was_collapsed: p.collapsed, opens })
+    }
+
+    /// A pane put beside a pane of its own split, along that split: just its place changes,
+    /// with its own size. Whether it was that.
+    fn reorder(&mut self, pane: PaneId, target: PaneId, edge: Edge) -> Result<bool> {
+        let (Some((s1, i, axis)), Some((s2, j, _))) = (self.parent_of(pane), self.parent_of(target)) else { return Ok(false) };
+        if s1 != s2 || axis != edge.axis() || pane == target {
+            return Ok(false);
+        }
+        let s = self.windows.iter_mut().find_map(|w| find_split_mut(&mut w.root, s1)).ok_or(LayoutError::UnknownSplit(s1))?;
+        let child = s.children.remove(i);
+        let j = if j > i { j - 1 } else { j };
+        s.children.insert(if edge.is_before() { j } else { j + 1 }, child);
+        Ok(true)
+    }
+
+    /// Drops an empty pane, unless it is the main window's last one; its space goes to
+    /// `receiver`'s side.
+    fn remove_pane_if_empty(&mut self, pane: PaneId, receiver: Option<Receiver>) -> Result<()> {
         if !self.pane(pane)?.tabs.is_empty() {
             return Ok(());
         }
@@ -614,7 +657,8 @@ impl Layout {
                 p.collapsed = false;
                 return Ok(());
             }
-            remove_pane_node(&mut self.window_mut(window)?.root, pane);
+            let collapsed = self.collapsed();
+            remove_pane_node(&mut self.window_mut(window)?.root, pane, receiver, &|n| !matches!(n, Node::Pane(p) if collapsed.contains(p)));
         } else {
             self.windows.retain(|w| w.id != window);
         }
@@ -714,7 +758,7 @@ impl Layout {
         let np = self.new_pane(vec![view]);
         let wid = WindowId(self.alloc());
         self.windows.push(Window { id: wid, root: Node::Pane(np), focused: np, maximized: None, size: None });
-        self.remove_pane_if_empty(pane)?;
+        self.remove_pane_if_empty(pane, None)?;
         self.repair();
         Ok(wid)
     }
@@ -1060,14 +1104,42 @@ fn find_split_mut(node: &mut Node, id: SplitId) -> Option<&mut Split> {
     s.children.iter_mut().find_map(|c| find_split_mut(&mut c.node, id))
 }
 
-/// Removes the leaf for `pane`; parents are tidied later by [`tidy`].
-fn remove_pane_node(node: &mut Node, pane: PaneId) -> bool {
+/// The pane a removed pane's space goes towards (what it merged into, or lands beside).
+#[derive(Copy, Clone, Debug)]
+struct Receiver {
+    pane: PaneId,
+    was_collapsed: bool,
+    /// The move expands it (a merge into it).
+    opens: bool,
+}
+
+/// Removes the leaf for `pane`, its weight going whole to one sibling, so every other
+/// part keeps its exact size: the sibling holding `receiver` (when it is expanded, or is
+/// the receiver a merge opens), else the expanded one before it, else the one after (else
+/// any, to keep the weights whole). A collapsed receiver the merge opens takes the weight
+/// instead of adding it (its own never drew anything); a collapsed pane gives nothing.
+/// Parents are tidied later by [`tidy`].
+fn remove_pane_node(node: &mut Node, pane: PaneId, receiver: Option<Receiver>, expanded: &dyn Fn(&Node) -> bool) -> bool {
     let Node::Split(s) = node else { return false };
     if let Some(i) = s.children.iter().position(|c| matches!(c.node, Node::Pane(p) if p == pane)) {
-        s.children.remove(i);
+        let gone = s.children.remove(i);
+        if !expanded(&gone.node) || s.children.is_empty() {
+            return true;
+        }
+        let opened = |r: &Receiver, c: &Child| r.opens && matches!(c.node, Node::Pane(p) if p == r.pane);
+        let holds = receiver.and_then(|r| s.children.iter().position(|c| contains_pane(&c.node, r.pane) && (expanded(&c.node) || opened(&r, c))));
+        let before = (0..i).rev().find(|&j| expanded(&s.children[j].node));
+        let after = (i..s.children.len()).find(|&j| expanded(&s.children[j].node));
+        let to = holds.or(before).or(after).unwrap_or(i.saturating_sub(1).min(s.children.len() - 1));
+        let into_collapsed = receiver.is_some_and(|r| r.was_collapsed && opened(&r, &s.children[to]));
+        if into_collapsed {
+            s.children[to].weight = gone.weight;
+        } else {
+            s.children[to].weight += gone.weight;
+        }
         return true;
     }
-    s.children.iter_mut().any(|c| remove_pane_node(&mut c.node, pane))
+    s.children.iter_mut().any(|c| remove_pane_node(&mut c.node, pane, receiver, expanded))
 }
 
 impl Node {

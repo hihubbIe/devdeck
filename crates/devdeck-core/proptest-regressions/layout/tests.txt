@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc c9170f6b0d5e0f899b97f6de3d13a2b9b2da1c748858b620f5a4589f6e73a2c3 # shrinks to ops = [Open(0, 0), Open(0, 1), Detach(0, 0), Detach(126, 0), MovePane(52, 189, Some(0))]
+cc 059e4f3fba7b72ba5ee821980e264937ffdc0b463e38bbc4b75c3a9826c8a165 # shrinks to ops = [Open(0, 0), Open(0, 0), Open(0, 0), Open(0, 4), MoveTab(0, 0, 0, Some(3)), Open(73, 1), MoveTab(19, 0, 0, Some(7)), MoveTab(176, 0, 150, None)]

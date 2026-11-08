@@ -535,7 +535,11 @@ fn apply(l: &mut Layout, op: &Op) {
                 let d = drop_for(l, nth(&panes, b), e);
                 let view = l.panes[&a].tabs[i].clone();
                 let want = l.preview(&Moved::Tab(a, i), d, size, m);
+                let before = l.clone();
                 if l.move_tab(a, i, d).is_ok() {
+                    if let Drop::Into(t) = d {
+                        merge_keeps_others(&before, l, a, t);
+                    }
                     let (p, _) = l.find_view(&view).unwrap();
                     let w = l.window_of(p).unwrap();
                     let got = l.pane_rects(w, size, m).unwrap().into_iter().find(|(q, _)| *q == p).map(|(_, r)| r);
@@ -547,7 +551,12 @@ fn apply(l: &mut Layout, op: &Op) {
         }
         Op::MovePane(a, b, e) => {
             let d = drop_for(l, nth(&panes, b), e);
-            let _ = l.move_pane(nth(&panes, a), d);
+            let before = l.clone();
+            if l.move_pane(nth(&panes, a), d).is_ok()
+                && let Drop::Into(t) = d
+            {
+                merge_keeps_others(&before, l, nth(&panes, a), t);
+            }
         }
         Op::Collapse(p) => {
             let _ = l.toggle_collapse(nth(&panes, p));
@@ -849,4 +858,212 @@ fn drop_at_offers_nothing_on_collapsed_panes_no_strips_while_maximized_and_only_
     ok(&l);
     assert_eq!(l.windows.len(), 1);
     assert_eq!(rect_of(&l, "b").h, SIZE.1);
+}
+
+// ------------------------------------------------------------------ exact space when a pane goes
+
+const DIVIDER: f32 = 5.0;
+
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() <= DIVIDER + 0.01
+}
+
+/// After `source` merged into `target` (and went away): in its window, every pane outside
+/// the sibling that took its space keeps its size, within the freed divider (not always
+/// its place: one between the two moves over as the receiver grows). Skipped
+/// where no rectangle can tell: maximized, a collapsed source or target, other windows.
+fn merge_keeps_others(before: &Layout, after: &Layout, source: PaneId, target: PaneId) {
+    if after.panes.contains_key(&source) || before.window_of(source).ok() != before.window_of(target).ok() {
+        return;
+    }
+    let Ok(window) = before.window_of(source) else { return };
+    let collapsed = |p: PaneId| before.panes.get(&p).is_some_and(|p| p.collapsed);
+    if before.window(window).unwrap().maximized.is_some() || collapsed(source) || collapsed(target) {
+        return;
+    }
+    let Some((split, i, _)) = before.parent_of(source) else { return };
+    let s = before.split(split).unwrap();
+    let expanded = |n: &Node| !matches!(n, Node::Pane(p) if collapsed(*p));
+    let others: Vec<&Child> = s.children.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, c)| c).collect();
+    let holds = others.iter().position(|c| contains_pane(&c.node, target));
+    let before_i = (0..i).rev().find(|&j| expanded(&others[j].node));
+    let after_i = (i..others.len()).find(|&j| expanded(&others[j].node));
+    let Some(to) = holds.or(before_i).or(after_i) else { return };
+    let mut receiving = Vec::new();
+    collect_panes(&others[to].node, &mut receiving);
+    let (size, m) = ((1000.0, 700.0), Metrics { divider: DIVIDER, rail: 28.0, header: 32.0 });
+    let old: BTreeMap<_, _> = before.pane_rects(window, size, m).unwrap().into_iter().collect();
+    let new: BTreeMap<_, _> = after.pane_rects(window, size, m).unwrap().into_iter().collect();
+    // The rule on its own: a target next to it in its split grows by the source.
+    if matches!(&others[to].node, Node::Pane(p) if *p == target) && new.contains_key(&target) {
+        let along = |r: &Rect| if s.axis == Axis::Row { r.w } else { r.h };
+        let want = along(&old[&target]) + along(&old[&source]) + DIVIDER;
+        assert!(near(along(&new[&target]), want), "{target:?} took {source:?}: {:?} -> {:?}", old[&target], new[&target]);
+    }
+    for (p, r) in &old {
+        if *p == source || receiving.contains(p) {
+            continue;
+        }
+        let Some(n) = new.get(p) else { continue };
+        assert!(near(r.w, n.w) && near(r.h, n.h), "{p:?} resized: {r:?} -> {n:?}, {source:?} into {target:?}");
+    }
+}
+
+/// `[a | b | c]`, a third each.
+fn thirds() -> (Layout, PaneId, PaneId, PaneId) {
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Edge(b, Edge::Right)).unwrap();
+    let (c, _) = l.find_view(&v("c")).unwrap();
+    if let Node::Split(s) = &mut l.windows[0].root {
+        s.children.iter_mut().for_each(|c| c.weight = 1.0 / 3.0);
+    }
+    ok(&l);
+    (l, a, b, c)
+}
+
+fn rects(l: &Layout) -> BTreeMap<PaneId, Rect> {
+    l.pane_rects(MAIN_WINDOW, SIZE, M).unwrap().into_iter().collect()
+}
+
+#[test]
+fn a_merge_gives_the_two_widths_together_and_leaves_the_rest() {
+    for how in ["pane", "last tab", "tab strip"] {
+        let (mut l, a, b, c) = thirds();
+        let r = rects(&l);
+        match how {
+            "pane" => l.move_pane(b, Drop::Into(a)).unwrap(),
+            "last tab" => l.move_tab(b, 0, Drop::Into(a)).unwrap(),
+            _ => l.move_tab_to(b, 0, a, 0).unwrap(),
+        }
+        ok(&l);
+        let n = rects(&l);
+        assert!(near(n[&a].w, r[&a].w + r[&b].w + DIVIDER), "{how}: {:?} from {:?} and {:?}", n[&a], r[&a], r[&b]);
+        assert!(near(n[&c].w, r[&c].w) && near(n[&c].x, r[&c].x), "{how}: c stays");
+    }
+}
+
+#[test]
+fn a_merge_into_a_pane_of_a_column_widens_the_column() {
+    // [a | [b / c]], a into b.
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Edge(b, Edge::Bottom)).unwrap();
+    let (c, _) = l.find_view(&v("c")).unwrap();
+    let r = rects(&l);
+    l.move_pane(a, Drop::Into(b)).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    assert_eq!((n[&b].w, n[&c].w), (SIZE.0, SIZE.0), "the column takes it all");
+    assert!(near(n[&b].h, r[&b].h) && near(n[&c].h, r[&c].h), "b and c share it as before");
+}
+
+#[test]
+fn a_closed_pane_gives_its_space_to_the_one_before_or_after_skipping_collapsed() {
+    let (mut l, a, b, c) = thirds();
+    let r = rects(&l);
+    l.close_tab(b, 0).unwrap();
+    let n = rects(&l);
+    assert!(near(n[&a].w, r[&a].w + r[&b].w + DIVIDER) && near(n[&c].w, r[&c].w), "b's space to a");
+    let (mut l, a, b, c) = thirds();
+    let r = rects(&l);
+    l.close_tab(a, 0).unwrap();
+    let n = rects(&l);
+    assert!(near(n[&b].w, r[&a].w + r[&b].w + DIVIDER) && near(n[&c].w, r[&c].w), "the first one's to the next");
+    // [a | b(collapsed) | c]: c closed, a gets it past the collapsed b.
+    let (mut l, a, b, c) = thirds();
+    l.toggle_collapse(b).unwrap();
+    let r = rects(&l);
+    l.close_tab(c, 0).unwrap();
+    let n = rects(&l);
+    assert!(near(n[&a].w, r[&a].w + r[&c].w + DIVIDER), "{:?} from {:?}", n[&a], r[&a]);
+    assert_eq!(n[&b].w, 28.0);
+}
+
+#[test]
+fn a_pane_put_back_beside_its_neighbour_gives_the_same_layout() {
+    let (mut l, _, b, c) = thirds();
+    let r = rects(&l);
+    l.move_pane(b, Drop::Edge(c, Edge::Left)).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    for (p, x) in &r {
+        assert!(near(n[p].x, x.x) && near(n[p].w, x.w), "{p:?}: {:?} -> {:?}", x, n[p]);
+    }
+}
+
+#[test]
+fn a_tab_into_a_collapsed_pane_gives_it_exactly_the_space_freed() {
+    // [a | b(collapsed) | c], a's only tab into b.
+    let (mut l, a, b, c) = thirds();
+    l.toggle_collapse(b).unwrap();
+    let r = rects(&l);
+    l.move_tab(a, 0, Drop::Into(b)).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    assert!(!l.pane(b).unwrap().collapsed);
+    // b takes a's weight (not a's plus its own): b and c are a third each again, the
+    // rail it no longer draws shared like a divider (a limit).
+    assert_eq!(n[&b].w, n[&c].w, "b replaced a: {:?} {:?}", n[&b], n[&c]);
+    assert!((n[&c].w - r[&c].w).abs() <= 28.0 + DIVIDER, "c about stays: {:?} -> {:?}", r[&c], n[&c]);
+}
+
+#[test]
+fn a_split_lifted_into_its_grandparent_keeps_every_size() {
+    // [x | [y / [b | c]]], y closed: [b | c] joins the row, x unchanged.
+    let (mut l, x) = with_tabs(&["x", "y", "b", "c"]);
+    l.move_tab(x, 1, Drop::Edge(x, Edge::Right)).unwrap();
+    let (y, _) = l.find_view(&v("y")).unwrap();
+    l.move_tab(x, 1, Drop::Edge(y, Edge::Bottom)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(x, 1, Drop::Edge(b, Edge::Right)).unwrap();
+    let (c, _) = l.find_view(&v("c")).unwrap();
+    let r = rects(&l);
+    l.close_tab(y, 0).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    assert!(near(n[&x].w, r[&x].w) && near(n[&x].x, r[&x].x), "x stays");
+    assert!(near(n[&b].w, r[&b].w) && near(n[&c].w, r[&c].w), "b and c keep their widths");
+    assert_eq!(n[&b].h, SIZE.1, "and take the full height");
+}
+
+/// `[a .2 | b .5 | c .3]`.
+fn uneven() -> (Layout, PaneId, PaneId, PaneId) {
+    let (mut l, a, b, c) = thirds();
+    if let Node::Split(s) = &mut l.windows[0].root {
+        for (c, w) in s.children.iter_mut().zip([0.2, 0.5, 0.3]) {
+            c.weight = w;
+        }
+    }
+    ok(&l);
+    (l, a, b, c)
+}
+
+#[test]
+fn a_pane_moved_along_its_own_split_keeps_its_size_whatever_the_sizes() {
+    let (mut l, a, b, c) = uneven();
+    let r = rects(&l);
+    l.move_pane(b, Drop::Edge(c, Edge::Left)).unwrap();
+    assert_eq!(rects(&l), r, "put back where it is: the same layout");
+    l.move_pane(b, Drop::Edge(a, Edge::Left)).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    for p in [a, b, c] {
+        assert!(near(n[&p].w, r[&p].w), "{p:?} keeps its width: {:?} -> {:?}", r[&p], n[&p]);
+    }
+    assert_eq!(n[&b].x, 0.0, "b first now");
+}
+
+#[test]
+fn a_merge_into_a_pane_further_away_gives_it_the_space_not_the_neighbour() {
+    // [a | b | c] uneven, c into a: a grows by c, b keeps its width (it moves over).
+    let (mut l, a, b, c) = uneven();
+    let r = rects(&l);
+    l.move_pane(c, Drop::Into(a)).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    assert!(near(n[&a].w, r[&a].w + r[&c].w + DIVIDER), "{:?}", n[&a]);
+    assert!(near(n[&b].w, r[&b].w), "b keeps its width");
 }
