@@ -58,4 +58,5 @@ exec, port-forward, metrics, protected envs, k9s launch. Plan:
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,
-packaging of the executable.
+packaging of the executable. Started: a per-user install for this laptop,
+`scripts/install.sh` (binary, icon, launcher to pin in the dock; 2026-11-08).

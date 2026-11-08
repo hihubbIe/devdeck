@@ -33,6 +33,23 @@ panics with "XDG_RUNTIME_DIR is not set". A fallback in `~/.bashrc` fixes it:
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 ```
 
+## Install
+
+```sh
+scripts/install.sh
+```
+
+Builds the release binary and installs it for this user: `~/.local/bin/devdeck`, its
+icon (`assets/app/devdeck.svg`) and a launcher in `~/.local/share/applications`. Then
+press Super, type devdeck, right-click it and choose Pin to Dash: the dock keeps it,
+and a click on it brings the open window forward (the launcher's `StartupWMClass` is the
+window's app id, `devdeck`). Run the script again to update (quit devdeck first or
+restart it after: a running one keeps the old binary). `scripts/install.sh --uninstall`
+removes the three files; settings and state stay.
+
+Started from the dock, devdeck has the desktop session's environment, and runs and
+terminals get the login shell's on top (PATH, nvm, pnpm).
+
 ## Tests and lints
 
 ```sh

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- devdeck's app icon: a window of the app (sidebar, two panes), a prompt and a run. -->
+  <rect x="16" y="16" width="224" height="224" rx="44" fill="#15161a" stroke="#30333a" stroke-width="6"/>
+  <rect x="44" y="56" width="40" height="144" rx="10" fill="#0f1012" stroke="#30333a" stroke-width="4"/>
+  <rect x="96" y="56" width="116" height="84" rx="10" fill="#0f1012" stroke="#64a6e3" stroke-width="6"/>
+  <rect x="96" y="152" width="116" height="48" rx="10" fill="#0f1012" stroke="#30333a" stroke-width="4"/>
+  <path d="M114 82 L134 98 L114 114" fill="none" stroke="#64a6e3" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="144" y1="114" x2="180" y2="114" stroke="#e1e2e5" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="64" cy="80" r="8" fill="#67c174"/>
+  <line x1="58" y1="104" x2="72" y2="104" stroke="#30333a" stroke-width="6" stroke-linecap="round"/>
+  <line x1="58" y1="122" x2="72" y2="122" stroke="#30333a" stroke-width="6" stroke-linecap="round"/>
+  <line x1="112" y1="176" x2="176" y2="176" stroke="#30333a" stroke-width="6" stroke-linecap="round"/>
+</svg>
