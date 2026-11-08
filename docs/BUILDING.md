@@ -25,9 +25,13 @@ cargo run --release -p devdeck-app
 That runs the `devdeck` binary (the package's `default-run`); the snapshot tool needs
 `--bin devdeck-snapshot --features snapshot`.
 
-GPUI needs the desktop session's `XDG_RUNTIME_DIR` (and `WAYLAND_DISPLAY` or `DISPLAY`):
-a shell that lacks it, like one in a tmux server started outside the session, panics with
-"XDG_RUNTIME_DIR is not set".
+GPUI needs the desktop session's `XDG_RUNTIME_DIR` (and `WAYLAND_DISPLAY` or `DISPLAY`).
+A shell that lacks it (one in a tmux server started outside the session, for instance)
+panics with "XDG_RUNTIME_DIR is not set". A fallback in `~/.bashrc` fixes it:
+
+```sh
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+```
 
 ## Tests and lints
 
