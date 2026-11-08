@@ -36,10 +36,18 @@ quit guard on real processes, a plain shell terminal tab. Plan:
 4. Terminal tab.
 5. Close: the user's config, states, measurements, manual test.
 
-## Later · From the user's ideas
-A file explorer, text files in tabs (basic syntax highlighting, save), tools for Claude
-to drive devdeck (open a tab, start a server, show logs filtered), detection of a
-devdeck terminal through an environment variable. To be assessed.
+## Files and notes
+View-only file tabs with highlighting (a file dropped on a pane), and Markdown notes per
+app, edited and rendered, saved by themselves (R12). Plan:
+[plans/files-and-notes.md](plans/files-and-notes.md). Steps: 1. spike and docs; 2. components
+in `devdeck-ui`; 3. engine: drops, view actions in the header, live titles; 4. file
+view; 5. notes.
+
+## Claude control (after Files and notes)
+Tools for Claude (or another LLM) running in a devdeck terminal to drive devdeck through
+an MCP server kept apart from the rest of the code: open a tab, start a server, read a
+tab, logs filtered; an environment variable tells it it runs inside devdeck. To be scoped
+on its own, built to grow.
 
 ## M3 · Real cluster
 kube-rs data, service inspector, git read only, deploys with journal and undo, logs,

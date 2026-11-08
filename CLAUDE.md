@@ -13,5 +13,5 @@ Rules that are easy to break:
 - Views use `devdeck-ui` components and theme tokens only (R9.3).
 - Every user operation is an action usable by mouse and keyboard (R5.1).
 - Nothing machine-specific in code; it belongs in config (R1.5).
-- No git or editor features (R6.10).
+- Files are view only; notes are the one thing devdeck edits (R12).
 - `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` pass before every commit.

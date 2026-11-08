@@ -284,7 +284,23 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 | kubernetes | kube + k8s-openapi | native watch, exec, port-forward, logs | needs tokio |
 | config | serde + toml | | |
 | file watching | notify 8.2 + notify-debouncer-full | discover new folders | non-recursive watches; drop access events |
+| editor, Markdown | gpui-component `=0.9.0` (`Editor` on `EditorState`, `TextView::markdown`), tree-sitter grammars: rust, go, typescript, tsx, javascript, json, yaml, toml, markdown, bash, css, html, python, make, diff, sql | pins `gpui-pre =0.3.11` like us; what Zed-style highlighting needs without Zed's editor | only inside `devdeck-ui` (R9.3); +21 MB binary (12 the library, 9 the grammars), see the spike in plans/files-and-notes.md |
 | icons | Lucide (lucide-static 1.61.0, ISC), only the icons used, in `devdeck-ui/assets/icons` | consistent outline set; what Zed and gpui-component start from | built in (`Icon` enum, `include_bytes!`), served by `devdeck_ui::Assets`; adding one = its SVG from the same release + a variant |
+
+## Files and notes
+
+- gpui-component is used only inside `devdeck-ui` (`code.rs`): a read-only code view, the
+  note editor and the Markdown view. `gpui_component::init` runs at start (its input's
+  own init is private); our theme is copied into its theme with `Theme::update` after a
+  single `Theme::change(Dark)`, at start and on every theme or scale change; its highlight
+  theme is its dark one with our editor colors. No `Root`.
+- Highlighting is most of the memory (a 10 MB file: 567 MB highlighted, 163 MB plain), so
+  only files up to 1 MB with lines under 5 000 characters are highlighted.
+- The editor adds both axes of every wheel event; the wrapper takes the wheel first and
+  locks the axis (R9.6), as the terminal does.
+- Notes live in `~/.local/share/devdeck/workspaces/<id>/notes/` (`index.json` and one
+  `<id>.md` each), owned by a `Notes` entity per workspace that holds their text and
+  writes it, one write at a time, so closing a tab or quitting never loses typing.
 
 ## Settings and scaling
 
@@ -301,7 +317,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   performance; risk is API churn (pinned commit mitigates).
 - 2026-11-07 Own layout engine instead of a dock widget: detach windows and
   collapse are central and must be testable as pure data.
-- 2026-11-07 No git or editor features (user decision).
+- 2026-11-07 No git or editor features (user decision). 2026-11-08: git has its panel
+  (R6.10); files are view only and notes the one thing devdeck edits (R12, user).
 - 2026-11-07 Lists are Pinned + All, alphabetical; no "mine", no "recent" (user decision).
   2026-11-08: groups the user makes are allowed in All (R4.8), still no automatic one.
 - 2026-11-07 Separate workspaces, one shown at a time, others keep running (user decision).

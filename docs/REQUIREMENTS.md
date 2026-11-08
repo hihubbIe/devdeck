@@ -24,7 +24,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R3.1** The window body is one tree of splits. Every leaf is a pane. There are no special docks: any pane can sit anywhere.
 - [~] **R3.2** A pane is a generic container of tabs. A tab shows exactly one view. Any view type can open in any pane.
-- [~] **R3.3** Views are implemented once and registered natively (examples: command output, app details, service inspector, pod, logs, text or config file, branch matrix, ports). Adding a view type must not require touching the layout engine.
+- [~] **R3.3** Views are implemented once and registered natively (examples: command output, app details, service inspector, pod, logs, file, note, branch matrix, ports). Adding a view type must not require touching the layout engine.
 - [~] **R3.4** Tabs move by drag and drop: into another pane's tab strip or header, or onto a pane edge to split it. Panes move the same way (drag the pane by the handle of its tab strip or header).
 - [~] **R3.5** Dividers are resizable by dragging.
 - [~] **R3.6** A pane can collapse to only its tab strip (or header), giving its space to its neighbours. Clicking a tab (or a key) expands it again.
@@ -38,7 +38,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 ## 4. Lists and text
 
 - [~] **R4.1** Every list is sorted alphabetically.
-- [x] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
+- [x] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections. Lists inside a view (an app's commands, its notes) are one alphabetical list.
 - [~] **R4.6** The Apps list's All section is a tree that keeps the folders apps sit in (a monorepo holds its apps and packages). Rows are closed at first and say what they hold (how many, something running, a missing tool); → and ← open and close, as do the chevron and a double click on a folder. What's open is remembered per workspace. A filter or "running only" shows the matches with their folders open, and leaves what's open as it was. Pinned stays flat. (Decided 2026-11-07.)
 - [~] **R4.3** No automatic "mine" grouping and no recency-ordered sections (groups the user makes are R4.8). Running state is shown as an indicator on the row, with a "running only" filter.
 - [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover. Terminals (run output, shell tabs) wrap at the pane width and never scroll horizontally (decided 2026-11-07).
@@ -103,7 +103,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 10. Configuration and setup
 
-- [~] **R10.1** All configuration in `~/.config/devdeck/` (TOML): workspaces, folders, envs, clusters, tools, overrides, themes. State (pins, layouts, history) in `~/.local/state/devdeck/`.
+- [~] **R10.1** All configuration in `~/.config/devdeck/` (TOML): workspaces, folders, envs, clusters, tools, overrides, themes. State (pins, layouts, history) in `~/.local/state/devdeck/`. What the user writes in devdeck (notes, R12.3) in `~/.local/share/devdeck/` (decided 2026-11-08).
 - [ ] **R10.2** `SETUP.md` written for Claude: it walks a new user through an interactive setup on their machine (find project folders, detect tools and kubeconfigs, propose and write the config).
 - [ ] **R10.3** Documentation where it is needed: architecture, adding a view, adding an action, components, config reference, themes.
 
@@ -114,3 +114,12 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R11.3** Dependencies are chosen deliberately (modern, fast, maintained) and pinned.
 - [~] **R11.4** Performance is measured at every milestone, not assumed: memory at idle and under load, CPU at idle and under load, input latency, binary size, and a leak test (repeated open/close cycles must plateau). Results go in `docs/perf/<milestone>.md` and regressions are fixed before the milestone closes.
 - [~] **R11.5** Development stops at the end of every milestone for the user's manual test.
+
+## 12. Files and notes
+
+Files are view only; notes are the one thing devdeck edits (decided 2026-11-08, user).
+
+- [ ] **R12.1** A file view (`file/<path>`): any text file, view only, highlighted by its language (from the extension, plain text otherwise), line numbers, select and copy, find. Up to 10 MB; over 1 MB or with a line of 5 000 characters or more it shows as plain text, and says so. Not text (a NUL byte, not UTF-8) or bigger: a message names why. It follows the file while shown: changed on disk, it reloads keeping its scroll; deleted, it says so and keeps the tab; back, it shows it again.
+- [ ] **R12.2** A file dropped from outside (a file manager) onto a pane opens there: in the pane, or at an edge to split it, like a list row (R3.4); one already open moves there. Several files open one tab each, in the same place. A folder or a path that isn't UTF-8 is refused with a toast naming it.
+- [ ] **R12.3** Notes: Markdown notes belonging to an app, kept in devdeck's data folder (R10.1), never in the project. Made, opened, renamed and deleted (confirmed) from the app's view, listed there alphabetically. A note is saved by itself while it's edited (no save key, no unsaved marker) and whenever devdeck saves its state or quits. An app that goes away keeps its notes, unseen until it comes back.
+- [ ] **R12.4** A Markdown file or a note shows its source or rendered, switched by an icon in its header (or tab strip), its tab menu, the palette and a key. A note opens rendered when it has text, as source when empty. What's shown is remembered per tab.
