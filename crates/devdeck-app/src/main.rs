@@ -20,6 +20,9 @@ fn env_u64(name: &str) -> Option<u64> {
 }
 
 fn main() {
+    // SAFETY: first thing, before anything starts a thread that could read the
+    // environment.
+    devdeck_app::scrub_env(|name| unsafe { std::env::remove_var(name) });
     let demo = std::env::args().any(|a| a == "--demo") || std::env::var("DEVDECK_STRESS").is_ok();
     // The demo keeps its own state, apart from the real workspaces' layouts and pins.
     let state_dir = if demo { default_state_dir().join("demo") } else { default_state_dir() };

@@ -139,3 +139,10 @@ fn without_a_runtime_folder_the_api_is_off(cx: &mut TestAppContext) {
 fn no_handler_is_unlisted() {
     assert_eq!(dispatch::handled().1, Vec::<&str>::new());
 }
+
+#[test]
+fn a_parent_devdecks_variables_are_removed_at_start() {
+    let mut removed = Vec::new();
+    devdeck_app::scrub_env(|n| removed.push(n.to_string()));
+    assert_eq!(removed, ["DEVDECK_SOCKET", "DEVDECK_TERMINAL"]);
+}

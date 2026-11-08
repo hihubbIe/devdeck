@@ -121,7 +121,7 @@ impl Services {
         let catalog = Rc::new(catalog);
         let env = catalog.pick_env(env);
         let log = state_dir.as_deref().map(devdeck_core::process::GroupLog::new);
-        let driver = Rc::new(crate::pty_driver::PtyDriver { env: environment.clone(), log });
+        let driver = Rc::new(crate::pty_driver::PtyDriver { env: environment.clone(), workspace: config.id.clone(), log });
         let recent = state_dir.as_deref().map(devdeck_core::recent_args::RecentArgs::load);
         let runner = cx.new(|_| {
             let runner = Runner::new(config.id.clone(), catalog.clone(), driver);

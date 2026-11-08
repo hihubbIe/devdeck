@@ -86,6 +86,15 @@ pub fn load_fonts(cx: &mut App) {
 
 /// Fonts, settings (with the theme they select) and key bindings, using the config
 /// folder from the environment (`DEVDECK_CONFIG_DIR`, XDG, or `~/.config/devdeck`).
+/// Removes what a parent devdeck told its shells (`DEVDECK_SOCKET`, `DEVDECK_TERMINAL`)
+/// from this devdeck's environment, through `remove`, so its toolbox and runs never pass
+/// them on (a devdeck started from a devdeck terminal).
+pub fn scrub_env(mut remove: impl FnMut(&str)) {
+    for name in [devdeck_api::SOCKET_ENV, devdeck_api::TERMINAL_ENV] {
+        remove(name);
+    }
+}
+
 pub fn init(cx: &mut App) {
     init_with_config_dir(&devdeck_core::settings::default_config_dir(), cx);
 }
