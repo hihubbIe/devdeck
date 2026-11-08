@@ -136,8 +136,106 @@ fn without_a_runtime_folder_the_api_is_off(cx: &mut TestAppContext) {
 }
 
 #[test]
-fn no_handler_is_unlisted() {
-    assert_eq!(dispatch::handled().1, Vec::<&str>::new());
+fn every_method_has_a_handler_and_no_more() {
+    assert_eq!(dispatch::handled(), (Vec::<&str>::new(), Vec::<&str>::new()));
+}
+
+fn get<T: serde::de::DeserializeOwned>(method: &str, params: Value, cx: &mut TestAppContext) -> T {
+    serde_json::from_value(call(&terminal(1), method, params, cx).unwrap_or_else(|e| panic!("{method}: {e}"))).unwrap()
+}
+
+#[gpui::test]
+fn a_terminal_sees_its_own_workspace_only(cx: &mut TestAppContext) {
+    let _shell = start(cx, "api-scope");
+    let w: devdeck_api::types::Workspaces = get("workspace.list", json!({}), cx);
+    assert_eq!(w.workspaces.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), ["work"]);
+    for m in ["workspace.get", "app.list", "run.list", "terminal.list", "ui.get", "layout.list", "note.list", "env.list", "devdeck.problems"] {
+        let e = call(&terminal(1), m, json!({ "workspace": "personal" }), cx).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::NotFound, "{m}");
+        assert!(call(&terminal(1), m, json!({ "workspace": "work" }), cx).is_ok(), "{m}");
+    }
+}
+
+#[gpui::test]
+fn apps_runs_and_terminals(cx: &mut TestAppContext) {
+    let shell = start(cx, "api-runs");
+    let apps: devdeck_api::types::Apps = get("app.list", json!({}), cx);
+    assert!(!apps.apps.is_empty());
+    let names: Vec<String> = apps.apps.iter().map(|a| a.name.0.to_lowercase()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "alphabetical");
+    // An app with a command, started.
+    let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
+    let (app_id, cmd_id) = cx.read(|cx| {
+        let a = services.read(cx).catalog.apps.iter().find(|a| !a.commands.is_empty()).unwrap().clone();
+        (a.id.clone(), a.commands[0].id.clone())
+    });
+    let runner = cx.read(|cx| services.read(cx).runner.clone());
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&devdeck_app::runner::RunKey::new(&app_id, &cmd_id), None, cx))).unwrap();
+    cx.run_until_parked();
+    let app: devdeck_api::types::App = get("app.get", json!({ "app": app_id }), cx);
+    assert!(app.commands.iter().any(|c| c.id == cmd_id && c.running));
+    let runs: devdeck_api::types::Runs = get("run.list", json!({}), cx);
+    assert!(runs.runs.iter().any(|r| r.app == app_id && r.cmd == cmd_id && r.state == devdeck_api::types::RunState::Running));
+    let run: devdeck_api::types::Run = get("run.get", json!({ "app": app_id, "cmd": cmd_id }), cx);
+    assert_eq!((run.state, run.starts), (devdeck_api::types::RunState::Running, 1));
+    assert!(run.line.is_some());
+    assert_eq!(call(&terminal(1), "run.get", json!({ "app": app_id, "cmd": "nope:x" }), cx).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(call(&terminal(1), "app.get", json!({ "app": "nope" }), cx).unwrap_err().kind, ErrorKind::NotFound);
+    // A terminal tab makes a terminal, with a uid.
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let tab = ViewAddr::Terminal { n: 4, dir: std::env::temp_dir().display().to_string() }.to_ref();
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(tab.clone(), l.main().focused).map(|_| ()))));
+    cx.run_until_parked();
+    let terms: devdeck_api::types::Terminals = get("terminal.list", json!({}), cx);
+    let t = terms.terminals.iter().find(|t| t.n == 4).expect("terminal 4");
+    assert!(!t.uid.is_empty());
+    let one: devdeck_api::types::Terminal = get("terminal.get", json!({ "n": 4 }), cx);
+    assert_eq!((one.uid.as_str(), one.shown.len()), (t.uid.as_str(), 1));
+    assert!(runs.runs.iter().all(|r| !r.cmd.starts_with("term/")), "terminals aren't runs here");
+}
+
+#[gpui::test]
+fn the_screen_layouts_notes_envs_and_settings(cx: &mut TestAppContext) {
+    let shell = start(cx, "api-ui");
+    let ui: devdeck_api::types::Ui = get("ui.get", json!({}), cx);
+    assert!(ui.windows[0].main);
+    fn tabs(n: &devdeck_api::types::Node, out: &mut Vec<devdeck_api::types::Tab>) {
+        match n {
+            devdeck_api::types::Node::Split { children, .. } => children.iter().for_each(|c| tabs(&c.node, out)),
+            devdeck_api::types::Node::Pane { tabs: t, .. } => out.extend(t.iter().cloned()),
+            devdeck_api::types::Node::Unknown => {}
+        }
+    }
+    let mut all = Vec::new();
+    tabs(&ui.windows[0].root, &mut all);
+    assert!(!all.is_empty() && all.iter().all(|t| t.title.as_ref().is_some_and(|t| !t.0.is_empty())), "titled tabs");
+    let layouts: devdeck_api::types::Layouts = get("layout.list", json!({}), cx);
+    let current = layouts.layouts.iter().find(|l| l.current).expect("a current layout");
+    assert_eq!(current.id, ui.layout);
+    let l: devdeck_api::types::Layout = get("layout.get", json!({ "id": ui.layout }), cx);
+    assert_eq!(l.windows, ui.windows);
+    // A note.
+    let notes = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).notes.clone());
+    let id = cx.update(|cx| notes.update(cx, |n, cx| n.create("eventservice", "todo", cx))).unwrap();
+    let list: devdeck_api::types::Notes = get("note.list", json!({ "app": "eventservice" }), cx);
+    assert_eq!(list.notes.iter().map(|n| n.name.0.as_str()).collect::<Vec<_>>(), ["todo"]);
+    let n: devdeck_api::types::Note = get("note.get", json!({ "id": id }), cx);
+    assert_eq!(n.app, "eventservice");
+    // Envs, edit mode, settings.
+    let envs: devdeck_api::types::Envs = get("env.list", json!({}), cx);
+    assert!(envs.envs.iter().any(|e| e.protected) && envs.envs.iter().filter(|e| e.current).count() <= 1);
+    let first = envs.envs[0].name.clone();
+    let e: devdeck_api::types::Env = get("env.get", json!({ "name": first }), cx);
+    assert_eq!(e.name, first);
+    let m: devdeck_api::types::EditMode = get("editmode.get", json!({}), cx);
+    assert!(!m.on, "off at every start");
+    let s: devdeck_api::types::Settings = get("settings.get", json!({}), cx);
+    assert!(s.scale > 0.0 && !s.theme.is_empty());
+    let _: devdeck_api::types::Problems = get("devdeck.problems", json!({}), cx);
+    let w: devdeck_api::types::Workspace = get("workspace.get", json!({}), cx);
+    assert_eq!((w.id.as_str(), w.envs.len()), ("work", envs.envs.len()));
 }
 
 #[test]

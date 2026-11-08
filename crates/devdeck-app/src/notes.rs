@@ -64,6 +64,11 @@ impl Notes {
         self.index.iter().filter(|n| n.app == app).cloned().collect()
     }
 
+    /// Every note of the workspace, by name then id.
+    pub fn all(&self) -> &[NoteMeta] {
+        &self.index
+    }
+
     pub fn meta(&self, id: &str) -> Option<&NoteMeta> {
         self.index.iter().find(|n| n.id == id)
     }

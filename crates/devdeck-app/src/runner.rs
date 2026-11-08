@@ -313,6 +313,11 @@ impl Runner {
         self.runs.get(key)
     }
 
+    /// Every run (terminals' shells included), by key.
+    pub fn runs(&self) -> impl Iterator<Item = (&RunKey, &Run)> {
+        self.runs.iter()
+    }
+
     pub fn state(&self, key: &RunKey) -> Option<RunState> {
         self.runs.get(key).map(|r| r.state)
     }
