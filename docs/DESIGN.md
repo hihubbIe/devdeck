@@ -21,6 +21,13 @@ The interactive HTML prototype that was approved is the visual reference
 - **Activity bar**: one icon per activity contributed by the workspace (Apps; Cluster
   only when configured; Ports; Layouts). Clicking the active one hides the sidebar.
 - **Sidebar**: the activity's list. Always Pinned + All, alphabetical, filter field.
+  Both sections fold from their header. All holds the groups the user makes (folders,
+  nested, first at each level, each list but Terminals; Cluster groups shared by every
+  env, as pins are): an item, or a folder of the Apps tree with all it holds, goes in
+  by a drop on the group or "Move to group ▸", and keeps its real path for opening and
+  selection. Dropping on a row lands in its group, on the All header at the top; a
+  pinned item keeps its group (unpinned on a row at the top, it goes back to it). The sidebar's right edge drags its width (200 px to half
+  the window, one width for the app; a double click resets it).
 - **Pane tree**: everything else. No fixed docks: "bottom output" and "pinned logs on
   the right" are just panes placed there.
 - **No hint bar** and no key hints anywhere else in the UI: shortcuts are listed on one
@@ -285,6 +292,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   collapse are central and must be testable as pure data.
 - 2026-11-07 No git or editor features (user decision).
 - 2026-11-07 Lists are Pinned + All, alphabetical; no "mine", no "recent" (user decision).
+  2026-11-08: groups the user makes are allowed in All (R4.8), still no automatic one.
 - 2026-11-07 Separate workspaces, one shown at a time, others keep running (user decision).
 - 2026-11-07 No tab drag between windows; "Send to…" with numbered panes instead, plus
   ⇲ re-attach and × close on detached windows (user decision after the M0 finding).
@@ -350,6 +358,14 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   default 2 px stroke kept: at 14 px it matches JetBrains Mono's weight in the
   before/after snapshots. A spinner turns only for a run stopping (it redraws while
   shown); a rollout or a load shows the loader still.
+- 2026-11-08 Ids for what has no identity of its own (user decision): a layout is known
+  by an id (the first `default`, new ones a UUID), its name is a label, so a rename
+  keeps its pin and group. Folder paths, deployment names and port numbers stay the
+  keys: they are what they name.
+- 2026-11-08 Groups as tagged folder rows of the list engine (their row path can't meet
+  a real one), so they open, close and take the keyboard like folders; one drop handler
+  per row (GPUI panics on two `on_drop` of one type); section headers stay out of the
+  keyboard selection, so Down from the filter still reaches the first row.
 
 ## Open questions
 

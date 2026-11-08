@@ -17,6 +17,7 @@ serde-saphyr.workspace = true
 jsonc-parser.workspace = true
 rustix.workspace = true
 signal-hook.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

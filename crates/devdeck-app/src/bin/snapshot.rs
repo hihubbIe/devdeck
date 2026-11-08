@@ -148,6 +148,55 @@ fn apps_tree_filtered(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &E
     filter(cx, w, shell, "infra");
 }
 
+/// Groups in the Apps list: `front-end` holding the monorepo and a group inside, open;
+/// `back-end` closed holding two services.
+fn make_groups(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    apps_tree(cx, w, shell);
+    let s = sidebar(cx, shell);
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.create_group(None, "front-end", cx).unwrap();
+            s.create_group(Some("front-end"), "design", cx).unwrap();
+            s.create_group(None, "back-end", cx).unwrap();
+            s.put("mono", Some("front-end"), cx);
+            s.put("mono/packages", Some("front-end/design"), cx);
+            s.put("eventservice", Some("back-end"), cx);
+            s.put("graphservice", Some("back-end"), cx);
+            s.toggle_open(&devdeck_core::list::group_row_path("back-end"), cx);
+            s.selected = Some("mono".into());
+        })
+    });
+}
+
+/// The groups and the right-click menu of an item in one.
+fn apps_groups(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    make_groups(cx, w, shell);
+    let s = sidebar(cx, shell);
+    let _ = cx.update_window(w, |_, window, cx| {
+        let items = Sidebar::item_menu(&s, "mono", false, cx);
+        open_menu(point(logical(220.), logical(160.)), items, window, cx);
+    });
+}
+
+/// Pinned folded, All open with groups, then All folded: only the headers.
+fn sections_folded(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    apps_pinned(cx, w, shell);
+    let s = sidebar(cx, shell);
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.create_group(None, "back-end", cx).unwrap();
+            s.toggle_section(devdeck_core::list::Section::Pinned, cx);
+            s.toggle_section(devdeck_core::list::Section::All, cx);
+        })
+    });
+}
+
+/// The sidebar dragged wider, with groups.
+fn sidebar_wide(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| shell.update(cx, |s, _| s.sidebar_w = Some(520.)));
+    make_groups(cx, w, shell);
+}
+
 fn cluster_env_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     let s = sidebar(cx, shell);
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
@@ -255,7 +304,7 @@ fn terminals(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<She
     cx.run_until_parked();
     cx.update(|cx| {
         deck.update(cx, |d, cx| {
-            d.switch_layout("default", cx).unwrap();
+            d.switch_layout(devdeck_core::layout_book::DEFAULT_ID, cx).unwrap();
             let here = devdeck_app::places::Place::Pane(d.layout().main().focused);
             d.open_terminal(&home.join("Documents/private_repos/devdeck"), here, cx);
         })
@@ -727,7 +776,7 @@ fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &En
     cx.update(|cx| {
         let layer = devdeck_ui::overlay::layer(w, cx);
         let modal = layer.read(cx).modals.last().cloned().unwrap();
-        let m = modal.downcast::<devdeck_app::layouts::NameLayout>().unwrap();
+        let m = modal.downcast::<devdeck_app::name_prompt::NamePrompt>().unwrap();
         let input = m.read(cx).input.clone();
         input.update(cx, |i, cx| i.set_text("Triage", cx));
         m.update(cx, |m, cx| {
@@ -742,7 +791,8 @@ fn keep_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<She
     cx.update(|cx| {
         deck.update(cx, |d, cx| {
             d.toggle_keep(&ViewRef::new("demo/logs"), cx);
-            let _ = d.switch_layout("triage", cx);
+            let triage = d.book.id_named("triage").unwrap_or_default();
+            let _ = d.switch_layout(&triage, cx);
         })
     });
     cx.run_until_parked();
@@ -866,6 +916,9 @@ fn states() -> Vec<State> {
         w("60-ports", "work", 1.0, Some(ports)),
         w("61-apps-tree", "work", 1.0, Some(apps_tree)),
         w("62-apps-tree-filtered", "work", 1.0, Some(apps_tree_filtered)),
+        w("62b-apps-groups", "work", 1.0, Some(apps_groups)),
+        w("62c-sections-folded", "work", 1.0, Some(sections_folded)),
+        w("62d-sidebar-wide", "work", 1.0, Some(sidebar_wide)),
         w("70-app-view", "work", 1.0, Some(app_view)),
         w("71-app-missing-tool", "work", 1.0, Some(app_missing_tool)),
         w("72-run-streaming", "work", 1.0, Some(run_streaming)),

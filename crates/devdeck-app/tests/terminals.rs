@@ -9,6 +9,7 @@ use devdeck_app::runner::{RunKey, Runner};
 use devdeck_app::shell::Shell;
 use devdeck_app::views::run_view::RunView;
 use devdeck_core::layout::ViewRef;
+use devdeck_core::layout_book::DEFAULT_ID;
 use devdeck_core::runs::RunState;
 use devdeck_core::view_addr::ViewAddr;
 use gpui::{AnyWindowHandle, AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
@@ -94,7 +95,7 @@ fn closing_a_terminal_ends_it_and_a_layout_switch_keeps_it(cx: &mut TestAppConte
     let main = main_window(&shell, cx);
     let deck = deck(&shell, cx);
     let r = runner(&shell, cx);
-    cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx).unwrap()));
+    let other = cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx).unwrap()));
     cx.simulate_keystrokes(main, "ctrl-shift-t");
     cx.run_until_parked();
     let tab = terminal_tabs(&deck, cx)[0].clone();
@@ -102,11 +103,11 @@ fn closing_a_terminal_ends_it_and_a_layout_switch_keeps_it(cx: &mut TestAppConte
     let key = RunKey::terminal(n);
     // A layout without it: hidden, still running; back: the same shell.
     // "Save as" made "other" current: "default" is the layout without it.
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(DEFAULT_ID, cx).unwrap()));
     settle(cx);
     assert!(terminal_tabs(&deck, cx).is_empty());
     assert_eq!(cx.read(|cx| r.read(cx).state(&key)), Some(RunState::Running), "a switch doesn't end it");
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("other", cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(&other, cx).unwrap()));
     settle(cx);
     assert_eq!(terminal_tabs(&deck, cx), std::slice::from_ref(&tab));
     assert_eq!(cx.read(|cx| r.read(cx).run(&key).map(|run| run.runs)), Some(1), "the same shell, not a new one");
@@ -156,7 +157,7 @@ fn the_terminals_list_has_every_shell_shown_or_not(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "ctrl-shift-t");
     cx.run_until_parked();
     let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&terminal_tabs(&deck, cx)[0]) else { unreachable!() };
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(DEFAULT_ID, cx).unwrap()));
     settle(cx);
     cx.simulate_keystrokes(main, "ctrl-5");
     cx.run_until_parked();
@@ -189,10 +190,10 @@ fn an_ended_terminal_stays_ended_through_layout_switches(cx: &mut TestAppContext
     let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&tab) else { unreachable!() };
     let key = RunKey::terminal(n);
     // In two layouts; closed in one: gone from both, not started again by the other.
-    cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx).unwrap()));
+    let other = cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx).unwrap()));
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
     settle(cx);
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(DEFAULT_ID, cx).unwrap()));
     settle(cx);
     assert!(terminal_tabs(&deck, cx).is_empty(), "closing is closing, in every layout");
     assert_eq!(cx.read(|cx| r.read(cx).state(&key)), None);
@@ -204,8 +205,8 @@ fn an_ended_terminal_stays_ended_through_layout_switches(cx: &mut TestAppContext
     let key = RunKey::terminal(n);
     cx.update(|cx| r.update(cx, |r, cx| r.stop(&key, cx)));
     settle(cx);
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("other", cx).unwrap()));
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(&other, cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(DEFAULT_ID, cx).unwrap()));
     settle(cx);
     assert_eq!(terminal_tabs(&deck, cx), std::slice::from_ref(&tab));
     assert_eq!(cx.read(|cx| r.read(cx).state(&key)), Some(RunState::Stopped), "not started again by the switch");

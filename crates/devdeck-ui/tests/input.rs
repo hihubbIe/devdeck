@@ -151,6 +151,9 @@ fn enter_and_escape_are_reported_and_keep_bubbling(cx: &mut TestAppContext) {
     let events = f.events.borrow();
     assert_eq!(events[events.len() - 2..], [InputEvent::Submit("query".into()), InputEvent::Cancel]);
     assert_eq!(*f.outer.borrow(), ["submit", "cancel"], "a dialog around the input still sees them");
+    // Enter nothing took comes as its character: a single line doesn't type it.
+    f.type_text(cx, "\n");
+    assert_eq!(f.text(cx), "query");
 }
 
 #[gpui::test]

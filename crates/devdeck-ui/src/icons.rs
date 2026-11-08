@@ -45,6 +45,8 @@ icons! {
     Ports => "ethernet-port",
     Layouts => "panels-top-left",
     Terminals => "square-terminal",
+    /// A group the user made in a list.
+    Group => "folder",
     // Runs.
     Run => "play",
     Stop => "square",

@@ -39,9 +39,12 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R4.1** Every list is sorted alphabetically.
 - [x] **R4.2** Lists have two sections, Pinned and All, both alphabetical. Pin or unpin with a menu action, a key, or by dragging a row between sections.
 - [~] **R4.6** The Apps list's All section is a tree that keeps the folders apps sit in (a monorepo holds its apps and packages). Rows are closed at first and say what they hold (how many, something running, a missing tool); → and ← open and close, as do the chevron and a double click on a folder. What's open is remembered per workspace. A filter or "running only" shows the matches with their folders open, and leaves what's open as it was. Pinned stays flat. (Decided 2026-11-07.)
-- [~] **R4.3** No "mine" grouping and no recency-ordered sections. Running state is shown as an indicator on the row, with a "running only" filter.
+- [~] **R4.3** No automatic "mine" grouping and no recency-ordered sections (groups the user makes are R4.8). Running state is shown as an indicator on the row, with a "running only" filter.
 - [~] **R4.4** Text never wraps unless a view explicitly allows it (for example a log view with wrapping toggled on). Single-line text truncates with an ellipsis (end or middle truncation) and shows the full text on hover. Terminals (run output, shell tabs) wrap at the pane width and never scroll horizontally (decided 2026-11-07).
 - [~] **R4.5** Status markers and glyphs never shrink or move to another line; the label truncates instead.
+- [~] **R4.7** Pinned and All fold from their header, which keeps its count. What's folded is remembered per workspace and list. A filter or "running only" shows the matches of a folded section and leaves what's folded as it was. (Decided 2026-11-08.)
+- [~] **R4.8** The user makes groups in All: nested, folded and opened like folders, remembered, first at each level, alphabetical. Every list but Terminals; Cluster groups are shared by every env. Made from the All header's menu or a group's, renamed, deleted (what it holds moves to its parent: nothing is lost). An item, or a folder of the Apps tree with all it holds, moves in by a drop on the group (on the All header: back to the top) or "Move to group ▸". A pinned item keeps its group and goes back to it when unpinned; dropped on a group it is unpinned into it, on the All header unpinned to the top. Something inside a folder put in a group can be taken back to the top on its own. (Decided 2026-11-08.)
+- [~] **R4.9** The sidebar's right edge drags its width, kept between 200 px and half the window; a double click goes back to the default. One width for the app, remembered. (Decided 2026-11-08.)
 
 ## 5. Interaction
 

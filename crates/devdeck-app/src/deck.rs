@@ -15,7 +15,7 @@ use crate::views::{self, ViewCx};
 use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
 use devdeck_core::layout::{Layout, LayoutError, MAIN_WINDOW, PaneId, ViewRef, WindowId};
-use devdeck_core::layout_book::{BookError, LayoutBook};
+use devdeck_core::layout_book::{BookError, LayoutBook, LayoutId};
 use devdeck_core::state::StateStore;
 use devdeck_ui::{ToastKind, toasts};
 use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Task, WindowHandle};
@@ -134,7 +134,7 @@ impl Deck {
             ViewAddr::Terminal { n, .. } => Some(n),
             _ => None,
         };
-        let in_layouts = std::iter::once(&self.layout).chain(self.book.layouts.values()).flat_map(|l| l.views()).filter_map(|r| number(&r));
+        let in_layouts = std::iter::once(&self.layout).chain(self.book.layouts.values().filter_map(|n| n.layout.as_ref())).flat_map(|l| l.views()).filter_map(|r| number(&r));
         let in_runner = self.services.iter().flat_map(|s| s.read(cx).runner.read(cx).terminals()).filter_map(|(k, _)| k.terminal_number());
         in_layouts.chain(in_runner).max().map_or(1, |n: u32| n + 1)
     }
@@ -149,7 +149,7 @@ impl Deck {
             return;
         }
         let mut purged = false;
-        for layout in self.book.layouts.values_mut() {
+        for layout in self.book.layouts.values_mut().filter_map(|n| n.layout.as_mut()) {
             for r in layout.views().into_iter().filter(is_it) {
                 purged |= layout.close_view(&r).is_ok();
             }
@@ -367,22 +367,22 @@ impl Deck {
 
     // ------------------------------------------------------------------ named layouts
 
-    pub fn save_layout_as(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+    pub fn save_layout_as(&mut self, name: &str, cx: &mut Context<Self>) -> Result<LayoutId, BookError> {
         let live = self.layout.clone();
-        self.book.save_as(name, &live)?;
+        let id = self.book.save_as(name, &live)?;
         self.save_book(cx);
         cx.notify();
-        Ok(())
+        Ok(id)
     }
 
     /// Shows another named layout: tabs that aren't in it close (their runs go on),
     /// kept views follow, detached windows follow the layout.
-    pub fn switch_layout(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
-        if self.book.current.eq_ignore_ascii_case(name) {
+    pub fn switch_layout(&mut self, id: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        if self.book.current == id {
             return Ok(());
         }
         let live = self.layout.clone();
-        let target = self.book.switch(name, &live)?;
+        let target = self.book.switch(id, &live)?;
         self.send = None;
         // Ids repeat across stored layouts: drop every detached OS window so the
         // target's open fresh instead of reusing one with the same id.
@@ -411,15 +411,15 @@ impl Deck {
         Ok(())
     }
 
-    pub fn rename_layout(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
-        self.book.rename(from, to)?;
+    pub fn rename_layout(&mut self, id: &str, to: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        self.book.rename(id, to)?;
         self.save_book(cx);
         cx.notify();
         Ok(())
     }
 
-    pub fn delete_layout(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
-        self.book.delete(name)?;
+    pub fn delete_layout(&mut self, id: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
+        self.book.delete(id)?;
         self.save_book(cx);
         cx.notify();
         Ok(())

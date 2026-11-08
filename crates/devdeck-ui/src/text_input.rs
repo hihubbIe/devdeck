@@ -200,6 +200,11 @@ impl EntityInputHandler for TextInput {
     }
 
     fn replace_text_in_range(&mut self, r: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+        // Enter that nothing around the input took arrives as its character: one line
+        // has no line break to type (a pasted one still becomes a space).
+        if matches!(text, "\n" | "\r" | "\r\n") {
+            return;
+        }
         let range = r
             .map(|r| self.buf.utf16_to_byte(r.start)..self.buf.utf16_to_byte(r.end))
             .or(self.buf.marked())

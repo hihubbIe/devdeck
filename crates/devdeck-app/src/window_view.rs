@@ -67,6 +67,21 @@ pub struct DraggedPane {
     pub title: SharedString,
 }
 
+/// The sidebar's right edge being dragged (R4.9).
+#[derive(Clone)]
+pub struct DraggedSidebarEdge;
+
+/// The narrowest the sidebar gets, at UI scale 1.
+pub const SIDEBAR_MIN: f32 = 200.;
+
+/// The sidebar's drawn width: `saved` (at UI scale 1; else the theme's), kept between
+/// [`SIDEBAR_MIN`] and half the window, without changing what's saved.
+pub fn sidebar_width(saved: Option<f32>, window_w: Pixels, t: &Theme) -> Pixels {
+    let (min, w) = (t.size(SIDEBAR_MIN), saved.map_or(t.sidebar_w, |w| t.size(w)));
+    let max = if window_w / 2. > min { window_w / 2. } else { min };
+    if w < min { min } else if w > max { max } else { w }
+}
+
 #[derive(Clone)]
 pub struct DraggedDivider {
     pub deck: EntityId,
@@ -407,6 +422,12 @@ impl WindowView {
         self.sidebar.as_ref().map(|(s, _)| s.clone())
     }
 
+    /// The sidebar's drawn width in this window.
+    fn sidebar_w(&self, window: &Window, t: &Theme, cx: &App) -> Pixels {
+        let saved = self.shell.as_ref().and_then(WeakEntity::upgrade).and_then(|s| s.read(cx).sidebar_w);
+        sidebar_width(saved, window.viewport_size().width, t)
+    }
+
     /// Shows an activity and focuses its list (ctrl+1/2/3, activity bar).
     fn show_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
@@ -458,14 +479,20 @@ impl WindowView {
         self.deck.read(cx).layout().window(self.id).ok().map(|w| w.focused)
     }
 
-    /// The pane area's size: the window body minus the activity bar and sidebar.
+    /// The pane area's size, as the neighbour keys and the tab menu see it.
+    pub fn pane_area(&self, window: &Window, cx: &App) -> (f32, f32) {
+        self.body_size(window, theme(cx), cx)
+    }
+
+    /// The pane area's size: the window body minus the activity bar, the sidebar and
+    /// its edge.
     fn body_size(&self, window: &Window, t: &Theme, cx: &App) -> (f32, f32) {
         let s = window.viewport_size();
         let mut w = s.width;
         if let Some(sidebar) = self.active_sidebar() {
             w -= t.activity_w;
             if sidebar.read(cx).state.visible {
-                w -= t.sidebar_w;
+                w -= self.sidebar_w(window, t, cx) + t.divider_grab;
             }
         }
         (f32::from(w), f32::from(s.height - t.title_h))
@@ -660,7 +687,7 @@ impl Render for WindowView {
             })
             .when(is_main, |d| {
                 let deck = self.deck.clone();
-                let current = deck.read(cx).book.current.clone();
+                let current = deck.read(cx).book.current_name().to_string();
                 d.child(
                     bar_control(button("layout", current, &t))
                         .child(button_icon(Icon::Open, &t))
@@ -761,7 +788,7 @@ impl Render for WindowView {
             .on_action(cx.listener(|this, _: &GrowPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, 0.05))))
             .on_action(cx.listener(|this, _: &ShrinkPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, -0.05))))
             // Per-workspace id, so element state never carries over between workspaces.
-            .child(div().id(("ws", deck_id.as_u64())).size_full().min_w_0().min_h_0().flex().child(tree))
+            .child(div().id(("ws", deck_id.as_u64())).debug_selector(|| "panes".into()).size_full().min_w_0().min_h_0().flex().child(tree))
             .child({
                 let origin = self.panes_origin.clone();
                 canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {}).absolute().size_full()
@@ -771,16 +798,29 @@ impl Render for WindowView {
             _ => match self.active_sidebar() {
                 Some(sidebar) => {
                     let visible = sidebar.read(cx).state.visible;
+                    let width = self.sidebar_w(window, &t, cx);
+                    let (shell, drag_shell) = (self.shell.clone(), self.shell.clone());
+                    let (activity_w, grab, scale) = (t.activity_w, t.divider_grab, t.scale);
                     div()
+                        .id("body")
                         .flex_1()
                         .min_h_0()
                         .min_w_0()
                         .flex()
                         .child(activity_bar(&sidebar, &t, cx))
                         .when(visible, |d| {
-                            // Redrawn only when the sidebar itself changes, not on every
-                            // frame of a streaming view next to it.
-                            d.child(sidebar.clone().cached(StyleRefinement::default().flex_none().w(t.sidebar_w).h_full()))
+                            // Redrawn only when the sidebar itself changes (or its width),
+                            // not on every frame of a streaming view next to it.
+                            d.child(sidebar.clone().cached(StyleRefinement::default().flex_none().w(width).h_full()))
+                                .child(sidebar_edge(shell, &t))
+                        })
+                        .on_drag_move::<DraggedSidebarEdge>(move |e: &DragMoveEvent<DraggedSidebarEdge>, window, cx| {
+                            let Some(shell) = drag_shell.as_ref().and_then(WeakEntity::upgrade) else { return };
+                            let wanted = e.event.position.x - e.bounds.origin.x - activity_w - grab / 2.;
+                            let t = theme(cx).clone();
+                            let w = sidebar_width(Some(f32::from(wanted) / scale), window.viewport_size().width, &t);
+                            shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
+                            window.refresh();
                         })
                         .child(panes)
                         .into_any_element()
@@ -1029,6 +1069,30 @@ fn render_node(f: &Frame, node: &Node, parent: Option<Axis>) -> AnyElement {
         }
     }
     container.into_any_element()
+}
+
+/// The sidebar's right edge: dragged, it sets the width; a double click goes back to
+/// the theme's.
+fn sidebar_edge(shell: Option<WeakEntity<Shell>>, t: &Theme) -> impl IntoElement {
+    div()
+        .id("sidebar-edge")
+        .debug_selector(|| "sidebar-edge".into())
+        .flex_none()
+        .w(t.divider_grab)
+        .h_full()
+        .flex()
+        .justify_center()
+        .cursor_col_resize()
+        .child(div().w(t.hairline).h_full().bg(t.line))
+        .on_drag(DraggedSidebarEdge, |_, _, _, cx| cx.new(|_| Empty))
+        .on_mouse_up(MouseButton::Left, move |e, window, cx| {
+            if e.click_count == 2
+                && let Some(shell) = shell.as_ref().and_then(WeakEntity::upgrade)
+            {
+                shell.update(cx, |s, _| s.sidebar_w = None);
+                window.refresh();
+            }
+        })
 }
 
 /// 5 px grab area with a 1 px line in the middle.

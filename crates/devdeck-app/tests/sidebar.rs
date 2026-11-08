@@ -244,6 +244,7 @@ fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
         pins: BTreeMap::from([("deployments".into(), BTreeSet::from(["vesselservice".into(), "gone-service".into()]))]),
         open: BTreeMap::new(),
         watch_pods: false,
+        ..Default::default()
     };
     store.save_sidebar("work", &saved).unwrap();
     std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();

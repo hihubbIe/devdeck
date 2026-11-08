@@ -77,6 +77,8 @@ pub struct Shell {
     main: Option<WindowHandle<WindowView>>,
     /// Main window size in logical pixels, saved in `app.json`.
     pub main_size: Option<(f32, f32)>,
+    /// The sidebar's width at UI scale 1, saved in `app.json` (`None`: the theme's).
+    pub sidebar_w: Option<f32>,
     pub quit_state: QuitState,
     /// Test seam: the test platform can't quit, so tests turn this off and count.
     pub quit_for_real: bool,
@@ -127,7 +129,7 @@ impl Shell {
                     }
                     _ => (spec.layout)(),
                 };
-                let sidebar_state = match store.as_ref().map(|s| s.load_sidebar(&spec.id)) {
+                let mut sidebar_state = match store.as_ref().map(|s| s.load_sidebar(&spec.id)) {
                     Some(Loaded::Ok(s)) => s,
                     Some(Loaded::Broken(e)) => {
                         problems.push(e);
@@ -152,6 +154,9 @@ impl Shell {
                     }
                     _ => LayoutBook::default(),
                 };
+                if let Some(pins) = sidebar_state.pins.get_mut("layouts") {
+                    pin_layouts_by_id(pins, &book);
+                }
                 let views = match store.as_ref().map(|s| s.load_views(&spec.id)) {
                     Some(Loaded::Ok(v)) => v,
                     Some(Loaded::Broken(e)) => {
@@ -182,6 +187,7 @@ impl Shell {
             store,
             main: None,
             main_size: app_state.main_size,
+            sidebar_w: app_state.sidebar_w,
             quit_state: QuitState::Idle,
             quit_for_real: true,
             quits: 0,
@@ -380,7 +386,7 @@ impl Shell {
 
     fn save_app(&mut self, cx: &mut Context<Self>) {
         let Some(store) = &self.store else { return };
-        let state = AppState { active_workspace: Some(self.workspaces[self.active].id.clone()), main_size: self.main_size };
+        let state = AppState { active_workspace: Some(self.workspaces[self.active].id.clone()), main_size: self.main_size, sidebar_w: self.sidebar_w };
         match store.save_app(&state) {
             Ok(()) => self.app_save_failed = false,
             Err(e) if !self.app_save_failed => {
@@ -409,6 +415,16 @@ pub fn report_problems(shell: &Entity<Shell>, cx: &mut App) {
     });
     let text = if count == 1 { "1 problem reading the config or the projects".to_string() } else { format!("{count} problems reading the config or the projects") };
     toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![("View".into(), view)], cx));
+}
+
+/// Layout pins saved before layouts had ids hold names: each moves to its layout's id.
+fn pin_layouts_by_id(pins: &mut std::collections::BTreeSet<String>, book: &LayoutBook) {
+    let named: Vec<(String, String)> =
+        pins.iter().filter(|k| !book.layouts.contains_key(*k)).filter_map(|k| Some((k.clone(), book.id_named(k)?))).collect();
+    for (name, id) in named {
+        pins.remove(&name);
+        pins.insert(id);
+    }
 }
 
 /// A run ending on its own in any workspace becomes a toast naming the workspace: an

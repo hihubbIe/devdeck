@@ -231,21 +231,21 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 0);
-    assert_eq!(cx.read(|cx| deck.read(cx).book.current.clone()), "triage");
+    assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "triage");
     // Change the live layout, then switch back to default from the Layouts list.
     cx.simulate_keystrokes(main, "ctrl-w");
     cx.run_until_parked();
     let fewer = cx.read(|cx| deck.read(cx).layout().views().len());
     cx.simulate_keystrokes(main, "ctrl-4 down enter");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).book.current.clone()), "default", "first row (alphabetical) is default");
+    assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "default", "first row (alphabetical) is default");
     assert_eq!(cx.read(|cx| deck.read(cx).layout().views().len()), fewer + 1, "default has the closed tab");
     // From the palette, back to triage.
     cx.simulate_keystrokes(main, "escape ctrl-k");
     cx.simulate_input(main, "layout triage");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).book.current.clone()), "triage");
+    assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "triage");
     // Focus lands in the panes, so pane keys work right away.
     let panes = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len());
     cx.simulate_keystrokes(main, "ctrl-\\");

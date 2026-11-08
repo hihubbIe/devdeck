@@ -43,11 +43,15 @@ pub struct SidebarState {
     pub open: BTreeMap<String, BTreeSet<String>>,
     /// The Cluster list watches every pod of its env (M3, off by default).
     pub watch_pods: bool,
+    /// Folded sections (`pinned`, `all`) per list id (R4.7).
+    pub collapsed: BTreeMap<String, BTreeSet<String>>,
+    /// The groups the user made per list id (R4.8); their open state is in `open`.
+    pub groups: BTreeMap<String, crate::list::Groups>,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false }
+        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new() }
     }
 }
 
@@ -57,6 +61,8 @@ pub struct AppState {
     pub active_workspace: Option<String>,
     /// Main window size in logical pixels.
     pub main_size: Option<(f32, f32)>,
+    /// The sidebar's width in logical pixels at UI scale 1 (R4.9); `None`: the theme's.
+    pub sidebar_w: Option<f32>,
 }
 
 /// Views' own states by view ref (each view decides what it keeps).
@@ -179,8 +185,17 @@ impl StateStore {
     pub fn load_book(&self, workspace: &str) -> Loaded<crate::layout_book::LayoutBook> {
         let path = self.book_path(workspace);
         match read(&path) {
-            Loaded::Ok(t) => match serde_json::from_str::<crate::layout_book::LayoutBook>(&t) {
-                Ok(b) if b.layouts.values().all(|l| l.validate().is_ok()) => Loaded::Ok(b),
+            Loaded::Ok(t) => match crate::layout_book::LayoutBook::from_json(&t) {
+                Ok(b) if b.layouts.values().filter_map(|n| n.layout.as_ref()).all(|l| l.validate().is_ok()) => {
+                    // Converted (ids given to a book saved by name) or repaired: written
+                    // back at once, so the ids it got are the ones pins and groups keep
+                    // (a failed write shows on the next save of the book).
+                    let json = b.to_json();
+                    if json != t {
+                        let _ = write_atomic(&path, &json);
+                    }
+                    Loaded::Ok(b)
+                }
                 Ok(_) => {
                     set_aside(&path);
                     Loaded::Broken(format!("{}: a saved layout is invalid (kept as layouts.json.bad)", path.display()))
@@ -295,7 +310,7 @@ mod tests {
         assert_eq!(s.load_sidebar("work"), Loaded::Missing);
         let pins: Pins = BTreeMap::from([("apps".to_string(), BTreeSet::from(["entityservice".to_string()]))]);
         let open = BTreeMap::from([("apps".to_string(), BTreeSet::from(["front-end".to_string()]))]);
-        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins, open, watch_pods: true };
+        let state = SidebarState { activity: "cluster".into(), visible: false, env: Some("dev35".into()), pins, open, watch_pods: true, ..Default::default() };
         s.save_sidebar("work", &state).unwrap();
         assert_eq!(s.load_sidebar("work"), Loaded::Ok(state));
         std::fs::write(s.dir.join("workspaces/work/sidebar.json"), "[").unwrap();
@@ -317,10 +332,23 @@ mod tests {
     }
 
     #[test]
+    fn a_book_saved_by_name_keeps_the_ids_it_got_on_its_first_load() {
+        let s = store("converted");
+        let layout = serde_json::to_value(Layout::new()).unwrap();
+        let old = serde_json::json!({ "current": "Triage", "layouts": { "Triage": layout, "default": layout }, "keep": [] });
+        std::fs::create_dir_all(s.dir.join("workspaces/work")).unwrap();
+        std::fs::write(s.dir.join("workspaces/work/layouts.json"), old.to_string()).unwrap();
+        let Loaded::Ok(first) = s.load_book("work") else { panic!("loads") };
+        let Loaded::Ok(second) = s.load_book("work") else { panic!("loads again") };
+        assert_eq!(first, second, "written back: the same ids every time");
+        assert_eq!(first.current_name(), "Triage");
+    }
+
+    #[test]
     fn app_state_and_safe_ids() {
         let s = store("app");
         assert_eq!(s.load_app(), Loaded::Missing);
-        let state = AppState { active_workspace: Some("personal".into()), main_size: Some((1600., 1000.)) };
+        let state = AppState { active_workspace: Some("personal".into()), main_size: Some((1600., 1000.)), sidebar_w: Some(360.) };
         s.save_app(&state).unwrap();
         assert_eq!(s.load_app(), Loaded::Ok(state));
         assert_eq!(safe_id("../evil name"), "___evil_name");

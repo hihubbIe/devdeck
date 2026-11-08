@@ -244,7 +244,7 @@ fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut Tes
     cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
     apply(&deck, cx, |l| l.close_view(&ViewRef::new("demo/notes")));
     let log = watch(&deck, cx);
-    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout("default", cx))).unwrap();
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(devdeck_core::layout_book::DEFAULT_ID, cx))).unwrap();
     cx.run_until_parked();
     assert_eq!(take(&log, "demo/notes"), [true], "the other layout's tab comes on screen");
     assert!(take(&log, "matrix").is_empty(), "the kept view never left the screen");

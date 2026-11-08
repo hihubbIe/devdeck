@@ -19,7 +19,7 @@ use crate::services::Services;
 use devdeck_core::cluster::{Env, Remote};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, Result as LayoutResult, ViewRef};
-use devdeck_core::list::{self, Kids, ListItem, Row, Section};
+use devdeck_core::list::{self, Groups, Kids, ListItem, Row, Section, Shape, group_of_row, group_row_path};
 use devdeck_core::state::{SidebarState, StateStore};
 use devdeck_ui::{DragGhost, Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, dot, icon, icon_text, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
 use gpui::{
@@ -115,6 +115,44 @@ pub struct DraggedListItem {
     pub label: SharedString,
     pub pinned: bool,
     pub view: ViewRef,
+}
+
+/// A folder or group row being dragged: onto a group to go in it, onto All to go back
+/// to the top.
+#[derive(Clone)]
+pub struct DraggedFolder {
+    pub sidebar: EntityId,
+    /// A folder's real path, or a group's [`group_row_path`].
+    pub path: String,
+    pub label: SharedString,
+}
+
+/// Where a drop lands: the Pinned section, a row of All in a group (`None`: at the
+/// top), or the All header (the top, a pinned item included).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Target {
+    Pinned,
+    All(Option<String>),
+    AllHeader,
+}
+
+/// What a drop does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effect {
+    /// Pins or unpins the item (unpinned, it goes back to its group).
+    TogglePin(String),
+    /// Puts a node in a group or at the top (unpinning it).
+    Put(String, Option<String>),
+    MoveGroup(String, Option<String>),
+}
+
+/// What a group's menu or a prompt moves into a group.
+#[derive(Clone, Debug)]
+pub enum Moving {
+    /// An item's key (its node path) or a folder's path.
+    Node(String),
+    /// A group's path.
+    Group(String),
 }
 
 /// Opens `view` at `drop` (into a pane or at its edge); an open view moves there.
@@ -359,11 +397,11 @@ impl Sidebar {
                 .collect(),
             Activity::Layouts => {
                 let book = &self.deck.read(cx).book;
-                book.names()
+                book.entries()
                     .into_iter()
-                    .map(|n| {
-                        let current = n == book.current;
-                        ListItem::new(n.clone(), n).detail(if current { "current" } else { "" }).running(current)
+                    .map(|(id, name)| {
+                        let current = id == book.current;
+                        ListItem::new(id, name).detail(if current { "current" } else { "" }).running(current)
                     })
                     .collect()
             }
@@ -377,8 +415,8 @@ impl Sidebar {
                     if deck.layout().views().iter().any(is_it) {
                         return "here".into();
                     }
-                    let other = deck.book.layouts.iter().find(|(name, l)| **name != deck.book.current && l.views().iter().any(is_it));
-                    other.map_or_else(|| "not shown".into(), |(name, _)| format!("in {name}"))
+                    let other = deck.book.layouts.iter().find(|(id, n)| **id != deck.book.current && n.layout.as_ref().is_some_and(|l| l.views().iter().any(is_it)));
+                    other.map_or_else(|| "not shown".into(), |(_, n)| format!("in {}", n.name))
                 };
                 runner
                     .terminals()
@@ -405,11 +443,6 @@ impl Sidebar {
         self.state.pins.get(self.activity().list_id()).cloned().unwrap_or_default()
     }
 
-    /// The open tree rows of the shown list.
-    fn opened(&self) -> std::collections::BTreeSet<String> {
-        self.state.open.get(self.activity().list_id()).cloned().unwrap_or_default()
-    }
-
     fn running_only(&self) -> bool {
         self.running_only && self.activity() == Activity::Apps
     }
@@ -421,8 +454,245 @@ impl Sidebar {
 
     pub fn rows(&self, cx: &App) -> (Vec<ListItem>, Vec<Row>) {
         let items = self.items(cx);
-        let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), self.running_only(), &self.opened());
+        let id = self.activity().list_id();
+        let (none, no_groups) = (std::collections::BTreeSet::new(), Groups::default());
+        let shape = Shape {
+            open: self.state.open.get(id).unwrap_or(&none),
+            groups: self.groups().unwrap_or(&no_groups),
+            folded: self.state.collapsed.get(id).unwrap_or(&none),
+        };
+        let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), self.running_only(), shape);
         (items, rows)
+    }
+
+    /// Lists but Terminals hold groups (their numbers come and go, as for pins).
+    pub fn groups_allowed(&self) -> bool {
+        self.activity() != Activity::Terminals
+    }
+
+    /// The shown list's groups.
+    pub fn groups(&self) -> Option<&Groups> {
+        self.groups_allowed().then(|| self.state.groups.get(self.activity().list_id())).flatten()
+    }
+
+    /// The shown list's groups and open rows, to change.
+    fn groups_mut(&mut self) -> (&mut Groups, &mut std::collections::BTreeSet<String>) {
+        let id = self.activity().list_id();
+        (self.state.groups.entry(id.to_string()).or_default(), self.state.open.entry(id.to_string()).or_default())
+    }
+
+    /// The group `node` shows in, itself or with what holds it.
+    fn group_of(&self, node: &str) -> Option<String> {
+        self.groups()?.shown_in(node).map(String::from)
+    }
+
+    fn changed(&mut self, cx: &mut Context<Self>) {
+        self.drop_hidden_selection(cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Folds or unfolds a section. While filtering everything shows: nothing to fold.
+    pub fn toggle_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.narrowing(cx) {
+            return;
+        }
+        let folded = self.state.collapsed.entry(self.activity().list_id().to_string()).or_default();
+        if !folded.remove(section.id()) {
+            folded.insert(section.id().to_string());
+        }
+        self.changed(cx);
+    }
+
+    /// Makes a group in `parent` (or at the top), opened with the way to it; returns its
+    /// path.
+    pub fn create_group(&mut self, parent: Option<&str>, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
+        if !self.groups_allowed() {
+            return Err("terminals aren't grouped".into());
+        }
+        let (groups, open) = self.groups_mut();
+        let path = groups.create(parent, name)?;
+        let mut at = Some(path.as_str());
+        while let Some(p) = at {
+            open.insert(group_row_path(p));
+            at = p.rsplit_once('/').map(|(up, _)| up);
+        }
+        self.changed(cx);
+        Ok(path)
+    }
+
+    /// Puts a node (an item's key, a folder's path) in a group, or at the top with
+    /// `None`; a pinned item is unpinned into it.
+    pub fn put(&mut self, node: &str, group: Option<&str>, cx: &mut Context<Self>) {
+        if !self.groups_allowed() {
+            return;
+        }
+        if let Some(pins) = self.state.pins.get_mut(self.activity().list_id()) {
+            pins.remove(node);
+        }
+        self.groups_mut().0.assign(node, group);
+        self.changed(cx);
+    }
+
+    /// Keeps the selection on a group (or one inside it) that moved from `from` to `to`.
+    fn reselect_group(&mut self, from: &str, to: &str) {
+        let Some(selected) = self.selected.as_deref().and_then(|k| group_of_row(k.strip_suffix('/')?)) else { return };
+        let rest = if selected == from { Some("") } else { selected.strip_prefix(from).filter(|r| r.starts_with('/')) };
+        if let Some(rest) = rest {
+            self.selected = Some(list::folder_key(&group_row_path(&format!("{to}{rest}"))));
+        }
+    }
+
+    pub fn rename_group(&mut self, path: &str, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
+        let (groups, open) = self.groups_mut();
+        let to = groups.rename(path, name, open)?;
+        self.reselect_group(path, &to);
+        self.changed(cx);
+        Ok(to)
+    }
+
+    /// Moves a group into `parent` (or to the top).
+    pub fn move_group(&mut self, path: &str, parent: Option<&str>, cx: &mut Context<Self>) -> Result<String, String> {
+        let (groups, open) = self.groups_mut();
+        let to = groups.move_group(path, parent, open)?;
+        self.reselect_group(path, &to);
+        self.changed(cx);
+        Ok(to)
+    }
+
+    /// Deletes a group; what it holds moves to its parent.
+    pub fn delete_group(&mut self, path: &str, cx: &mut Context<Self>) {
+        let (groups, open) = self.groups_mut();
+        for (from, to) in groups.delete(path, open) {
+            self.reselect_group(&from, &to);
+        }
+        self.changed(cx);
+    }
+
+    /// What dropping an item (by key) on `target` does, if anything.
+    pub fn item_drop(&self, key: &str, pinned: bool, target: &Target) -> Option<Effect> {
+        if self.activity() == Activity::Terminals {
+            return None;
+        }
+        match target {
+            Target::Pinned => (!pinned).then(|| Effect::TogglePin(key.into())),
+            Target::AllHeader if pinned => Some(Effect::Put(key.into(), None)),
+            Target::AllHeader => self.group_of(key).is_some().then(|| Effect::Put(key.into(), None)),
+            // Unpinned on a row at the top, it goes back to its group.
+            Target::All(None) if pinned => Some(Effect::TogglePin(key.into())),
+            Target::All(g) if pinned => Some(Effect::Put(key.into(), g.clone())),
+            Target::All(g) => (self.group_of(key) != *g).then(|| Effect::Put(key.into(), g.clone())),
+        }
+    }
+
+    /// What dropping a folder or group row (by its row path) on `target` does.
+    pub fn folder_drop(&self, path: &str, target: &Target) -> Option<Effect> {
+        let g = match target {
+            Target::Pinned => return None,
+            Target::All(g) => g,
+            Target::AllHeader => &None,
+        };
+        if !self.groups_allowed() {
+            return None;
+        }
+        match group_of_row(path) {
+            Some(p) => {
+                let inside = g.as_deref().is_some_and(|g| g == p || g.starts_with(&format!("{p}/")));
+                let parent = p.rsplit_once('/').map(|(up, _)| up);
+                (!inside && parent != g.as_deref()).then(|| Effect::MoveGroup(p.into(), g.clone()))
+            }
+            None => (self.group_of(path) != *g).then(|| Effect::Put(path.into(), g.clone())),
+        }
+    }
+
+    pub fn apply_drop(&mut self, effect: Effect, cx: &mut Context<Self>) {
+        match effect {
+            Effect::TogglePin(key) => self.toggle_pin(&key, cx),
+            Effect::Put(node, g) => self.put(&node, g.as_deref(), cx),
+            Effect::MoveGroup(path, g) => {
+                if let Err(e) = self.move_group(&path, g.as_deref(), cx) {
+                    toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e, vec![], cx));
+                }
+            }
+        }
+    }
+
+    /// Asks for a group's name, makes it in `parent` and moves `then` into it.
+    pub fn prompt_new_group(this: &Entity<Self>, parent: Option<String>, then: Option<Moving>, window: &mut Window, cx: &mut App) {
+        let me = this.clone();
+        let title = match &parent {
+            Some(p) => format!("New group in {p}"),
+            None => "New group".into(),
+        };
+        let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| {
+            me.update(cx, |s, cx| {
+                let path = s.create_group(parent.as_deref(), name, cx)?;
+                match &then {
+                    Some(Moving::Node(n)) => s.put(n, Some(&path), cx),
+                    Some(Moving::Group(g)) => {
+                        s.move_group(g, Some(&path), cx)?;
+                    }
+                    None => {}
+                }
+                Ok(())
+            })
+        });
+        crate::name_prompt::open(title, "", "group-name", submit, window, cx);
+    }
+
+    pub fn prompt_rename_group(this: &Entity<Self>, path: String, window: &mut Window, cx: &mut App) {
+        let me = this.clone();
+        let name = path.rsplit_once('/').map_or(path.as_str(), |(_, l)| l).to_string();
+        let title = format!("Rename group {path}");
+        let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| me.update(cx, |s, cx| s.rename_group(&path, name, cx).map(drop)));
+        crate::name_prompt::open(title, &name, "group-name", submit, window, cx);
+    }
+
+    /// "Move to group ▸": the item itself makes a new group and moves `what` in; the
+    /// submenu has the top level and every group (but `what` and what's inside it).
+    pub fn move_menu(this: &Entity<Self>, what: Moving, cx: &App) -> MenuItem {
+        let s = this.read(cx);
+        let paths = s.groups().map(Groups::paths).unwrap_or_default();
+        let (current, skip) = match &what {
+            Moving::Node(n) => (s.group_of(n), None),
+            Moving::Group(g) => (g.rsplit_once('/').map(|(up, _)| up.to_string()), Some(g.clone())),
+        };
+        let to = |group: Option<String>| {
+            let (me, what) = (this.clone(), what.clone());
+            move |_: &mut Window, cx: &mut App| {
+                me.update(cx, |s, cx| match &what {
+                    Moving::Node(n) => s.put(n, group.as_deref(), cx),
+                    Moving::Group(g) => {
+                        if let Err(e) = s.move_group(g, group.as_deref(), cx) {
+                            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e, vec![], cx));
+                        }
+                    }
+                })
+            }
+        };
+        let mut sub = vec![MenuItem::new("Top level", to(None)).checked(current.is_none())];
+        sub.extend(
+            paths
+                .into_iter()
+                .filter(|p| skip.as_ref().is_none_or(|g| p != g && !p.starts_with(&format!("{g}/"))))
+                .map(|p| MenuItem::new(p.clone(), to(Some(p.clone()))).checked(current.as_deref() == Some(p.as_str()))),
+        );
+        let (me, then) = (this.clone(), what);
+        MenuItem::new("Move to group", move |window, cx| Sidebar::prompt_new_group(&me, None, Some(then.clone()), window, cx))
+            .submenu(sub)
+    }
+
+    /// A group row's menu.
+    pub fn group_menu(this: &Entity<Self>, path: &str, cx: &App) -> Vec<MenuItem> {
+        let (m1, m2, m3) = (this.clone(), this.clone(), this.clone());
+        let (p1, p2, p3) = (path.to_string(), path.to_string(), path.to_string());
+        vec![
+            MenuItem::new("New group inside…", move |window, cx| Sidebar::prompt_new_group(&m1, Some(p1.clone()), None, window, cx)),
+            MenuItem::new("Rename…", move |window, cx| Sidebar::prompt_rename_group(&m2, p2.clone(), window, cx)),
+            MenuItem::new("Delete", move |_, cx| m3.update(cx, |s, cx| s.delete_group(&p3, cx))),
+            MenuItem::separator(),
+            Sidebar::move_menu(this, Moving::Group(path.to_string()), cx),
+        ]
     }
 
     fn selected_row(&self, items: &[ListItem], rows: &[Row]) -> Option<usize> {
@@ -699,6 +969,8 @@ impl Sidebar {
                 }),
                 MenuItem::new("Rename…", move |window, cx| crate::layouts::open_rename(d2.clone(), k2.clone(), window, cx)),
                 delete,
+                MenuItem::separator(),
+                Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
             ];
         }
         let (open, pin) = (this.clone(), this.clone());
@@ -706,6 +978,7 @@ impl Sidebar {
         let mut items = vec![
             MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
             MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
+            Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
         ];
         // An app's shell, in its folder (not a folder row's).
         if this.read(cx).activity() == Activity::Apps
@@ -840,7 +1113,7 @@ impl Render for Sidebar {
                 let selected = this.selected_row(&items, &rows);
                 let focused = this.list_focus.is_focused(window);
                 let me = cx.entity();
-                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, t };
+                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, groups: this.groups_allowed(), t };
                 range
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
                     .map(|(i, row)| {
@@ -860,15 +1133,11 @@ impl Render for Sidebar {
         div()
             .id("sidebar")
             .key_context("Sidebar")
-            .flex_none()
-            .w(t.sidebar_w)
-            .h_full()
+            .size_full()
             .min_h_0()
             .flex()
             .flex_col()
             .bg(t.bar)
-            .border_r_1()
-            .border_color(t.line)
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_selection(1, cx)))
             .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_selection(-1, cx)))
             .on_action(cx.listener(|this, _: &SelectFirst, _, cx| this.select_edge(false, cx)))
@@ -910,6 +1179,8 @@ struct Look {
     running_only: bool,
     focused: bool,
     status: Option<String>,
+    /// The list holds groups (a menu on the All header).
+    groups: bool,
     t: Theme,
 }
 
@@ -929,17 +1200,37 @@ fn render_row(
     let filtered = !look.filter.trim().is_empty();
     let sidebar_id = me.entity_id();
     let base = div().h(t.row_h).w_full().px_3().flex().items_center().gap_2().whitespace_nowrap();
-    // Drops on a section (header, empty line or row) pin or unpin.
-    let section_drop = |section: Section, el: gpui::Stateful<gpui::Div>| {
-        let me = me.clone();
-        let (bg, want) = (t.drop_bg, section == Section::Pinned);
-        el.drag_over::<DraggedListItem>(move |s, d: &DraggedListItem, _, _| if d.sidebar == sidebar_id && d.pinned != want { s.bg(bg) } else { s })
-            .on_drop(move |d: &DraggedListItem, _, cx| {
-                if d.sidebar == sidebar_id && d.pinned != want {
-                    let key = d.key.clone();
-                    me.update(cx, |s, cx| s.toggle_pin(&key, cx));
-                }
-            })
+    // Every row takes drops for where it is (one handler per dragged type: GPUI panics
+    // on two): pin, unpin, into its group or to the top.
+    let row_drop = |el: gpui::Stateful<gpui::Div>| {
+        let target = target(rows, i);
+        let bg = t.drop_bg;
+        let (m1, m2, m3, m4) = (me.clone(), me.clone(), me.clone(), me.clone());
+        let (t1, t2, t3, t4) = (target.clone(), target.clone(), target.clone(), target);
+        el.drag_over::<DraggedListItem>(move |s, d: &DraggedListItem, _, cx| {
+            if d.sidebar == sidebar_id && m1.read(cx).item_drop(&d.key, d.pinned, &t1).is_some() { s.bg(bg) } else { s }
+        })
+        .drag_over::<DraggedFolder>(move |s, d: &DraggedFolder, _, cx| {
+            if d.sidebar == sidebar_id && m2.read(cx).folder_drop(&d.path, &t2).is_some() { s.bg(bg) } else { s }
+        })
+        .on_drop(move |d: &DraggedListItem, _, cx| {
+            if d.sidebar == sidebar_id {
+                m3.update(cx, |s, cx| {
+                    if let Some(e) = s.item_drop(&d.key, d.pinned, &t3) {
+                        s.apply_drop(e, cx);
+                    }
+                });
+            }
+        })
+        .on_drop(move |d: &DraggedFolder, _, cx| {
+            if d.sidebar == sidebar_id {
+                m4.update(cx, |s, cx| {
+                    if let Some(e) = s.folder_drop(&d.path, &t4) {
+                        s.apply_drop(e, cx);
+                    }
+                });
+            }
+        })
     };
     // A tree row: selection look, hover, and the chevron opening or closing `path`.
     let tree = |key: &str, depth: usize, kids: Option<Kids>, path: Option<String>| {
@@ -955,26 +1246,55 @@ fn render_row(
         .cursor_pointer()
     };
     match row {
-        Row::Header(section) => {
-            let n = list::count(rows, section);
+        Row::Header { section, open, count } => {
             let text = match section {
-                Section::Pinned => format!("PINNED · {n}"),
-                Section::All => format!("ALL · {n}"),
+                Section::Pinned => format!("PINNED · {count}"),
+                Section::All => format!("ALL · {count}"),
             };
             let selector = if section == Section::Pinned { "header-pinned" } else { "header-all" };
-            section_drop(section, base.id(("hdr", i)).debug_selector(move || selector.into()).text_color(t.dim).text_size(t.text_small).child(text))
-                .into_any_element()
+            let (m_chevron, m_click, m_menu) = (me.clone(), me.clone(), me.clone());
+            let el = tree_row(selector, 0, Some(open), move |_, cx| m_chevron.update(cx, |s, cx| s.toggle_section(section, cx)), t)
+                .cursor_pointer()
+                .text_color(t.dim)
+                .text_size(t.text_small)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| m_click.update(cx, |s, cx| s.toggle_section(section, cx)))
+                .when(section == Section::All && look.groups, |d| {
+                    d.on_mouse_down(MouseButton::Right, move |e, window, cx| {
+                        let m = m_menu.clone();
+                        let items = vec![MenuItem::new("New group…", move |window, cx| Sidebar::prompt_new_group(&m, None, None, window, cx))];
+                        open_menu(e.position, items, window, cx);
+                    })
+                })
+                .child(text);
+            row_drop(el).into_any_element()
         }
-        Row::Empty(section) => section_drop(
-            section,
-            base.id(("empty", i)).pl_6().text_color(t.dim).child(label(empty_text(section, filtered, look.running_only, look.status.as_deref()))),
-        )
-        .into_any_element(),
-        Row::Folder { path, name, depth, kids } => {
+        Row::Empty(section) => {
+            row_drop(base.id(("empty", i)).pl_6().text_color(t.dim).child(label(empty_text(section, filtered, look.running_only, look.status.as_deref())))).into_any_element()
+        }
+        Row::Folder { path, name, depth, kids, group } => {
             let key = list::folder_key(&path);
-            let m = me.clone();
+            let (m, m_menu) = (me.clone(), me.clone());
+            let k_menu = key.clone();
+            let menu_path = path.clone();
+            let drag = DraggedFolder { sidebar: sidebar_id, path: path.clone(), label: name.clone().into() };
+            let hint: SharedString = group_of_row(&path).map_or_else(|| path.clone(), |g| format!("group {g}")).into();
             let el = tree(&key, depth, Some(kids), Some(path.clone()))
-                .tooltip(tip(path.clone()))
+                .tooltip(tip(hint))
+                .on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone())))
+                .on_mouse_down(MouseButton::Right, move |e, window, cx| {
+                    m_menu.update(cx, |s, cx| {
+                        s.selected = Some(k_menu.clone());
+                        cx.notify();
+                    });
+                    let items = match group_of_row(&menu_path) {
+                        Some(g) => Sidebar::group_menu(&m_menu, g, cx),
+                        None if m_menu.read(cx).groups_allowed() => vec![Sidebar::move_menu(&m_menu, Moving::Node(menu_path.clone()), cx)],
+                        None => Vec::new(),
+                    };
+                    if !items.is_empty() {
+                        open_menu(e.position, items, window, cx);
+                    }
+                })
                 .on_mouse_down(MouseButton::Left, move |e, window, cx| {
                     let double = e.click_count == 2;
                     m.update(cx, |s, cx| {
@@ -986,13 +1306,13 @@ fn render_row(
                         cx.notify();
                     });
                 })
-                .child(div().flex_1().min_w_0().truncate().text_color(t.mute).child(format!("{name}/")))
+                .when(group, |d| d.child(icon(Icon::Group, t.mute, t)))
+                .child(div().flex_1().min_w_0().truncate().text_color(t.mute).child(if group { name } else { format!("{name}/") }))
                 .when(!kids.open, |d| d.child(holds(kids, t)));
-            section_drop(Section::All, el).into_any_element()
+            row_drop(el).into_any_element()
         }
         Row::Item { index, pinned, depth, kids } => {
             let item = &items[index];
-            let section = if pinned { Section::Pinned } else { Section::All };
             let key = item.key.clone();
             let (k_click, k_menu) = (key.clone(), key.clone());
             let (m_click, m_menu) = (me.clone(), me.clone());
@@ -1034,9 +1354,36 @@ fn render_row(
                     let color = if item.warning.is_some() { t.warn } else { t.dim };
                     d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(color).child(detail))
                 });
-            section_drop(section, el).into_any_element()
+            row_drop(el).into_any_element()
         }
     }
+}
+
+/// Where a drop on row `i` lands: Pinned, or All in the group the row is (or is in).
+fn target(rows: &[Row], i: usize) -> Target {
+    let section = rows[..=i].iter().rev().find_map(|r| match r {
+        Row::Header { section, .. } => Some(*section),
+        _ => None,
+    });
+    if section != Some(Section::All) {
+        return Target::Pinned;
+    }
+    let group = |path: &str| Target::All(group_of_row(path).map(String::from));
+    let mut depth = match &rows[i] {
+        Row::Folder { path, group: true, .. } => return group(path),
+        Row::Header { .. } => return Target::AllHeader,
+        Row::Empty(_) => return Target::All(None),
+        r => r.depth(),
+    };
+    for r in rows[..i].iter().rev() {
+        match r {
+            Row::Header { .. } => break,
+            Row::Folder { path, group: true, depth: d, .. } if *d < depth => return group(path),
+            r if r.depth() < depth => depth = r.depth(),
+            _ => {}
+        }
+    }
+    Target::All(None)
 }
 
 /// What a closed row holds: how many, and whether something in it runs or can't run.

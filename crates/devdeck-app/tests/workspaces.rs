@@ -245,7 +245,7 @@ fn saved_state_is_restored_and_broken_files_fall_back(cx: &mut TestAppContext) {
     let dir = temp(cx, "restore");
     let store = StateStore::new(dir.clone());
     store.save_layout("work", &custom_work()).unwrap();
-    store.save_app(&AppState { active_workspace: Some("personal".into()), main_size: None }).unwrap();
+    store.save_app(&AppState { active_workspace: Some("personal".into()), main_size: None, sidebar_w: None }).unwrap();
     std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();
     std::fs::write(dir.join("workspaces/personal/layout.json"), "{oops").unwrap();
 
@@ -366,7 +366,7 @@ fn reopening_brings_views_back_and_restarts_what_ran(cx: &mut TestAppContext) {
     ]
     .into();
     store.save_views("work", &views).unwrap();
-    store.save_app(&AppState { active_workspace: Some("work".into()), main_size: None }).unwrap();
+    store.save_app(&AppState { active_workspace: Some("work".into()), main_size: None, sidebar_w: None }).unwrap();
     let shell = start(cx, devdeck_app::demo_workspaces(), Some(store), "views-restore");
     let work = deck(&shell, cx, "work");
     let run = cx.read(|cx| work.read(cx).view(&run_ref()).unwrap().downcast::<RunView>().unwrap());
@@ -415,11 +415,11 @@ fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
     let work = deck(&shell, cx, "work");
     let main = main_window(&shell, cx);
     // Save the demo arrangement as "triage", then make a sparse one as "focus".
-    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("triage", cx))).unwrap();
+    let triage = cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("triage", cx))).unwrap();
     let logs = ViewRef::new("demo/logs");
     let logs_view = cx.read(|cx| work.read(cx).view(&logs).unwrap());
     cx.update(|cx| work.update(cx, |d, cx| d.toggle_keep(&logs, cx)));
-    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("focus", cx))).unwrap();
+    let focus = cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("focus", cx))).unwrap();
     cx.update(|cx| {
         work.update(cx, |d, cx| {
             d.apply(cx, |l| {
@@ -432,7 +432,7 @@ fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| work.read(cx).book.keep.is_empty()), "closing a kept tab clears its mark");
     cx.update(|cx| work.update(cx, |d, cx| d.toggle_keep(&ViewRef::new("demo/notes"), cx)));
     // Switch to triage: its tabs come back, the kept notes tab follows.
-    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("Triage", cx))).unwrap();
+    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout(&triage, cx))).unwrap();
     cx.run_until_parked();
     let l = cx.read(|cx| work.read(cx).layout().clone());
     assert!(l.find_view(&logs).is_some() && l.find_view(&ViewRef::new("demo/notes")).is_some());
@@ -441,15 +441,16 @@ fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
     let store = StateStore::new(dir.clone());
     assert_eq!(store.load_layout("work"), Loaded::Ok(l.clone()), "layout.json holds the new tree right away");
     let Loaded::Ok(book) = store.load_book("work") else { panic!("layouts.json") };
-    assert_eq!(book.current, "triage");
-    assert_eq!(book.layouts["focus"], notes_only(), "the layout left behind is stored under its name");
+    assert_eq!(book.current, triage);
+    assert_eq!(book.current_name(), "triage");
+    assert_eq!(book.layouts[&focus].layout, Some(notes_only()), "the layout left behind is stored under its id");
     // Switching to the current one does nothing.
     let saves = cx.read(|cx| work.read(cx).saves);
-    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("triage", cx))).unwrap();
+    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout(&triage, cx))).unwrap();
     assert_eq!(cx.read(|cx| work.read(cx).saves), saves);
-    // Unknown names are refused with the reason.
+    // Unknown ones are refused with the reason.
     let err = cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("nope", cx))).unwrap_err();
-    assert_eq!(err.to_string(), "no layout called nope");
+    assert_eq!(err.to_string(), "no such layout: nope");
     let _ = main;
 }
 
@@ -460,7 +461,7 @@ fn a_switch_replaces_detached_windows_even_with_colliding_ids(cx: &mut TestAppCo
     // "a": notes detached. "b": long detached (same window id in both layouts).
     detach_notes(&work, cx);
     let wa = cx.read(|cx| work.read(cx).layout().windows[1].id);
-    cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("a", cx))).unwrap();
+    let a = cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("a", cx))).unwrap();
     // Save as "b" (a copy, now current), then change b.
     cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
     // "b": the same window (same id) now holds long; notes went back to the main window.
@@ -477,7 +478,7 @@ fn a_switch_replaces_detached_windows_even_with_colliding_ids(cx: &mut TestAppCo
     cx.run_until_parked();
     let wb = cx.read(|cx| work.read(cx).layout().windows[1].id);
     assert_eq!(wa, wb, "the two layouts use the same detached window id");
-    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("a", cx))).unwrap();
+    cx.update(|cx| work.update(cx, |d, cx| d.switch_layout(&a, cx))).unwrap();
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 2);
     let detached_view = cx.read(|cx| {
@@ -497,4 +498,40 @@ fn a_switch_replaces_detached_windows_even_with_colliding_ids(cx: &mut TestAppCo
     });
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), 1);
+}
+
+#[gpui::test]
+fn a_renamed_layout_stays_pinned(cx: &mut TestAppContext) {
+    use devdeck_app::sidebar::Activity;
+    let shell = demo(cx, "layout-rename");
+    let work = deck(&shell, cx, "work");
+    let triage = cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("triage", cx))).unwrap();
+    let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Layouts, cx)));
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.toggle_pin(&triage, cx)));
+    cx.update(|cx| work.update(cx, |d, cx| d.rename_layout(&triage, "incident", cx))).unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| sidebar.read(cx).state.pins["layouts"].contains(&triage)), "the pin is on the id, which a rename keeps");
+    let row = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == triage).map(|i| i.label));
+    assert_eq!(row.as_deref(), Some("incident"));
+}
+
+#[gpui::test]
+fn layout_pins_saved_by_name_move_to_the_ids(cx: &mut TestAppContext) {
+    use devdeck_core::state::SidebarState;
+    use std::collections::{BTreeMap, BTreeSet};
+    let dir = temp(cx, "layout-old-pins");
+    let store = StateStore::new(dir.clone());
+    // Saved before layouts had ids: the book by name, a layout pinned by its name.
+    let old = serde_json::json!({ "current": "default", "layouts": { "default": notes_only(), "Triage": notes_only() } });
+    std::fs::create_dir_all(dir.join("workspaces/work")).unwrap();
+    std::fs::write(dir.join("workspaces/work/layouts.json"), old.to_string()).unwrap();
+    let pins = BTreeMap::from([("layouts".to_string(), BTreeSet::from(["triage".to_string()]))]);
+    store.save_sidebar("work", &SidebarState { pins, ..Default::default() }).unwrap();
+    let shell = start(cx, devdeck_app::demo_workspaces(), Some(store), "layout-old-pins");
+    let work = deck(&shell, cx, "work");
+    let triage = cx.read(|cx| work.read(cx).book.id_named("triage")).expect("converted");
+    assert_ne!(triage, "Triage", "an id, not the name");
+    let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
+    assert_eq!(cx.read(|cx| sidebar.read(cx).state.pins["layouts"].clone()), BTreeSet::from([triage]));
 }

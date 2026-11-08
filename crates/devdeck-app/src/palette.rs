@@ -161,13 +161,13 @@ impl Palette {
             out.push(Entry { running: false, label: "branch matrix".into(), detail: "view".into(), item: Item::View(ViewAddr::Matrix), disabled: None });
         }
         let book = &ws.deck.read(cx).book;
-        for name in book.names() {
-            let current = name == book.current;
+        for (id, name) in book.entries() {
+            let current = id == book.current;
             out.push(Entry {
                 running: false,
                 label: format!("layout {name}"),
                 detail: if current { "current".into() } else { "switch layout".into() },
-                item: Item::Layout(name),
+                item: Item::Layout(id),
                 disabled: None,
             });
         }
@@ -301,8 +301,8 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
         }
         Item::Env(env) => sidebar.update(cx, |s, cx| s.set_env(&env, cx)),
         Item::Workspace(i) => shell.update(cx, |s, cx| s.switch(i, cx)),
-        Item::Layout(name) => {
-            if let Err(e) = deck.update(cx, |d, cx| d.switch_layout(&name, cx)) {
+        Item::Layout(id) => {
+            if let Err(e) = deck.update(cx, |d, cx| d.switch_layout(&id, cx)) {
                 toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e.to_string(), vec![], cx));
             }
         }

@@ -153,7 +153,8 @@ impl Stress {
             cx.update(|cx| self.shell.update(cx, |s, cx| s.switch(to, cx)));
             self.frame(cx).await;
         }
-        for to in [LAYOUT_B, self.layout_a.as_str()] {
+        let layout_b = cx.update(|cx| self.deck.read(cx).book.id_named(LAYOUT_B)).unwrap_or_default();
+        for to in [layout_b.as_str(), self.layout_a.as_str()] {
             let _ = cx.update(|cx| self.deck.update(cx, |d, cx| d.switch_layout(to, cx)));
             self.frame(cx).await;
         }

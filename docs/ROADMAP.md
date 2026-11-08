@@ -47,7 +47,9 @@ exec, port-forward, metrics, protected envs, k9s launch. Plan:
 [plans/M3-cluster.md](plans/M3-cluster.md). Steps, one at a time:
 1. Config and real deployments, read only — done 2026-11-07.
 2. Service inspector on real data (pods, metrics) — done 2026-11-08.
-3. Git panel — done 2026-11-08. 3b. Edit mode — done 2026-11-08.
+3. Git panel — done 2026-11-08. 3b. Edit mode — done 2026-11-08. 3c. Sidebar
+   groups, folded sections, width; layout ids
+   ([plans/sidebar-groups.md](plans/sidebar-groups.md)) — done 2026-11-08.
 4. Logs, shell, port-forward, k9s.
 5. Writes.
 6. Close.
