@@ -43,11 +43,17 @@ app, edited and rendered, saved by themselves (R12). Plan:
 in `devdeck-ui`; 3. engine: drops, view actions in the header, live titles; 4. file
 view; 5. notes.
 
-## Claude control (after Files and notes)
-Tools for Claude (or another LLM) running in a devdeck terminal to drive devdeck through
-an MCP server kept apart from the rest of the code: open a tab, start a server, read a
-tab, logs filtered; an environment variable tells it it runs inside devdeck. To be scoped
-on its own, built to grow.
+## Control API (after Files and notes)
+A generic API for everything devdeck shows and does (R13); a CLI and an MCP server for
+Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), decided
+2026-11-08. Phases, one at a time:
+0. Decisions, requirements, design — done 2026-11-08.
+1. API crate, socket, identity, audit, observe methods, CLI, first MCP.
+2. Bounded reads: output, screen, search, notes, files.
+3. Operations layer, approvals core, events, jobs, waits; present, run, organize.
+4. Approval card; type, remote and destructive methods.
+5. Chosen MCP tools, instructions, setup docs.
+6. Cluster methods, as M3 steps 4–5 land.
 
 ## M3 · Real cluster
 kube-rs data, service inspector, git read only, deploys with journal and undo, logs,

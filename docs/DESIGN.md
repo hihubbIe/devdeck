@@ -349,6 +349,33 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   editor when it's drawn focused (the editor is made on the first draw); Esc in the
   editor gives the keys back to the view until the view loses focus.
 
+## Control API
+
+Planned (R13, `plans/control-api.md`); nothing built yet.
+
+- Pieces: `devdeck-api` holds the protocol only (types with serde and schemars schemas,
+  the catalog, errors, ids, a small client) and depends on nothing of devdeck.
+  `devdeck-app/src/api/` is the one part that knows the app: socket, identity, policy,
+  approvals, a dispatcher per domain, events, audit. `devdeck-ctl` and `devdeck-mcp` (rmcp,
+  stdio) depend only on `devdeck-api`.
+- The operations layer: each operation is a model function taking ids; the UI resolves
+  focus and selection into ids and calls it, the API calls it directly. What lives in
+  views today moves out (a shell's start, the logs text, the protected-env unlock,
+  confirmations, Share with's need for a window).
+- Threading: the socket's thread hands each request to the UI thread through a channel
+  (as the watcher does); the UI thread takes a snapshot, the connection's thread encodes
+  and writes; the audit log has a writer thread. Observers exist only while a client
+  subscribes, timers only while something waits.
+- Identity is the process tree (`SO_PEERCRED`, held as a pidfd), walked up to a shell
+  devdeck started. No tokens: a string in the environment can be read by any process of
+  the user.
+- Approvals: one service; destructive functions take a proof (`Approval<Op>`, holding its
+  arguments) that only the user's answer in the UI makes, used once and bound to the
+  state it was decided on.
+- Not a sandbox: an agent in a devdeck terminal has the user's power through its own
+  shell. The permissions guard what is done through devdeck, give clients least
+  privilege, and record everything.
+
 ## Settings and scaling
 
 - Settings open as a full-window view from a title-bar button, not as a tab.
@@ -461,6 +488,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   a real one), so they open, close and take the keyboard like folders; one drop handler
   per row (GPUI panics on two `on_drop` of one type); section headers stay out of the
   keyboard selection, so Down from the filter still reaches the first row.
+
+- 2026-11-08 Claude control becomes a generic control API (user): MCP is one client of
+  it, a CLI another; MCP can go without touching the app. Callers are known from their
+  process tree (no tokens to steal); permissions by class of operation, by who started
+  what, and by devdeck's own rules; risky calls wait for a card only the user answers.
+  The six proposals of `plans/control-api.md` taken as they are.
 
 ## Open questions
 
