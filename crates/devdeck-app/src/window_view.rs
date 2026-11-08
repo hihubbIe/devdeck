@@ -647,7 +647,7 @@ impl Render for WindowView {
                     .gap_2()
                     .text_color(t.hi)
                     .tooltip(tip(APP_NAME))
-                    .child(img(APP_ICON).flex_none().size(t.size(18.)))
+                    .child(img(APP_ICON).flex_none().size(t.size(23.)))
                     .child(APP_NAME),
             )
             .when_some(menu_shell, |d, shell| {
@@ -1515,7 +1515,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .justify_center()
                 .gap_2()
                 .text_color(t.mute)
-                .child(img(APP_ICON).flex_none().size(t.size(72.)))
+                .child(img(APP_ICON).flex_none().size(t.size(144.)))
                 .child(div().text_color(t.hi).child(format!("Welcome to {APP_NAME}")))
                 .child(label("Empty pane. Drop a tab here.").debug_selector(|| "empty-message".into()))
                 .into_any_element(),
