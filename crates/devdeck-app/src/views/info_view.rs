@@ -68,6 +68,6 @@ impl Render for WelcomeView {
             .child(label(format!("Add one file per workspace in {}/{WORKSPACES_DIR}/, for example work.toml:", dir.display())).text_color(t.mute))
             .child(div().p_2().bg(t.raised).rounded(t.radius_m).flex().flex_col().children(example.map(|l| div().whitespace_nowrap().child(l))))
             .child(label(format!("Machine paths (Node folders, PATH additions) go in {}/{MACHINE_FILE}.", dir.display())).text_color(t.mute))
-            .child(label("Restart devdeck once the first workspace file is there; after that, devdeck follows changes to the files and the folders. `devdeck --demo` shows the demo.").text_color(t.mute))
+            .child(label("Restart Kugelblitz once the first workspace file is there; after that, it follows changes to the files and the folders. `devdeck --demo` shows the demo.").text_color(t.mute))
     }
 }

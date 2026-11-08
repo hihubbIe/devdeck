@@ -85,16 +85,28 @@ icons! {
     WindowRestore => "copy",
 }
 
+/// What the app is called wherever it names itself (the installed launcher's name;
+/// the binary and the files stay `devdeck`).
+pub const APP_NAME: &str = "Kugelblitz";
+
+/// The app's icon, in colour (drawn with `img`, not tinted like the icons above): the
+/// installed launcher's (`assets/app/devdeck.svg`).
+pub const APP_ICON: &str = "app/kugelblitz.svg";
+const APP_ICON_SVG: &[u8] = include_bytes!("../../../assets/app/devdeck.svg");
+
 /// Serves the icons to GPUI (`Application::with_assets`).
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if path == APP_ICON {
+            return Ok(Some(Cow::Borrowed(APP_ICON_SVG)));
+        }
         Ok(Icon::ALL.iter().find(|i| i.path() == path).map(|i| Cow::Borrowed(i.svg())))
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        let paths: BTreeSet<&str> = Icon::ALL.iter().map(|i| i.path()).filter(|p| p.starts_with(path)).collect();
+        let paths: BTreeSet<&str> = Icon::ALL.iter().map(|i| i.path()).chain([APP_ICON]).filter(|p| p.starts_with(path)).collect();
         Ok(paths.into_iter().map(SharedString::from).collect())
     }
 }

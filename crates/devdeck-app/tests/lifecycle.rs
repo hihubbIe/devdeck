@@ -19,7 +19,7 @@ fn one_devdeck_per_state_folder(cx: &mut TestAppContext) {
     let dir = cx.update(|cx| devdeck_app::test_dir("lock", cx));
     let first = claim(&dir).expect("free");
     let second = claim(&dir).err().expect("held");
-    assert_eq!(second, format!("devdeck is already running (pid {})", std::process::id()));
+    assert_eq!(second, format!("Kugelblitz is already running (pid {})", std::process::id()));
     drop(first);
     // A process another test spawns meanwhile holds a copy of the lock's descriptor
     // from its fork until its exec closes it (close-on-exec): free within moments.

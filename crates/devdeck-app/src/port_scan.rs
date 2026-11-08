@@ -422,7 +422,7 @@ impl Render for StopProcess {
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &ConfirmStopHolder, window, cx| this.confirm(window, cx)))
             .child(div().text_color(t.hi).child(format!("Stop {name}?")))
-            .child(label(format!("It holds port {} and wasn't started by devdeck. It gets SIGTERM.", self.port)).text_color(t.mute))
+            .child(label(format!("It holds port {} and wasn't started by Kugelblitz. It gets SIGTERM.", self.port)).text_color(t.mute))
             .child(div().px_2().py_1().rounded(t.radius_s).bg(t.bg).text_color(t.fg).debug_selector(|| "stop-holder-command".into()).child(self.command.clone()))
             .child(
                 div()

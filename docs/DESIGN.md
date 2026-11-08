@@ -362,6 +362,9 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   by an id (the first `default`, new ones a UUID), its name is a label, so a rename
   keeps its pin and group. Folder paths, deployment names and port numbers stay the
   keys: they are what they name.
+- 2026-11-08 The app calls itself **Kugelblitz** (user): the title bar (with its icon,
+  `assets/app/devdeck.svg`), window titles, an empty pane's welcome and every message
+  naming the app. The project, binary, crates, files, refs and app id stay `devdeck`.
 - 2026-11-08 Right-click menu (R5.7): a view passes its own items and the content
   (`context_menu::Content`, text for now); a list of action functions adds what applies
   (Copy, Share with). Share with pastes into terminals whose program turned bracketed

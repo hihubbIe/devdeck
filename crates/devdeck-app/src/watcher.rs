@@ -64,7 +64,7 @@ pub fn start(shell: &Entity<Shell>, config_dir: PathBuf, cx: &mut App) -> Option
     let debouncer = match new_debouncer(PAUSE, None, handler) {
         Ok(d) => d,
         Err(e) => {
-            let text = format!("Folders aren't watched ({e}): restart devdeck to see new projects.");
+            let text = format!("Folders aren't watched ({e}): restart Kugelblitz to see new projects.");
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
             return None;
         }
@@ -224,7 +224,7 @@ fn changed(shell: &Entity<Shell>, config_dir: &Path, files: &RefCell<BTreeSet<St
     if workspaces_changed {
         let now = workspace_files(config_dir);
         if *files.borrow() != now {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, "Restart devdeck to add or remove a workspace.", vec![], cx));
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, "Restart Kugelblitz to add or remove a workspace.", vec![], cx));
             *files.borrow_mut() = now;
         }
         for e in &errors {

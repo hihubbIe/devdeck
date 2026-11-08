@@ -17,7 +17,7 @@ pub const OFF: &str = "turn on edit mode first (the warning button in the title 
 pub const ALLOWS: [&str; 5] = [
     "Deploys: setting an image, undoing a rollout, restarts and replicas.",
     "Git: replacing a rewritten branch on the remote, aborting a rebase, merge, cherry-pick, revert or am.",
-    "Stopping a process devdeck didn't start (one holding a port).",
+    "Stopping a process Kugelblitz didn't start (one holding a port).",
     "A shell in a pod, and k9s with its write actions.",
     "Protected envs still ask for their name; main and master are never pushed.",
 ];
@@ -121,7 +121,7 @@ impl Render for TurnOn {
             .on_action(cx.listener(|this, _: &devdeck_ui::overlay::ModalClose, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &ConfirmEditMode, window, cx| this.confirm(window, cx)))
             .child(div().text_color(t.hi).debug_selector(|| "edit-mode-title".into()).child("Turn on edit mode?"))
-            .child(label("While it's on, devdeck can do things that are hard to undo:").text_color(t.mute))
+            .child(label("While it's on, Kugelblitz can do things that are hard to undo:").text_color(t.mute))
             .children(ALLOWS.iter().map(|l| div().text_color(t.fg).child(format!("· {l}"))))
             .child(label("Turn it off with the same button when you're done; it's off at every start.").text_color(t.mute))
             .child(

@@ -59,7 +59,7 @@ impl Render for PortView {
         let stop = {
             let runner = self.ctx.services.read(cx).runner.downgrade();
             let port = info.port;
-            let why = if self.ctx.services.read(cx).config.is_some() { "another user's process: stop it where it runs" } else { "not started by devdeck: stop it where it runs" };
+            let why = if self.ctx.services.read(cx).config.is_some() { "another user's process: stop it where it runs" } else { "not started by Kugelblitz: stop it where it runs" };
             button("stop-holder", "stop holder", &t)
                 .debug_selector(|| "stop-holder".into())
                 .when(holder.is_none(), |b| b.text_color(t.dim).tooltip(tip(why)))

@@ -86,7 +86,7 @@ pub fn load(machine: MachineConfig, cx: &mut App) -> Entity<Environment> {
                     e.shell_problems.clear();
                 }
                 Err((why, own)) => {
-                    let text = format!("{why}; runs use devdeck's own environment");
+                    let text = format!("{why}; runs use Kugelblitz's own environment");
                     devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Warn, text.clone(), vec![], cx));
                     e.shell_problems = vec![text];
                     e.state = EnvState::Ready(own);

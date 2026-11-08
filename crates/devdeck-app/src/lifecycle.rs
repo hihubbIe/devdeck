@@ -5,7 +5,7 @@
 //!   leftovers). The demo has its own state folder, so its own lock.
 //! - At start, what a previous devdeck left running (`GroupLog::leftovers`: its runs'
 //!   scopes still holding processes, or groups) is offered in a dialog, one row per run:
-//!   "N processes left by a previous devdeck: Kill / Leave". Leave forgets them, so this
+//!   "N processes left by a previous Kugelblitz: Kill / Leave". Leave forgets them, so this
 //!   devdeck doesn't kill them when it quits.
 //! - SIGTERM, SIGHUP and SIGINT to devdeck: the app marks what runs as stopped to quit,
 //!   kills everything, saves and quits; so the runs start again when devdeck reopens. If
@@ -44,7 +44,7 @@ pub fn claim(state_dir: &Path) -> Result<InstanceLock, String> {
     if flock(&file, FlockOperation::NonBlockingLockExclusive).is_err() {
         let mut pid = String::new();
         let _ = file.read_to_string(&mut pid);
-        return Err(format!("devdeck is already running (pid {})", pid.trim()));
+        return Err(format!("Kugelblitz is already running (pid {})", pid.trim()));
     }
     // Who holds it, for the message a second devdeck shows.
     let _ = file.set_len(0).and_then(|_| file.rewind()).and_then(|_| write!(file, "{}", std::process::id()));
@@ -115,7 +115,7 @@ fn open_leftovers(leftovers: Vec<Leftover>, log: GroupLog, window: &mut Window, 
     first.focus(window, cx);
 }
 
-/// "N processes left by a previous devdeck", one row per run (its name and what runs
+/// "N processes left by a previous Kugelblitz", one row per run (its name and what runs
 /// in it, or a group's command): Kill (Enter) or Leave (Esc).
 pub struct Leftovers {
     pub leftovers: Vec<Leftover>,
@@ -152,7 +152,7 @@ impl Render for Leftovers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let n: usize = self.leftovers.iter().map(|l| l.pids.len()).sum();
-        let title = if n == 1 { "1 process left by a previous devdeck".to_string() } else { format!("{n} processes left by a previous devdeck") };
+        let title = if n == 1 { "1 process left by a previous Kugelblitz".to_string() } else { format!("{n} processes left by a previous Kugelblitz") };
         let list = div().flex().flex_col().gap_1().children(
             self.rows.iter().map(|r| div().flex().items_center().gap_1().child(dot(t.warn, true, &t)).child(label(r.clone()).text_color(t.warn))),
         );
@@ -176,7 +176,7 @@ impl Render for Leftovers {
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.leave(window, cx)))
             .on_action(cx.listener(|this, _: &KillLeftovers, window, cx| this.confirm(window, cx)))
             .child(div().text_color(t.hi).child(title))
-            .child(label("devdeck didn't stop them (it was killed or crashed). They may hold ports.").text_color(t.mute))
+            .child(label("Kugelblitz didn't stop them (it was killed or crashed). They may hold ports.").text_color(t.mute))
             .child(list)
             .child(buttons);
         modal_frame(content.into_any_element(), window, &t)

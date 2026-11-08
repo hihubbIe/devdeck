@@ -477,7 +477,7 @@ fn open_quit_guard(shell: Entity<Shell>, running: Vec<(String, Vec<String>)>, wi
     first.focus(window, cx);
 }
 
-/// "Quit devdeck?" with what runs, per workspace. Enter picks the focused button
+/// "Quit Kugelblitz?" with what runs, per workspace. Enter picks the focused button
 /// ("Stop all and quit" first), Esc cancels.
 pub struct QuitGuard {
     shell: Entity<Shell>,
@@ -556,7 +556,7 @@ impl Render for QuitGuard {
             .on_action(cx.listener(|this, _: &ModalPrev, window, cx| this.focus.cycle(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.cancel(window, cx)))
             .on_action(cx.listener(|this, _: &ConfirmQuit, window, cx| this.confirm(window, cx)))
-            .child(div().text_color(t.hi).child("Quit devdeck?"))
+            .child(div().text_color(t.hi).child("Quit Kugelblitz?"))
             .child(label("These are still running:").text_color(t.mute))
             .child(list)
             .child(buttons);

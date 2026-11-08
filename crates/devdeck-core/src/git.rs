@@ -905,7 +905,7 @@ pub const NEVER_PUSHED: [&str; 2] = ["main", "master"];
 /// Refuses `main` and `master` (any case).
 pub fn never_pushed(branch: &str) -> Result<(), String> {
     if NEVER_PUSHED.iter().any(|b| branch.eq_ignore_ascii_case(b)) {
-        return Err(format!("devdeck never pushes {branch}: push it from a terminal if you must"));
+        return Err(format!("Kugelblitz never pushes {branch}: push it from a terminal if you must"));
     }
     Ok(())
 }

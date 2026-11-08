@@ -14,13 +14,13 @@ use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
-use devdeck_ui::{DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
+use devdeck_ui::{APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
     FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Point, Render, ResizeEdge, SharedString, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
-    Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, point, prelude::*, relative,
+    Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, img, point, prelude::*, relative,
     size,
 };
 use std::cell::Cell;
@@ -210,7 +210,7 @@ impl WindowView {
             cx.defer(shell::request_quit);
             false
         });
-        window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
+        window.set_window_title(&format!("{APP_NAME} · {}", shell.read(cx).active_name()));
         let sidebar = shell.read(cx).active_sidebar();
         let mut this = Self::build(MAIN_WINDOW, Some(shell.downgrade()), deck, observe, window, cx);
         this.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
@@ -232,7 +232,7 @@ impl WindowView {
             close_deck.update(cx, |d, cx| d.os_window_closed(id, cx));
             true
         });
-        window.set_window_title(&format!("devdeck · {} · detached", deck.read(cx).workspace));
+        window.set_window_title(&format!("{APP_NAME} · {} · detached", deck.read(cx).workspace));
         Self::build(id, None, deck, observe, window, cx)
     }
 
@@ -327,7 +327,7 @@ impl WindowView {
             self.view_target = None;
             let sidebar = shell.read(cx).active_sidebar();
             self.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
-            window.set_window_title(&format!("devdeck · {}", shell.read(cx).active_name()));
+            window.set_window_title(&format!("{APP_NAME} · {}", shell.read(cx).active_name()));
             if !app_settings::is_open(cx) {
                 match self.remembered.get(&self.deck.entity_id()).and_then(WeakFocusHandle::upgrade) {
                     Some(h) => h.focus(window, cx),
@@ -639,7 +639,17 @@ impl Render for WindowView {
                     window.start_window_move();
                 }
             })
-            .child(div().text_color(t.hi).child("devdeck"))
+            .child(
+                div()
+                    .id("app-name")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_color(t.hi)
+                    .tooltip(tip(APP_NAME))
+                    .child(img(APP_ICON).flex_none().size(t.size(18.)))
+                    .child(APP_NAME),
+            )
             .when_some(menu_shell, |d, shell| {
                 d.child(
                     bar_control(button("workspace", ws_name.clone(), &t))
@@ -1496,12 +1506,17 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     .child(v.clone().cached(StyleRefinement::default().size_full()))
                     .into_any_element()
             }
+            // An empty pane welcomes: the app's icon and name, and how to fill it.
             None => div()
                 .size_full()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
+                .gap_2()
                 .text_color(t.mute)
+                .child(img(APP_ICON).flex_none().size(t.size(72.)))
+                .child(div().text_color(t.hi).child(format!("Welcome to {APP_NAME}")))
                 .child(label("Empty pane. Drop a tab here.").debug_selector(|| "empty-message".into()))
                 .into_any_element(),
         });

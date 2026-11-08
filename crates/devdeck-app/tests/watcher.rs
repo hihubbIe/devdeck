@@ -128,7 +128,7 @@ fn config_problems_follow_the_files(cx: &mut TestAppContext) {
     std::fs::write(&file, "folders = [").unwrap();
     until(cx, "the problem", |cx| !config_problems(cx).is_empty());
     assert!(config_problems(cx)[0].contains("work.toml"), "{:?}", config_problems(cx));
-    assert!(!toast_texts(cx).iter().any(|t| t.starts_with("Restart devdeck")), "the same files: no restart needed");
+    assert!(!toast_texts(cx).iter().any(|t| t.starts_with("Restart Kugelblitz")), "the same files: no restart needed");
     std::fs::write(&file, good).unwrap();
     until(cx, "cleared", |cx| config_problems(cx).is_empty());
 }

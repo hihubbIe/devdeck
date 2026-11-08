@@ -693,7 +693,7 @@ impl Render for ServiceView {
 
         let mut hist = div().flex().flex_col();
         if history.is_empty() {
-            hist = hist.child(label("no deploys from devdeck yet").text_color(t.dim));
+            hist = hist.child(label("no deploys from Kugelblitz yet").text_color(t.dim));
         }
         for r in history.iter().rev() {
             let failed = r.outcome.starts_with("failed");
