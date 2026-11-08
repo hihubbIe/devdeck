@@ -33,7 +33,7 @@ as today. Covers R3.12 (new), and touches R3.4, R3.6.
 - The bar keeps what the strip has (drop target, grip, pane buttons); it draws either the
   tab list or the title.
 - The title: id `("tab", pane, 0)`, debug selectors `tab-{pane}-0` and `tab-title` kept
-  (it is that tab, so tests and the menu key's anchor find it), drag `DraggedTab`, click
+  (it is that tab, so tests find it), drag `DraggedTab`, click
   activates and focuses, double-click maximizes, middle-click closes, right-click
   `tab_menu`.
 - Right-click on the rest of the header: the tab menu with one tab, the pane menu with none.
@@ -49,7 +49,7 @@ as today. Covers R3.12 (new), and touches R3.4, R3.6.
   to "its tab strip or header".
 - DESIGN layout section: the header rule and its states.
 
-## Tests (`crates/devdeck-app/tests/deck.rs`)
+## Tests (`crates/devdeck-app/tests/pane_header.rs`)
 
 - One tab: the header shows, no tab list; a second tab: the tab list, no header; back to
   one: the header. The body's top is the same in all three.
@@ -84,6 +84,22 @@ long titles, 07 empty, 08 detached, 14 detached at 150, and a new 15-one-tab-foc
 - 11 Taken: R3.4's handle clause, DESIGN's collapsed line, `pane_menu`'s comment.
 - 12 Taken: 15-one-tab-focused and 16-one-tab-focused-150; × checked in 06.
 - 13 Taken: the divider is a 1 px `line` div sized by tokens.
+
+## Diff review (subagent, 2026-11-08) and assessment
+
+- 1 Taken: the narrow test asserts the pane buttons gave way first (`pane-buttons-{pane}`);
+  it fails with the buttons' shrink at 1.
+- 2 Taken: a strip's tab right-click asserts its own menu, not the strip's pane menu.
+- 3 Taken: the focus line has a selector, asserted only when focused; the title's top
+  is the same focused or not.
+- 4 Rejected: an empty pane is only ever the last pane of a window (a pane goes with
+  its last tab), so no tab of that window can be dragged onto it, and tabs don't drag
+  between windows (R3.8). The plan's "drop on an empty pane's header" was not reachable.
+- 5 Taken: the tests are in `tests/pane_header.rs`.
+- 6 Taken: an empty pane's menu disables "Send pane to…" and "Close pane" (no tabs).
+- 7 Taken: the title has the pointer cursor, no hover background (no tab shape).
+- 8 Left: a tab dragged over its own header highlights it, as over its own strip today.
+- 9 Taken: the closure no longer shadows the pane id.
 
 ## Out of scope
 

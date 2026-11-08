@@ -17,9 +17,9 @@ use crate::views;
 use devdeck_ui::{APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, DragMoveEvent, Entity, EntityId,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId,
     FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Point, Render, ResizeEdge, SharedString, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
+    Point, Render, ResizeEdge, SharedString, Stateful, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
     Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, img, point, prelude::*, relative,
     size,
 };
@@ -396,7 +396,12 @@ impl WindowView {
         let origin = self.panes_origin.get();
         let at = rect.map_or(origin, |r| point(origin.x + logical(r.x) + t.size(24.), origin.y + logical(r.y) + t.tab_h));
         let d = self.deck.read(cx);
-        let items = tab_menu(&self.deck, p, active, self.id, d.layout(), &d.book.keep, cx);
+        // An empty pane has no tab: its menu is the pane's (R3.12).
+        let items = if d.layout().pane(p).is_ok_and(|pane| pane.tabs.is_empty()) {
+            pane_menu(&self.deck, p, d.layout(), cx)
+        } else {
+            tab_menu(&self.deck, p, active, self.id, d.layout(), &d.book.keep, cx)
+        };
         open_menu(at, items, window, cx);
     }
 
@@ -1223,23 +1228,46 @@ fn open_terminal_item(deck: &Entity<Deck>, pane: PaneId, window: WindowId, view:
     places::item("Open terminal here", Place::Pane(pane), window, deck, None, cx, move |d, place, cx| d.open_terminal(&folder, place, cx))
 }
 
-/// The menu of a pane (right-click on its tab strip or grip).
+/// What a tab does by mouse, on the strip and as a header's title (R3.12): a click
+/// activates it (two maximize), middle-click closes, right-click opens its menu, it drags.
+fn tab_handlers(el: Stateful<Div>, f: &Frame, pane: PaneId, i: usize, title: &SharedString) -> Stateful<Div> {
+    let (d_click, d_mid, d_menu) = (f.deck.clone(), f.deck.clone(), f.deck.clone());
+    let (deck_id, window_id) = (f.deck.entity_id(), f.window);
+    el.on_click(move |e, _, cx| {
+        let double = e.click_count() == 2;
+        apply_on(&d_click, cx, |l| {
+            l.activate(pane, i)?;
+            if double { l.toggle_maximize(pane) } else { Ok(()) }
+        });
+    })
+    .on_mouse_down(MouseButton::Middle, move |_, _, cx| apply_on(&d_mid, cx, |l| l.close_tab(pane, i).map(|_| ())))
+    .on_mouse_down(MouseButton::Right, move |e, window, cx| {
+        cx.stop_propagation();
+        let d = d_menu.read(cx);
+        let items = tab_menu(&d_menu, pane, i, window_id, d.layout(), &d.book.keep, cx);
+        open_menu(e.position, items, window, cx);
+    })
+    .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| cx.new(|_| DragGhost(d.title.clone())))
+}
+
+/// The menu of a pane (right-click on its tab strip or grip, or on an empty pane's header).
 fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Vec<MenuItem> {
     let tabs = layout.pane(pane).map(|p| p.tabs.len()).unwrap_or(0);
     let d = |deck: &Entity<Deck>| deck.clone();
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
     let split = |item: MenuItem| if tabs < 2 { item.disabled("needs two tabs") } else { item };
+    let some = |item: MenuItem| if tabs == 0 { item.disabled("no tabs") } else { item };
     vec![
         split(MenuItem::new("Split right", move |_, cx| apply_on(&d1, cx, |l| split_active(l, pane, Edge::Right)))),
         split(MenuItem::new("Split down", move |_, cx| apply_on(&d2, cx, |l| split_active(l, pane, Edge::Bottom)))),
         MenuItem::separator(),
         MenuItem::new("Collapse", move |_, cx| apply_on(&d3, cx, |l| l.toggle_collapse(pane))),
         MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))),
-        MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx)),
+        some(MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx))),
         MenuItem::separator(),
         open_terminal_item(deck, pane, layout.window_of(pane).unwrap_or(MAIN_WINDOW), None, cx),
         MenuItem::separator(),
-        MenuItem::new("Close pane", move |_, cx| {
+        some(MenuItem::new("Close pane", move |_, cx| {
             apply_on(&d6, cx, |l| {
                 let views = l.pane(pane)?.tabs.clone();
                 for v in views {
@@ -1247,7 +1275,7 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Ve
                 }
                 Ok(())
             })
-        }),
+        })),
     ]
 }
 
@@ -1288,11 +1316,16 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         return rail.into_any_element();
     }
 
-    // Tab strip: drop target for tabs (move into this pane).
+    // One tab or none: a header naming the view, its title being the tab (R3.12); more:
+    // the tab strip. Either is a drop target for tabs (move into this pane).
+    let header = p.tabs.len() <= 1;
+    let one = p.tabs.len() == 1;
     let drop_bg = t.drop_bg;
     let strip_deck = f.deck.clone();
     let mut strip = div()
         .id(("strip", pane.0))
+        .when(header, |d| d.debug_selector(move || format!("pane-header-{}", pane.0)))
+        .relative()
         .flex_none()
         .h(t.tab_h)
         .w_full()
@@ -1303,10 +1336,10 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         .border_color(t.line)
         .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(drop_bg))
         .on_mouse_down(MouseButton::Right, {
-            let deck = f.deck.clone();
+            let (deck, window_id) = (f.deck.clone(), f.window);
             move |e, window, cx| {
-                let layout = deck.read(cx).layout().clone();
-                let items = pane_menu(&deck, pane, &layout, cx);
+                let d = deck.read(cx);
+                let items = if one { tab_menu(&deck, pane, 0, window_id, d.layout(), &d.book.keep, cx) } else { pane_menu(&deck, pane, d.layout(), cx) };
                 open_menu(e.position, items, window, cx);
             }
         })
@@ -1342,96 +1375,100 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             .child(icon(Icon::Grip, t.dim, t)),
     );
 
-    // Tabs keep priority over the pane buttons when the pane is narrow.
-    let mut tabs = div().flex().flex_1().min_w(t.tabs_min_w).overflow_hidden();
-    for (i, title) in titles.iter().enumerate() {
-        let active = i == p.active;
-        let (d_click, d_mid, d_close) = (f.deck.clone(), f.deck.clone(), f.deck.clone());
-        let full = title.clone();
-        let (hover, line, fg, accent) = (t.hover, t.line, t.fg, t.accent);
-        // Dragged over, a tab is a place: its left half before it, its right half after.
-        let (moving, showing, dropping) = (f.tab_insert.clone(), f.tab_insert.clone(), f.tab_insert.clone());
-        let d_drop = f.deck.clone();
-        tabs = tabs.child(
-            div()
-                .id(eid("tab", pane.0, i))
-                .debug_selector(move || format!("tab-{}-{i}", pane.0))
+    // Tabs (or the title) keep priority over the pane buttons when the pane is narrow.
+    // A header's title gives way after the pane buttons (they shrink far faster), never ×.
+    if header {
+        strip = strip.child(match titles.first() {
+            Some(title) => tab_handlers(div().id(eid("tab", pane.0, 0)), f, pane, 0, title)
+                .debug_selector(move || format!("tab-{}-0", pane.0))
                 .flex()
-                .flex_shrink(1.)
-                .min_w(t.tab_min_w)
-                .max_w(t.tab_max_w)
+                .flex_auto()
+                .min_w_0()
                 .h_full()
-                .px_3()
-                .gap_2()
+                .px_2()
                 .items_center()
-                .border_r_1()
-                .border_color(t.line)
-                .when(active, |d| d.bg(t.bg).text_color(t.fg))
-                .when(!active, |d| d.text_color(t.mute))
-                .when(active && focused, |d| d.border_t_2().border_color(t.accent))
-                .hover(move |s| s.bg(hover))
+                .text_color(t.fg)
                 .cursor_pointer()
-                .tooltip(tip(full))
-                .on_click(move |e, _, cx| {
-                    let double = e.click_count() == 2;
-                    apply_on(&d_click, cx, |l| {
-                        l.activate(pane, i)?;
-                        if double { l.toggle_maximize(pane) } else { Ok(()) }
-                    });
-                })
-                .on_mouse_down(MouseButton::Middle, move |_, _, cx| apply_on(&d_mid, cx, |l| l.close_tab(pane, i).map(|_| ())))
-                .on_mouse_down(MouseButton::Right, {
-                    let (deck, window_id) = (f.deck.clone(), f.window);
-                    move |e, window, cx| {
-                        cx.stop_propagation();
-                        let d = deck.read(cx);
-                        let items = tab_menu(&deck, pane, i, window_id, d.layout(), &d.book.keep, cx);
-                        open_menu(e.position, items, window, cx);
-                    }
-                })
-                .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| {
-                    cx.new(|_| DragGhost(d.title.clone()))
-                })
-                .on_drag_move::<DraggedTab>(move |e, window, _| {
-                    if !e.bounds.contains(&e.event.position) {
-                        return;
-                    }
-                    let at = if e.event.position.x < e.bounds.center().x { i } else { i + 1 };
-                    if moving.get() != Some((pane, at)) {
-                        moving.set(Some((pane, at)));
-                        window.refresh();
-                    }
-                })
-                .drag_over::<DraggedTab>(move |s, _, _, _| match showing.get() {
-                    Some((p, at)) if p == pane && at == i => s.border_l_2().border_color(accent),
-                    Some((p, at)) if p == pane && at == i + 1 => s.border_r_2().border_color(accent),
-                    _ => s,
-                })
-                .on_drop(move |tab: &DraggedTab, _, cx| {
-                    let at = dropping.take().filter(|(p, _)| *p == pane).map_or(i, |(_, at)| at);
-                    if tab.deck == deck_id {
-                        let tab = tab.clone();
-                        apply_on(&d_drop, cx, |l| l.move_tab_to(tab.pane, tab.index, pane, at));
-                    }
-                })
+                .tooltip(tip(title.clone()))
                 .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
-                .child(
-                    div()
-                        .id(eid("tab-x", pane.0, i))
-                        .flex_none()
-                        .px_1()
-                        .rounded(t.radius_s)
-                        .group("tab-close")
-                        .hover(move |s| s.bg(line))
-                        .on_click(move |_, _, cx| {
-                            cx.stop_propagation();
-                            apply_on(&d_close, cx, |l| l.close_tab(pane, i).map(|_| ()));
-                        })
-                        .child(icon(Icon::Close, t.dim, t).size(t.size(12.)).group_hover("tab-close", move |s| s.text_color(fg))),
-                ),
-        );
+                .into_any_element(),
+            None => div().flex_1().into_any_element(),
+        });
+    } else {
+        let mut tabs = div()
+            .flex()
+            .flex_1()
+            .min_w(t.tabs_min_w)
+            .overflow_hidden()
+            .debug_selector(move || format!("pane-tabs-{}", pane.0));
+        for (i, title) in titles.iter().enumerate() {
+            let active = i == p.active;
+            let d_close = f.deck.clone();
+            let full = title.clone();
+            let (hover, line, fg, accent) = (t.hover, t.line, t.fg, t.accent);
+            // Dragged over, a tab is a place: its left half before it, its right half after.
+            let (moving, showing, dropping) = (f.tab_insert.clone(), f.tab_insert.clone(), f.tab_insert.clone());
+            let d_drop = f.deck.clone();
+            tabs = tabs.child(
+                tab_handlers(div().id(eid("tab", pane.0, i)), f, pane, i, title)
+                    .debug_selector(move || format!("tab-{}-{i}", pane.0))
+                    .flex()
+                    .flex_shrink(1.)
+                    .min_w(t.tab_min_w)
+                    .max_w(t.tab_max_w)
+                    .h_full()
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(t.line)
+                    .when(active, |d| d.bg(t.bg).text_color(t.fg))
+                    .when(!active, |d| d.text_color(t.mute))
+                    .when(active && focused, |d| d.border_t_2().border_color(t.accent))
+                    .hover(move |s| s.bg(hover))
+                    .cursor_pointer()
+                    .tooltip(tip(full))
+                    .on_drag_move::<DraggedTab>(move |e, window, _| {
+                        if !e.bounds.contains(&e.event.position) {
+                            return;
+                        }
+                        let at = if e.event.position.x < e.bounds.center().x { i } else { i + 1 };
+                        if moving.get() != Some((pane, at)) {
+                            moving.set(Some((pane, at)));
+                            window.refresh();
+                        }
+                    })
+                    .drag_over::<DraggedTab>(move |s, _, _, _| match showing.get() {
+                        Some((p, at)) if p == pane && at == i => s.border_l_2().border_color(accent),
+                        Some((p, at)) if p == pane && at == i + 1 => s.border_r_2().border_color(accent),
+                        _ => s,
+                    })
+                    .on_drop(move |tab: &DraggedTab, _, cx| {
+                        let at = dropping.take().filter(|(p, _)| *p == pane).map_or(i, |(_, at)| at);
+                        if tab.deck == deck_id {
+                            let tab = tab.clone();
+                            apply_on(&d_drop, cx, |l| l.move_tab_to(tab.pane, tab.index, pane, at));
+                        }
+                    })
+                    .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
+                    .child(
+                        div()
+                            .id(eid("tab-x", pane.0, i))
+                            .flex_none()
+                            .px_1()
+                            .rounded(t.radius_s)
+                            .group("tab-close")
+                            .hover(move |s| s.bg(line))
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                apply_on(&d_close, cx, |l| l.close_tab(pane, i).map(|_| ()));
+                            })
+                            .child(icon(Icon::Close, t.dim, t).size(t.size(12.)).group_hover("tab-close", move |s| s.text_color(fg))),
+                    ),
+            );
+        }
+        strip = strip.child(tabs);
     }
-    strip = strip.child(tabs);
 
     // Pane buttons.
     let is_detached = f.window != MAIN_WINDOW;
@@ -1440,7 +1477,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
     let can_detach = !p.tabs.is_empty() && !(is_detached && p.tabs.len() == 1);
     strip = strip.child(
         div()
-            .flex_shrink(1.)
+            .debug_selector(move || format!("pane-buttons-{}", pane.0))
+            .flex_shrink(if header { 100. } else { 1. })
             .min_w_0()
             .overflow_hidden()
             .flex()
@@ -1472,6 +1510,37 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 )
             }),
     );
+    // A header's ×, in its own box: a narrow pane clips the buttons, never it.
+    if one {
+        let d_close = f.deck.clone();
+        strip = strip.child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_1()
+                .pr_1()
+                .child(div().w(t.hairline).h(t.icon).bg(t.line))
+                .child(
+                    icon_button(("close", pane.0), Icon::Close, "close", t)
+                        .debug_selector(move || format!("pane-close-{}", pane.0))
+                        .on_click(move |_, _, cx| apply_on(&d_close, cx, |l| l.close_tab(pane, 0).map(|_| ()))),
+                ),
+        );
+    }
+    // A header's focus: a line drawn over its top, not a border, so nothing moves.
+    if header && focused {
+        strip = strip.child(
+            div()
+                .debug_selector(move || format!("pane-focus-{}", pane.0))
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(t.hairline * 2.)
+                .bg(t.accent),
+        );
+    }
 
     if p.collapsed {
         return div().size_full().child(strip).into_any_element();
@@ -1482,6 +1551,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
     let window = f.window;
     let mut body = div()
         .id(("body", pane.0))
+        .debug_selector(move || format!("pane-body-{}", pane.0))
         .relative()
         .flex_1()
         .min_w_0()

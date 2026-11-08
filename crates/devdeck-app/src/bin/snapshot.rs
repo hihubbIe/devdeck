@@ -833,6 +833,14 @@ fn collapsed_row() -> Layout {
     l
 }
 
+/// The focus on a one-tab pane: its header's accent line (R3.12).
+fn one_tab_focused() -> Layout {
+    let mut l = devdeck_app::initial_layout();
+    let p = pane_of(&l, "matrix");
+    l.focus(p).unwrap();
+    l
+}
+
 fn maximized() -> Layout {
     let mut l = devdeck_app::initial_layout();
     let p = pane_of(&l, "matrix");
@@ -909,6 +917,8 @@ fn states() -> Vec<State> {
         s("12-scale-150", devdeck_app::initial_layout, 500, 1.5, false),
         s("13-narrow-at-80", narrow, 500, 0.8, false),
         s("14-detached-at-150", detached, 500, 1.5, false),
+        s("15-one-tab-focused", one_tab_focused, 500, 1.0, false),
+        s("16-one-tab-focused-150", one_tab_focused, 500, 1.5, false),
         s("20-settings-100", devdeck_app::initial_layout, 200, 1.0, true),
         s("21-settings-150", devdeck_app::initial_layout, 200, 1.5, true),
         x("30-gallery-menu-toasts", 1.0, gallery_menu_and_toasts),
