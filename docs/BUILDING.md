@@ -40,8 +40,10 @@ scripts/install.sh
 ```
 
 Builds the release binary and installs it for this user: `~/.local/bin/devdeck`, its
-icon (`assets/app/devdeck.svg`) and a launcher in `~/.local/share/applications`. Then
-press Super, type devdeck, right-click it and choose Pin to Dash: the dock keeps it,
+icon (`assets/app/devdeck.svg`, a black hole) and a launcher in
+`~/.local/share/applications`. The installed app is called **Kugelblitz**; the binary,
+the window's app id and the files stay `devdeck`. Then press Super, type Kugelblitz,
+right-click it and choose Pin to Dash: the dock keeps it,
 and a click on it brings the open window forward (the launcher's `StartupWMClass` is the
 window's app id, `devdeck`). Run the script again to update (quit devdeck first or
 restart it after: a running one keeps the old binary). `scripts/install.sh --uninstall`

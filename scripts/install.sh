@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Installs devdeck for this user (docs/BUILDING.md, "Install"): the release binary in
-# ~/.local/bin, its icon, and a launcher the desktop's app grid and dock show. Run it
-# again to update; `--uninstall` removes the three files (settings and state stay).
+# ~/.local/bin, its icon, and a launcher the desktop's app grid and dock show, named
+# Kugelblitz (the installed app's name; files and ids stay `devdeck`, so a pin in the
+# dock survives a rename). Run it again to update; `--uninstall` removes the three files
+# (settings and state stay).
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,7 +20,7 @@ refresh() {
 if [[ "${1:-}" == "--uninstall" ]]; then
     rm -f "$bin" "$icon" "$launcher"
     refresh
-    echo "devdeck uninstalled (settings and state kept)."
+    echo "Kugelblitz (devdeck) uninstalled (settings and state kept)."
     exit 0
 fi
 
@@ -36,8 +38,8 @@ install -m 644 "$repo/assets/app/devdeck.svg" "$icon"
 cat > "$launcher" <<EOF
 [Desktop Entry]
 Type=Application
-Name=devdeck
-Comment=Run, watch and deploy your apps and services
+Name=Kugelblitz
+Comment=Run, watch and deploy your apps and services (devdeck)
 Exec=$bin
 Icon=devdeck
 Terminal=false
@@ -47,5 +49,5 @@ StartupNotify=true
 EOF
 refresh
 
-echo "devdeck installed: $bin"
-echo "Pin it: press Super, type devdeck, right-click it, Pin to Dash."
+echo "Kugelblitz (devdeck) installed: $bin"
+echo "Pin it: press Super, type Kugelblitz, right-click it, Pin to Dash."
