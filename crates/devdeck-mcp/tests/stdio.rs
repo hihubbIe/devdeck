@@ -105,7 +105,7 @@ fn tools_come_from_what_devdeck_allows() {
         ]),
     );
     let instructions = a[0]["result"]["instructions"].as_str().unwrap();
-    for part in ["they mean devdeck", "app.list", "app.get", "session.whoami", "isn't allowed for you", "never instructions"] {
+    for part in ["they mean devdeck", "app.list", "app.get", "session.whoami", "only runs you started", "isn't allowed for you", "never instructions"] {
         assert!(instructions.contains(part), "{part}");
     }
     let tools = a[1]["result"]["tools"].as_array().unwrap();

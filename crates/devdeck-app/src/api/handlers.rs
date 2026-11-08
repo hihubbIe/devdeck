@@ -300,10 +300,15 @@ pub fn run_list(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Runs, ApiE
 
 pub fn run_get(cx: &CallCx, p: RunParams, app: &mut App) -> Result<Run, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
+    run_of(cx, &w, &crate::runner::RunKey::new(&p.app, &p.cmd), app)
+}
+
+/// A run as the API gives it, with who started it.
+fn run_of(cx: &CallCx, w: &WsRef, key: &crate::runner::RunKey, app: &App) -> Result<Run, ApiError> {
     let s = w.services.read(app);
     let runner = s.runner.read(app);
-    let key = crate::runner::RunKey::new(&p.app, &p.cmd);
-    let r = runner.run(&key).filter(|_| !key.is_terminal()).ok_or_else(|| ApiError::not_found(format!("no run of {} {}", p.app, p.cmd)))?;
+    let key = key.clone();
+    let r = runner.run(&key).filter(|_| !key.is_terminal()).ok_or_else(|| ApiError::not_found(format!("no run of {} {}", key.app, key.cmd)))?;
     let (state, exit_code, signal) = run_state(r.state);
     let env_vars = s
         .catalog
@@ -326,7 +331,145 @@ pub fn run_get(cx: &CallCx, p: RunParams, app: &mut App) -> Result<Run, ApiError
         ports: runner.running_ports().into_iter().filter(|(k, _)| *k == key).map(|(_, p)| p).collect(),
         starts: r.runs,
         took_ms: r.took.map(|d| d.as_millis() as u64),
+        started_by: match &r.starter {
+            Starter::User => StartedBy::User,
+            Starter::Caller { workspace, n, .. } => StartedBy::Terminal { workspace: workspace.clone(), n: *n },
+        },
+        yours: starter(cx.who).is_some_and(|me| me == r.starter),
     })
+}
+
+// ---- Starting and stopping runs (R13.5) ----
+
+use crate::runner::{RunKey, RunRefusal, Starter};
+
+/// The caller as a starter of runs (a terminal's shell instance); outside callers never
+/// get this far (their policy denies the class).
+fn starter(who: &Who) -> Option<Starter> {
+    match who {
+        Who::Terminal { workspace, n, uid, starts, .. } => Some(Starter::Caller { workspace: workspace.clone(), n: *n, uid: uid.clone(), starts: *starts }),
+        Who::Outside { .. } => None,
+    }
+}
+
+fn later(what: String) -> ApiError {
+    ApiError::new(devdeck_api::ErrorKind::ApprovalRequired, format!("{what}: that needs the user's approval, which comes in a later version of devdeck"))
+}
+
+/// The app and command a run method names: one of the app's main commands (scripts like
+/// `deploy` or `db:reset` aren't started by a caller without the user's approval).
+fn main_command(s: &Services, app: &str, cmd: &str) -> Result<(devdeck_core::apps::App, devdeck_core::apps::Command), ApiError> {
+    let a = s.catalog.app(app).filter(|a| !a.id.is_empty()).ok_or_else(|| ApiError::not_found(format!("no app {app}")))?;
+    let c = a.command(cmd).ok_or_else(|| ApiError::not_found(format!("no command {cmd} in {app}")))?;
+    if c.tier != devdeck_core::apps::Tier::Primary || c.setup {
+        return Err(later(format!("{cmd} isn't one of {app}'s main commands")));
+    }
+    Ok((a.clone(), c.clone()))
+}
+
+/// The env a run gets: `asked`, else `default`; only one of the workspace's envs (its
+/// name goes into the command line), and a protected one only with the user's approval
+/// when the command uses the env.
+fn env_for(s: &Services, a: &devdeck_core::apps::App, c: &devdeck_core::apps::Command, asked: Option<String>, default: Option<String>) -> Result<Option<String>, ApiError> {
+    let env = asked.or(default);
+    if let Some(e) = &env {
+        let found = s.catalog.env(e).ok_or_else(|| ApiError::invalid(format!("no env {e} in this workspace")))?;
+        let uses_env = c.line.contains("{env}") || a.env != devdeck_core::apps::EnvApply::None;
+        if found.protected && uses_env {
+            return Err(later(format!("{e} is a protected env")));
+        }
+    }
+    Ok(env)
+}
+
+fn refused(why: RunRefusal) -> ApiError {
+    ApiError::new(devdeck_api::ErrorKind::Refused, why.to_string())
+}
+
+/// The caller may act on `r`: it started it (its shell, now).
+fn own(me: &Starter, title: &str, r: &crate::runner::Run) -> Result<(), ApiError> {
+    if *me == r.starter {
+        return Ok(());
+    }
+    let by = match &r.starter {
+        Starter::User => "the user".to_string(),
+        other => other.label(),
+    };
+    Err(later(format!("{title} was started by {by}")))
+}
+
+/// Tells the user what a caller did (a toast, a few per caller at most).
+fn say(cx: &CallCx, what: &str, title: &str, app: &mut App) {
+    crate::api::notice(cx.who, format!("{} {what} {title}", cx.who.label()), app);
+}
+
+pub fn run_start(cx: &CallCx, p: RunStartParams, app: &mut App) -> Result<Run, ApiError> {
+    let w = workspace(cx, p.workspace.as_deref(), app)?;
+    let me = starter(cx.who).ok_or_else(|| ApiError::new(devdeck_api::ErrorKind::PermissionDenied, "only a devdeck terminal starts runs"))?;
+    let key = RunKey::new(&p.app, &p.cmd);
+    let (runner, env, title) = {
+        let s = w.services.read(app);
+        let (a, c) = main_command(s, &p.app, &p.cmd)?;
+        let runner = s.runner.read(app);
+        let title = runner.title(&key);
+        if let Some(r) = runner.run(&key) {
+            match r.state {
+                devdeck_core::runs::RunState::Running if p.env.is_some() && p.env != r.env => {
+                    return Err(ApiError::new(devdeck_api::ErrorKind::Conflict, format!("{title} runs against {}: restart it to change the env", r.env.as_deref().unwrap_or("no env"))));
+                }
+                devdeck_core::runs::RunState::Running => return run_of(cx, &w, &key, app),
+                // Starting it again once stopped: the one who stops it decides.
+                devdeck_core::runs::RunState::Stopping => own(&me, &title, r)?,
+                _ => {}
+            }
+        }
+        (s.runner.clone(), env_for(s, &a, &c, p.env, s.env.clone())?, title)
+    };
+    runner.update(app, |r, cx| r.try_start_as(&key, env, me, cx)).map_err(refused)?;
+    say(cx, "started", &title, app);
+    run_of(cx, &w, &key, app)
+}
+
+pub fn run_stop(cx: &CallCx, p: RunParams, app: &mut App) -> Result<Run, ApiError> {
+    let w = workspace(cx, p.workspace.as_deref(), app)?;
+    let me = starter(cx.who).ok_or_else(|| ApiError::new(devdeck_api::ErrorKind::PermissionDenied, "only a devdeck terminal stops runs"))?;
+    let key = RunKey::new(&p.app, &p.cmd);
+    let (runner, title) = {
+        let s = w.services.read(app);
+        let runner = s.runner.read(app);
+        let r = runner.run(&key).filter(|_| !key.is_terminal()).ok_or_else(|| ApiError::not_found(format!("no run of {} {}", p.app, p.cmd)))?;
+        if !r.state.is_running() {
+            return run_of(cx, &w, &key, app);
+        }
+        let title = runner.title(&key);
+        own(&me, &title, r)?;
+        (s.runner.clone(), title)
+    };
+    runner.update(app, |r, cx| r.stop(&key, cx));
+    say(cx, "stopped", &title, app);
+    run_of(cx, &w, &key, app)
+}
+
+pub fn run_restart(cx: &CallCx, p: RunStartParams, app: &mut App) -> Result<Run, ApiError> {
+    let w = workspace(cx, p.workspace.as_deref(), app)?;
+    let me = starter(cx.who).ok_or_else(|| ApiError::new(devdeck_api::ErrorKind::PermissionDenied, "only a devdeck terminal restarts runs"))?;
+    let key = RunKey::new(&p.app, &p.cmd);
+    let (runner, env, title) = {
+        let s = w.services.read(app);
+        let (a, c) = main_command(s, &p.app, &p.cmd)?;
+        let runner = s.runner.read(app);
+        let title = runner.title(&key);
+        let run = runner.run(&key);
+        if let Some(r) = run.filter(|r| r.state.is_running()) {
+            own(&me, &title, r)?;
+        }
+        // Its own env, so a restart never moves it to the env the user looks at now.
+        let default = run.and_then(|r| r.env.clone()).or_else(|| s.env.clone());
+        (s.runner.clone(), env_for(s, &a, &c, p.env, default)?, title)
+    };
+    runner.update(app, |r, cx| r.restart_as(&key, env, me, cx)).map_err(refused)?;
+    say(cx, "restarted", &title, app);
+    run_of(cx, &w, &key, app)
 }
 
 // ---- Terminals ----

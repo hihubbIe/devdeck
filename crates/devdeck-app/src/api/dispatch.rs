@@ -64,6 +64,9 @@ handlers! {
     EnvGet => h::env_get,
     EditModeGet => h::editmode_get,
     SettingsGet => h::settings_get,
+    RunStart => h::run_start,
+    RunStop => h::run_stop,
+    RunRestart => h::run_restart,
 }
 
 static HANDLERS: LazyLock<BTreeMap<&'static str, Handler>> = LazyLock::new(table);

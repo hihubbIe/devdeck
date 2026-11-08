@@ -973,8 +973,8 @@ fn api_callers(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell
             s.audit_path = Some("/home/u/.local/state/devdeck/api-audit.jsonl".into());
             let terminal = Who::Terminal { workspace: "work".into(), n: 3, uid: "u".into(), shell: 1, shell_start: 1, starts: 1 };
             let long = Who::Outside { pid: Some(4242), program: "a-program-whose-name-is-long-enough-to-be-cut-short-at-the-end-of-the-settings-page-row-when-it-is-narrow".into() };
-            s.connections.insert(1, Connection { who: terminal.clone(), since: now, calls: 12 });
-            s.connections.insert(2, Connection { who: long, since: now, calls: 1 });
+            s.connections.insert(1, Connection { who: terminal.clone(), pid: Some(4100), since: now, calls: 12 });
+            s.connections.insert(2, Connection { who: long, pid: Some(4242), since: now, calls: 1 });
             s.audit.push_front(Entry::new(terminal.label(), Event::Connected, None, None));
             s.audit.push_front(Entry::new("devdeck-ctl (pid 4242)".into(), Event::Denied, Some("run.list".into()), None));
             s.audit.push_front(Entry::new("?".into(), Event::Refused, None, Some("another user (uid 1001)".into())));

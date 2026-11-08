@@ -76,6 +76,7 @@ fn api_rows(api: Option<&ApiState>, label_w: gpui::Pixels, t: &devdeck_ui::Theme
     let classes = |p: devdeck_api::Policy| Class::ALL.iter().filter(|c| crate::api::policy::terminal(**c) == p).map(|c| c.as_str()).collect::<Vec<_>>().join(", ");
     rows = rows
         .child(row("a terminal may", label(format!("{} · asks you: {}", classes(devdeck_api::Policy::Allow), classes(devdeck_api::Policy::Ask)))))
+        .child(row("", label("runs: an app's main commands; stops and restarts only what it started").text_color(t.mute)))
         .child(row("outside may", label(format!("only {}", crate::api::policy::OUTSIDE_METHODS.join(", ")))));
     let where_ = api.audit_path.as_ref().map_or_else(|| "kept in memory".to_string(), |p| format!("all of it in {}", p.display()));
     rows = rows.child(row("audit", label(format!("newest first; {where_}")).text_color(t.mute)));

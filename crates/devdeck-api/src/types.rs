@@ -448,6 +448,32 @@ pub enum RunState {
     Unknown,
 }
 
+/// Who started a run last.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StartedBy {
+    /// The user, in devdeck.
+    User,
+    /// A caller in a devdeck terminal (its shell at the time).
+    Terminal { workspace: String, n: u32 },
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// A run to start or restart. `env`: one of the workspace's envs; when left out, the
+/// workspace's current env (start) or the run's own (restart).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunStartParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub app: String,
+    pub cmd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RunSummary {
     pub app: String,
@@ -486,6 +512,12 @@ pub struct Run {
     pub starts: u32,
     /// How long its last start ran, once ended.
     pub took_ms: Option<u64>,
+    /// Who started it last (level 2).
+    #[serde(default)]
+    pub started_by: StartedBy,
+    /// The caller started it (its shell, now): it may stop and restart it (level 2).
+    #[serde(default)]
+    pub yours: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -30,7 +30,9 @@ pub trait Visit {
 }
 
 macro_rules! methods {
-    ($( $(#[$doc:meta])* $ty:ident = $name:literal, $class:ident, $params:ty => $result:ty, $summary:literal; )*) => {
+    (@since) => { 1 };
+    (@since $since:literal) => { $since };
+    ($( $(#[$doc:meta])* $ty:ident = $name:literal, $class:ident, $params:ty => $result:ty, $summary:literal $(, since $since:literal)?; )*) => {
         $(
             $(#[$doc])*
             pub struct $ty;
@@ -38,6 +40,7 @@ macro_rules! methods {
                 const NAME: &'static str = $name;
                 const SUMMARY: &'static str = $summary;
                 const CLASS: Class = Class::$class;
+                const SINCE: u32 = methods!(@since $($since)?);
                 type Params = $params;
                 type Result = $result;
             }
@@ -95,6 +98,12 @@ methods! {
         "Whether edit mode is on. Only the user turns it on.";
     SettingsGet = "settings.get", Observe, NoParams => Settings,
         "UI scale and theme.";
+    RunStart = "run.start", Run, RunStartParams => Run,
+        "Starts one of an app's main commands with the arguments the user set; already running, nothing changes.", since 2;
+    RunStop = "run.stop", Run, RunParams => Run,
+        "Stops a run the caller started (the user's runs need the user's approval).", since 2;
+    RunRestart = "run.restart", Run, RunStartParams => Run,
+        "Restarts a run the caller started, or starts it when it isn't running.", since 2;
 }
 
 /// A method as the catalog lists it.
@@ -169,7 +178,10 @@ mod tests {
     }
 
     #[test]
-    fn phase_one_only_observes() {
-        assert!(catalog().iter().all(|m| m.class == Class::Observe && m.escalates_to.is_empty()));
+    fn methods_look_or_run_and_levels_say_when() {
+        for m in catalog() {
+            assert!(matches!(m.class, Class::Observe | Class::Run) && m.escalates_to.is_empty(), "{}", m.name);
+            assert_eq!(m.since, if m.class == Class::Run { 2 } else { 1 }, "{}", m.name);
+        }
     }
 }

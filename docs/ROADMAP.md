@@ -52,9 +52,9 @@ Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), deci
    waiting for the user's manual test ([plans/control-api-p1.md](plans/control-api-p1.md)).
    1b. The MCP server's instructions: generic, saying when the user means devdeck and
    which methods find apps and commands (brought forward from 5) — done 2026-11-08.
-   1c. Starting and stopping runs, a slice of 3 brought forward: `run.start` (configured
-   commands, no arguments), `run.stop`/`run.restart` on runs the caller started, who
-   started what, the `devdeck_run` tool.
+   1c. Starting and stopping runs, a slice of 3 brought forward: `run.start` (an app's
+   main commands, no arguments), `run.stop`/`run.restart` on runs the caller started,
+   who started what, the `devdeck_run` tool — done 2026-11-08.
 2. Bounded reads: output, screen, search, notes, files.
 3. Operations layer, approvals core, events, jobs, waits; present, run, organize.
 4. Approval card; type, remote and destructive methods.

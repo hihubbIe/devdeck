@@ -241,3 +241,37 @@ memory at start 132 MB RSS / 122 MB PSS. Binary 66 725 032 bytes (+0.98 MB over
    `claude` in a devdeck terminal: `/mcp` lists devdeck with `devdeck_observe`; ask it what
    runs, which terminal it's in, what's on screen. (Claude's own Bash may not reach the
    socket if its sandbox blocks Unix sockets; MCP does.)
+
+## Step 1c: starting and stopping runs (2026-11-08)
+
+A slice of phase 3, brought forward (user). API level 2.
+
+- `run.start {app, cmd, env?}`: one of the app's **main commands** only (tier primary,
+  not setup: start, dev, serve, run, watch, up); others, `build` and `test` included,
+  answer `approval_required` (user's choice of the recommendation: scripts like
+  `deploy` or `db:reset` would otherwise run under one "always allow"). Uses the
+  arguments the user set; the API can't set any. Already running: nothing changes
+  (another explicit env: `conflict`).
+- `run.stop`, `run.restart`: only on a run the caller started; the user's or another
+  caller's: `approval_required`. A restart keeps the run's own env.
+- The env: one of the workspace's envs by exact name (its name goes into the shell
+  line); a protected one, when the command uses the env (`{env}`, a variable, an
+  argument, a file), answers `approval_required`.
+- Who started a run (`Runner`, `Starter`): the user, or a terminal's shell instance
+  (terminal uid and shell start count: a new shell there isn't it). Carried through a
+  pending restart; who restarts takes the run over. Never saved: a run a caller
+  started isn't saved as running, so no layout starts it again as the user's.
+- `Run` says `started_by` and `yours`. A toast tells the user (one per caller every 2 s
+  at most); the audit has one entry per call that acts, with its process, arguments
+  and outcome. MCP: `devdeck_run` appears; the instructions say only own runs.
+
+Review (subagent), all taken: env names injected into the shell line; ownership lost
+through the pending restart; start while stopping bringing back the user's run;
+restart moving a run to the current (maybe protected) env; any script runnable;
+protected check per way the env reaches the run; ownership by shell instance, not
+terminal; layouts restarting a caller's runs as the user's; no "Stop holder" on the
+caller's refusals (the handlers never use the UI's toast); one audit entry per call;
+`started_by` in `Run`; API level 2.
+
+Not covered by a test: a held port refusing a start (the demo never holds ports; the
+refusal is the runner's own, passed on as `refused`).

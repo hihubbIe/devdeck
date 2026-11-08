@@ -28,6 +28,10 @@ use transport::{Opened, Sink};
 
 /// Audit entries kept for the Settings view.
 const AUDIT_KEPT: usize = 200;
+/// A caller's actions are told in a toast at most this often (the audit has them all).
+const NOTICE_EVERY: Duration = Duration::from_secs(2);
+/// The arguments an audit entry keeps, in characters.
+const AUDIT_ARGS: usize = 200;
 /// A caller connecting again within this is audited once.
 const CONNECT_AUDIT_EVERY: Duration = Duration::from_secs(60);
 
@@ -90,6 +94,8 @@ pub enum Status {
 
 pub struct Connection {
     pub who: Who,
+    /// The connected process, when it was pinned.
+    pub pid: Option<u32>,
     pub since: SystemTime,
     pub calls: u64,
 }
@@ -107,6 +113,8 @@ pub struct ApiState {
     pub audit_path: Option<PathBuf>,
     writer: Option<audit::Writer>,
     connects: HashMap<String, Instant>,
+    /// When each caller was last told in a toast.
+    noticed: HashMap<String, Instant>,
     next: u64,
     _serving: Option<(socket::Bound, transport::Stop)>,
     /// The socket threads' channel to the UI thread (they hold it weakly).
@@ -212,6 +220,7 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         audit_path,
         writer,
         connects: HashMap::new(),
+        noticed: HashMap::new(),
         next: 1,
         _serving: serving,
         _inbox: tx,
@@ -265,30 +274,54 @@ fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
 /// A new connection from `peer`: who it is, recorded.
 pub fn open(state: &Entity<ApiState>, peer: &Peer, cx: &mut App) -> Opened {
     let who = identify(peer, cx);
-    state.update(cx, |s, cx| s.open(who, cx))
+    state.update(cx, |s, cx| s.open(who, peer.pid, cx))
+}
+
+/// Tells the user what a caller did, in a toast: one per caller every
+/// [`NOTICE_EVERY`] at most (an agent in a loop doesn't flood them).
+pub fn notice(who: &Who, text: String, cx: &mut App) {
+    let Some(state) = state(cx) else { return };
+    let now = Instant::now();
+    let tell = state.update(cx, |s, _| {
+        let label = who.label();
+        s.noticed.retain(|_, t| now.duration_since(*t) < NOTICE_EVERY);
+        s.noticed.insert(label, now).is_none()
+    });
+    if tell {
+        devdeck_ui::overlay::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::overlay::ToastKind::Info, text, vec![], cx));
+    }
 }
 
 /// A call on a connection: its caller must still be there, then the method runs.
 pub fn call(state: &Entity<ApiState>, conn: u64, method: &str, params: Value, cx: &mut App) -> Result<Value, ApiError> {
-    let (who, instance, kind) = {
+    let (who, pid, instance, kind) = {
         let s = state.read(cx);
         let c = s.connections.get(&conn).ok_or_else(|| ApiError::new(ErrorKind::Expired, "connection closed"))?;
-        (c.who.clone(), s.instance.clone(), s.state)
+        (c.who.clone(), c.pid, s.instance.clone(), s.state)
     };
     if !alive(&who, cx) {
         state.update(cx, |s, cx| s.record(audit::Entry::new(who.label(), audit::Event::Expired, Some(method.into()), None), cx));
         return Err(ApiError::new(ErrorKind::Expired, "the caller's shell ended; connect again"));
     }
     let cx_call = dispatch::CallCx { who: &who, instance: &instance, state: kind };
+    let args: String = params.to_string().chars().take(AUDIT_ARGS).collect();
     let result = dispatch::call(&cx_call, method, params, cx);
+    let acts = dispatch::info(method).is_some_and(|m| m.class != devdeck_api::Class::Observe);
     state.update(cx, |s, cx| {
         if let Some(c) = s.connections.get_mut(&conn) {
             c.calls += 1;
         }
-        if let Err(e) = &result
+        // One entry per call that acts, with its outcome; a look only when refused.
+        let outcome = match &result {
+            Ok(_) => "done".to_string(),
+            Err(e) => e.kind.as_str().to_string(),
+        };
+        if acts {
+            s.record(audit::Entry::new(who.label(), audit::Event::Called, Some(method.into()), Some(format!("{args} → {outcome}"))).with_pid(pid), cx);
+        } else if let Err(e) = &result
             && e.kind == ErrorKind::PermissionDenied
         {
-            s.record(audit::Entry::new(who.label(), audit::Event::Denied, Some(method.into()), None), cx);
+            s.record(audit::Entry::new(who.label(), audit::Event::Denied, Some(method.into()), None).with_pid(pid), cx);
         }
         cx.notify();
     });
@@ -325,15 +358,15 @@ pub fn alive(who: &Who, cx: &App) -> bool {
 }
 
 impl ApiState {
-    fn open(&mut self, who: Who, cx: &mut Context<Self>) -> Opened {
+    fn open(&mut self, who: Who, pid: Option<u32>, cx: &mut Context<Self>) -> Opened {
         let id = self.next;
         self.next += 1;
         let outside = who.is_outside();
         let label = who.label();
         if self.first_in_a_while(label.clone()) {
-            self.record(audit::Entry::new(label, audit::Event::Connected, None, None), cx);
+            self.record(audit::Entry::new(label, audit::Event::Connected, None, None).with_pid(pid), cx);
         }
-        self.connections.insert(id, Connection { who, since: SystemTime::now(), calls: 0 });
+        self.connections.insert(id, Connection { who, pid, since: SystemTime::now(), calls: 0 });
         cx.notify();
         Opened { id, outside }
     }

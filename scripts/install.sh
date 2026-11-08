@@ -58,5 +58,5 @@ EOF
 refresh
 
 echo "Kugelblitz (devdeck) installed: $bin, with ${clients[*]}"
-echo "For Claude Code: claude mcp add devdeck -- $(dirname "$bin")/devdeck-mcp"
+echo "For Claude Code (once): claude mcp add --scope user devdeck -- $(dirname "$bin")/devdeck-mcp"
 echo "Pin it: press Super, type Kugelblitz, right-click it, Pin to Dash."

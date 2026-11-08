@@ -113,8 +113,30 @@ pub trait RunDriver {
     fn spawn(&self, launch: Launch, cx: &mut Context<Runner>) -> Result<Started, String>;
 }
 
+/// Who started a run (the control API, R13.5): the user (the UI), or a caller of the API
+/// in a devdeck terminal, as that terminal's shell instance (its run's start count): a
+/// new shell there, or the user, isn't the one that started it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Starter {
+    #[default]
+    User,
+    Caller { workspace: String, n: u32, uid: String, starts: u32 },
+}
+
+impl Starter {
+    /// As people read it: `you`, `work · terminal 3`.
+    pub fn label(&self) -> String {
+        match self {
+            Starter::User => "you".into(),
+            Starter::Caller { workspace, n, .. } => format!("{workspace} · terminal {n}"),
+        }
+    }
+}
+
 pub struct Run {
     pub state: RunState,
+    /// Who started it last (who restarts it takes it over).
+    pub starter: Starter,
     pub terminal: Terminal,
     pub env: Option<String>,
     /// How many times it started.
@@ -127,7 +149,8 @@ pub struct Run {
     pub took: Option<std::time::Duration>,
     control: Option<Box<dyn RunControl>>,
     _task: Option<Task<()>>,
-    restart_after_stop: bool,
+    /// Start again once stopped, as this starter (a restart asked while it stops).
+    restart_after_stop: Option<Starter>,
     /// How long its stop sequence takes, from its command when it started (the command
     /// may change or disappear while it runs).
     stop: std::time::Duration,
@@ -410,13 +433,18 @@ impl Runner {
 
     /// [`Runner::start`], refused with a reason the UI can act on (a held port's holder).
     pub fn try_start(&mut self, key: &RunKey, env: Option<String>, cx: &mut Context<Self>) -> Result<(), RunRefusal> {
+        self.try_start_as(key, env, Starter::User, cx)
+    }
+
+    /// [`Runner::try_start`] by `starter`.
+    pub fn try_start_as(&mut self, key: &RunKey, env: Option<String>, starter: Starter, cx: &mut Context<Self>) -> Result<(), RunRefusal> {
         if let Some(why) = self.refusal_detail(key, cx) {
             return Err(why);
         }
         if let Some(r) = self.runs.get_mut(key)
             && r.state == RunState::Stopping
         {
-            r.restart_after_stop = true;
+            r.restart_after_stop = Some(starter);
             r.env = env;
             return Ok(());
         }
@@ -431,6 +459,7 @@ impl Runner {
             }
             None => self.runs.entry(key.clone()).or_insert(Run {
                 state: RunState::Stopped,
+                starter: Starter::User,
                 terminal,
                 env: None,
                 runs: 0,
@@ -439,7 +468,7 @@ impl Runner {
                 took: None,
                 control: None,
                 _task: None,
-                restart_after_stop: false,
+                restart_after_stop: None,
                 stop: Default::default(),
             }),
         };
@@ -449,7 +478,8 @@ impl Runner {
         run.took = None;
         run.env = env.clone();
         run.error = None;
-        run.restart_after_stop = false;
+        run.restart_after_stop = None;
+        run.starter = starter;
         run.stop = devdeck_core::process::StopKind::of(&cmd).total();
         let applied = app.env.apply(&cmd.line, env.as_deref());
         let args = self.args.get(key).cloned().unwrap_or_default();
@@ -485,7 +515,7 @@ impl Runner {
     pub fn stop(&mut self, key: &RunKey, cx: &mut Context<Self>) {
         let Some(run) = self.runs.get_mut(key) else { return };
         if run.state == RunState::Stopping {
-            run.restart_after_stop = false;
+            run.restart_after_stop = None;
             cx.notify();
             return;
         }
@@ -500,26 +530,32 @@ impl Runner {
     }
 
     pub fn restart(&mut self, key: &RunKey, env: Option<String>, cx: &mut Context<Self>) -> Result<(), String> {
+        self.restart_as(key, env, Starter::User, cx).map_err(|why| why.to_string())
+    }
+
+    /// [`Runner::restart`] by `starter`, who takes the run over.
+    pub fn restart_as(&mut self, key: &RunKey, env: Option<String>, starter: Starter, cx: &mut Context<Self>) -> Result<(), RunRefusal> {
         match self.state(key) {
             Some(RunState::Running) => {
                 if let Some(why) = self.blocked(key) {
-                    return Err(why);
+                    return Err(RunRefusal::Cannot(why));
                 }
                 self.stop(key, cx);
                 if let Some(r) = self.runs.get_mut(key) {
-                    r.restart_after_stop = true;
+                    r.restart_after_stop = Some(starter);
                     r.env = env;
                 }
                 Ok(())
             }
-            _ => self.start(key, env, cx),
+            _ => self.try_start_as(key, env, starter, cx),
         }
     }
 
     /// Remembers what runs as stopped only because devdeck quits, whatever ends it next
     /// (its stop sequence, or a kill).
+    /// Runs an API caller started aren't: what they did ends with their shell (R13.4).
     pub fn quitting(&mut self) {
-        let keys = self.runs.iter().filter(|(_, r)| r.state.is_running()).map(|(k, _)| k.clone());
+        let keys = self.runs.iter().filter(|(_, r)| r.state.is_running() && r.starter == Starter::User).map(|(k, _)| k.clone());
         self.stopped_to_quit.extend(keys);
     }
 
@@ -531,13 +567,15 @@ impl Runner {
             self.stop(&k, cx);
         }
         for r in self.runs.values_mut() {
-            r.restart_after_stop = false;
+            r.restart_after_stop = None;
         }
     }
 
     /// Running, or stopped only because devdeck quits: what a run view saves as "running".
+    /// Never a run an API caller started: a layout doesn't start it again as the user's.
     pub fn was_running(&self, key: &RunKey) -> bool {
-        self.state(key).is_some_and(RunState::is_running) || self.stopped_to_quit.contains(key)
+        let users = self.runs.get(key).is_none_or(|r| r.starter == Starter::User);
+        users && (self.state(key).is_some_and(RunState::is_running) || self.stopped_to_quit.contains(key))
     }
 
     /// How long the slowest stop sequence of the real processes running now takes (zero
@@ -622,8 +660,7 @@ impl Runner {
         // A shell's exit status is its last command's: nothing to announce.
         let terminal = id.key.is_terminal();
         note(&mut run.terminal, if terminal && state != RunState::NotStarted { "shell ended" } else { &text });
-        let again = run.restart_after_stop.then(|| run.env.clone());
-        run.restart_after_stop = false;
+        let again = run.restart_after_stop.take().map(|s| (run.env.clone(), s));
         if let Some(code) = state.failed().filter(|_| !terminal) {
             cx.emit(RunnerEvent::Failed { key: id.key.clone(), code });
         }
@@ -638,8 +675,8 @@ impl Runner {
             cx.notify();
             return;
         }
-        if let Some(env) = again
-            && let Err(why) = self.start(&id.key, env, cx)
+        if let Some((env, starter)) = again
+            && let Err(why) = self.try_start_as(&id.key, env, starter, cx)
             && let Some(run) = self.runs.get_mut(&id.key)
         {
             note(&mut run.terminal, &format!("couldn't restart: {why}"));

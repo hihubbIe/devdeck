@@ -15,6 +15,8 @@ const ROTATE_AT: u64 = 1_000_000;
 #[serde(rename_all = "snake_case")]
 pub enum Event {
     Connected,
+    /// A method that acts was called (whatever came of it: the detail says).
+    Called,
     Refused,
     Denied,
     Notification,
@@ -25,6 +27,7 @@ impl Event {
     pub fn label(self) -> &'static str {
         match self {
             Event::Connected => "connected",
+            Event::Called => "called",
             Event::Refused => "refused",
             Event::Denied => "denied",
             Event::Notification => "notification dropped",
@@ -38,6 +41,9 @@ pub struct Entry {
     /// Milliseconds since the Unix epoch.
     pub at_ms: u64,
     pub caller: String,
+    /// The calling process, when it was pinned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     pub event: Event,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
@@ -48,7 +54,12 @@ pub struct Entry {
 impl Entry {
     pub fn new(caller: String, event: Event, method: Option<String>, detail: Option<String>) -> Self {
         let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-        Self { at_ms, caller, event, method, detail }
+        Self { at_ms, caller, pid: None, event, method, detail }
+    }
+
+    pub fn with_pid(mut self, pid: Option<u32>) -> Self {
+        self.pid = pid;
+        self
     }
 }
 
