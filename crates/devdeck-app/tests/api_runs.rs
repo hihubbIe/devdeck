@@ -151,3 +151,20 @@ fn an_agents_run_isnt_saved_as_running_and_the_user_is_told(cx: &mut TestAppCont
     assert_eq!((e.event.label(), e.method.as_deref(), e.pid), ("called", Some("run.start"), Some(77)));
     assert!(e.detail.unwrap().ends_with("→ permission_denied"));
 }
+
+#[gpui::test]
+fn a_restart_the_user_queued_is_theirs_at_once(cx: &mut TestAppContext) {
+    let shell = start(cx, "runs-queued");
+    let r = runner(&shell, cx);
+    let key = RunKey::new(APP, CMD);
+    call(&agent(), "run.start", run(APP, CMD), cx).unwrap();
+    // The user restarts the agent's run; it's still stopping.
+    cx.update(|cx| r.update(cx, |r, cx| r.restart(&key, None, cx))).unwrap();
+    assert_eq!(call(&agent(), "run.get", run(APP, CMD), cx).unwrap().state, RunState::Stopping);
+    for m in ["run.stop", "run.restart", "run.start"] {
+        assert_eq!(call(&agent(), m, run(APP, CMD), cx).unwrap_err().kind, ErrorKind::ApprovalRequired, "{m}: the user's restart stands");
+    }
+    settle(cx);
+    let after = call(&agent(), "run.get", run(APP, CMD), cx).unwrap();
+    assert_eq!((after.state, after.started_by, after.starts), (RunState::Running, StartedBy::User, 2));
+}

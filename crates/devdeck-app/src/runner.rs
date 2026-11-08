@@ -444,6 +444,9 @@ impl Runner {
         if let Some(r) = self.runs.get_mut(key)
             && r.state == RunState::Stopping
         {
+            // Whoever asks for it again owns it now, not once it respawns: nobody else
+            // may cancel or take over a start they queued.
+            r.starter = starter.clone();
             r.restart_after_stop = Some(starter);
             r.env = env;
             return Ok(());
@@ -542,6 +545,8 @@ impl Runner {
                 }
                 self.stop(key, cx);
                 if let Some(r) = self.runs.get_mut(key) {
+                    // Owned from the request on (see `try_start_as`).
+                    r.starter = starter.clone();
                     r.restart_after_stop = Some(starter);
                     r.env = env;
                 }
