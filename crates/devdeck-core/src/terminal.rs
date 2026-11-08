@@ -617,6 +617,8 @@ pub fn key_bytes(key: &str, text: Option<&str>, mods: Mods, app_cursor: bool) ->
     let tilde = |n: u8| if m == 1 { format!("\x1b[{n}~") } else { format!("\x1b[{n};{m}~") };
     let ss3 = |end: char| if m == 1 { format!("\x1bO{end}") } else { format!("\x1b[1;{m}{end}") };
     let text = match key {
+        // Shift+Enter as Alt+Enter would be: a new line in Claude Code and the like.
+        "enter" if mods.shift => "\x1b\r".into(),
         "enter" => "\r".into(),
         "backspace" if mods.ctrl => "\x08".into(),
         "backspace" => "\x7f".into(),
@@ -869,6 +871,7 @@ mod tests {
             ("a", Some("A"), shift, "A"),
             ("é", Some("é"), none, "é"),
             ("enter", None, none, "\r"),
+            ("enter", None, shift, "\x1b\r"),
             ("backspace", None, none, "\x7f"),
             ("backspace", None, ctrl, "\x08"),
             ("tab", None, none, "\t"),
