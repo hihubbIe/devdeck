@@ -23,9 +23,11 @@
 //! - The git dirs of the repositories views hold (their `HEAD`, `index`, refs…) are watched
 //!   on a route of their own: a change there tells the repository (read again if a view
 //!   looks, else later), never a rescan.
+//! - The folders of the files views show (R12.1) are watched on a route of their own too:
+//!   a change there tells the file (read again by its views while shown), never a rescan.
 //! - The watcher's thread hands paths to the UI thread over a channel; nothing blocks it.
 
-use crate::services::{GitWatches, Rescanned, Services};
+use crate::services::{Watches, Rescanned, Services};
 use crate::shell::Shell;
 use devdeck_core::config::{MACHINE_FILE, WORKSPACES_DIR, load_machine, load_workspaces};
 use std::ffi::OsStr;
@@ -86,7 +88,7 @@ pub fn start(shell: &Entity<Shell>, config_dir: PathBuf, cx: &mut App) -> Option
         .collect();
     rescans.extend(workspaces.iter().map(|s| {
         let (shell, config_dir, watching) = (shell.clone(), config_dir.clone(), watching.clone());
-        cx.subscribe(s, move |_, _: &GitWatches, cx| {
+        cx.subscribe(s, move |_, _: &Watches, cx| {
             follow(&shell, &config_dir, &watching, cx);
         })
     }));
@@ -118,7 +120,8 @@ struct Watching {
 
 /// Watches what should be watched now, and stops watching what shouldn't. The first
 /// folder that can't be watched (other than a missing one) is reported, once. Whether
-/// it started watching a folder of projects (git dirs don't count: no rescan for them).
+/// it started watching a folder of projects (git dirs and shown files' folders don't
+/// count: no rescan for them).
 fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>, cx: &mut App) -> bool {
     let mut wanted: BTreeSet<PathBuf> = [config_dir.to_path_buf(), config_dir.join(WORKSPACES_DIR)].into();
     let mut kubeconfigs: Vec<(PathBuf, Entity<Services>)> = Vec::new();
@@ -134,6 +137,10 @@ fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>
             if deep {
                 recursive.insert(dir.clone());
             }
+            git.insert(dir.clone());
+            wanted.insert(dir);
+        }
+        for dir in s.file_watch(cx) {
             git.insert(dir.clone());
             wanted.insert(dir);
         }
@@ -197,7 +204,10 @@ fn changed(shell: &Entity<Shell>, config_dir: &Path, files: &RefCell<BTreeSet<St
     reload_kubeconfigs(shell, paths, cx);
     let workspaces: Vec<_> = shell.read(cx).workspaces.iter().map(|w| w.services.clone()).collect();
     for s in workspaces {
-        s.update(cx, |s, cx| s.git_changed(paths, cx));
+        s.update(cx, |s, cx| {
+            s.git_changed(paths, cx);
+            s.files_changed(paths, cx);
+        });
     }
     if !machine_changed && !workspaces_changed {
         return rescan_concerned(shell, paths, cx);

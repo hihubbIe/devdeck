@@ -45,6 +45,8 @@ pub struct Deck {
     focus: HashMap<ViewRef, FocusHandle>,
     /// How views that keep state are read for saving.
     savers: HashMap<ViewRef, views::Saver>,
+    /// Views that name themselves or offer actions ([`views::Live`]).
+    lives: HashMap<ViewRef, views::Lively>,
     /// States saved last time, handed to each view when it's built (then dropped).
     restored: devdeck_core::state::ViewStates,
     /// The views' states as last written (or about to be).
@@ -104,6 +106,7 @@ impl Deck {
             views: HashMap::new(),
             focus: HashMap::new(),
             savers: HashMap::new(),
+            lives: HashMap::new(),
             restored: Default::default(),
             written: Default::default(),
             missing: HashMap::new(),
@@ -217,6 +220,16 @@ impl Deck {
         app.or_else(|| s.config.as_ref()?.folders.first().cloned()).unwrap_or_else(home)
     }
 
+    /// Whether it belongs to a workspace (views other than the demo's need one).
+    pub fn has_services(&self) -> bool {
+        self.services.is_some()
+    }
+
+    /// Its workspace's services.
+    pub fn services(&self) -> Option<Entity<crate::services::Services>> {
+        self.services.clone()
+    }
+
     pub fn with_services(mut self, services: Entity<crate::services::Services>) -> Self {
         self.services = Some(services);
         self
@@ -310,6 +323,16 @@ impl Deck {
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// A tab's title: what its view says, else what its address says.
+    pub fn title(&self, r: &ViewRef, cx: &App) -> String {
+        self.lives.get(r).and_then(|l| l.title(cx)).unwrap_or_else(|| views::title(r))
+    }
+
+    /// What a view offers now (R12.4), for its header and its tab's menu.
+    pub fn view_actions(&self, r: &ViewRef, cx: &App) -> Vec<views::ViewAction> {
+        self.lives.get(r).map(|l| l.actions(cx)).unwrap_or_default()
     }
 
     pub fn view(&self, r: &ViewRef) -> Option<AnyView> {
@@ -539,6 +562,7 @@ impl Deck {
             // A terminal's shell outlives its tabs (R6.12): its view only goes.
             self.focus.remove(&r);
             self.savers.remove(&r);
+            self.lives.remove(&r);
             self.missing.remove(&r);
             if let Some(v) = self.views.remove(&r) {
                 self.released.push((v.downgrade(), self.generation));
@@ -555,6 +579,9 @@ impl Deck {
                 }
                 if let Some(s) = built.save {
                     self.savers.insert(r.clone(), s);
+                }
+                if let Some(l) = built.live {
+                    self.lives.insert(r.clone(), l);
                 }
                 if built.missing {
                     self.missing.insert(r.clone(), saved);
@@ -610,6 +637,10 @@ impl Deck {
 
     /// A view that keeps state changed: saved soon if its state did.
     pub fn view_changed(&mut self, r: &ViewRef, cx: &mut Context<Self>) {
+        // Its title or header may have changed.
+        if self.lives.contains_key(r) {
+            cx.notify();
+        }
         let Some(save) = self.savers.get(r) else { return };
         if save(cx).as_ref() != self.written.get(r.as_str()) && self.store.is_some() && self.save_task.is_none() {
             self.schedule_save(cx);

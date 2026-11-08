@@ -290,3 +290,13 @@ binary; both removed. Outcome: **go on**, with the limits below.
 13. Smaller points. Taken: no `default-features` line; dependency weight measured in the
     spike; "edited 3h" dropped (it would go stale); the notes list's exception to R4.2
     written down; notes rows in the app view's selection.
+
+## Build notes (2026-11-08)
+
+- Steps 3 and 4 landed in one commit: the engine pieces (live titles, view actions) have
+  their first user and their tests with the file view, and external drops open file views.
+- gpui-component's editor needs a window to be made; devdeck builds views without one, so
+  a view makes its editor on its first draw. A view moved to another window keeps the
+  editor made in the first one: to check by hand (detach a file tab).
+- The editor's own keys add `ctrl-h` and `ctrl-enter` to the ones listed by the review.
+- Reload timing uses the executor's clock, so tests drive it.

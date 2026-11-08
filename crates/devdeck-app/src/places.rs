@@ -4,7 +4,6 @@
 //! click, and offers every place in its submenu.
 
 use crate::deck::Deck;
-use crate::views;
 use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, PaneId, Result, ViewRef, WindowId};
 use devdeck_ui::MenuItem;
 use gpui::{App, Entity};
@@ -16,16 +15,16 @@ pub enum Place {
     NewWindow,
 }
 
-/// Every pane in its numbered order, with where it is and its active tab:
-/// "main window · run web", "detached window 2 · empty".
-pub fn panes(l: &Layout) -> Vec<(PaneId, String)> {
+/// Every pane in its numbered order, with where it is and its active tab (named by
+/// `title`): "main window · run web", "detached window 2 · empty".
+pub fn panes(l: &Layout, title: impl Fn(&ViewRef) -> String) -> Vec<(PaneId, String)> {
     let numbered = l.numbered_panes();
     let mut detached: Vec<_> = numbered.iter().map(|(_, w)| *w).filter(|w| *w != MAIN_WINDOW).collect();
     detached.dedup();
     numbered
         .iter()
         .map(|(pane, win)| {
-            let active = l.pane(*pane).ok().and_then(|p| p.active_view().cloned()).map(|r| views::title(&r)).unwrap_or_else(|| "empty".into());
+            let active = l.pane(*pane).ok().and_then(|p| p.active_view().cloned()).map(|r| title(&r)).unwrap_or_else(|| "empty".into());
             let place = if *win == MAIN_WINDOW {
                 "main window".to_string()
             } else {
@@ -145,12 +144,13 @@ pub fn item(
             }
         }
     };
-    let l = deck.read(cx).layout();
+    let d = deck.read(cx);
+    let l = d.layout();
     let disabled = |item: MenuItem, place: Place| match view.and_then(|v| refusal(l, v, place)) {
         Some(why) => item.disabled(why),
         None => item,
     };
-    let mut places: Vec<MenuItem> = panes(l)
+    let mut places: Vec<MenuItem> = panes(l, |r| d.title(r, cx))
         .into_iter()
         .enumerate()
         .map(|(i, (pane, name))| disabled(MenuItem::new(format!("{} · {name}", i + 1), at(Place::Pane(pane))), Place::Pane(pane)))

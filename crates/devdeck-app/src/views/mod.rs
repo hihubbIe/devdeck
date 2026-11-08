@@ -9,6 +9,7 @@
 
 pub mod app_view;
 pub mod demo;
+pub mod file_view;
 pub mod git_view;
 pub mod info_view;
 pub mod logs_view;
@@ -30,6 +31,11 @@ use gpui::{
 };
 
 pub use demo::LogsView;
+
+gpui::actions!(view, [
+    /// A Markdown file or a note: its source or rendered (R12.4).
+    ToggleRendered
+]);
 
 /// What a view knows about its workspace and itself.
 #[derive(Clone)]
@@ -85,6 +91,64 @@ pub struct Built {
     /// A message standing in for a view whose app, command or env isn't there (yet): the
     /// deck builds it again when the workspace's apps change.
     pub missing: bool,
+    /// What the view says about itself beyond its address ([`Live`]).
+    pub live: Option<Lively>,
+}
+
+/// An action a view offers right now (R5.1, R12.4): the registry's action `id`, drawn
+/// with `icon` in its pane's header (or strip, for the active tab) and listed in its
+/// tab's menu; `on` when it's a state that is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewAction {
+    pub id: &'static str,
+    pub icon: Icon,
+    pub on: bool,
+}
+
+/// A view that says more about itself than its address: its tab's title when the
+/// address can't say it (a note's name), and the actions it offers now. Whenever the
+/// view changes its deck redraws, so the title and the header follow.
+pub trait Live: Render {
+    fn title(&self, _cx: &App) -> Option<String> {
+        None
+    }
+    fn actions(&self, _cx: &App) -> Vec<ViewAction> {
+        Vec::new()
+    }
+}
+
+type TitleFn = std::rc::Rc<dyn Fn(&App) -> Option<String>>;
+type ActionsFn = std::rc::Rc<dyn Fn(&App) -> Vec<ViewAction>>;
+
+/// How the deck reads a [`Live`] view (through a weak handle: never keeps it alive).
+#[derive(Clone)]
+pub struct Lively {
+    title: TitleFn,
+    actions: ActionsFn,
+}
+
+impl Lively {
+    pub fn title(&self, cx: &App) -> Option<String> {
+        (self.title)(cx)
+    }
+    pub fn actions(&self, cx: &App) -> Vec<ViewAction> {
+        (self.actions)(cx)
+    }
+}
+
+/// Adds `view`'s [`Live`] part to `built`; its changes reach its deck.
+fn live<V: Live>(mut built: Built, view: &Entity<V>, ctx: &ViewCx, cx: &mut App) -> Built {
+    let (deck, r) = (ctx.deck.clone(), ctx.view.clone());
+    cx.observe(view, move |_, cx| {
+        let _ = deck.update(cx, |d, cx| d.view_changed(&r, cx));
+    })
+    .detach();
+    let (t, a) = (view.downgrade(), view.downgrade());
+    built.live = Some(Lively {
+        title: std::rc::Rc::new(move |cx| t.upgrade().and_then(|v| v.read(cx).title(cx))),
+        actions: std::rc::Rc::new(move |cx| a.upgrade().map(|v| v.read(cx).actions(cx)).unwrap_or_default()),
+    });
+    built
 }
 
 /// Reads a view's state to save (`None` once the view is gone).
@@ -99,7 +163,7 @@ pub trait KeepsState: Render + Sized {
 
 fn focusable<V: Render + Focusable>(view: Entity<V>, cx: &App) -> Built {
     let focus = Some(view.read(cx).focus_handle(cx));
-    Built { view: view.into(), focus, save: None, missing: false }
+    Built { view: view.into(), focus, save: None, missing: false, live: None }
 }
 
 /// A focusable view that keeps its state: restored from `saved`, saved through a weak
@@ -122,7 +186,7 @@ fn keeping<V: KeepsState + Focusable>(view: Entity<V>, saved: Option<&serde_json
 
 pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value>, cx: &mut App) -> Built {
     let addr = ViewAddr::parse(r);
-    let message = |text: String, cx: &mut App| Built { view: cx.new(|_| Message(text.into())).into(), focus: None, save: None, missing: true };
+    let message = |text: String, cx: &mut App| Built { view: cx.new(|_| Message(text.into())).into(), focus: None, save: None, missing: true, live: None };
     match (addr, ctx) {
         (ViewAddr::Other(_), ctx) => demo::build(r, ctx, cx),
 
@@ -167,7 +231,7 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
         },
         (ViewAddr::Pod { env, pod }, Some(ctx)) => match cluster_env(ctx, &env, cx) {
             Err(text) => message(text, cx),
-            Ok(cluster) => Built { view: cx.new(|cx| pod_view::PodView::new(env, pod, ctx.clone(), cluster, cx)).into(), focus: None, save: None, missing: false },
+            Ok(cluster) => Built { view: cx.new(|cx| pod_view::PodView::new(env, pod, ctx.clone(), cluster, cx)).into(), focus: None, save: None, missing: false, live: None },
         },
         (ViewAddr::Matrix, Some(ctx)) => match ctx.services.read(cx).cluster.clone() {
             None => message("This workspace has no cluster.".into(), cx),
@@ -176,8 +240,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 focusable(v, cx)
             }
         },
-        (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None, save: None, missing: false },
-        (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None, save: None, missing: false },
+        (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None, save: None, missing: false, live: None },
+        (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None, save: None, missing: false, live: None },
         (ViewAddr::Git { root }, Some(ctx)) => {
             let root = std::path::PathBuf::from(root);
             let repo = ctx.services.update(cx, |s, cx| s.repo(&root, cx));
@@ -189,7 +253,12 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 _ => message(format!("{} isn't a git repository.", devdeck_core::config::shown(&root)), cx),
             }
         }
-        (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None, save: None, missing: false },
+        (ViewAddr::File { path }, Some(ctx)) => {
+            let v = cx.new(|cx| file_view::FileView::new(std::path::PathBuf::from(path), ctx.clone(), cx));
+            let built = keeping(v.clone(), saved, ctx, cx);
+            live(built, &v, ctx, cx)
+        }
+        (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None, save: None, missing: false, live: None },
     }
 }
 
@@ -202,7 +271,8 @@ fn cluster_env(ctx: &ViewCx, env: &str, cx: &App) -> Result<Entity<crate::cluste
     Ok(cluster)
 }
 
-/// The tab label of a view.
+/// The tab label of a view from its address; a live view may say better
+/// ([`crate::deck::Deck::title`]).
 pub fn title(r: &ViewRef) -> String {
     match ViewAddr::parse(r) {
         ViewAddr::App { app } => app,
@@ -214,6 +284,7 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Port { port } => format!(":{port}"),
         ViewAddr::Problems => "problems".into(),
         ViewAddr::Welcome => "welcome".into(),
+        ViewAddr::File { path } => path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/").to_string(),
         ViewAddr::Git { root } => format!("{} · git", root.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Terminal { dir, .. } => format!("terminal · {}", terminal_name(&dir)),
         ViewAddr::Other(_) => demo::title(r),

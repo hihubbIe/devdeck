@@ -248,6 +248,37 @@ fn open_view(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, addr: ViewAddr)
     cx.run_until_parked();
 }
 
+/// A file of this repository, to show in a file view (R12.1).
+fn repo_file(rel: &str) -> ViewAddr {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel);
+    let path = path.canonicalize().unwrap_or(path);
+    ViewAddr::File { path: path.to_string_lossy().into_owned() }
+}
+
+fn file_rust(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, repo_file("crates/devdeck-core/src/view_addr.rs"));
+}
+
+fn file_md_rendered(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, repo_file("docs/ROADMAP.md"));
+}
+
+fn file_md_source(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let addr = repo_file("docs/ROADMAP.md");
+    open_view(cx, shell, addr.clone());
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<devdeck_app::views::file_view::FileView>().unwrap());
+    let _ = cx.update_window(w, |_, window, cx| v.update(cx, |v, cx| v.toggle_rendered(window, cx)));
+}
+
+fn file_not_text(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, repo_file("assets/fonts/jetbrains-mono/JetBrainsMonoNL-Regular.ttf"));
+}
+
+fn file_missing(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    open_view(cx, shell, repo_file("docs/no-such-file.md"));
+}
+
 fn run_cmd(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, app: &str, cmd: &str, wait_ms: u64) {
     let runner = cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).runner.clone());
     cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new(app, cmd), Some("dev35".into()), cx))).expect("starts");
@@ -993,6 +1024,12 @@ fn states() -> Vec<State> {
         w("B1-layouts-list", "work", 1.0, Some(layouts_list)),
         w("B2-layout-save-error", "work", 1.0, Some(layout_save_error)),
         w("B3-keep-in-every-layout", "work", 1.0, Some(keep_menu)),
+        w("C0-file-rust", "work", 1.0, Some(file_rust)),
+        w("C1-file-md-rendered", "work", 1.0, Some(file_md_rendered)),
+        w("C2-file-md-source", "work", 1.0, Some(file_md_source)),
+        w("C3-file-not-text", "work", 1.0, Some(file_not_text)),
+        w("C4-file-missing", "work", 1.0, Some(file_missing)),
+        w("C5-file-rust-150", "work", 1.5, Some(file_rust)),
     ]
 }
 

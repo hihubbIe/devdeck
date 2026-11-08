@@ -5,7 +5,6 @@
 //! is completed, and it's cancelled when its source goes away or the workspace hides.
 
 use crate::deck::{Deck, SendSource};
-use crate::views;
 use devdeck_ui::overlay::ModalClose;
 use devdeck_ui::overlay::PRIORITY_MODAL;
 use devdeck_ui::{label, pop_modal, push_modal, theme};
@@ -80,12 +79,12 @@ impl Render for SendTo {
         let t = theme(cx).clone();
         let d = self.deck.read(cx);
         let what = match &d.send {
-            Some(SendSource::Tab(v)) => format!("Send {} to…", views::title(v)),
+            Some(SendSource::Tab(v)) => format!("Send {} to…", d.title(v, cx)),
             Some(SendSource::Pane(_)) => "Send this pane (all its tabs) to…".into(),
             None => String::new(),
         };
         let mut list = div().flex().flex_col();
-        for (i, (pane, name)) in crate::places::panes(d.layout()).into_iter().enumerate() {
+        for (i, (pane, name)) in crate::places::panes(d.layout(), |r| d.title(r, cx)).into_iter().enumerate() {
             let n = i + 1;
             let refusal = d.send_refusal(Some(pane));
             list = list.child(target_row(("target", n), format!("{n}"), name, refusal, &t).on_click(cx.listener(move |this, _, _, cx| this.pick(Some(n), cx))));

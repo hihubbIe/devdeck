@@ -17,7 +17,7 @@ use crate::views;
 use devdeck_ui::{APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId, ExternalPaths,
     FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Point, Render, ResizeEdge, SharedString, Stateful, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
     Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, img, point, prelude::*, relative,
@@ -181,6 +181,10 @@ struct Frame<'a> {
     views: &'a HashMap<PaneId, AnyView>,
     window: WindowId,
     deck: &'a Entity<Deck>,
+    /// Every tab's title, as its view says it (`Deck::title`).
+    titles: &'a HashMap<ViewRef, SharedString>,
+    /// What each pane's active view offers now (R12.4), for its header.
+    actions: &'a HashMap<PaneId, Vec<views::ViewAction>>,
     t: &'a Theme,
     dragging: bool,
     tab_insert: &'a Rc<Cell<Option<(PaneId, usize)>>>,
@@ -614,7 +618,26 @@ impl Render for WindowView {
             let d = self.deck.read(cx);
             layout.panes.keys().map(|p| (*p, d.view_focus(*p).unwrap_or_else(|| self.panes_focus.clone()))).collect()
         };
-        let frame = Frame { layout: &layout, numbers: &numbers, view_focus: &view_focus, views: &views, window: self.id, deck: &self.deck, t: &t, dragging: cx.has_active_drag(), tab_insert: &self.tab_insert };
+        let (titles, actions) = {
+            let d = self.deck.read(cx);
+            let titles: HashMap<ViewRef, SharedString> = layout.panes.values().flat_map(|p| p.tabs.iter()).map(|r| (r.clone(), d.title(r, cx).into())).collect();
+            let actions: HashMap<PaneId, Vec<views::ViewAction>> =
+                layout.panes.iter().filter_map(|(id, p)| p.active_view().map(|r| (*id, d.view_actions(r, cx)))).filter(|(_, a)| !a.is_empty()).collect();
+            (titles, actions)
+        };
+        let frame = Frame {
+            layout: &layout,
+            numbers: &numbers,
+            view_focus: &view_focus,
+            views: &views,
+            window: self.id,
+            deck: &self.deck,
+            titles: &titles,
+            actions: &actions,
+            t: &t,
+            dragging: cx.has_active_drag(),
+            tab_insert: &self.tab_insert,
+        };
         let deck_id = self.deck.entity_id();
         let workspace = self.deck.read(cx).workspace.clone();
         let shell = self.shell.as_ref().and_then(WeakEntity::upgrade);
@@ -1127,6 +1150,24 @@ fn divider(deck: EntityId, split: SplitId, index: usize, axis: Axis, t: &Theme) 
     }
 }
 
+/// Runs a view's action (R12.4) on that pane's view, whichever pane has the focus: the
+/// pane (and tab `idx`, when given) comes forward and focused, then the action goes to
+/// its view.
+fn run_view_action(deck: &Entity<Deck>, pane: PaneId, idx: Option<usize>, id: &'static str, window: &mut Window, cx: &mut App) {
+    apply_on(deck, cx, |l| {
+        if let Some(i) = idx {
+            l.activate(pane, i)?;
+        }
+        l.focus(pane)
+    });
+    if let Some(f) = deck.read(cx).view_focus(pane) {
+        f.focus(window, cx);
+    }
+    if let Some(spec) = crate::registry::by_id(id) {
+        window.dispatch_action((spec.build)(), cx);
+    }
+}
+
 fn apply_on(deck: &Entity<Deck>, cx: &mut App, op: impl FnOnce(&mut Layout) -> devdeck_core::layout::Result<()>) {
     deck.update(cx, |d, cx| {
         d.apply(cx, op);
@@ -1185,11 +1226,25 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
     let kept = keep.contains(&view);
     let d7 = deck.clone();
     let terminal = open_terminal_item(deck, pane, window, Some(&view), cx);
+    // What the view offers now (R12.4), first.
+    let mut items: Vec<MenuItem> = deck
+        .read(cx)
+        .view_actions(&view, cx)
+        .into_iter()
+        .filter_map(|a| {
+            let spec = crate::registry::by_id(a.id)?;
+            let (deck, id) = (deck.clone(), a.id);
+            Some(MenuItem::new(spec.label, move |window, cx| run_view_action(&deck, pane, Some(idx), id, window, cx)).checked(a.on))
+        })
+        .collect();
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+    }
     let mut detach = MenuItem::new("Detach to a window", move |_, cx| apply_on(&d3, cx, |l| l.detach(pane, idx).map(|_| ())));
     if alone {
         detach = detach.disabled("already alone in its window");
     }
-    vec![
+    items.extend([
         MenuItem::new("Close", move |_, cx| apply_on(&d1, cx, |l| l.close_view(&v1))),
         MenuItem::new("Close others", move |_, cx| {
             apply_on(&d2, cx, |l| {
@@ -1215,7 +1270,8 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
         .checked(kept),
         MenuItem::separator(),
         terminal,
-    ]
+    ]);
+    items
 }
 
 /// "Open terminal here": a shell in the folder of `view` (the pane's active tab when
@@ -1286,7 +1342,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
     let win = f.layout.window(f.window).ok();
     let focused = win.is_some_and(|w| w.focused == pane);
     let maximized = win.is_some_and(|w| w.maximized == Some(pane));
-    let titles: Vec<SharedString> = p.tabs.iter().map(|r| views::title(r).into()).collect();
+    let titles: Vec<SharedString> = p.tabs.iter().map(|r| f.titles.get(r).cloned().unwrap_or_else(|| views::title(r).into())).collect();
     let deck_id = f.deck.entity_id();
 
     // Collapsed in a row split: a narrow rail of monograms (GPUI can't rotate text).
@@ -1336,6 +1392,11 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         .border_b_1()
         .border_color(t.line)
         .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(drop_bg))
+        .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(drop_bg))
+        .on_drop({
+            let deck = f.deck.clone();
+            move |paths: &ExternalPaths, _, cx| crate::drops::open_files(&deck, paths.paths(), Drop::Into(pane), cx)
+        })
         .on_mouse_down(MouseButton::Right, {
             let (deck, window_id) = (f.deck.clone(), f.window);
             move |e, window, cx| {
@@ -1486,6 +1547,19 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             .items_center()
             .gap_1()
             .px_1()
+            // What the view offers now (R12.4), before the pane's own buttons.
+            .children(f.actions.get(&pane).into_iter().flatten().enumerate().filter_map(|(i, a)| {
+                let spec = crate::registry::by_id(a.id)?;
+                let (deck, id) = (f.deck.clone(), a.id);
+                let button = icon_button(eid("view-action", pane.0, i), a.icon, spec.label, t)
+                    .debug_selector(move || format!("view-action-{}-{id}", pane.0))
+                    .when(a.on, |b| b.bg(t.selected))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        run_view_action(&deck, pane, None, id, window, cx);
+                    });
+                Some(button)
+            }))
             .when(!is_detached, |d| {
                 d.child(
                     icon_button(("collapse", pane.0), if p.collapsed { Icon::Open } else { Icon::Collapse }, "collapse or expand", t)
@@ -1623,10 +1697,13 @@ fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity
     let (bg, accent) = (t.drop_bg, t.accent);
     let (d_tab, d_pane) = (deck.clone(), deck.clone());
     let deck_id = deck.entity_id();
-    let d_item = deck.clone();
+    let (d_item, d_files) = (deck.clone(), deck.clone());
     zone.drag_over::<DraggedTab>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
         .drag_over::<DraggedPane>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
         .drag_over::<DraggedListItem>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
+        .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
+        // Files from a file manager (R12.2).
+        .on_drop(move |paths: &ExternalPaths, _, cx| crate::drops::open_files(&d_files, paths.paths(), drop, cx))
         .on_drop(move |item: &DraggedListItem, _, cx| {
             if item.deck == deck_id {
                 let view = item.view.clone();

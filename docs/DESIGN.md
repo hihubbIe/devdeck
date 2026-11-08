@@ -305,6 +305,19 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   alt+arrows still work while typing. gpui-component's inspector key is dropped; its
   other keys live in its components' contexts. Its find bar's icons come from its own
   Lucide set (`gpui-kit-assets`), served by our `Assets` after ours.
+- Views can say more than their address (`views::Live`): a tab's title (a note's name)
+  and the actions they offer now (`ViewAction`: a registry id, an icon, on or off). The
+  deck keeps them per view and redraws when such a view changes; every title goes through
+  `Deck::title` (tabs, headers, "Send to…", places). The actions are drawn in the header
+  (or strip, for the active tab) before the pane's buttons and listed first in the tab's
+  menu; a click brings that pane and tab forward and focused, then dispatches the action.
+- A file view (`file/<path>`) shares an `OpenFile` per path with its workspace
+  (`Services::file`); the app's watcher watches the closest existing folder of each, on its
+  own route like git dirs (no rescan). It reads in the background, only while shown, at
+  most once a second; the editor is made on the first draw (gpui-component's editor needs
+  a window, views are built without one).
+- Files dropped from outside (`ExternalPaths`) land through the same drop zones and tab
+  strips as tabs and list rows (`drops.rs`).
 - Notes live in `~/.local/share/devdeck/workspaces/<id>/notes/` (`index.json` and one
   `<id>.md` each), owned by a `Notes` entity per workspace that holds their text and
   writes it, one write at a time, so closing a tab or quitting never loses typing.

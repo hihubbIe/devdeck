@@ -15,6 +15,7 @@
 use crate::cluster::{Cluster, new_cluster};
 use crate::fake_cluster::FakeCluster;
 use crate::kube_cluster::KubeCluster;
+use crate::open_file::OpenFile;
 use crate::repo::Repo;
 use crate::environment::Environment;
 use crate::port_scan::{PortHolder, Ports};
@@ -39,6 +40,8 @@ pub struct Services {
     kube: Option<(Entity<Cluster>, Rc<KubeCluster>)>,
     /// The repositories views show, by root (one each, while a view holds it).
     repos: BTreeMap<PathBuf, gpui::WeakEntity<Repo>>,
+    /// The files views show (R12.1), followed on disk.
+    files: BTreeMap<PathBuf, gpui::WeakEntity<OpenFile>>,
     /// The config it comes from; `None` for the demo.
     pub config: Option<WorkspaceConfig>,
     /// What discovery and the config overrides reported, shown on request.
@@ -64,10 +67,11 @@ pub struct Rescanned;
 
 impl EventEmitter<Rescanned> for Services {}
 
-/// The git dirs to watch changed (a repository opened).
-pub struct GitWatches;
+/// What to watch besides the workspace's folders changed (a repository opened, a file
+/// shown, a shown file's folder gone or back).
+pub struct Watches;
 
-impl EventEmitter<GitWatches> for Services {}
+impl EventEmitter<Watches> for Services {}
 
 /// A port someone listens on: a run, a process a port view shows, or a demo holder.
 #[derive(Clone, Debug, PartialEq)]
@@ -98,7 +102,7 @@ impl Services {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
             let unusable = unusable(&catalog);
-            Services { workspace: workspace.into(), catalog, env, runner, cluster, kube: None, repos: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
+            Services { workspace: workspace.into(), catalog, env, runner, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
         })
     }
 
@@ -140,7 +144,7 @@ impl Services {
             })
             .detach();
             let unusable = unusable(&catalog);
-            Services { workspace: config.id.clone(), catalog, env, runner, cluster, kube, repos: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable }
+            Services { workspace: config.id.clone(), catalog, env, runner, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable }
         })
     }
 
@@ -226,9 +230,43 @@ impl Services {
         self.repos.retain(|_, r| r.upgrade().is_some());
         let vars = crate::environment::environment(cx).read(cx).toolbox().map(|t| t.vars.clone()).unwrap_or_default();
         let repo = cx.new(|cx| Repo::new(root.clone(), ceiling, vars, cx));
-        cx.subscribe(&repo, |_, _, _: &crate::repo::Opened, cx| cx.emit(GitWatches)).detach();
+        cx.subscribe(&repo, |_, _, _: &crate::repo::Opened, cx| cx.emit(Watches)).detach();
         self.repos.insert(root, repo.downgrade());
         Some(repo)
+    }
+
+    /// The file at `path`, shared with every view showing it, followed on disk while one
+    /// holds it.
+    pub fn file(&mut self, path: &Path, cx: &mut Context<Self>) -> Entity<OpenFile> {
+        if let Some(f) = self.files.get(path).and_then(gpui::WeakEntity::upgrade) {
+            return f;
+        }
+        self.files.retain(|_, f| f.upgrade().is_some());
+        let file = cx.new(|_| OpenFile::new(path.to_path_buf()));
+        cx.subscribe(&file, |_, _, _: &crate::open_file::Moved, cx| cx.emit(Watches)).detach();
+        self.files.insert(path.to_path_buf(), file.downgrade());
+        cx.emit(Watches);
+        file
+    }
+
+    /// The folders of the files views show.
+    pub fn file_watch(&self, cx: &App) -> Vec<PathBuf> {
+        self.files.values().filter_map(gpui::WeakEntity::upgrade).filter_map(|f| f.read(cx).watch()).collect()
+    }
+
+    /// Tells the shown files that `paths` touch; a released file's folder stops being
+    /// watched then.
+    pub fn files_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let before = self.files.len();
+        self.files.retain(|_, f| f.upgrade().is_some());
+        for file in self.files.values().filter_map(gpui::WeakEntity::upgrade) {
+            if paths.iter().any(|p| file.read(cx).concerns(p)) {
+                file.update(cx, |f, cx| f.changed(cx));
+            }
+        }
+        if self.files.len() != before {
+            cx.emit(Watches);
+        }
     }
 
     /// The git folders of the repositories views hold, and whether recursively.
@@ -247,7 +285,7 @@ impl Services {
             }
         }
         if self.repos.len() != before {
-            cx.emit(GitWatches);
+            cx.emit(Watches);
         }
     }
 

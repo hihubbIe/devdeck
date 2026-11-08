@@ -157,6 +157,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("term.copy", "copy the selection", "Run output", Some("RunView && !TextInput"), ["ctrl-shift-c", "ctrl-c"], term::Copy),
         spec!("term.paste", "paste", "Terminal", Some("Terminal"), ["ctrl-shift-v"], term::Paste),
         spec!("term.leave", "leave the terminal", "Terminal", Some("Terminal"), ["ctrl-shift-escape"], rv::LeaveTerminal),
+        spec!("view.toggle_rendered", "source or rendered", "View", Some("FileView || NoteView"), ["ctrl-shift-e"], crate::views::ToggleRendered),
         // Service
         spec!("svc.save", "save tag", "Service", Some("ServiceView"), ["ctrl-s"], sv::SaveTag),
         spec!("svc.undo", "undo rollout", "Service", Some("ServiceView && !TextInput"), ["u"], sv::Undo),

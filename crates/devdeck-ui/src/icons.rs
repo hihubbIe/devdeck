@@ -78,6 +78,10 @@ icons! {
     Plus => "plus",
     Grip => "grip-vertical",
     Settings => "settings",
+    /// A Markdown file or a note shown rendered (R12.4). From gpui-kit-assets' Lucide set.
+    Rendered => "eye",
+    File => "file-text",
+    Note => "sticky-note",
     To => "arrow-right",
     // Window controls.
     WindowMinimize => "minus",

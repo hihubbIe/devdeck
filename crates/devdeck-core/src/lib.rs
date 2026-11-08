@@ -8,6 +8,7 @@ pub mod config;
 pub mod demo;
 pub mod discovery;
 pub mod environment;
+pub mod files;
 pub mod fuzzy;
 pub mod git;
 pub mod layout;
