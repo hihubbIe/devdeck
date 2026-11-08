@@ -101,6 +101,8 @@ pub struct ApiState {
     pub connections: BTreeMap<u64, Connection>,
     /// Newest first.
     pub audit: VecDeque<audit::Entry>,
+    /// Where the whole audit goes (none: kept in memory only).
+    pub audit_path: Option<PathBuf>,
     writer: Option<audit::Writer>,
     connects: HashMap<String, Instant>,
     next: u64,
@@ -184,7 +186,8 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         None => Err("XDG_RUNTIME_DIR isn't set".to_string()),
         Some(rt) => socket::bind(rt, &name),
     };
-    let writer = config.audit_file.then(|| audit::Writer::start(config.state_dir.join(audit::FILE)).ok()).flatten();
+    let audit_path = config.audit_file.then(|| config.state_dir.join(audit::FILE));
+    let writer = audit_path.clone().and_then(|p| audit::Writer::start(p).ok());
     let (tx, rx) = async_channel::unbounded::<ToUi>();
     let (status, serving) = match bound.and_then(|b| {
         let listener = b.listener.try_clone().map_err(|e| e.to_string())?;
@@ -204,6 +207,7 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         state: kind,
         connections: BTreeMap::new(),
         audit: VecDeque::new(),
+        audit_path,
         writer,
         connects: HashMap::new(),
         next: 1,

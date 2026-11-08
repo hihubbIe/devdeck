@@ -126,3 +126,15 @@ fn unknown_saved_theme_falls_back_with_a_message(cx: &mut TestAppContext) {
     let problems = cx.read(|cx| app_settings::settings(cx).read(cx).theme_problems.clone());
     assert!(problems.iter().any(|p| p.contains("gone")), "{problems:?}");
 }
+
+#[gpui::test]
+fn settings_show_the_control_api(cx: &mut TestAppContext) {
+    let (_deck, dir) = setup(cx, "api");
+    let config = devdeck_app::api::Config { runtime: None, state_dir: dir.clone(), default_state_dir: dir, audit_file: false };
+    cx.update(|cx| devdeck_app::api::start(config, cx));
+    let main = cx.windows()[0];
+    cx.simulate_keystrokes(main, "ctrl-,");
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("settings-api").is_some(), "the API section is drawn");
+}

@@ -944,6 +944,45 @@ fn welcome() -> Layout {
     l
 }
 
+/// The control API off (no runtime folder): Settings says why.
+fn api_off(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell>) {
+    cx.update(|cx| {
+        let dir = std::env::temp_dir();
+        devdeck_app::api::start(devdeck_app::api::Config { runtime: None, state_dir: dir.clone(), default_state_dir: dir, audit_file: false }, cx);
+    });
+}
+
+/// The control API on, with callers (one with a name long enough to be cut) and audit
+/// entries. Shown as it would be; no socket is made.
+fn api_callers(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell>) {
+    use devdeck_app::api::audit::{Entry, Event};
+    use devdeck_app::api::{Connection, Status, Who};
+    let api = cx.update(|cx| {
+        let dir = PathBuf::from("/home/u/.local/state/devdeck");
+        devdeck_app::api::start(devdeck_app::api::Config { runtime: None, state_dir: dir.clone(), default_state_dir: dir, audit_file: false }, cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        toasts(cx).update(cx, |t, cx| {
+            t.queue.items.clear();
+            cx.notify();
+        });
+        api.update(cx, |s, cx| {
+            let now = std::time::SystemTime::now();
+            s.status = Status::On("/run/user/1000/devdeck/main.sock".into());
+            s.audit_path = Some("/home/u/.local/state/devdeck/api-audit.jsonl".into());
+            let terminal = Who::Terminal { workspace: "work".into(), n: 3, uid: "u".into(), shell: 1, starts: 1 };
+            let long = Who::Outside { pid: Some(4242), program: "a-program-whose-name-is-long-enough-to-be-cut-short-at-the-end-of-the-settings-page-row-when-it-is-narrow".into() };
+            s.connections.insert(1, Connection { who: terminal.clone(), since: now, calls: 12 });
+            s.connections.insert(2, Connection { who: long, since: now, calls: 1 });
+            s.audit.push_front(Entry::new(terminal.label(), Event::Connected, None, None));
+            s.audit.push_front(Entry::new("devdeck-ctl (pid 4242)".into(), Event::Denied, Some("run.list".into()), None));
+            s.audit.push_front(Entry::new("?".into(), Event::Refused, None, Some("another user (uid 1001)".into())));
+            cx.notify();
+        });
+    });
+}
+
 fn states() -> Vec<State> {
     let s = |name, layout, settle_ms, scale, settings_open| State {
         name,
@@ -960,6 +999,15 @@ fn states() -> Vec<State> {
         settle: Duration::from_millis(200),
         scale,
         settings_open: false,
+        extra: Some(extra),
+        workspaces: None,
+    };
+    let a = |name, scale, extra: Extra| State {
+        name,
+        layout: devdeck_app::initial_layout,
+        settle: Duration::from_millis(200),
+        scale,
+        settings_open: true,
         extra: Some(extra),
         workspaces: None,
     };
@@ -991,6 +1039,9 @@ fn states() -> Vec<State> {
         s("16-one-tab-focused-150", one_tab_focused, 500, 1.5, false),
         s("20-settings-100", devdeck_app::initial_layout, 200, 1.0, true),
         s("21-settings-150", devdeck_app::initial_layout, 200, 1.5, true),
+        a("22-settings-api-off", 1.0, api_off),
+        a("23-settings-api-callers", 1.0, api_callers),
+        a("24-settings-api-callers-150", 1.5, api_callers),
         x("30-gallery-menu-toasts", 1.0, gallery_menu_and_toasts),
         x("31-gallery-menu-toasts-150", 1.5, gallery_menu_and_toasts),
         x("32-gallery-modal", 1.0, gallery_modal),
