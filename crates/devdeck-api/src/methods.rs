@@ -1,0 +1,175 @@
+//! The method catalog: one type per method, naming it, its class and what it takes and
+//! gives. The server builds its handlers from the same list ([`visit_all`]), so a method
+//! can't be listed without being served (a test in the app checks it).
+
+use crate::types::*;
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+pub trait Method: 'static {
+    /// `domain.verb`.
+    const NAME: &'static str;
+    /// One line, for people and agents choosing a method.
+    const SUMMARY: &'static str;
+    /// Its class for any target.
+    const CLASS: Class;
+    /// Classes it rises to with some targets (stopping a foreign process).
+    const ESCALATES_TO: &'static [Class] = &[];
+    /// The API level it appeared at.
+    const SINCE: u32 = 1;
+    /// May still change; outside the "only grows" promise.
+    const EXPERIMENTAL: bool = false;
+    type Params: Serialize + DeserializeOwned + JsonSchema;
+    type Result: Serialize + DeserializeOwned + JsonSchema;
+}
+
+/// Something done for every method, typed (the server registering handlers, the catalog).
+pub trait Visit {
+    fn visit<M: Method>(&mut self);
+}
+
+macro_rules! methods {
+    ($( $(#[$doc:meta])* $ty:ident = $name:literal, $class:ident, $params:ty => $result:ty, $summary:literal; )*) => {
+        $(
+            $(#[$doc])*
+            pub struct $ty;
+            impl Method for $ty {
+                const NAME: &'static str = $name;
+                const SUMMARY: &'static str = $summary;
+                const CLASS: Class = Class::$class;
+                type Params = $params;
+                type Result = $result;
+            }
+        )*
+
+        /// Calls `v` for every method.
+        pub fn visit_all(v: &mut impl Visit) {
+            $( v.visit::<$ty>(); )*
+        }
+    };
+}
+
+methods! {
+    SessionHello = "session.hello", Observe, HelloParams => Hello,
+        "Introduces the client: the API level, who devdeck takes the caller for, and what it may do per class.";
+    SessionWhoami = "session.whoami", Observe, NoParams => Whoami,
+        "Who devdeck takes the caller for: its terminal, workspace, and where that terminal shows.";
+    ApiDescribe = "api.describe", Observe, DescribeParams => Describe,
+        "Every method with its class and whether the caller may use it; give `method` for its parameter and result schemas.";
+    DevdeckInfo = "devdeck.info", Observe, NoParams => Info,
+        "devdeck's version, API level, instance and process.";
+    DevdeckProblems = "devdeck.problems", Observe, InWorkspace => Problems,
+        "What discovery, the config and the machine reported for the workspace.";
+    WorkspaceList = "workspace.list", Observe, NoParams => Workspaces,
+        "The workspaces the caller can see.";
+    WorkspaceGet = "workspace.get", Observe, InWorkspace => Workspace,
+        "A workspace: folders, envs, current env.";
+    AppList = "app.list", Observe, InWorkspace => Apps,
+        "The workspace's apps, with whether they run and can be used.";
+    AppGet = "app.get", Observe, AppParams => App,
+        "An app: its commands (id, line, ports, running), links, why it can't be used, notes count.";
+    RunList = "run.list", Observe, InWorkspace => Runs,
+        "The workspace's runs (commands started at least once), with their state.";
+    RunGet = "run.get", Observe, RunParams => Run,
+        "A run: state, exit, env, command line, arguments, process, ports.";
+    TerminalList = "terminal.list", Observe, InWorkspace => Terminals,
+        "The workspace's terminals (shells): folder, running, program in the foreground.";
+    TerminalGet = "terminal.get", Observe, TerminalParams => Terminal,
+        "A terminal, and where it shows.";
+    UiGet = "ui.get", Observe, InWorkspace => Ui,
+        "What's on screen: windows, the pane tree, tabs with their view and title, focused and maximized panes.";
+    LayoutList = "layout.list", Observe, InWorkspace => Layouts,
+        "The workspace's saved layouts, and which is current.";
+    LayoutGet = "layout.get", Observe, IdParams => Layout,
+        "A layout's windows, panes and tabs.";
+    NoteList = "note.list", Observe, NoteListParams => Notes,
+        "The workspace's notes (names only), or one app's.";
+    NoteGet = "note.get", Observe, IdParams => Note,
+        "A note's name and app.";
+    EnvList = "env.list", Observe, InWorkspace => Envs,
+        "The workspace's envs, protected or not, and the current one.";
+    EnvGet = "env.get", Observe, EnvParams => Env,
+        "An env.";
+    EditModeGet = "editmode.get", Observe, NoParams => EditMode,
+        "Whether edit mode is on. Only the user turns it on.";
+    SettingsGet = "settings.get", Observe, NoParams => Settings,
+        "UI scale and theme.";
+}
+
+/// A method as the catalog lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MethodInfo {
+    pub name: &'static str,
+    pub summary: &'static str,
+    pub class: Class,
+    pub escalates_to: &'static [Class],
+    pub since: u32,
+    pub experimental: bool,
+    pub params: serde_json::Value,
+    pub result: serde_json::Value,
+}
+
+impl MethodInfo {
+    pub fn of<M: Method>() -> Self {
+        let schema = |s: schemars::Schema| serde_json::to_value(s).unwrap_or_default();
+        Self {
+            name: M::NAME,
+            summary: M::SUMMARY,
+            class: M::CLASS,
+            escalates_to: M::ESCALATES_TO,
+            since: M::SINCE,
+            experimental: M::EXPERIMENTAL,
+            params: schema(schemars::schema_for!(M::Params)),
+            result: schema(schemars::schema_for!(M::Result)),
+        }
+    }
+
+    /// Every class it may be called as: its own and those it rises to.
+    pub fn classes(&self) -> impl Iterator<Item = Class> + '_ {
+        std::iter::once(self.class).chain(self.escalates_to.iter().copied())
+    }
+}
+
+/// Every method, alphabetical by name.
+pub fn catalog() -> Vec<MethodInfo> {
+    struct Collect(Vec<MethodInfo>);
+    impl Visit for Collect {
+        fn visit<M: Method>(&mut self) {
+            self.0.push(MethodInfo::of::<M>());
+        }
+    }
+    let mut c = Collect(Vec::new());
+    visit_all(&mut c);
+    c.0.sort_by_key(|m| m.name);
+    c.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_catalog_is_well_formed() {
+        let all = catalog();
+        let mut names: Vec<&str> = all.iter().map(|m| m.name).collect();
+        names.dedup();
+        assert_eq!(names.len(), all.len(), "names are unique");
+        for m in &all {
+            let (domain, verb) = m.name.split_once('.').expect("domain.verb");
+            assert!(!domain.is_empty() && !verb.is_empty() && !verb.contains('.'), "{}", m.name);
+            assert!(m.name.chars().all(|c| c.is_ascii_lowercase() || c == '.' || c == '_'), "{}", m.name);
+            assert_ne!(m.class, Class::Unknown, "{}", m.name);
+            assert!(!m.escalates_to.contains(&m.class) && !m.escalates_to.contains(&Class::Unknown), "{}", m.name);
+            assert!(m.since >= 1 && m.since <= crate::API_LEVEL, "{}", m.name);
+            assert!(m.summary.ends_with('.'), "{}: a sentence", m.name);
+            assert_eq!(m.params["type"], "object", "{}: parameters are an object", m.name);
+            assert_eq!(m.result["type"], "object", "{}: results are an object, so they can grow", m.name);
+        }
+    }
+
+    #[test]
+    fn phase_one_only_observes() {
+        assert!(catalog().iter().all(|m| m.class == Class::Observe && m.escalates_to.is_empty()));
+    }
+}
