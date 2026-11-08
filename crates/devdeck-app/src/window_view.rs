@@ -1151,8 +1151,9 @@ fn divider(deck: EntityId, split: SplitId, index: usize, axis: Axis, t: &Theme) 
 }
 
 /// Runs a view's action (R12.4) on that pane's view, whichever pane has the focus: the
-/// pane (and tab `idx`, when given) comes forward and focused, then the action goes to
-/// its view.
+/// pane (and tab `idx`, when given) comes forward and focused, and the view runs it
+/// itself (a tab just brought forward isn't drawn yet, so a dispatched action would
+/// miss it).
 fn run_view_action(deck: &Entity<Deck>, pane: PaneId, idx: Option<usize>, id: &'static str, window: &mut Window, cx: &mut App) {
     apply_on(deck, cx, |l| {
         if let Some(i) = idx {
@@ -1160,11 +1161,13 @@ fn run_view_action(deck: &Entity<Deck>, pane: PaneId, idx: Option<usize>, id: &'
         }
         l.focus(pane)
     });
-    if let Some(f) = deck.read(cx).view_focus(pane) {
+    let d = deck.read(cx);
+    let view = d.layout().pane(pane).ok().and_then(|p| p.active_view().cloned());
+    if let Some(f) = d.view_focus(pane) {
         f.focus(window, cx);
     }
-    if let Some(spec) = crate::registry::by_id(id) {
-        window.dispatch_action((spec.build)(), cx);
+    if let Some(l) = view.and_then(|r| deck.read(cx).lively(&r)) {
+        l.run(id, window, cx);
     }
 }
 

@@ -252,6 +252,13 @@ impl Services {
         self.files.retain(|_, f| f.upgrade().is_some());
         let file = cx.new(|_| OpenFile::new(path.to_path_buf()));
         cx.subscribe(&file, |_, _, _: &crate::open_file::Moved, cx| cx.emit(Watches)).detach();
+        // The last view showing it closed: its folder stops being watched.
+        let key = path.to_path_buf();
+        cx.observe_release(&file, move |this, _, cx| {
+            this.files.remove(&key);
+            cx.emit(Watches);
+        })
+        .detach();
         self.files.insert(path.to_path_buf(), file.downgrade());
         cx.emit(Watches);
         file

@@ -25,6 +25,8 @@ pub struct Notes {
     /// Texts read or typed so far, by id.
     texts: HashMap<String, String>,
     unsaved: BTreeSet<String>,
+    /// Notes whose file couldn't be read, with why: shown as that, never written over.
+    unreadable: HashMap<String, String>,
     save: Option<Task<()>>,
     /// A write failed and that was said (said again only after one succeeds).
     failing: bool,
@@ -45,7 +47,7 @@ impl Notes {
             }
             None => Vec::new(),
         };
-        Self { store, index, texts: HashMap::new(), unsaved: BTreeSet::new(), save: None, failing: false }
+        Self { store, index, texts: HashMap::new(), unsaved: BTreeSet::new(), unreadable: HashMap::new(), save: None, failing: false }
     }
 
     /// Keeps the notes in `store` from now on (tests: a folder of their own).
@@ -66,14 +68,30 @@ impl Notes {
         self.index.iter().find(|n| n.id == id)
     }
 
-    /// A note's text (read from disk the first time).
+    /// A note's text (read from disk the first time); empty when it can't be read
+    /// ([`Notes::unreadable`]).
     pub fn text(&mut self, id: &str) -> String {
         if let Some(t) = self.texts.get(id) {
             return t.clone();
         }
-        let text = self.store.as_ref().and_then(|s| s.read(id).ok()).unwrap_or_default();
-        self.texts.insert(id.to_string(), text.clone());
-        text
+        if self.unreadable.contains_key(id) {
+            return String::new();
+        }
+        match self.store.as_ref().map(|s| s.read(id)).unwrap_or(Ok(String::new())) {
+            Ok(text) => {
+                self.texts.insert(id.to_string(), text.clone());
+                text
+            }
+            Err(e) => {
+                self.unreadable.insert(id.to_string(), e);
+                String::new()
+            }
+        }
+    }
+
+    /// Why a note's file couldn't be read (another program wrote it, not as UTF-8 text).
+    pub fn unreadable(&self, id: &str) -> Option<&str> {
+        self.unreadable.get(id).map(String::as_str)
     }
 
     /// Makes a note for `app`; its id.
@@ -124,13 +142,14 @@ impl Notes {
         self.index.retain(|n| n.id != id);
         self.texts.remove(id);
         self.unsaved.remove(id);
+        self.unreadable.remove(id);
         cx.emit(NoteDeleted(id.to_string()));
         cx.notify();
     }
 
     /// The user changed a note's text: it's written soon.
     pub fn set_text(&mut self, id: &str, text: String, cx: &mut Context<Self>) {
-        if self.meta(id).is_none() || self.texts.get(id) == Some(&text) {
+        if self.meta(id).is_none() || self.unreadable.contains_key(id) || self.texts.get(id) == Some(&text) {
             return;
         }
         self.texts.insert(id.to_string(), text);

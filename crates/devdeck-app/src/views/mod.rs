@@ -116,16 +116,20 @@ pub trait Live: Render {
     fn actions(&self, _cx: &App) -> Vec<ViewAction> {
         Vec::new()
     }
+    /// Runs one of its [`actions`](Live::actions) (from its header or tab menu).
+    fn run(&mut self, _id: &str, _window: &mut Window, _cx: &mut gpui::Context<Self>) {}
 }
 
 type TitleFn = std::rc::Rc<dyn Fn(&App) -> Option<String>>;
 type ActionsFn = std::rc::Rc<dyn Fn(&App) -> Vec<ViewAction>>;
+type RunFn = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 /// How the deck reads a [`Live`] view (through a weak handle: never keeps it alive).
 #[derive(Clone)]
 pub struct Lively {
     title: TitleFn,
     actions: ActionsFn,
+    run: RunFn,
 }
 
 impl Lively {
@@ -135,19 +139,28 @@ impl Lively {
     pub fn actions(&self, cx: &App) -> Vec<ViewAction> {
         (self.actions)(cx)
     }
+    pub fn run(&self, id: &str, window: &mut Window, cx: &mut App) {
+        (self.run)(id, window, cx)
+    }
 }
 
-/// Adds `view`'s [`Live`] part to `built`; its changes reach its deck.
+/// Adds `view`'s [`Live`] part to `built`; its changes reach its deck (through the
+/// observer `keeping` set, else one of its own).
 fn live<V: Live>(mut built: Built, view: &Entity<V>, ctx: &ViewCx, cx: &mut App) -> Built {
-    let (deck, r) = (ctx.deck.clone(), ctx.view.clone());
-    cx.observe(view, move |_, cx| {
-        let _ = deck.update(cx, |d, cx| d.view_changed(&r, cx));
-    })
-    .detach();
-    let (t, a) = (view.downgrade(), view.downgrade());
+    if built.save.is_none() {
+        let (deck, r) = (ctx.deck.clone(), ctx.view.clone());
+        cx.observe(view, move |_, cx| {
+            let _ = deck.update(cx, |d, cx| d.view_changed(&r, cx));
+        })
+        .detach();
+    }
+    let (t, a, run) = (view.downgrade(), view.downgrade(), view.downgrade());
     built.live = Some(Lively {
         title: std::rc::Rc::new(move |cx| t.upgrade().and_then(|v| v.read(cx).title(cx))),
         actions: std::rc::Rc::new(move |cx| a.upgrade().map(|v| v.read(cx).actions(cx)).unwrap_or_default()),
+        run: std::rc::Rc::new(move |id, window, cx| {
+            let _ = run.update(cx, |v, cx| v.run(id, window, cx));
+        }),
     });
     built
 }

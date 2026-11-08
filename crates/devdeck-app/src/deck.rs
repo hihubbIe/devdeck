@@ -35,6 +35,9 @@ pub struct TerminalTabs {
     pub layouts: Vec<(LayoutId, String)>,
 }
 
+/// What a live view said last: its title and its actions.
+type Said = (Option<String>, Vec<views::ViewAction>);
+
 pub struct Deck {
     /// Read through [`Deck::layout`]; every change goes through [`Deck::apply`].
     layout: Layout,
@@ -45,8 +48,9 @@ pub struct Deck {
     focus: HashMap<ViewRef, FocusHandle>,
     /// How views that keep state are read for saving.
     savers: HashMap<ViewRef, views::Saver>,
-    /// Views that name themselves or offer actions ([`views::Live`]).
-    lives: HashMap<ViewRef, views::Lively>,
+    /// Views that name themselves or offer actions ([`views::Live`]), with what they said
+    /// last (a change redraws; typing in a note doesn't).
+    lives: HashMap<ViewRef, (views::Lively, Said)>,
     /// States saved last time, handed to each view when it's built (then dropped).
     restored: devdeck_core::state::ViewStates,
     /// The views' states as last written (or about to be).
@@ -327,12 +331,17 @@ impl Deck {
 
     /// A tab's title: what its view says, else what its address says.
     pub fn title(&self, r: &ViewRef, cx: &App) -> String {
-        self.lives.get(r).and_then(|l| l.title(cx)).unwrap_or_else(|| views::title(r))
+        self.lives.get(r).and_then(|(l, _)| l.title(cx)).unwrap_or_else(|| views::title(r))
     }
 
     /// What a view offers now (R12.4), for its header and its tab's menu.
     pub fn view_actions(&self, r: &ViewRef, cx: &App) -> Vec<views::ViewAction> {
-        self.lives.get(r).map(|l| l.actions(cx)).unwrap_or_default()
+        self.lives.get(r).map(|(l, _)| l.actions(cx)).unwrap_or_default()
+    }
+
+    /// How to run a view's actions on it (R12.4).
+    pub fn lively(&self, r: &ViewRef) -> Option<views::Lively> {
+        self.lives.get(r).map(|(l, _)| l.clone())
     }
 
     pub fn view(&self, r: &ViewRef) -> Option<AnyView> {
@@ -581,7 +590,8 @@ impl Deck {
                     self.savers.insert(r.clone(), s);
                 }
                 if let Some(l) = built.live {
-                    self.lives.insert(r.clone(), l);
+                    let said = (l.title(cx), l.actions(cx));
+                    self.lives.insert(r.clone(), (l, said));
                 }
                 if built.missing {
                     self.missing.insert(r.clone(), saved);
@@ -638,8 +648,12 @@ impl Deck {
     /// A view that keeps state changed: saved soon if its state did.
     pub fn view_changed(&mut self, r: &ViewRef, cx: &mut Context<Self>) {
         // Its title or header may have changed.
-        if self.lives.contains_key(r) {
-            cx.notify();
+        if let Some((l, said)) = self.lives.get_mut(r) {
+            let now = (l.title(cx), l.actions(cx));
+            if *said != now {
+                *said = now;
+                cx.notify();
+            }
         }
         let Some(save) = self.savers.get(r) else { return };
         if save(cx).as_ref() != self.written.get(r.as_str()) && self.store.is_some() && self.save_task.is_none() {

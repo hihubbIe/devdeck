@@ -271,3 +271,48 @@ fn what_is_shown_survives_a_restart(cx: &mut TestAppContext) {
     }));
     assert!(!vcx.read(|cx| v.read(cx).rendered));
 }
+
+#[gpui::test]
+fn the_tab_menu_runs_the_action_on_a_tab_behind(cx: &mut TestAppContext) {
+    let (deck, files) = setup(cx);
+    let a = files.join("a.md");
+    std::fs::write(&a, "# a\n").unwrap();
+    let mut vcx = window(cx);
+    let pane = the_pane(&deck, &mut vcx);
+    let at = body(&mut vcx, pane).center();
+    drop_files(&mut vcx, std::slice::from_ref(&a), at);
+    let v = view(&deck, &a, &mut vcx);
+    // The notes tab comes in front; the file's is behind.
+    let notes = ViewRef::new("demo/notes");
+    vcx.update(|_, cx| deck.update(cx, |d, cx| d.apply(cx, |l| { let (p, i) = l.find_view(&notes).unwrap(); l.activate(p, i) })));
+    vcx.run_until_parked();
+    let i = vcx.read(|cx| deck.read(cx).layout().find_view(&file_ref(&a)).unwrap().1);
+    let tab = vcx.debug_bounds(Box::leak(format!("tab-{}-{i}", pane.0).into_boxed_str())).expect("its tab");
+    vcx.simulate_mouse_down(tab.center(), gpui::MouseButton::Right, Modifiers::none());
+    vcx.run_until_parked();
+    let w = vcx.update(|window, _| window.window_handle());
+    let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(w, cx).read(cx).menu.clone()).expect("a menu");
+    let run = vcx.read(|cx| menu.read(cx).items()[0].run.clone()).expect("runs");
+    vcx.update(|window, cx| run(window, cx));
+    vcx.run_until_parked();
+    assert!(!vcx.read(|cx| v.read(cx).rendered), "switched to the source");
+    let front = vcx.read(|cx| deck.read(cx).layout().pane(pane).unwrap().active_view().cloned());
+    assert_eq!(front, Some(file_ref(&a)), "and brought forward");
+}
+
+#[gpui::test]
+fn a_closed_files_folder_stops_being_watched(cx: &mut TestAppContext) {
+    let (deck, files) = setup(cx);
+    let a = files.join("a.rs");
+    std::fs::write(&a, "").unwrap();
+    let mut vcx = window(cx);
+    let pane = the_pane(&deck, &mut vcx);
+    let at = body(&mut vcx, pane).center();
+    drop_files(&mut vcx, std::slice::from_ref(&a), at);
+    let services = vcx.read(|cx| deck.read(cx).services().unwrap());
+    assert_eq!(vcx.read(|cx| services.read(cx).file_watch(cx)), vec![files.clone()]);
+    let r = file_ref(&a);
+    vcx.update(|_, cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&r))));
+    vcx.run_until_parked();
+    assert!(vcx.read(|cx| services.read(cx).file_watch(cx)).is_empty());
+}

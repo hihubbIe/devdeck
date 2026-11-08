@@ -174,6 +174,12 @@ impl Live for FileView {
     fn actions(&self, _cx: &App) -> Vec<ViewAction> {
         if self.markdown { vec![ViewAction { id: TOGGLE_RENDERED, icon: Icon::Rendered, on: self.rendered }] } else { Vec::new() }
     }
+
+    fn run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == TOGGLE_RENDERED {
+            self.toggle_rendered(window, cx);
+        }
+    }
 }
 
 /// The registry's id of [`ToggleRendered`].
@@ -230,10 +236,12 @@ impl FileView {
 impl Render for FileView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
-        let code = matches!(self.shown, Shown::Text { .. }).then(|| self.editor(window, cx));
+        // The editor only while the source shows: rendered Markdown doesn't pay for
+        // highlighting it (the text waits in `pending`).
+        let source = matches!(self.shown, Shown::Text { .. }) && !(self.markdown && self.rendered);
+        let code = source.then(|| self.editor(window, cx));
         // Focus given to the view goes on to the text while it shows (copy, find).
         if let Some(c) = &code
-            && !(self.markdown && self.rendered)
             && self.focus.is_focused(window)
         {
             let f = c.read(cx).focus_handle(cx);
@@ -249,11 +257,11 @@ impl Render for FileView {
         match &self.shown {
             Shown::Loading => root.into_any_element(),
             Shown::Problem(why) => root
-                .items_center()
                 .justify_center()
+                .px_3()
                 .text_color(t.mute)
                 .debug_selector(|| "file-problem".into())
-                .child(label(why.clone()))
+                .child(div().w_full().min_w_0().flex().justify_center().child(label(why.clone()).min_w_0()))
                 .into_any_element(),
             Shown::Text { .. } if self.markdown && self.rendered => root
                 .child(

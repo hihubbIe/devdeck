@@ -267,3 +267,22 @@ fn a_failed_write_keeps_the_text_and_says_so(cx: &mut TestAppContext) {
     vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.flush(cx)));
     assert_eq!(std::fs::read_to_string(file(&s, &id)).unwrap(), "kept", "written once it can be");
 }
+
+#[gpui::test]
+fn a_note_that_cant_be_read_is_never_written_over(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let mut vcx = window(cx);
+    let id = vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.create(APP, "latin1", cx))).unwrap();
+    // Another program wrote it, not as UTF-8; the store forgets what it read.
+    std::fs::write(file(&s, &id), [0x63, 0x61, 0x66, 0xe9]).unwrap();
+    let store = s.store.clone();
+    vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.set_store(store, cx)));
+    vcx.update(|_, cx| s.deck.update(cx, |d, cx| d.apply(cx, |l| { let p = l.main().focused; l.open(note_ref(&id), p).map(|_| ()) })));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("note-unreadable").is_some(), "says so");
+    vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.set_text(&id, "typed".into(), cx)));
+    vcx.executor().advance_clock(SAVE_AFTER);
+    vcx.run_until_parked();
+    assert_eq!(std::fs::read(file(&s, &id)).unwrap(), [0x63, 0x61, 0x66, 0xe9], "untouched");
+}
+

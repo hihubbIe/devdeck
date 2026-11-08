@@ -7,14 +7,16 @@
 //! [`sync_theme`] copies it again whenever ours changes (theme or UI scale).
 //!
 //! What's ours around the editor: a wheel gesture keeps the axis it starts on (R9.6, the
-//! editor adds both axes of every event), right-click opens our menu (R5.2), and the note
-//! editor has its own key context, [`NOTE_CONTEXT`], where only the keys it uses as text
-//! are taken from devdeck ([`editor_takes`]).
+//! editor adds both axes of every event), right-click opens our menu (R5.2), the cursor
+//! doesn't blink (idle stays idle, R1.3), and inside gpui-component's text fields
+//! ([`EDITOR_CONTEXT`]: the editors and their find field) only the keys they use as text
+//! are taken from devdeck ([`editor_takes`]); the editor's `alt-shift-arrows` go back to
+//! devdeck (moving tabs).
 
 use crate::{MenuItem, Theme, open_menu, theme};
 use gpui::{
     App, AppContext, ClipboardItem, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Keystroke, MouseButton, OngoingScroll,
-    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, SharedString, Styled, Subscription, Window, canvas, div, prelude::FluentBuilder, InteractiveElement,
+    ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, SharedString, Styled, Subscription, Window, canvas, div,
 };
 use gpui_component::input::{Editor, EditorState, InputEvent};
 use std::cell::Cell;
@@ -24,8 +26,12 @@ use std::rc::Rc;
 /// Esc in the editor, when it doesn't use it itself (a view leaves the editor on it).
 pub use gpui_component::input::Escape as EditorEscape;
 
-/// The key context of the note editor (an editable [`Code`]).
-pub const NOTE_CONTEXT: &str = "NoteEditor";
+/// The key context of gpui-component's text fields: both editors and their find field.
+pub const EDITOR_CONTEXT: &str = "Input";
+
+/// Its keys devdeck keeps (moving tabs, R5.1): the editor's own use of them (select to a
+/// word, add a cursor) has other keys.
+const GIVEN_BACK: &[&str] = &["alt-shift-left", "alt-shift-right", "alt-shift-up", "alt-shift-down"];
 
 /// Bigger than this, a file shows as plain text: highlighting is most of the memory a
 /// file costs (step 1 of docs/plans/files-and-notes.md: 10 MB took 567 MB highlighted,
@@ -37,8 +43,20 @@ pub const HIGHLIGHT_MAX_LINE: usize = 5_000;
 /// Sets gpui-component up for devdeck. Call once, before the first window.
 pub fn init(cx: &mut App) {
     gpui_component::init(cx);
-    // Its inspector's key is its only binding outside its components' contexts.
-    let kept: Vec<gpui::KeyBinding> = cx.key_bindings().borrow().bindings().filter(|b| !b.action().name().ends_with("ToggleInspector")).cloned().collect();
+    // Its inspector's key is its only binding outside its components' contexts; the
+    // editor's alt-shift-arrows are devdeck's.
+    let given_back: Vec<Keystroke> = GIVEN_BACK.iter().filter_map(|k| Keystroke::parse(k).ok()).collect();
+    let kept: Vec<gpui::KeyBinding> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|b| !b.action().name().ends_with("ToggleInspector"))
+        .filter(|b| match b.keystrokes() {
+            [k] => !given_back.iter().any(|g| g.modifiers == k.inner().modifiers && g.key == k.inner().key),
+            _ => true,
+        })
+        .cloned()
+        .collect();
     cx.clear_key_bindings();
     cx.bind_keys(kept);
     gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
@@ -55,6 +73,8 @@ pub fn sync_theme(cx: &mut App) {
         g.mono_font_family = t.font.clone();
         g.font_size = t.text;
         g.mono_font_size = t.text;
+        // A blinking cursor redraws twice a second forever (R1.3), as our own inputs don't.
+        g.cursor_blink = gpui_component::input::CursorBlink::steady();
         let c = &mut g.colors;
         c.background = t.bg;
         c.foreground = t.fg;
@@ -119,10 +139,10 @@ pub fn highlightable(text: &str) -> bool {
     text.len() <= HIGHLIGHT_MAX_BYTES && text.lines().all(|l| l.len() < HIGHLIGHT_MAX_LINE)
 }
 
-/// True when the focused note editor uses `key` (a binding's key, `ctrl-k`) itself: text
-/// and moving keys (no modifier but shift), and the editing keys it binds. Those of
-/// devdeck's bindings are off inside [`NOTE_CONTEXT`]; the others (ctrl+w, ctrl+tab,
-/// alt+arrows…) keep working while typing a note.
+/// True when a focused editor (or its find field) uses `key` (a binding's key, `ctrl-k`)
+/// itself: text and moving keys (no modifier but shift), and the editing keys it binds.
+/// Those of devdeck's bindings are off inside [`EDITOR_CONTEXT`]; the others (ctrl+w,
+/// ctrl+tab, alt+arrows, alt+shift+arrows…) keep working there.
 pub fn editor_takes(key: &'static str) -> bool {
     let Ok(k) = Keystroke::parse(key) else { return false };
     let m = k.modifiers;
@@ -132,8 +152,8 @@ pub fn editor_takes(key: &'static str) -> bool {
     EDITOR_KEYS.contains(&key)
 }
 
-/// The note editor's own keys with ctrl or alt (gpui-component's `Input` bindings on
-/// Linux; `tests/code.rs` checks the list against them).
+/// The editor's own keys with ctrl or alt (gpui-component's `Input` bindings on Linux,
+/// less [`GIVEN_BACK`]; `tests/code.rs` checks the list against them both ways).
 pub const EDITOR_KEYS: &[&str] = &[
     "ctrl-a",
     "ctrl-c",
@@ -141,7 +161,6 @@ pub const EDITOR_KEYS: &[&str] = &[
     "ctrl-v",
     "ctrl-z",
     "ctrl-y",
-    "ctrl-shift-z",
     "ctrl-f",
     "ctrl-h",
     "ctrl-enter",
@@ -158,18 +177,6 @@ pub const EDITOR_KEYS: &[&str] = &[
     "ctrl-shift-right",
     "ctrl-shift-home",
     "ctrl-shift-end",
-    "ctrl-alt-up",
-    "ctrl-alt-down",
-    "alt-backspace",
-    "alt-delete",
-    "alt-left",
-    "alt-right",
-    "alt-shift-left",
-    "alt-shift-right",
-    "shift-alt-left",
-    "shift-alt-right",
-    "shift-alt-up",
-    "shift-alt-down",
 ];
 
 /// What a [`Code`] reports.
@@ -325,20 +332,22 @@ impl Render for Code {
         let t = theme(cx);
         let me = cx.entity().downgrade();
         let (wheel, menu) = (me.clone(), me);
-        // Wheel and right-click are taken before the editor sees them (capture phase).
+        // Wheel and right-click are taken before the editor sees them (capture phase), when
+        // nothing covers it (a menu, the palette, a modal).
         let catcher = canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| {
+            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |_, hitbox, window, _| {
                 let wheel = wheel.clone();
-                window.on_mouse_event(move |e: &ScrollEvent, phase, _, cx| {
-                    if phase == gpui::DispatchPhase::Capture && bounds.contains(&e.position) {
+                let over = hitbox.clone();
+                window.on_mouse_event(move |e: &ScrollEvent, phase, window, cx| {
+                    if phase == gpui::DispatchPhase::Capture && over.should_handle_scroll(window) {
                         cx.stop_propagation();
                         let _ = wheel.update(cx, |c, cx| c.scroll(e, cx));
                     }
                 });
                 let menu = menu.clone();
                 window.on_mouse_event(move |e: &gpui::MouseDownEvent, phase, window, cx| {
-                    if phase == gpui::DispatchPhase::Capture && e.button == MouseButton::Right && bounds.contains(&e.position) {
+                    if phase == gpui::DispatchPhase::Capture && e.button == MouseButton::Right && hitbox.is_hovered(window) {
                         cx.stop_propagation();
                         window.prevent_default();
                         if let Some(c) = menu.upgrade() {
@@ -355,7 +364,6 @@ impl Render for Code {
         div()
             .relative()
             .size_full()
-            .when(self.editable, |d| d.key_context(NOTE_CONTEXT))
             .font_family(t.font.clone())
             .text_size(t.text)
             .child(Editor::new(&self.state).readonly(!self.editable).bordered(false).appearance(false).h_full())

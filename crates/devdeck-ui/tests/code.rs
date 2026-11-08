@@ -150,6 +150,7 @@ fn our_theme_reaches_the_editor(cx: &mut TestAppContext) {
         assert_eq!(theirs.mono_font_family, ours.font);
         assert_eq!(theirs.mono_font_size, ours.text);
         assert_eq!(theirs.highlight_theme.style.editor_background, Some(gpui::red()));
+        assert!(theirs.cursor_blink.is_steady(), "no blinking: idle stays idle");
     });
 }
 
@@ -187,8 +188,32 @@ fn every_editor_key_is_known(cx: &mut TestAppContext) {
     missing.sort();
     missing.dedup();
     assert!(missing.is_empty(), "not in EDITOR_KEYS: {missing:?}");
+    // And the other way: every key listed is one the editor binds here.
+    let bound: Vec<Keystroke> = cx.update(|cx| {
+        let keymap = cx.key_bindings();
+        let keymap = keymap.borrow();
+        keymap
+            .bindings()
+            .filter(|b| b.predicate().is_some_and(|p| p.to_string().contains("Input")))
+            .filter_map(|b| match b.keystrokes() {
+                [k] => Some(k.inner().clone()),
+                _ => None,
+            })
+            .collect()
+    });
+    let unbound: Vec<&str> = EDITOR_KEYS.iter().copied().filter(|k| {
+        let k = Keystroke::parse(k).unwrap();
+        !bound.iter().any(|b| b.modifiers == k.modifiers && b.key == k.key)
+    }).collect();
+    assert!(unbound.is_empty(), "listed but not bound: {unbound:?}");
+    // The editor's alt-shift-arrows are devdeck's (moving tabs).
+    for k in ["alt-shift-left", "alt-shift-right", "alt-shift-up", "alt-shift-down"] {
+        let k = Keystroke::parse(k).unwrap();
+        assert!(!bound.iter().any(|b| b.modifiers == k.modifiers && b.key == k.key), "{k:?} given back");
+    }
     assert!(editor_takes("a") && editor_takes("enter") && editor_takes("shift-up") && editor_takes("ctrl-c"));
     assert!(!editor_takes("ctrl-w") && !editor_takes("ctrl-tab") && !editor_takes("ctrl-shift-m"));
+    assert!(!editor_takes("alt-left") && !editor_takes("alt-shift-left"), "pane keys stay devdeck's");
 }
 
 #[test]

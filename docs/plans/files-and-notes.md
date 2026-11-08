@@ -305,3 +305,34 @@ binary; both removed. Outcome: **go on**, with the limits below.
 - `pty_driver::the_environment_is_exactly_the_runs` timed out once (5 s of real time
   waiting for a real process) during a full parallel run, then passed alone three times
   and in the next full run: load-sensitive, not touched by this work.
+
+## Diff review (subagent, 2026-11-08) and assessment
+
+1. A note that can't be read (not UTF-8, no permission) opened empty and the next keystroke
+   wrote over it. Taken: `Notes` keeps it as unreadable, the view says so and has no
+   editor, nothing is written.
+2. The editor's cursor blinked forever, so idle CPU wasn't zero (R1.3). Taken: a steady
+   cursor (`CursorBlink::steady`), as our own inputs.
+3. Wheel and right-click were caught under a menu, the palette or a modal. Taken: a
+   hitbox, `should_handle_scroll` / `is_hovered`.
+4. A tab-menu action on a tab behind did nothing (dispatched against a frame without it).
+   Taken: `Live::run`, the view runs it itself.
+5. Keys: the editor took alt-shift-arrows (moving tabs) on Linux; `EDITOR_KEYS` listed
+   macOS-only keys; `?` in the find field opened the cheat sheet. Taken: alt-shift-arrows
+   given back to devdeck; the list checked both ways against the keymap; the rule now
+   applies to gpui-component's `Input` context (both editors and the find field). Found
+   while fixing: the rule matched "Input" inside "TextInput"; context names now compare
+   whole. `ctrl-h` stays (bound on Linux).
+6. A note detached to another window keeps focus hooks of the first: left for the manual
+   check (as noted in the build notes).
+7. A Markdown file shown rendered still highlighted its source. Taken: the editor is made
+   only when the source shows.
+8. Every keystroke in a note redrew the window (two observers, deck notified always).
+   Taken: the deck redraws only when a view's title or actions change; one observer.
+9. A closed file's folder stayed watched until some change; every log line re-ran the
+   watcher's follow. Taken: released with the last view; `Moved` only when the folder to
+   watch changes.
+10. Smaller: the problem message in a narrow pane (taken: it truncates); the stress note
+    (rejected: the stress run is the demo, whose notes stay in memory); `docs/perf`
+    numbers (not done in this step: for the milestone's measurements); light themes get
+    the dark highlight colors (noted: one theme ships).

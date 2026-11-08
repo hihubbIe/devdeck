@@ -259,15 +259,17 @@ pub fn terminal_takes(key: &'static str) -> bool {
 }
 
 /// Where `key` of `spec` applies: its context, outside terminals when a terminal takes
-/// it, outside the note editor when the editor does (R12.3).
+/// it, outside gpui-component's text fields when they do (R12).
 fn context_of(spec: &ActionSpec, key: &'static str) -> Option<String> {
-    let in_terminals = spec.context.is_some_and(|c| c.contains("Terminal"));
+    // Whole names: `TextInput` isn't `Input`.
+    let names = |c: &str, name: &str| c.split(|ch: char| !ch.is_alphanumeric()).any(|w| w == name);
+    let in_terminals = spec.context.is_some_and(|c| names(c, "Terminal"));
     let mut outside = Vec::new();
     if terminal_takes(key) && !in_terminals {
         outside.push("!Terminal".to_string());
     }
-    if devdeck_ui::code::editor_takes(key) && !spec.context.is_some_and(|c| c.contains(devdeck_ui::code::NOTE_CONTEXT)) {
-        outside.push(format!("!{}", devdeck_ui::code::NOTE_CONTEXT));
+    if devdeck_ui::code::editor_takes(key) && !spec.context.is_some_and(|c| names(c, devdeck_ui::code::EDITOR_CONTEXT)) {
+        outside.push(format!("!{}", devdeck_ui::code::EDITOR_CONTEXT));
     }
     match (spec.context, outside.is_empty()) {
         (c, true) => c.map(String::from),

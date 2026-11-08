@@ -10,6 +10,8 @@ pub struct OpenFile {
     pub path: PathBuf,
     /// Counts the changes seen on disk; a view reads again when it differs from its own.
     pub generation: u64,
+    /// The folder watched for it, as last told to the watcher.
+    watched: Option<PathBuf>,
 }
 
 /// The folder to watch changed (the file's folder went away or came back).
@@ -19,7 +21,9 @@ impl EventEmitter<Moved> for OpenFile {}
 
 impl OpenFile {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, generation: 0 }
+        let mut f = Self { path, generation: 0, watched: None };
+        f.watched = f.watch();
+        f
     }
 
     /// The folder to watch: the file's, or its closest ancestor that exists.
@@ -32,10 +36,15 @@ impl OpenFile {
         self.path == p || self.path.starts_with(p)
     }
 
-    /// Something at a path it [`concerns`](Self::concerns) changed.
+    /// Something at a path it [`concerns`](Self::concerns) changed. The watcher hears of
+    /// it only when the folder to watch changed (not for every line a log gets).
     pub fn changed(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
-        cx.emit(Moved);
+        let watch = self.watch();
+        if watch != self.watched {
+            self.watched = watch;
+            cx.emit(Moved);
+        }
         cx.notify();
     }
 }

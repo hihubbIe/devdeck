@@ -98,6 +98,12 @@ impl Live for NoteView {
     fn actions(&self, _cx: &App) -> Vec<ViewAction> {
         vec![ViewAction { id: super::file_view::TOGGLE_RENDERED, icon: Icon::Rendered, on: self.rendered }]
     }
+
+    fn run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == super::file_view::TOGGLE_RENDERED {
+            self.toggle_rendered(window, cx);
+        }
+    }
 }
 
 impl KeepsState for NoteView {
@@ -130,6 +136,17 @@ impl Render for NoteView {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &ToggleRendered, window, cx| this.toggle_rendered(window, cx)))
             .on_action(cx.listener(|this, _: &devdeck_ui::code::EditorEscape, window, cx| this.leave_editor(window, cx)));
+        // A file another program wrote, not as text: said, never edited (it would be
+        // written over).
+        if let Some(why) = self.notes.read(cx).unreadable(&self.id) {
+            return root
+                .justify_center()
+                .px_3()
+                .text_color(t.mute)
+                .debug_selector(|| "note-unreadable".into())
+                .child(div().w_full().min_w_0().flex().justify_center().child(label(format!("This note can't be read: {why}")).min_w_0()))
+                .into_any_element();
+        }
         if self.rendered {
             let text = self.notes.update(cx, |n, _| n.text(&self.id));
             let body = if text.trim().is_empty() {

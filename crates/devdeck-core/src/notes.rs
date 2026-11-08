@@ -84,7 +84,7 @@ impl NotesStore {
         write_atomic(&self.index_path(), &text)
     }
 
-    /// A note's text; empty when its file is missing.
+    /// A note's text; empty when its file is missing. Not UTF-8 or not readable: an error.
     pub fn read(&self, id: &str) -> Result<String, String> {
         match std::fs::read_to_string(self.file(id)) {
             Ok(t) => Ok(t),
