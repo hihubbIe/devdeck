@@ -4,7 +4,7 @@
 //! Copy, and Share with, which pastes the text into another terminal of the workspace
 //! (Claude Code running there, for one), as it is.
 
-use crate::deck::Deck;
+use crate::deck::{Deck, TerminalTabs};
 use crate::places;
 use crate::runner::{RunKey, Runner};
 use crate::services::Services;
@@ -13,7 +13,7 @@ use devdeck_core::terminal::paste_bytes;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::{MenuItem, open_menu};
 use gpui::{App, ClipboardItem, Entity, EntityId, Global, Pixels, Point, WeakEntity, Window};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// What a right click landed on, that actions can take.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +84,7 @@ struct Target {
 /// The workspace's running terminals but `source`, by number, named by their folder (with
 /// their number when two share one). Only a terminal whose program takes pastes as such
 /// (bracketed paste) gets text: elsewhere each line would run as a command.
-fn targets(runner: &Runner, deck: Option<&Deck>, source: Option<&RunKey>) -> Vec<Target> {
+fn targets(runner: &Runner, tabs: &BTreeMap<u32, TerminalTabs>, source: Option<&RunKey>) -> Vec<Target> {
     let mut found: Vec<(u32, RunKey, String)> = runner
         .terminals()
         .into_iter()
@@ -98,9 +98,8 @@ fn targets(runner: &Runner, deck: Option<&Deck>, source: Option<&RunKey>) -> Vec
         .zip(names.iter())
         .map(|((n, key, dir), name)| {
             let twice = names.iter().filter(|m| *m == name).count() > 1;
-            // The tab showing it (its folder as the tab has it), else a new one.
-            let shown = deck.and_then(|d| d.layout().views().into_iter().find(|r| matches!(ViewAddr::parse(r), ViewAddr::Terminal { n: m, .. } if m == n)));
-            let view = shown.unwrap_or_else(|| ViewAddr::Terminal { n, dir }.to_ref());
+            // The tab a layout shows it by (so showing it never adds a second), else a new one.
+            let view = tabs.get(&n).map(|t| t.view.clone()).unwrap_or_else(|| ViewAddr::Terminal { n, dir }.to_ref());
             let pastes = runner.run(&key).is_some_and(|r| r.terminal.modes().bracketed_paste);
             Target { key, name: if twice { format!("{name} · {n}") } else { name.clone() }, view, refused: (!pastes).then_some("doesn't take pastes safely") }
         })
@@ -132,8 +131,8 @@ pub fn share(text: &str, to: &RunKey, view: &ViewRef, origin: &Origin, window: &
 fn share_with(content: &Content, origin: &Origin, cx: &App) -> Vec<MenuItem> {
     let Content::Text(text) = content;
     let runner = origin.services.read(cx).runner.clone();
-    let deck = origin.deck.upgrade();
-    let targets = targets(runner.read(cx), deck.as_ref().map(|d| d.read(cx)), origin.source.as_ref());
+    let tabs = origin.deck.upgrade().map(|d| d.read(cx).terminals(cx)).unwrap_or_default();
+    let targets = targets(runner.read(cx), &tabs, origin.source.as_ref());
     let send = |t: &Target| {
         let (text, key, view, origin) = (text.clone(), t.key.clone(), t.view.clone(), origin.clone());
         move |window: &mut Window, cx: &mut App| share(&text, &key, &view, &origin, window, cx)

@@ -172,15 +172,16 @@ pub struct Runner {
     recent: Option<devdeck_core::recent_args::RecentArgs>,
     /// The workspace's terminals: what each runs (its folder's app, and the shell).
     terminals: BTreeMap<RunKey, (App, Command)>,
-    /// Terminals ending: forgotten once their shell is gone.
-    ending: std::collections::BTreeSet<RunKey>,
+    /// The terminals a layout shows (by number, the deck's report): one that isn't
+    /// running and isn't shown is forgotten (R6.12).
+    shown: std::collections::BTreeSet<u32>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), ending: Default::default() }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), shown: Default::default() }
     }
 
     /// Makes terminal `n` known, a shell in `dir`, and returns its key; starting it is
@@ -221,19 +222,24 @@ impl Runner {
         self.terminals.iter().map(|(k, (a, _))| (k.clone(), a.dir.clone())).collect()
     }
 
-    /// Ends a terminal: its shell hangs up, then the terminal is forgotten.
-    pub fn end_terminal(&mut self, key: &RunKey, cx: &mut Context<Self>) {
-        if !self.terminals.contains_key(key) {
-            return;
-        }
-        if self.state(key).is_some_and(RunState::is_running) {
-            self.ending.insert(key.clone());
-            self.stop(key, cx);
-        } else {
-            self.terminals.remove(key);
-            self.runs.remove(key);
+    /// The terminals a layout shows now. A terminal's shell outlives its tabs; one that
+    /// isn't running (ended, stopped, never started) and no tab shows is forgotten, now
+    /// or when its shell exits.
+    pub fn set_shown_terminals(&mut self, shown: std::collections::BTreeSet<u32>, cx: &mut Context<Self>) {
+        self.shown = shown;
+        let gone: Vec<RunKey> = self.terminals.keys().filter(|k| self.forgettable(k)).cloned().collect();
+        if !gone.is_empty() {
+            for k in gone {
+                self.terminals.remove(&k);
+                self.runs.remove(&k);
+            }
             cx.notify();
         }
+    }
+
+    /// A terminal no tab shows whose shell isn't running (stopping counts as running).
+    fn forgettable(&self, key: &RunKey) -> bool {
+        key.terminal_number().is_some_and(|n| !self.shown.contains(&n)) && !self.state(key).is_some_and(RunState::is_running)
     }
 
     /// The program running in a terminal (`vite`), when its shell runs one.
@@ -604,7 +610,8 @@ impl Runner {
             cx.emit(RunnerEvent::Succeeded { key: id.key.clone(), took });
         }
         cx.emit(RunnerEvent::Output { key: id.key.clone() });
-        if self.ending.remove(&id.key) {
+        // A shell ending while no tab shows it: its terminal goes (unless it restarts).
+        if terminal && again.is_none() && self.forgettable(&id.key) {
             self.terminals.remove(&id.key);
             self.runs.remove(&id.key);
             cx.notify();

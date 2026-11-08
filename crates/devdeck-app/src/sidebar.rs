@@ -406,23 +406,15 @@ impl Sidebar {
                     .collect()
             }
             Activity::Terminals => {
-                // Each shell, what it does, and where it shows: here, another layout, or
-                // nowhere (still running, listed here so it isn't lost).
+                // Every terminal (R6.12): running or not, shown or not (its shell outlives
+                // its tabs), what it does and where it shows.
                 let runner = s.runner.read(cx);
-                let deck = self.deck.read(cx);
-                let shows_in = |n: u32| -> String {
-                    let is_it = |r: &ViewRef| matches!(ViewAddr::parse(r), ViewAddr::Terminal { n: m, .. } if m == n);
-                    if deck.layout().views().iter().any(is_it) {
-                        return "here".into();
-                    }
-                    let other = deck.book.layouts.iter().find(|(id, n)| **id != deck.book.current && n.layout.as_ref().is_some_and(|l| l.views().iter().any(is_it)));
-                    other.map_or_else(|| "not shown".into(), |(_, n)| format!("in {}", n.name))
-                };
-                runner
-                    .terminals()
+                self.deck
+                    .read(cx)
+                    .terminals(cx)
                     .into_iter()
-                    .filter_map(|(key, dir)| {
-                        let n = key.terminal_number()?;
+                    .map(|(n, tabs)| {
+                        let key = RunKey::terminal(n);
                         let state = runner.state(&key);
                         let doing = match (runner.terminal_program(&key), state) {
                             (Some(program), _) => program,
@@ -430,11 +422,19 @@ impl Sidebar {
                             (None, Some(_)) => "ended".into(),
                             (None, None) => "not started".into(),
                         };
-                        let dir = dir.display().to_string();
-                        let item = ListItem::new(n.to_string(), crate::views::terminal_name(&dir))
-                            .detail(format!("{doing} · {}", shows_in(n)))
-                            .hint(Some(format!("{} · {doing} · {}", devdeck_core::config::shown(std::path::Path::new(&dir)), shows_in(n))));
-                        Some(item.running(state.is_some_and(|s| s.is_running())))
+                        let shows = match (tabs.here, tabs.layouts.as_slice()) {
+                            (true, _) => "here".to_string(),
+                            (false, []) => "not shown".to_string(),
+                            (false, l) => format!("in {}", l.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>().join(", ")),
+                        };
+                        let dir = match ViewAddr::parse(&tabs.view) {
+                            ViewAddr::Terminal { dir, .. } => dir,
+                            _ => String::new(),
+                        };
+                        ListItem::new(n.to_string(), crate::views::terminal_name(&dir))
+                            .detail(format!("{doing} · {shows}"))
+                            .hint(Some(format!("{} · {doing} · {shows}", devdeck_core::config::shown(std::path::Path::new(&dir)))))
+                            .running(state.is_some_and(|s| s.is_running()))
                     })
                     .collect()
             }
@@ -787,23 +787,24 @@ impl Sidebar {
             Activity::Cluster => ViewAddr::Svc { env: self.services.read(cx).env.clone().unwrap_or_default(), name: key.into() },
             Activity::Ports => ViewAddr::Port { port: key.into() },
             Activity::Layouts => return None,
-            Activity::Terminals => {
-                let n: u32 = key.parse().ok()?;
-                let dir = self.services.read(cx).runner.read(cx).terminals().into_iter().find(|(k, _)| *k == RunKey::terminal(n))?.1;
-                ViewAddr::Terminal { n, dir: dir.display().to_string() }
-            }
+            // The tab a layout shows it by, so opening it never adds a second one.
+            Activity::Terminals => return self.deck.read(cx).terminals(cx).remove(&key.parse().ok()?).map(|t| t.view),
         }
         .to_ref())
     }
 
-    /// Ends terminal `n` everywhere (its tab, every layout, its shell).
-    pub fn end_terminal(&mut self, n: u32, cx: &mut Context<Self>) {
-        self.deck.update(cx, |d, cx| d.end_terminal(n, cx));
+    /// Stops terminal `n`'s shell; its tabs stay, showing it ended (R6.12).
+    pub fn stop_terminal(&mut self, n: u32, cx: &mut Context<Self>) {
+        let runner = self.services.read(cx).runner.clone();
+        runner.update(cx, |r, cx| r.stop(&RunKey::terminal(n), cx));
     }
 
     /// Opens an item in the main window's focused pane; an open one is activated.
     pub fn open(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(view) = self.view_ref(key, cx) else {
+            if self.activity() != Activity::Layouts {
+                return;
+            }
             let key = key.to_string();
             self.deck.update(cx, |d, cx| {
                 let _ = d.switch_layout(&key, cx);
@@ -936,18 +937,21 @@ impl Sidebar {
     pub fn item_menu(this: &Entity<Self>, key: &str, pinned: bool, cx: &App) -> Vec<MenuItem> {
         let deck = this.read(cx).deck.clone();
         if this.read(cx).activity() == Activity::Terminals {
-            let end = this.clone();
+            let stop = this.clone();
             let n = key.parse::<u32>().unwrap_or_default();
             let Some(view) = this.read(cx).view_ref(key, cx) else { return Vec::new() };
-            // Opened where it shows, else in the main window's focused pane.
+            // Opened where it shows, else in the main window's focused pane (the same
+            // shell; one not started starts there).
             let here = places::showing(deck.read(cx).layout(), &view);
             let v = view.clone();
-            return vec![
-                places::item("Open", Place::Pane(here), MAIN_WINDOW, &deck, Some(&view), cx, move |d, place, cx| {
-                    d.apply(cx, |l| places::open(l, v.clone(), place))
-                }),
-                MenuItem::new("End", move |_, cx| end.update(cx, |s, cx| s.end_terminal(n, cx))),
-            ];
+            let mut items = vec![places::item("Open", Place::Pane(here), MAIN_WINDOW, &deck, Some(&view), cx, move |d, place, cx| {
+                d.apply(cx, |l| places::open(l, v.clone(), place))
+            })];
+            let runs = this.read(cx).services.read(cx).runner.read(cx).state(&RunKey::terminal(n)).is_some_and(|s| s == devdeck_core::runs::RunState::Running);
+            if runs {
+                items.push(MenuItem::new("Stop", move |_, cx| stop.update(cx, |s, cx| s.stop_terminal(n, cx))));
+            }
+            return items;
         }
         if this.read(cx).activity() == Activity::Layouts {
             let deck = this.read(cx).deck.clone();

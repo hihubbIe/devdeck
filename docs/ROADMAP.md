@@ -51,7 +51,9 @@ exec, port-forward, metrics, protected envs, k9s launch. Plan:
    groups, folded sections, width; layout ids
    ([plans/sidebar-groups.md](plans/sidebar-groups.md)) — done 2026-11-08. 3d. Right-click
    menu with Share with; short terminal names
-   ([plans/context-menu.md](plans/context-menu.md)) — done 2026-11-08.
+   ([plans/context-menu.md](plans/context-menu.md)) — done 2026-11-08. 3e. Terminals
+   outlive their tabs ([plans/layouts-own-their-tabs.md](plans/layouts-own-their-tabs.md))
+   — done 2026-11-08.
 4. Logs, shell, port-forward, k9s.
 5. Writes.
 6. Close.

@@ -197,7 +197,8 @@ fn a_terminal_is_an_interactive_shell_that_hangs_up_when_ended(cx: &mut TestAppC
     wait_until(cx, "sleep in the foreground", |cx| cx.read(|cx| s.runner.read(cx).terminal_program(&key)).as_deref() == Some("sleep"));
     assert!(cx.read(|cx| s.runner.read(cx).running()).iter().any(|t| t.ends_with("· sleep")), "in the quit list while it runs something");
     let at = Instant::now();
-    cx.update(|cx| s.runner.update(cx, |r, cx| r.end_terminal(&key, cx)));
+    // Stopped while no tab shows it: hung up, then forgotten.
+    cx.update(|cx| s.runner.update(cx, |r, cx| r.stop(&key, cx)));
     wait_until(cx, "the shell gone", |cx| cx.read(|cx| s.runner.read(cx).state(&key)).is_none());
     assert!(at.elapsed() < Duration::from_secs(2), "a hang-up, not the SIGKILL fallback: {:?}", at.elapsed());
     assert!(cx.read(|cx| s.runner.read(cx).terminals()).is_empty(), "forgotten");

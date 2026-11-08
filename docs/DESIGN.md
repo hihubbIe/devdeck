@@ -119,7 +119,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Moving a tab onto a pane edge replaces that pane with a split.
 - Removing the last tab removes the pane and collapses the split (except the last pane
   of a window).
-- Collapsed pane: in a column split it is its 32 px tab strip; in a row split it
+- A pane with one tab or none has a header instead of a tab strip (R3.12): same 32 px,
+  same `bar`, so bodies stay aligned. Grip, the view's title (fg, truncated, no tab
+  shape), the pane buttons, then a 1 px `line` and × (its own box: a narrow pane clips
+  the buttons first, never ×). Focus is a 2 px accent line drawn over its top (not a
+  border, so nothing moves). An empty pane's header has no title.
+- Collapsed pane: in a column split it is its 32 px tab strip or header; in a row split it
   becomes a 28 px rail of tab monograms (GPUI cannot rotate text), full titles as
   tooltips. The last expanded pane of a window cannot collapse.
 - Detach: a new `Window` whose root is a single pane holding the tab. Detached windows
@@ -362,6 +367,14 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   by an id (the first `default`, new ones a UUID), its name is a label, so a rename
   keeps its pin and group. Folder paths, deployment names and port numbers stay the
   keys: they are what they name.
+- 2026-11-08 A terminal's runtime is apart from its tabs (user): tabs are views on a
+  shell (`term/<n>/…` is shell `n`), shared across layouts; closing a tab, a detached
+  window or a layout never ends it (it used to end the shell and close its tab in every
+  layout, each losing that pane: the "2 panes instead of 3" bug). The Terminals list is
+  built from the layouts and the runner (`Deck::terminals`), with Open and Stop, no End
+  (closing a shell never changes a layout, user). The deck tells the runner which
+  terminals are shown; one not running and not shown is forgotten. Empty panes stay out
+  (user): a pane still goes with its last tab.
 - 2026-11-08 The app calls itself **Kugelblitz** (user): the title bar (with its icon,
   `assets/app/devdeck.svg`), window titles, an empty pane's welcome and every message
   naming the app. The project, binary, crates, files, refs and app id stay `devdeck`.

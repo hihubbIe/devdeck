@@ -10,7 +10,6 @@
 //! - notifies observers so every window re-renders.
 
 use crate::places::{self, Place};
-use crate::runner::RunKey;
 use crate::views::{self, ViewCx};
 use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
@@ -19,11 +18,22 @@ use devdeck_core::layout_book::{BookError, LayoutBook, LayoutId};
 use devdeck_core::state::StateStore;
 use devdeck_ui::{ToastKind, toasts};
 use gpui::{AnyView, AnyWeakView, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Task, WindowHandle};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 /// How long after a change the layout is written.
 pub const SAVE_DELAY: Duration = Duration::from_millis(1000);
+
+/// Where a terminal shows ([`Deck::terminals`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalTabs {
+    /// The tab to show it by.
+    pub view: ViewRef,
+    /// The live layout shows it.
+    pub here: bool,
+    /// The saved layouts showing it: (id, name).
+    pub layouts: Vec<(LayoutId, String)>,
+}
 
 pub struct Deck {
     /// Read through [`Deck::layout`]; every change goes through [`Deck::apply`].
@@ -56,8 +66,6 @@ pub struct Deck {
     generation: u64,
     store: Option<StateStore>,
     dirty: bool,
-    /// A layout switch is under way: terminals leaving with the old layout keep running.
-    switching: bool,
     save_task: Option<Task<()>>,
     save_failed: bool,
     /// Layout writes done (tests check the debounce).
@@ -108,7 +116,6 @@ impl Deck {
             generation: 0,
             store: None,
             dirty: false,
-            switching: false,
             save_task: None,
             save_failed: false,
             saves: 0,
@@ -139,28 +146,48 @@ impl Deck {
         in_layouts.chain(in_runner).max().map_or(1, |n: u32| n + 1)
     }
 
-    /// Ends terminal `n` everywhere: its tab closes (in this layout), it leaves every
-    /// saved layout, and its shell hangs up. Closing its tab comes here too.
-    pub fn end_terminal(&mut self, n: u32, cx: &mut Context<Self>) {
-        let is_it = |r: &ViewRef| matches!(ViewAddr::parse(r), ViewAddr::Terminal { n: m, .. } if m == n);
-        if let Some(r) = self.layout.views().into_iter().find(is_it) {
-            // Its closing comes back here through `sync`, with the tab gone.
-            self.apply(cx, |l| l.close_view(&r));
-            return;
-        }
-        let mut purged = false;
-        for layout in self.book.layouts.values_mut().filter_map(|n| n.layout.as_mut()) {
-            for r in layout.views().into_iter().filter(is_it) {
-                purged |= layout.close_view(&r).is_ok();
+    /// Every terminal the layouts or the runner know, by number (R6.12): the tab to show
+    /// it by (a layout's own ref, the live layout's first; else one from the runner's
+    /// folder), whether the live layout shows it, and the saved layouts that do. The
+    /// book's copy of the current layout is stale (the live one stands for it): skipped.
+    pub fn terminals(&self, cx: &App) -> BTreeMap<u32, TerminalTabs> {
+        let mut out: BTreeMap<u32, TerminalTabs> = BTreeMap::new();
+        let number = |r: &ViewRef| match ViewAddr::parse(r) {
+            ViewAddr::Terminal { n, .. } => Some(n),
+            _ => None,
+        };
+        for r in self.layout.views() {
+            if let Some(n) = number(&r) {
+                out.entry(n).or_insert(TerminalTabs { view: r, here: true, layouts: Vec::new() });
             }
         }
-        if purged {
-            self.save_book(cx);
+        for (id, named) in self.book.layouts.iter().filter(|(id, _)| **id != self.book.current) {
+            let Some(layout) = &named.layout else { continue };
+            for r in layout.views() {
+                let Some(n) = number(&r) else { continue };
+                let t = out.entry(n).or_insert_with(|| TerminalTabs { view: r.clone(), here: false, layouts: Vec::new() });
+                if !t.layouts.iter().any(|(i, _)| i == id) {
+                    t.layouts.push((id.clone(), named.name.clone()));
+                }
+            }
         }
         if let Some(services) = &self.services {
-            let runner = services.read(cx).runner.clone();
-            runner.update(cx, |r, cx| r.end_terminal(&RunKey::terminal(n), cx));
+            for (key, dir) in services.read(cx).runner.read(cx).terminals() {
+                if let Some(n) = key.terminal_number() {
+                    out.entry(n).or_insert_with(|| TerminalTabs { view: ViewAddr::Terminal { n, dir: dir.display().to_string() }.to_ref(), here: false, layouts: Vec::new() });
+                }
+            }
         }
+        out
+    }
+
+    /// Tells the runner which terminals the layouts show: one whose shell isn't running
+    /// and that no tab shows any more is forgotten (R6.12).
+    fn report_terminals(&self, cx: &mut Context<Self>) {
+        let Some(services) = &self.services else { return };
+        let shown: std::collections::BTreeSet<u32> = self.terminals(cx).into_iter().filter(|(_, t)| t.here || !t.layouts.is_empty()).map(|(n, _)| n).collect();
+        let runner = services.read(cx).runner.clone();
+        runner.update(cx, |r, cx| r.set_shown_terminals(shown, cx));
     }
 
     /// Opens a new terminal in `dir`, at `place`. Returns the pane showing it.
@@ -398,12 +425,10 @@ impl Deck {
                 });
             }
         }
-        self.switching = true;
         self.apply(cx, |l| {
             *l = target;
             Ok(())
         });
-        self.switching = false;
         // Both files at once, so they never disagree about which tree is current.
         if self.store.is_some() {
             self.save_task = None;
@@ -447,6 +472,8 @@ impl Deck {
 
     /// Writes the book now: a small file, changed rarely, and writes stay in order.
     fn save_book(&mut self, cx: &mut Context<Self>) {
+        // A deleted layout may have been the last to show a stopped terminal.
+        self.report_terminals(cx);
         let Some(store) = self.store.clone() else { return };
         let result = store.save_book(&self.workspace, &self.book);
         self.saved(result, cx);
@@ -509,12 +536,7 @@ impl Deck {
         // it stays as small as the leaks themselves.
         self.released.retain(|(weak, _)| weak.upgrade().is_some());
         for r in closed {
-            // Closing a terminal ends its shell; a layout switch only hides it.
-            if !self.switching
-                && let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&r)
-            {
-                self.end_terminal(n, cx);
-            }
+            // A terminal's shell outlives its tabs (R6.12): its view only goes.
             self.focus.remove(&r);
             self.savers.remove(&r);
             self.missing.remove(&r);
@@ -540,6 +562,7 @@ impl Deck {
                 self.views.insert(r, built.view);
             }
         }
+        self.report_terminals(cx);
         // Detached windows: open the missing ones, close the ones the model dropped (or
         // all of them while the workspace is hidden).
         let wanted: Vec<WindowId> = if self.active {

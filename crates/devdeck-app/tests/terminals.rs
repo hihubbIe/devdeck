@@ -1,11 +1,13 @@
 //! M2 step 4: terminal tabs, on the demo (its terminals' shell is the fake driver's).
-//! Opening one, closing ends it, a layout switch keeps it, closing a detached window
-//! ends its terminals; no toasts; the quit list counts a terminal only while it runs
-//! something.
+//! A terminal's shell outlives its tabs (R6.12, 2026-11-08): closing a tab, a detached
+//! window or a layout, or switching, keeps it running; the Terminals list re-attaches
+//! (Open) or stops it (Stop); one not running that no tab shows is forgotten. No
+//! toasts; the quit list counts a terminal only while it runs something.
 
 use devdeck_app::deck::Deck;
 use devdeck_app::fake_driver::STOP_DELAY;
 use devdeck_app::runner::{RunKey, Runner};
+use devdeck_app::sidebar::Sidebar;
 use devdeck_app::shell::Shell;
 use devdeck_app::views::run_view::RunView;
 use devdeck_core::layout::ViewRef;
@@ -90,7 +92,7 @@ fn the_key_opens_a_terminal_in_the_focused_tabs_app_folder(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn closing_a_terminal_ends_it_and_a_layout_switch_keeps_it(cx: &mut TestAppContext) {
+fn closing_a_terminal_tab_or_switching_keeps_its_shell(cx: &mut TestAppContext) {
     let shell = start(cx, "term-close");
     let main = main_window(&shell, cx);
     let deck = deck(&shell, cx);
@@ -111,17 +113,21 @@ fn closing_a_terminal_ends_it_and_a_layout_switch_keeps_it(cx: &mut TestAppConte
     settle(cx);
     assert_eq!(terminal_tabs(&deck, cx), std::slice::from_ref(&tab));
     assert_eq!(cx.read(|cx| r.read(cx).run(&key).map(|run| run.runs)), Some(1), "the same shell, not a new one");
-    // Closing its tab ends it, and it's forgotten.
+    // Closing its tab: the shell runs on, shown nowhere; opening it again re-attaches it.
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
     settle(cx);
-    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), None, "ended and forgotten");
-    assert!(cx.read(|cx| r.read(cx).terminals()).is_empty());
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), Some(RunState::Running), "the shell outlives its tab");
+    let tabs = cx.read(|cx| deck.read(cx).terminals(cx));
+    assert!(!tabs[&n].here && tabs[&n].layouts.iter().all(|(id, _)| *id != other), "shown nowhere now");
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(tab.clone(), l.main().focused).map(drop))));
+    settle(cx);
+    assert_eq!(cx.read(|cx| r.read(cx).run(&key).map(|run| run.runs)), Some(1), "the same shell");
     let toasts: Vec<String> = cx.update(|cx| devdeck_ui::toasts(cx).read(cx).queue.items.iter().map(|t| t.text.to_string()).collect());
     assert!(toasts.iter().all(|t| !t.contains("terminal")), "no toast for a shell: {toasts:?}");
 }
 
 #[gpui::test]
-fn closing_a_detached_window_ends_its_terminals(cx: &mut TestAppContext) {
+fn closing_a_detached_window_keeps_its_terminals(cx: &mut TestAppContext) {
     let shell = start(cx, "term-detached");
     let main = main_window(&shell, cx);
     let deck = deck(&shell, cx);
@@ -143,7 +149,7 @@ fn closing_a_detached_window_ends_its_terminals(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| r.read(cx).state(&RunKey::terminal(n))), Some(RunState::Running), "detaching keeps it");
     cx.update(|cx| deck.update(cx, |d, cx| d.close_window(window, cx)));
     settle(cx);
-    assert_eq!(cx.read(|cx| r.read(cx).state(&RunKey::terminal(n))), None, "closing the window ends it");
+    assert_eq!(cx.read(|cx| r.read(cx).state(&RunKey::terminal(n))), Some(RunState::Running), "closing the window keeps it");
 }
 
 #[gpui::test]
@@ -171,11 +177,104 @@ fn the_terminals_list_has_every_shell_shown_or_not(cx: &mut TestAppContext) {
     assert_eq!(terminal_tabs(&deck, cx).len(), 1);
     assert_eq!(listed(cx)[0].1, "idle · here");
     assert_eq!(cx.read(|cx| r.read(cx).run(&RunKey::terminal(n)).map(|run| run.runs)), Some(1));
-    // End: its tab closes, its shell ends, it leaves the list.
-    cx.update(|cx| sidebar.update(cx, |s, cx| s.end_terminal(n, cx)));
+    // Stop: its shell ends, its tab stays and says so, it stays listed.
+    let menu = |cx: &mut TestAppContext| cx.update(|cx| Sidebar::item_menu(&sidebar, &n.to_string(), false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
+    assert_eq!(menu(cx), ["Open", "Stop"]);
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.stop_terminal(n, cx)));
     settle(cx);
-    assert!(terminal_tabs(&deck, cx).is_empty());
-    assert!(listed(cx).is_empty());
+    assert_eq!(terminal_tabs(&deck, cx).len(), 1, "the layout is untouched");
+    assert_eq!(listed(cx), [(n.to_string(), "ended · here".to_string())]);
+    assert_eq!(menu(cx), ["Open"], "nothing to stop");
+    // Its tab closed here: "other" still shows it, so it stays (ended).
+    let tab = terminal_tabs(&deck, cx)[0].clone();
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
+    settle(cx);
+    assert_eq!(listed(cx), [(n.to_string(), "ended · in other".to_string())]);
+}
+
+#[gpui::test]
+fn a_terminal_not_running_that_no_tab_shows_is_forgotten(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-forget");
+    let main = main_window(&shell, cx);
+    let deck = deck(&shell, cx);
+    let r = runner(&shell, cx);
+    cx.simulate_keystrokes(main, "ctrl-shift-t");
+    cx.run_until_parked();
+    let tab = terminal_tabs(&deck, cx)[0].clone();
+    let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&tab) else { unreachable!() };
+    let key = RunKey::terminal(n);
+    // Ended (■, or `exit`) then its tab closed: forgotten.
+    cx.update(|cx| r.update(cx, |r, cx| r.stop(&key, cx)));
+    settle(cx);
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
+    settle(cx);
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), None);
+    assert!(!cx.read(|cx| deck.read(cx).terminals(cx)).contains_key(&n));
+    // Running with no tab, then stopped: forgotten when its shell exits.
+    cx.simulate_keystrokes(main, "ctrl-shift-t");
+    cx.run_until_parked();
+    let tab = terminal_tabs(&deck, cx)[0].clone();
+    let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&tab) else { unreachable!() };
+    let key = RunKey::terminal(n);
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
+    settle(cx);
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), Some(RunState::Running), "no tab, still running");
+    cx.update(|cx| r.update(cx, |r, cx| r.stop(&key, cx)));
+    settle(cx);
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), None, "stopped with no tab: forgotten");
+}
+
+#[gpui::test]
+fn deleting_a_layout_keeps_its_terminals_running(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-delete");
+    let main = main_window(&shell, cx);
+    let deck = deck(&shell, cx);
+    let r = runner(&shell, cx);
+    let other = cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx).unwrap()));
+    cx.simulate_keystrokes(main, "ctrl-shift-t");
+    cx.run_until_parked();
+    let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&terminal_tabs(&deck, cx)[0]) else { unreachable!() };
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(DEFAULT_ID, cx).unwrap()));
+    cx.update(|cx| deck.update(cx, |d, cx| d.delete_layout(&other, cx).unwrap()));
+    settle(cx);
+    assert_eq!(cx.read(|cx| r.read(cx).state(&RunKey::terminal(n))), Some(RunState::Running));
+    assert!(cx.read(|cx| deck.read(cx).terminals(cx))[&n].layouts.is_empty(), "shown nowhere now, listed");
+}
+
+#[gpui::test]
+fn after_a_restart_a_hidden_layouts_terminal_is_listed_and_opens(cx: &mut TestAppContext) {
+    use devdeck_app::sidebar::Activity;
+    use devdeck_core::layout::Layout;
+    use devdeck_core::layout_book::{LayoutBook, Named};
+    use devdeck_core::state::StateStore;
+    let dir = cx.update(|cx| devdeck_app::test_dir("term-restart-state", cx));
+    let folder = cx.update(|cx| devdeck_app::test_dir("term-restart-folder", cx));
+    let store = StateStore::new(dir);
+    // "other" shows terminal 7; the live layout (default) doesn't.
+    let term = ViewAddr::Terminal { n: 7, dir: folder.display().to_string() }.to_ref();
+    let mut hidden = Layout::new();
+    let p = hidden.main().focused;
+    hidden.open(term.clone(), p).unwrap();
+    let mut book = LayoutBook::default();
+    book.layouts.insert("other-id".into(), Named { name: "other".into(), layout: Some(hidden) });
+    store.save_book("work", &book).unwrap();
+    store.save_layout("work", &Layout::new()).unwrap();
+    let config = cx.update(|cx| devdeck_app::test_dir("term-restart-config", cx));
+    cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
+    let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", Some(store), cx));
+    cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+    cx.run_until_parked();
+    let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Terminals, cx)));
+    let listed = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().map(|i| (i.key, i.detail)).collect::<Vec<_>>());
+    assert_eq!(listed, [("7".to_string(), "not started · in other".to_string())]);
+    assert_eq!(cx.update(|cx| Sidebar::item_menu(&sidebar, "7", false, cx).len()), 1, "Open, nothing to stop");
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.open("7", cx)));
+    settle(cx);
+    let deck = deck(&shell, cx);
+    assert_eq!(terminal_tabs(&deck, cx), [term], "its own tab, opened here");
+    let r = runner(&shell, cx);
+    assert_eq!(cx.read(|cx| r.read(cx).state(&RunKey::terminal(7))), Some(RunState::Running), "started");
 }
 
 #[gpui::test]
@@ -189,14 +288,16 @@ fn an_ended_terminal_stays_ended_through_layout_switches(cx: &mut TestAppContext
     let tab = terminal_tabs(&deck, cx)[0].clone();
     let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&tab) else { unreachable!() };
     let key = RunKey::terminal(n);
-    // In two layouts; closed in one: gone from both, not started again by the other.
+    // In two layouts; closed in one: the other keeps its tab (and pane), the same shell.
     let other = cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx).unwrap()));
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
     settle(cx);
     cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(DEFAULT_ID, cx).unwrap()));
     settle(cx);
-    assert!(terminal_tabs(&deck, cx).is_empty(), "closing is closing, in every layout");
-    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), None);
+    assert_eq!(terminal_tabs(&deck, cx), std::slice::from_ref(&tab), "closing in one layout leaves the others");
+    assert_eq!(cx.read(|cx| r.read(cx).run(&key).map(|run| (run.state, run.runs))), Some((RunState::Running, 1)));
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
+    settle(cx);
     // Stopped (■, or `exit`): its tab keeps it ended through a round trip; ⏎ starts it.
     cx.simulate_keystrokes(main, "ctrl-shift-t");
     cx.run_until_parked();
