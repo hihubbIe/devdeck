@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <!-- The installed app's icon (Kugelblitz): a black hole, its light ring, and the disc
-       passing behind it and in front of it. -->
-  <rect x="16" y="16" width="224" height="224" rx="52" fill="#0b0d1c"/>
+       passing behind it and in front of it, on no background. -->
   <g transform="rotate(-14 128 128)">
     <path d="M32 128 A96 24 0 0 1 224 128" fill="none" stroke="#ff9a3c" stroke-width="12" stroke-linecap="round"/>
   </g>
