@@ -1539,6 +1539,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "devdeck-ctl"
+version = "0.1.0"
+dependencies = [
+ "devdeck-api",
+ "serde_json",
+]
+
+[[package]]
 name = "devdeck-kube"
 version = "0.1.0"
 dependencies = [

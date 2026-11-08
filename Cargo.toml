@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/devdeck-core", "crates/devdeck-ui", "crates/devdeck-kube", "crates/devdeck-app", "crates/devdeck-api"]
+members = ["crates/devdeck-core", "crates/devdeck-ui", "crates/devdeck-kube", "crates/devdeck-app", "crates/devdeck-api", "crates/devdeck-ctl"]
 
 [workspace.package]
 version = "0.1.0"

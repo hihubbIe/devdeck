@@ -1,0 +1,14 @@
+[package]
+name = "devdeck-ctl"
+description = "A command line client of devdeck's control API (R13.11)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "devdeck-ctl"
+path = "src/main.rs"
+
+[dependencies]
+devdeck-api.workspace = true
+serde_json.workspace = true
