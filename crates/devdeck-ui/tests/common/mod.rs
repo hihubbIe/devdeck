@@ -38,6 +38,7 @@ pub fn host(cx: &mut TestAppContext, content: impl Fn(&mut Window, &mut App) -> 
     cx.update(|cx| {
         if !cx.has_global::<Theme>() {
             cx.set_global(Theme::devdeck_dark(1.0));
+            devdeck_ui::code::init(cx);
         }
     });
     let window = cx.add_window(move |window, cx| {

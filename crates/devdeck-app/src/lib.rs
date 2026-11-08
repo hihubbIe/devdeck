@@ -101,6 +101,8 @@ pub fn test_dir(tag: &str, cx: &mut App) -> std::path::PathBuf {
 
 pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     load_fonts(cx);
+    // Before devdeck's keys: it keeps only its components' own (R12).
+    devdeck_ui::code::init(cx);
     app_settings::init(dir, cx);
     edit_mode::edit_mode(cx);
     actions::bind(cx);

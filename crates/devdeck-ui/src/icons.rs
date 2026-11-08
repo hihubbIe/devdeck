@@ -102,7 +102,11 @@ impl AssetSource for Assets {
         if path == APP_ICON {
             return Ok(Some(Cow::Borrowed(APP_ICON_SVG)));
         }
-        Ok(Icon::ALL.iter().find(|i| i.path() == path).map(|i| Cow::Borrowed(i.svg())))
+        match Icon::ALL.iter().find(|i| i.path() == path) {
+            Some(i) => Ok(Some(Cow::Borrowed(i.svg()))),
+            // The editor's find bar draws gpui-component's own icons: Lucide too (R9.5).
+            None => Ok(gpui_kit_assets::Assets.load(path).ok().flatten()),
+        }
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {

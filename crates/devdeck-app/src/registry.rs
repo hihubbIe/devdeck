@@ -255,13 +255,21 @@ pub fn terminal_takes(key: &'static str) -> bool {
     Keystroke::parse(key).is_ok_and(|k| term::takes(&k))
 }
 
-/// Where `key` of `spec` applies: its context, outside terminals when a terminal takes it.
+/// Where `key` of `spec` applies: its context, outside terminals when a terminal takes
+/// it, outside the note editor when the editor does (R12.3).
 fn context_of(spec: &ActionSpec, key: &'static str) -> Option<String> {
     let in_terminals = spec.context.is_some_and(|c| c.contains("Terminal"));
-    match (spec.context, terminal_takes(key) && !in_terminals) {
-        (c, false) => c.map(String::from),
-        (Some(c), true) => Some(format!("({c}) && !Terminal")),
-        (None, true) => Some("!Terminal".into()),
+    let mut outside = Vec::new();
+    if terminal_takes(key) && !in_terminals {
+        outside.push("!Terminal".to_string());
+    }
+    if devdeck_ui::code::editor_takes(key) && !spec.context.is_some_and(|c| c.contains(devdeck_ui::code::NOTE_CONTEXT)) {
+        outside.push(format!("!{}", devdeck_ui::code::NOTE_CONTEXT));
+    }
+    match (spec.context, outside.is_empty()) {
+        (c, true) => c.map(String::from),
+        (Some(c), false) => Some(format!("({c}) && {}", outside.join(" && "))),
+        (None, false) => Some(outside.join(" && ")),
     }
 }
 

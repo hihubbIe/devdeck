@@ -297,7 +297,14 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Highlighting is most of the memory (a 10 MB file: 567 MB highlighted, 163 MB plain), so
   only files up to 1 MB with lines under 5 000 characters are highlighted.
 - The editor adds both axes of every wheel event; the wrapper takes the wheel first and
-  locks the axis (R9.6), as the terminal does.
+  locks the axis (R9.6), as the terminal does. Right-click opens our menu (Copy; the
+  note's Cut, Paste; Select all; then what the view adds).
+- Keys: the note editor's key context is `NoteEditor`. A devdeck binding whose key it uses
+  (`code::editor_takes`: no modifier but shift, or one of its own ctrl/alt keys, checked
+  against its keymap by a test) is off inside it, as for terminals; ctrl+w, ctrl+tab,
+  alt+arrows still work while typing. gpui-component's inspector key is dropped; its
+  other keys live in its components' contexts. Its find bar's icons come from its own
+  Lucide set (`gpui-kit-assets`), served by our `Assets` after ours.
 - Notes live in `~/.local/share/devdeck/workspaces/<id>/notes/` (`index.json` and one
   `<id>.md` each), owned by a `Notes` entity per workspace that holds their text and
   writes it, one write at a time, so closing a tab or quitting never loses typing.

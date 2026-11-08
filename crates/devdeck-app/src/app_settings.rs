@@ -38,6 +38,7 @@ pub fn init(dir: &Path, cx: &mut App) {
     }
     let settings = AppSettings { store, open: false, themes, theme_problems, themes_dir };
     cx.set_global(Theme::from_colors(settings.current_colors(), settings.store.settings.scale()));
+    devdeck_ui::code::sync_theme(cx);
     let entity = cx.new(|_| settings);
     cx.set_global(AppSettingsHandle(entity));
 }
@@ -54,6 +55,7 @@ fn apply_theme(cx: &mut App) {
     let s = settings(cx).read(cx);
     let theme = Theme::from_colors(s.current_colors(), s.store.settings.scale());
     cx.set_global(theme);
+    devdeck_ui::code::sync_theme(cx);
     cx.refresh_windows();
 }
 
