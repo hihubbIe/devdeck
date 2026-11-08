@@ -211,15 +211,6 @@ impl FileView {
             Some(c) => c.clone(),
             None => {
                 let c = cx.new(|cx| Code::viewer(window, cx));
-                let sub = cx.on_focus(&self.focus, window, |this, window, cx| {
-                    if let Some(c) = &this.code
-                        && !(this.markdown && this.rendered)
-                    {
-                        let f = c.read(cx).focus_handle(cx);
-                        f.focus(window, cx);
-                    }
-                });
-                self._subs.push(sub);
                 self.code = Some(c.clone());
                 c
             }
@@ -240,6 +231,14 @@ impl Render for FileView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let code = matches!(self.shown, Shown::Text { .. }).then(|| self.editor(window, cx));
+        // Focus given to the view goes on to the text while it shows (copy, find).
+        if let Some(c) = &code
+            && !(self.markdown && self.rendered)
+            && self.focus.is_focused(window)
+        {
+            let f = c.read(cx).focus_handle(cx);
+            window.defer(cx, move |window, cx| f.focus(window, cx));
+        }
         let root = div()
             .size_full()
             .flex()

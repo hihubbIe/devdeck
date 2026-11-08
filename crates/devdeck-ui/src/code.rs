@@ -21,6 +21,9 @@ use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 
+/// Esc in the editor, when it doesn't use it itself (a view leaves the editor on it).
+pub use gpui_component::input::Escape as EditorEscape;
+
 /// The key context of the note editor (an editable [`Code`]).
 pub const NOTE_CONTEXT: &str = "NoteEditor";
 

@@ -15,6 +15,7 @@ pub mod layout;
 pub mod layout_book;
 pub mod links;
 pub mod list;
+pub mod notes;
 pub mod ports;
 pub mod process;
 pub mod procfs;

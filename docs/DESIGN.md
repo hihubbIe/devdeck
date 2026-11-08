@@ -319,8 +319,13 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Files dropped from outside (`ExternalPaths`) land through the same drop zones and tab
   strips as tabs and list rows (`drops.rs`).
 - Notes live in `~/.local/share/devdeck/workspaces/<id>/notes/` (`index.json` and one
-  `<id>.md` each), owned by a `Notes` entity per workspace that holds their text and
-  writes it, one write at a time, so closing a tab or quitting never loses typing.
+  `<id>.md` each; `DEVDECK_DATA_DIR` moves it), owned by a `Notes` entity per workspace
+  (`Services::notes`) that holds their text: a note view only edits it there, so closing
+  a tab or quitting never loses typing. It writes 500 ms after the last change (small
+  atomic writes, on the UI thread, so never two at once) and everything from
+  `Shell::flush`. The demo's notes stay in memory. The note view hands focus on to its
+  editor when it's drawn focused (the editor is made on the first draw); Esc in the
+  editor gives the keys back to the view until the view loses focus.
 
 ## Settings and scaling
 

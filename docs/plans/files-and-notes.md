@@ -300,3 +300,8 @@ binary; both removed. Outcome: **go on**, with the limits below.
   editor made in the first one: to check by hand (detach a file tab).
 - The editor's own keys add `ctrl-h` and `ctrl-enter` to the ones listed by the review.
 - Reload timing uses the executor's clock, so tests drive it.
+- A view focused before its editor exists (a note just made, a pane focused) hands focus
+  on at its next draw; an `on_focus` hook made with the editor came too late.
+- `pty_driver::the_environment_is_exactly_the_runs` timed out once (5 s of real time
+  waiting for a real process) during a full parallel run, then passed alone three times
+  and in the next full run: load-sensitive, not touched by this work.

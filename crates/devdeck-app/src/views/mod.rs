@@ -14,6 +14,7 @@ pub mod git_view;
 pub mod info_view;
 pub mod logs_view;
 pub mod matrix_view;
+pub mod note_view;
 pub mod pod_view;
 pub mod port_view;
 pub mod run_view;
@@ -258,6 +259,14 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             let built = keeping(v.clone(), saved, ctx, cx);
             live(built, &v, ctx, cx)
         }
+        (ViewAddr::Note { id }, Some(ctx)) => {
+            if ctx.services.read(cx).notes.read(cx).meta(&id).is_none() {
+                return Built { missing: false, ..message("This note was deleted.".into(), cx) };
+            }
+            let v = cx.new(|cx| note_view::NoteView::new(id, ctx.clone(), cx));
+            let built = keeping(v.clone(), saved, ctx, cx);
+            live(built, &v, ctx, cx)
+        }
         (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None, save: None, missing: false, live: None },
     }
 }
@@ -284,6 +293,7 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Port { port } => format!(":{port}"),
         ViewAddr::Problems => "problems".into(),
         ViewAddr::Welcome => "welcome".into(),
+        ViewAddr::Note { .. } => "note".into(),
         ViewAddr::File { path } => path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/").to_string(),
         ViewAddr::Git { root } => format!("{} · git", root.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Terminal { dir, .. } => format!("terminal · {}", terminal_name(&dir)),

@@ -1,7 +1,7 @@
 //! The leak run (`DEVDECK_STRESS=<cycles>`, R11.4). Every cycle does one of everything
 //! the app does, so a short run already goes through every path:
-//! - opens each view type (app, run, service, service logs, matrix, port, a demo view) and
-//!   presses Esc in an input inside the service view;
+//! - opens each view type (app, run, service, service logs, matrix, port, a demo view, a
+//!   file and a note, R12) and presses Esc in an input inside the service view;
 //! - starts and stops a run;
 //! - splits, collapses, maximizes, detaches (a real OS window, with a menu opened in it)
 //!   and re-attaches a tab;
@@ -82,14 +82,26 @@ struct Stress {
     home: usize,
     other: usize,
     layout_a: String,
+    /// A Markdown file in the state folder and a note, made once, opened every cycle.
+    files: Vec<ViewRef>,
 }
 
 impl Stress {
     fn new(shell: Entity<Shell>, cx: &mut AsyncApp) -> Self {
         cx.update(|cx| {
+            let file = devdeck_core::state::default_state_dir().join("stress.md");
+            let _ = std::fs::write(&file, "# Stress\n\n- [ ] a task\n\n```rust\nfn main() {}\n```\n");
+            let notes = {
+                let s = shell.read(cx);
+                s.workspaces[s.active].services.read(cx).notes.clone()
+            };
+            let note = notes.update(cx, |n, cx| n.create("entityservice", "stress", cx));
             let s = shell.read(cx);
             let home = s.active;
+            let mut files = vec![ViewAddr::File { path: file.to_string_lossy().into_owned() }.to_ref()];
+            files.extend(note.map(|id| ViewAddr::Note { id }.to_ref()));
             Self {
+                files,
                 deck: s.active_deck(),
                 main: s.main_window().expect("main window").into(),
                 home,
@@ -133,7 +145,8 @@ impl Stress {
     }
 
     async fn cycle(&self, n: u64, cx: &mut AsyncApp) {
-        let opened = views(n);
+        let mut opened = views(n);
+        opened.extend(self.files.iter().cloned());
         for (i, v) in opened.iter().enumerate() {
             let v = v.clone();
             self.apply(cx, n, "open", move |l| {

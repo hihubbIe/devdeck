@@ -18,6 +18,7 @@ pub mod kube_cluster;
 pub mod layouts;
 pub mod lifecycle;
 pub mod name_prompt;
+pub mod notes;
 pub mod open_file;
 pub mod palette;
 pub mod places;

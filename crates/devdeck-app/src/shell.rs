@@ -383,6 +383,8 @@ impl Shell {
     pub fn flush(&mut self, cx: &mut Context<Self>) {
         for w in &self.workspaces {
             w.deck.update(cx, |d, cx| d.flush(cx));
+            let notes = w.services.read(cx).notes.clone();
+            notes.update(cx, |n, cx| n.flush(cx));
         }
         self.save_app(cx);
     }

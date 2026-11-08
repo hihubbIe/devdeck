@@ -1,7 +1,9 @@
 //! App view (`app/<id>`, R6.3, R6.5, R6.6, R6.7): header with the env and how it
 //! applies, missing tools named, then commands by tier with their run state and
-//! actions, and its repository's branch with a way to its git panel. Keys (`AppView`): ↑↓
-//! select, ⏎ run, s stop, r restart, o output, h hidden, g git.
+//! actions, and its repository's branch with a way to its git panel; then its notes (R12.3):
+//! one alphabetical list, made, opened, renamed and deleted here. Keys (`AppView`): ↑↓
+//! select (commands, then notes), ⏎ run (or open a note), s stop, r restart, o output,
+//! h hidden, g git, n new note.
 
 use super::{ViewCx, run_mark};
 use crate::runner::RunKey;
@@ -14,7 +16,14 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
 };
 
-actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit]);
+actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote]);
+
+/// A selected note is `note:<id>` in [`AppView::selected`] (commands are `source:name`).
+const NOTE_KEY: &str = "note:";
+
+fn note_of(selected: &str) -> Option<&str> {
+    selected.strip_prefix(NOTE_KEY)
+}
 
 pub struct AppView {
     pub app: String,
@@ -32,7 +41,8 @@ pub struct AppView {
 
 impl AppView {
     pub fn new(app: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
-        let mut subs = vec![cx.observe(&ctx.services, |_, _, cx| cx.notify())];
+        let notes = ctx.services.read(cx).notes.clone();
+        let mut subs = vec![cx.observe(&ctx.services, |_, _, cx| cx.notify()), cx.observe(&notes, |_, _, cx| cx.notify())];
         let dir = ctx.services.read(cx).catalog.app(&app).map(|a| a.dir.clone());
         let repo = dir.and_then(|d| ctx.services.update(cx, |s, cx| s.repo(&d, cx)));
         if let Some(r) = &repo {
@@ -65,18 +75,32 @@ impl AppView {
             .collect()
     }
 
+    /// What ↑↓ go through: commands in display order, then notes.
+    fn selectable(&self, cx: &App) -> Vec<String> {
+        let notes = self.ctx.services.read(cx).notes.read(cx).of(&self.app);
+        self.visible_commands(cx).into_iter().map(|c| c.id).chain(notes.into_iter().map(|n| format!("{NOTE_KEY}{}", n.id))).collect()
+    }
+
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let cmds = self.visible_commands(cx);
-        if cmds.is_empty() {
+        let rows = self.selectable(cx);
+        if rows.is_empty() {
             return;
         }
-        let at = self.selected.as_ref().and_then(|s| cmds.iter().position(|c| &c.id == s));
+        let at = self.selected.as_ref().and_then(|s| rows.iter().position(|r| r == s));
         let next = match at {
             None => 0,
-            Some(i) => (i as isize + delta).clamp(0, cmds.len() as isize - 1) as usize,
+            Some(i) => (i as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
         };
-        self.selected = Some(cmds[next].id.clone());
+        self.selected = Some(rows[next].clone());
         cx.notify();
+    }
+
+    pub fn open_note(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.ctx.open(ViewAddr::Note { id: id.to_string() }, cx);
+    }
+
+    pub fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        super::note_view::new_note(&self.ctx, &self.app, window, cx);
     }
 
     fn key(&self, cmd: &str) -> RunKey {
@@ -114,17 +138,33 @@ impl AppView {
         self.ctx.open(ViewAddr::Run { app: self.app.clone(), cmd: cmd.into() }, cx);
     }
 
-    fn with_selected(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Self, &str, &mut Context<Self>)) {
+    /// Runs `f` on the selected command (the first when none is); a selected note is
+    /// opened instead when `open_note`, else left alone.
+    fn with_selected(&mut self, cx: &mut Context<Self>, open_note: bool, f: impl FnOnce(&mut Self, &str, &mut Context<Self>)) {
         if self.selected.is_none() {
             self.move_selection(0, cx);
         }
-        if let Some(cmd) = self.selected.clone() {
-            f(self, &cmd, cx);
+        let Some(sel) = self.selected.clone() else { return };
+        match note_of(&sel) {
+            Some(id) if open_note => self.open_note(id, cx),
+            Some(_) => {}
+            None => f(self, &sel, cx),
         }
     }
 }
 
 impl AppView {
+    /// The menu of a note row (right-click, shift+F10).
+    pub fn note_menu(this: &gpui::Entity<Self>, id: &str, cx: &App) -> Vec<devdeck_ui::MenuItem> {
+        let notes = this.read(cx).ctx.services.read(cx).notes.clone();
+        let (me, id1, id2, id3, n2, n3) = (this.clone(), id.to_string(), id.to_string(), id.to_string(), notes.clone(), notes);
+        vec![
+            devdeck_ui::MenuItem::new("Open", move |_, cx| me.update(cx, |v, cx| v.open_note(&id1, cx))),
+            devdeck_ui::MenuItem::new("Rename…", move |window, cx| super::note_view::rename_note(&n2, &id2, window, cx)),
+            devdeck_ui::MenuItem::new("Delete…", move |window, cx| super::note_view::delete_note(&n3, &id3, window, cx)),
+        ]
+    }
+
     /// The menu of a command row (right-click, shift+F10).
     pub fn command_menu(this: &gpui::Entity<Self>, cmd: &str) -> Vec<devdeck_ui::MenuItem> {
         let item = |label: &'static str, f: fn(&mut Self, &str, &mut Context<Self>)| {
@@ -298,6 +338,51 @@ impl Render for AppView {
             }
         }
 
+        // Notes (R12.3): one alphabetical list, after the commands.
+        let notes = self.ctx.services.read(cx).notes.read(cx).of(&self.app);
+        body = body.child(
+            section(format!("Notes · {}", notes.len()), &t)
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(devdeck_ui::button("new-note", "new note", &t).debug_selector(|| "new-note".into()).on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx)))),
+        );
+        for (i, n) in notes.iter().enumerate() {
+            let key = format!("{NOTE_KEY}{}", n.id);
+            let selected = self.selected.as_deref() == Some(key.as_str());
+            let (open, menu_id, sel, selector) = (n.id.clone(), n.id.clone(), key.clone(), n.id.clone());
+            body = body.child(
+                div()
+                    .id(("note", i))
+                    .debug_selector(move || format!("note-{selector}"))
+                    .h(t.row_h)
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(t.radius_s)
+                    .cursor_pointer()
+                    .when(selected, |d| d.bg(if focused { t.selection } else { t.hover }))
+                    .on_mouse_down(gpui::MouseButton::Right, {
+                        let (me, key) = (cx.entity(), key.clone());
+                        move |e, window, cx| {
+                            me.update(cx, |v, cx| {
+                                v.selected = Some(key.clone());
+                                cx.notify();
+                            });
+                            let items = AppView::note_menu(&me, &menu_id, cx);
+                            devdeck_ui::open_menu(e.position, items, window, cx);
+                        }
+                    })
+                    .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                        this.selected = Some(sel.clone());
+                        this.open_note(&open, cx);
+                    }))
+                    .child(icon(Icon::Note, t.mute, &t).size(t.icon_small))
+                    .child(label(n.name.clone()).flex_1().min_w_0()),
+            );
+        }
+
         div()
             .id("app-view")
             .key_context("AppView")
@@ -308,19 +393,24 @@ impl Render for AppView {
             .flex_col()
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_selection(1, cx)))
             .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.move_selection(-1, cx)))
-            .on_action(cx.listener(|this, _: &RunSelected, _, cx| this.with_selected(cx, |s, c, cx| s.run(c, cx))))
-            .on_action(cx.listener(|this, _: &StopSelected, _, cx| this.with_selected(cx, |s, c, cx| s.stop(c, cx))))
-            .on_action(cx.listener(|this, _: &RestartSelected, _, cx| this.with_selected(cx, |s, c, cx| s.restart(c, cx))))
-            .on_action(cx.listener(|this, _: &OpenOutput, _, cx| this.with_selected(cx, |s, c, cx| s.open_output(c, cx))))
+            .on_action(cx.listener(|this, _: &RunSelected, _, cx| this.with_selected(cx, true, |s, c, cx| s.run(c, cx))))
+            .on_action(cx.listener(|this, _: &StopSelected, _, cx| this.with_selected(cx, false, |s, c, cx| s.stop(c, cx))))
+            .on_action(cx.listener(|this, _: &RestartSelected, _, cx| this.with_selected(cx, false, |s, c, cx| s.restart(c, cx))))
+            .on_action(cx.listener(|this, _: &OpenOutput, _, cx| this.with_selected(cx, true, |s, c, cx| s.open_output(c, cx))))
             .on_action(cx.listener(|this, _: &crate::actions::ContextMenu, window, cx| {
                 if this.selected.is_none() {
                     this.move_selection(0, cx);
                 }
-                if let Some(cmd) = this.selected.clone() {
+                if let Some(sel) = this.selected.clone() {
                     let at = this.origin.get() + gpui::point(theme(cx).size(140.), theme(cx).size(96.));
-                    devdeck_ui::open_menu(at, AppView::command_menu(&cx.entity(), &cmd), window, cx);
+                    let items = match note_of(&sel) {
+                        Some(id) => AppView::note_menu(&cx.entity(), id, cx),
+                        None => AppView::command_menu(&cx.entity(), &sel),
+                    };
+                    devdeck_ui::open_menu(at, items, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &OpenGit, _, cx| this.open_git(cx)))
             .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
                 this.show_hidden = !this.show_hidden;

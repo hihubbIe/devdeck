@@ -279,6 +279,45 @@ fn file_missing(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity
     open_view(cx, shell, repo_file("docs/no-such-file.md"));
 }
 
+/// Notes of entityservice (kept in memory: the demo), its app view open; the ids.
+fn make_notes(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Vec<String> {
+    let notes = cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).notes.clone());
+    let ids = cx.update(|cx| {
+        notes.update(cx, |n, cx| {
+            let a = n.create("entityservice", "todo", cx).unwrap();
+            let b = n.create("entityservice", "a very long note name that the row has to truncate somewhere", cx).unwrap();
+            let c = n.create("entityservice", "bugs", cx).unwrap();
+            n.set_text(&a, "# Today\n\n- [x] read the graph code\n- [ ] fix the zoom\n\n```rust\nfn zoom(f: f32) -> f32 { f * 2. }\n```\n".into(), cx);
+            vec![a, b, c]
+        })
+    });
+    open_view(cx, shell, ViewAddr::App { app: "entityservice".into() });
+    ids
+}
+
+fn notes_list(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    make_notes(cx, shell);
+}
+
+fn note_rendered(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let ids = make_notes(cx, shell);
+    open_view(cx, shell, ViewAddr::Note { id: ids[0].clone() });
+}
+
+fn note_source(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let ids = make_notes(cx, shell);
+    open_view(cx, shell, ViewAddr::Note { id: ids[0].clone() });
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&ViewAddr::Note { id: ids[0].clone() }.to_ref()).unwrap().downcast::<devdeck_app::views::note_view::NoteView>().unwrap());
+    let _ = cx.update_window(w, |_, window, cx| v.update(cx, |v, cx| v.toggle_rendered(window, cx)));
+}
+
+fn note_delete(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let ids = make_notes(cx, shell);
+    let notes = cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).notes.clone());
+    let _ = cx.update_window(w, |_, window, cx| devdeck_app::views::note_view::delete_note(&notes, &ids[0], window, cx));
+}
+
 fn run_cmd(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, app: &str, cmd: &str, wait_ms: u64) {
     let runner = cx.update(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).runner.clone());
     cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new(app, cmd), Some("dev35".into()), cx))).expect("starts");
@@ -1030,6 +1069,10 @@ fn states() -> Vec<State> {
         w("C3-file-not-text", "work", 1.0, Some(file_not_text)),
         w("C4-file-missing", "work", 1.0, Some(file_missing)),
         w("C5-file-rust-150", "work", 1.5, Some(file_rust)),
+        w("D0-notes-list", "work", 1.0, Some(notes_list)),
+        w("D1-note-rendered", "work", 1.0, Some(note_rendered)),
+        w("D2-note-source", "work", 1.0, Some(note_source)),
+        w("D3-note-delete", "work", 1.0, Some(note_delete)),
     ]
 }
 

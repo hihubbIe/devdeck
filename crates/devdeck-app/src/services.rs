@@ -33,6 +33,8 @@ pub struct Services {
     /// The workspace env (title bar `env ▾`), `None` without envs.
     pub env: Option<String>,
     pub runner: Entity<Runner>,
+    /// The workspace's notes (R12.3).
+    pub notes: Entity<crate::notes::Notes>,
     /// `None` without `[cluster]` (no Cluster activity, R2.3).
     pub cluster: Option<Entity<Cluster>>,
     /// A config workspace's cluster and its driver, kept while `[cluster]` is gone: the
@@ -102,7 +104,9 @@ impl Services {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
             let unusable = unusable(&catalog);
-            Services { workspace: workspace.into(), catalog, env, runner, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
+            // The demo's notes stay in memory.
+            let notes = cx.new(|cx| crate::notes::Notes::new(None, cx));
+            Services { workspace: workspace.into(), catalog, env, runner, notes, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
         })
     }
 
@@ -126,6 +130,7 @@ impl Services {
                 None => runner,
             }
         });
+        let keeps_notes = state_dir.is_some();
         let ports = Ports::new(&config.id, runner.clone(), state_dir, cx);
         let kube = config.cluster.clone().map(|c| {
             let driver = Rc::new(KubeCluster::new(c));
@@ -144,7 +149,10 @@ impl Services {
             })
             .detach();
             let unusable = unusable(&catalog);
-            Services { workspace: config.id.clone(), catalog, env, runner, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable }
+            // Notes are kept with what the user writes (R10.1), when devdeck keeps state.
+            let store = keeps_notes.then(|| devdeck_core::notes::NotesStore::new(devdeck_core::notes::notes_dir(&devdeck_core::notes::default_data_dir(), &config.id)));
+            let notes = cx.new(|cx| crate::notes::Notes::new(store, cx));
+            Services { workspace: config.id.clone(), catalog, env, runner, notes, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable }
         })
     }
 

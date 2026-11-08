@@ -147,6 +147,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("app_view.output", "output", "App view", Some("AppView && !TextInput"), ["o"], av::OpenOutput),
         spec!("app_view.hidden", "hidden commands", "App view", Some("AppView && !TextInput"), ["h"], av::ToggleHidden),
         spec!("app_view.git", "git panel", "App view", Some("AppView && !TextInput"), ["g"], av::OpenGit),
+        spec!("app_view.new_note", "new note", "App view", Some("AppView && !TextInput"), ["n"], av::NewNote),
         // Run view
         spec!("run.run", "run", "Run output", Some("RunView && !TextInput"), ["enter", "ctrl-shift-enter"], rv::RunAgain),
         spec!("run.stop", "stop", "Run output", Some("RunView && !TextInput"), ["s", "ctrl-shift-x"], rv::Stop),
@@ -157,6 +158,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("term.copy", "copy the selection", "Run output", Some("RunView && !TextInput"), ["ctrl-shift-c", "ctrl-c"], term::Copy),
         spec!("term.paste", "paste", "Terminal", Some("Terminal"), ["ctrl-shift-v"], term::Paste),
         spec!("term.leave", "leave the terminal", "Terminal", Some("Terminal"), ["ctrl-shift-escape"], rv::LeaveTerminal),
+        spec!("note.confirm_delete", "delete", "Notes", Some("Modal && DeleteNote"), ["enter"], crate::views::note_view::ConfirmDeleteNote),
         spec!("view.toggle_rendered", "source or rendered", "View", Some("FileView || NoteView"), ["ctrl-shift-e"], crate::views::ToggleRendered),
         // Service
         spec!("svc.save", "save tag", "Service", Some("ServiceView"), ["ctrl-s"], sv::SaveTag),

@@ -22,6 +22,8 @@ pub enum ViewAddr {
     Git { root: String },
     /// A text file, view only (R12.1): its absolute path.
     File { path: String },
+    /// A note of the workspace (R12.3), by id.
+    Note { id: String },
     /// Anything else (demo views, refs from older versions).
     Other(String),
 }
@@ -49,6 +51,7 @@ impl ViewAddr {
             ViewAddr::Terminal { n, dir } => format!("term/{n}/{}", esc(dir)),
             ViewAddr::Git { root } => format!("git/{}", esc(root)),
             ViewAddr::File { path } => format!("file/{}", esc(path)),
+            ViewAddr::Note { id } => format!("note/{}", esc(id)),
             ViewAddr::Other(s) => s.clone(),
         })
     }
@@ -69,6 +72,7 @@ impl ViewAddr {
             ["welcome"] => ViewAddr::Welcome,
             ["git", root] => ViewAddr::Git { root: root.to_string() },
             ["file", path] => ViewAddr::File { path: path.to_string() },
+            ["note", id] => ViewAddr::Note { id: id.to_string() },
             ["term", n, dir] if n.parse::<u32>().is_ok() => ViewAddr::Terminal { n: n.parse().unwrap_or_default(), dir: dir.to_string() },
             _ => ViewAddr::Other(s.to_string()),
         }
@@ -88,6 +92,7 @@ mod tests {
             ViewAddr::Svc { env: "dev35".into(), name: "entityservice".into() },
             ViewAddr::Git { root: "/home/me/repos/front-end".into() },
             ViewAddr::File { path: "/home/me/repos/a b%/notes.md".into() },
+            ViewAddr::Note { id: "6f1c2e7a-0d4b-4c59-9a1e-2b7f3c8d9e01".into() },
             ViewAddr::Logs { env: "hades".into(), name: "graphservice".into() },
             ViewAddr::Pod { env: "dev35".into(), pod: "entityservice-7d9f-x2k4p".into() },
             ViewAddr::Matrix,
