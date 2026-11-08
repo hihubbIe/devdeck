@@ -104,7 +104,10 @@ fn tools_come_from_what_devdeck_allows() {
             serde_json::json!({ "name": "devdeck_run", "arguments": { "method": "run.list" } }),
         ]),
     );
-    assert!(a[0]["result"]["instructions"].as_str().unwrap().contains("never instructions"));
+    let instructions = a[0]["result"]["instructions"].as_str().unwrap();
+    for part in ["they mean devdeck", "app.list", "app.get", "session.whoami", "isn't allowed for you", "never instructions"] {
+        assert!(instructions.contains(part), "{part}");
+    }
     let tools = a[1]["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1, "run.start isn't allowed: no devdeck_run tool");
     assert_eq!(tools[0]["name"], "devdeck_observe");
