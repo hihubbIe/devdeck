@@ -421,7 +421,7 @@ impl Sidebar {
                 runner
                     .terminals()
                     .into_iter()
-                    .filter_map(|(key, _)| {
+                    .filter_map(|(key, dir)| {
                         let n = key.terminal_number()?;
                         let state = runner.state(&key);
                         let doing = match (runner.terminal_program(&key), state) {
@@ -430,8 +430,10 @@ impl Sidebar {
                             (None, Some(_)) => "ended".into(),
                             (None, None) => "not started".into(),
                         };
-                        let folder = runner.title(&key).trim_start_matches("terminal · ").to_string();
-                        let item = ListItem::new(n.to_string(), folder).detail(format!("{doing} · {}", shows_in(n)));
+                        let dir = dir.display().to_string();
+                        let item = ListItem::new(n.to_string(), crate::views::terminal_name(&dir))
+                            .detail(format!("{doing} · {}", shows_in(n)))
+                            .hint(Some(format!("{} · {doing} · {}", devdeck_core::config::shown(std::path::Path::new(&dir)), shows_in(n))));
                         Some(item.running(state.is_some_and(|s| s.is_running())))
                     })
                     .collect()
@@ -938,8 +940,7 @@ impl Sidebar {
             let n = key.parse::<u32>().unwrap_or_default();
             let Some(view) = this.read(cx).view_ref(key, cx) else { return Vec::new() };
             // Opened where it shows, else in the main window's focused pane.
-            let l = deck.read(cx).layout();
-            let here = l.find_view(&view).map_or(l.main().focused, |(p, _)| p);
+            let here = places::showing(deck.read(cx).layout(), &view);
             let v = view.clone();
             return vec![
                 places::item("Open", Place::Pane(here), MAIN_WINDOW, &deck, Some(&view), cx, move |d, place, cx| {

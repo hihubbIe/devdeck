@@ -59,6 +59,53 @@ pub fn open(l: &mut Layout, view: ViewRef, place: Place) -> Result<PaneId> {
     }
 }
 
+/// Where `view` shows: the pane holding it, else the main window's focused pane (where
+/// it would open).
+pub fn showing(l: &Layout, view: &ViewRef) -> PaneId {
+    l.find_view(view).map_or(l.main().focused, |(p, _)| p)
+}
+
+/// Brings `view` to the front: its tab active where it shows (or opened in the main
+/// window's focused pane), a maximized other pane restored so it's drawn, its window
+/// raised and keys going to it. `here` is the window the request came from.
+pub fn show(deck: &Entity<Deck>, view: &ViewRef, here: WindowId, window: &mut gpui::Window, cx: &mut App) {
+    let pane = showing(deck.read(cx).layout(), view);
+    let v = view.clone();
+    let shown = deck.update(cx, |d, cx| {
+        d.apply(cx, |l| {
+            let p = open(l, v, Place::Pane(pane))?;
+            let w = l.window_of(p)?;
+            if let Some(m) = l.window(w)?.maximized.filter(|m| *m != p) {
+                l.toggle_maximize(m)?;
+            }
+            Ok(p)
+        })
+    });
+    let Some(pane) = shown else { return };
+    let Ok(w) = deck.read(cx).layout().window_of(pane) else { return };
+    if w == here {
+        if let Some(f) = deck.read(cx).view_focus(pane) {
+            f.focus(window, cx);
+        }
+        return;
+    }
+    // Another window: raised, then the view focused in it (once the menu's window let go).
+    let handle = match w {
+        MAIN_WINDOW => crate::shell::try_shell(cx).and_then(|s| s.read(cx).main_window()),
+        _ => deck.read(cx).os_window(w),
+    };
+    let Some(handle) = handle else { return };
+    let deck = deck.clone();
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            window.activate_window();
+            if let Some(f) = deck.read(cx).view_focus(pane) {
+                f.focus(window, cx);
+            }
+        });
+    });
+}
+
 /// Why `view` (open somewhere) can't go to `place`.
 fn refusal(l: &Layout, view: &ViewRef, place: Place) -> Option<&'static str> {
     let (p, _) = l.find_view(view)?;

@@ -225,6 +225,11 @@ impl Deck {
         cx.notify();
     }
 
+    /// The OS window showing detached window `w`, once open.
+    pub fn os_window(&self, w: WindowId) -> Option<WindowHandle<WindowView>> {
+        self.os_windows.get(&w).copied().flatten()
+    }
+
     /// Where keys go when the active view of `pane` should have them.
     pub fn view_focus(&self, pane: PaneId) -> Option<FocusHandle> {
         let r = self.layout.pane(pane).ok()?.active_view()?;

@@ -320,10 +320,11 @@ impl Runner {
         self.runs.iter().filter(|(k, r)| r.state.is_running() && busy(k)).map(|(k, _)| title(k)).collect()
     }
 
-    /// `app · command`, with the app's display name; `terminal · ~/folder`.
+    /// `app · command`, with the app's display name; `terminal · folder` (its short
+    /// name, [`crate::views::terminal_name`]).
     pub fn title(&self, key: &RunKey) -> String {
         if let Some((app, _)) = self.terminals.get(key) {
-            return format!("terminal · {}", app.folder);
+            return format!("terminal · {}", crate::views::terminal_name(&app.folder));
         }
         match self.catalog.app(&key.app) {
             Some(app) => format!("{} · {}", app.name, devdeck_core::apps::name_of(&key.cmd)),

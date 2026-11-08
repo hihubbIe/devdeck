@@ -54,6 +54,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R5.4** k9s-inspired single-key shortcuts. Shortcuts are not shown in the UI (no key hints in menus, tooltips, labels or a hint bar: it clutters); they are listed on one page, today the searchable cheat sheet (`?`, ctrl+/), to be redesigned later (changed 2026-11-07, user decision).
 - [~] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
 - [ ] **R5.6** Edit mode (user, 2026-11-08): potentially destructive actions (deploys, a replace push, a git abort, stopping a process devdeck didn't start, a shell in a pod) run only while edit mode is on: a title bar button, turned on after a modal saying what it allows, off without one, off at every start. k9s opens read only unless it's on. devdeck never pushes `main` or `master`, edit mode or not.
+- [~] **R5.7** A right-click menu (user, 2026-11-08): what a view offers there, then every action that can take what was right-clicked, shown only where it applies. First content: text selected in a terminal (a run's output or a shell); first actions: Copy and **Share with**, which pastes the text as it is (no Enter) into another terminal of the workspace whose program takes pastes safely (bracketed paste; others listed, refused with why) and shows it; its own click goes where text went last. Later content: files and images opened. The menu key opens it at the selection. Terminals are named by their folder's last part everywhere (tabs, lists, menus).
 
 ## 6. Local apps
 

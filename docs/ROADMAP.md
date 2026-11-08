@@ -49,7 +49,9 @@ exec, port-forward, metrics, protected envs, k9s launch. Plan:
 2. Service inspector on real data (pods, metrics) — done 2026-11-08.
 3. Git panel — done 2026-11-08. 3b. Edit mode — done 2026-11-08. 3c. Sidebar
    groups, folded sections, width; layout ids
-   ([plans/sidebar-groups.md](plans/sidebar-groups.md)) — done 2026-11-08.
+   ([plans/sidebar-groups.md](plans/sidebar-groups.md)) — done 2026-11-08. 3d. Right-click
+   menu with Share with; short terminal names
+   ([plans/context-menu.md](plans/context-menu.md)) — done 2026-11-08.
 4. Logs, shell, port-forward, k9s.
 5. Writes.
 6. Close.

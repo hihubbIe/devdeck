@@ -10,13 +10,16 @@
 //! process except alt+… and ctrl+shift+…: ctrl+shift+⏎/x/r run, stop and restart,
 //! ctrl+shift+v pastes, ctrl+shift+esc leaves it. Copying the selection: ctrl+shift+c
 //! anywhere in the tab, and ctrl+c when something is selected, clearing it (otherwise
-//! ctrl+c goes to the process). Dragging selects; the wheel scrolls. With shift
+//! ctrl+c goes to the process). Dragging selects; the wheel scrolls. A right click (or
+//! the menu key with a selection) opens the context menu: Paste, and for the selection
+//! Copy and Share with (`context_menu`). With shift
 //! held over the output, its links are underlined and shift+click opens one in the
 //! browser (`http`, `https` and `file` only). When several
 //! views show one run, the one focused last sizes its terminal. Output redraws at most
 //! every [`OUTPUT_FRAME`], except right after typing, so echo shows at once.
 
 use super::{ViewCx, run_mark};
+use crate::context_menu::{self, Content, Origin};
 use crate::runner::{RunKey, RunnerEvent};
 use devdeck_core::runs::RunState;
 use devdeck_core::terminal::{Mods, TermSize, key_bytes, paste_bytes};
@@ -245,6 +248,11 @@ impl RunView {
         Some(gpui::point(x, g.origin.y + g.cell.height * (on_screen as f32 + 0.5)))
     }
 
+    /// Whether row `row` (numbered as `Terminal::row`) is on screen.
+    fn row_shown(&self, row: usize) -> bool {
+        self.geometry.get().is_some_and(|g| (row as u64 + g.dropped).checked_sub(g.first).is_some_and(|r| r < g.shown as u64))
+    }
+
     /// Shows or hides the output's links (shift held or released).
     pub fn show_links(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.links_on != on {
@@ -345,6 +353,12 @@ impl RunView {
         self.term_focus.is_focused(window)
     }
 
+    /// Drops the selection.
+    pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        self.scrollback.clear();
+        cx.notify();
+    }
+
     /// Selects from cell `from` to cell `to` (row, column), as a drag does.
     pub fn select(&mut self, from: (usize, usize), to: (usize, usize), cx: &mut Context<Self>) {
         let dropped = self.ctx.services.read(cx).runner.read(cx).run(&self.key).map_or(0, |r| r.terminal.dropped());
@@ -411,6 +425,38 @@ impl RunView {
         if let Some(bytes) = terminal::keystroke_bytes(&e.keystroke, modes.app_cursor) {
             cx.stop_propagation();
             self.write(&bytes, cx);
+        }
+    }
+
+    /// The right-click menu at `at`: Paste while the process runs, and for a selection
+    /// what takes text (Copy, Share with). Returns whether it opened.
+    pub fn context_menu(&mut self, at: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(deck) = self.ctx.deck.upgrade() else { return false };
+        let l = deck.read(cx).layout();
+        let Some(here) = l.find_view(&self.ctx.view).and_then(|(p, _)| l.window_of(p).ok()) else { return false };
+        let origin = Origin { deck: self.ctx.deck.clone(), services: self.ctx.services.clone(), window: here, source: Some(self.key.clone()) };
+        let running = self.ctx.services.read(cx).runner.read(cx).state(&self.key).is_some_and(|s| s.is_running());
+        let me = cx.entity().downgrade();
+        let own = if running {
+            vec![MenuItem::new("Paste", move |_, cx| {
+                let _ = me.update(cx, |v, cx| v.paste(cx));
+            })]
+        } else {
+            Vec::new()
+        };
+        context_menu::open(at, own, self.selected_text(cx).map(Content::Text), &origin, window, cx)
+    }
+
+    /// The menu key: the context menu at the end of the selection; without one the tab
+    /// menu opens as before.
+    fn menu_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let end = self.ctx.services.read(cx).runner.read(cx).run(&self.key).and_then(|r| self.scrollback.selection(r.terminal.dropped())).map(|(_, end)| end);
+        // Its end where shown, else the output's top left (it scrolled away).
+        let top_left = self.geometry.get().map(|g| gpui::point(g.origin.x + g.cell.width, g.origin.y + g.cell.height));
+        let at = end.map(|(row, col)| self.cell_center(row, col).filter(|_| self.row_shown(row)).or(top_left));
+        match at.flatten() {
+            Some(at) if self.context_menu(at, window, cx) => {}
+            _ => cx.propagate(),
         }
     }
 
@@ -650,8 +696,18 @@ impl Render for RunView {
                     for (b, _) in &link_boxes {
                         window.set_cursor_style(CursorStyle::PointingHand, b);
                     }
-                    let (down, drag, wheel, shift) = (view.clone(), view.clone(), view.clone(), view.clone());
-                    let (hit, over) = (hitbox.clone(), hitbox.clone());
+                    let (down, drag, wheel, shift, menu) = (view.clone(), view.clone(), view.clone(), view.clone(), view.clone());
+                    let (hit, over, menu_hit) = (hitbox.clone(), hitbox.clone(), hitbox.clone());
+                    // A right click: the context menu (the selection stays).
+                    window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Bubble && e.button == MouseButton::Right && menu_hit.is_hovered(window) {
+                            let _ = menu.update(cx, |this, cx| {
+                                if this.context_menu(e.position, window, cx) {
+                                    cx.stop_propagation();
+                                }
+                            });
+                        }
+                    });
                     // Shift held or released while the mouse moves over the output.
                     window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                         let on = e.modifiers.shift && over.is_hovered(window);
@@ -729,6 +785,7 @@ impl Render for RunView {
             .on_modifiers_changed(cx.listener(|this, e: &gpui::ModifiersChangedEvent, _, cx| this.show_links(e.modifiers.shift, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
             .on_action(cx.listener(|this, _: &terminal::Copy, _, cx| this.copy(cx)))
+            .on_action(cx.listener(|this, _: &crate::actions::ContextMenu, window, cx| this.menu_key(window, cx)))
             .on_action(cx.listener(|this, _: &RunAgain, _, cx| this.act("run", cx)))
             .on_action(cx.listener(|this, _: &Stop, _, cx| this.act("stop", cx)))
             .on_action(cx.listener(|this, _: &Restart, _, cx| this.act("restart", cx)))

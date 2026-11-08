@@ -127,6 +127,11 @@ pub struct Menu {
 }
 
 impl Menu {
+    /// What it offers.
+    pub fn items(&self) -> &[MenuItem] {
+        &self.items
+    }
+
     /// Removes the menu. Focus goes back to what had it on open, unless it already moved
     /// elsewhere (`give_back_focus` false), which then keeps it.
     fn close(&mut self, give_back_focus: bool, window: &mut Window, cx: &mut Context<Self>) {

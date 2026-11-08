@@ -320,6 +320,22 @@ fn terminals_list(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entit
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Terminals, cx)));
 }
 
+/// mastertadaapp's dev server output with two lines selected and the right-click menu:
+/// Paste, Copy and Share with (the demo's shells don't take pastes safely: refused).
+fn run_context_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    terminals(cx, w, shell);
+    let addr = ViewAddr::Run { app: "front-end/mastertadaapp".into(), cmd: "pnpm:start:dev".into() };
+    open_view(cx, shell, addr.clone());
+    cx.advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<RunView>().unwrap());
+    cx.update(|cx| v.update(cx, |v, cx| v.select((1, 0), (2, 30), cx)));
+    cx.run_until_parked();
+    let at = cx.update(|cx| v.read(cx).cell_center(2, 30)).unwrap_or(point(logical(600.), logical(300.)));
+    let _ = cx.update_window(w, |_, window, cx| v.update(cx, |v, cx| v.context_menu(at, window, cx)));
+}
+
 /// mastertadaapp's dev server with shift held: its link underlined.
 fn run_links(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     let addr = ViewAddr::Run { app: "front-end/mastertadaapp".into(), cmd: "pnpm:start:dev".into() };
@@ -917,6 +933,7 @@ fn states() -> Vec<State> {
         w("61-apps-tree", "work", 1.0, Some(apps_tree)),
         w("62-apps-tree-filtered", "work", 1.0, Some(apps_tree_filtered)),
         w("62b-apps-groups", "work", 1.0, Some(apps_groups)),
+        w("66-run-context-menu", "work", 1.0, Some(run_context_menu)),
         w("62c-sections-folded", "work", 1.0, Some(sections_folded)),
         w("62d-sidebar-wide", "work", 1.0, Some(sidebar_wide)),
         w("70-app-view", "work", 1.0, Some(app_view)),

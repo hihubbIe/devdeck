@@ -362,6 +362,13 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   by an id (the first `default`, new ones a UUID), its name is a label, so a rename
   keeps its pin and group. Folder paths, deployment names and port numbers stay the
   keys: they are what they name.
+- 2026-11-08 Right-click menu (R5.7): a view passes its own items and the content
+  (`context_menu::Content`, text for now); a list of action functions adds what applies
+  (Copy, Share with). Share with pastes into terminals whose program turned bracketed
+  paste on, control characters stripped (a plain shell would run each line); the text
+  goes as it is, no header (user). Named "Share with", not "Send to terminal": the
+  destination needn't stay a terminal (user), and the tab menu's "Send to…" moves panes.
+  No Claude Code detection: every terminal by its short name (user).
 - 2026-11-08 Groups as tagged folder rows of the list engine (their row path can't meet
   a real one), so they open, close and take the keyboard like folders; one drop handler
   per row (GPUI panics on two `on_drop` of one type); section headers stay out of the

@@ -215,9 +215,15 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Problems => "problems".into(),
         ViewAddr::Welcome => "welcome".into(),
         ViewAddr::Git { root } => format!("{} · git", root.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
-        ViewAddr::Terminal { dir, .. } => format!("terminal · {}", dir.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
+        ViewAddr::Terminal { dir, .. } => format!("terminal · {}", terminal_name(&dir)),
         ViewAddr::Other(_) => demo::title(r),
     }
+}
+
+/// What a terminal is called wherever it's named: its folder's last part, as the apps
+/// list names apps (`entities-graph`, not `~/repos/mf-entities-graph/entities-graph`).
+pub fn terminal_name(dir: &str) -> String {
+    dir.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/").to_string()
 }
 
 /// The mark of a run state (DESIGN visual language): a dot while running, a ring when
