@@ -170,8 +170,9 @@ pub struct Runner {
     args: BTreeMap<RunKey, String>,
     /// The arguments used before, per command (none: not kept).
     recent: Option<devdeck_core::recent_args::RecentArgs>,
-    /// The workspace's terminals: what each runs (its folder's app, and the shell).
-    terminals: BTreeMap<RunKey, (App, Command)>,
+    /// The workspace's terminals: what each runs (its folder's app, and the shell), and
+    /// its uid (given when it's made, kept while it lives: its shell may restart).
+    terminals: BTreeMap<RunKey, (App, Command, String)>,
     /// The terminals a layout shows (by number, the deck's report): one that isn't
     /// running and isn't shown is forgotten (R6.12).
     shown: std::collections::BTreeSet<u32>,
@@ -212,14 +213,19 @@ impl Runner {
                 setup: false,
                 ports: Vec::new(),
             };
-            self.terminals.insert(key.clone(), (app, cmd));
+            self.terminals.insert(key.clone(), (app, cmd, uuid::Uuid::new_v4().to_string()));
         }
         key
     }
 
     /// Every terminal of the workspace with its folder, by number.
     pub fn terminals(&self) -> Vec<(RunKey, std::path::PathBuf)> {
-        self.terminals.iter().map(|(k, (a, _))| (k.clone(), a.dir.clone())).collect()
+        self.terminals.iter().map(|(k, (a, ..))| (k.clone(), a.dir.clone())).collect()
+    }
+
+    /// A terminal's uid (the control API names terminals by number and uid).
+    pub fn terminal_uid(&self, key: &RunKey) -> Option<&str> {
+        self.terminals.get(key).map(|(.., uid)| uid.as_str())
     }
 
     /// The terminals a layout shows now. A terminal's shell outlives its tabs; one that
@@ -329,7 +335,7 @@ impl Runner {
     /// `app · command`, with the app's display name; `terminal · folder` (its short
     /// name, [`crate::views::terminal_name`]).
     pub fn title(&self, key: &RunKey) -> String {
-        if let Some((app, _)) = self.terminals.get(key) {
+        if let Some((app, ..)) = self.terminals.get(key) {
             return format!("terminal · {}", crate::views::terminal_name(&app.folder));
         }
         match self.catalog.app(&key.app) {
@@ -352,7 +358,7 @@ impl Runner {
 
     fn command(&self, key: &RunKey) -> Option<(&App, &Command)> {
         if key.is_terminal() {
-            return self.terminals.get(key).map(|(a, c)| (a, c));
+            return self.terminals.get(key).map(|(a, c, _)| (a, c));
         }
         let app = self.catalog.app(&key.app)?;
         Some((app, app.command(&key.cmd)?))

@@ -73,6 +73,16 @@ fn main() {
             }
             shell
         };
+        // The control API (R13): after the shell, which it reads.
+        devdeck_app::api::start(
+            devdeck_app::api::Config {
+                runtime: std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()).map(Into::into),
+                state_dir: state_dir.clone(),
+                default_state_dir: devdeck_core::state::state_dir(|k| if k == "DEVDECK_STATE_DIR" { None } else { std::env::var(k).ok() }),
+                audit_file: true,
+            },
+            cx,
+        );
         cx.activate(true);
         if let Ok(view) = std::env::var("DEVDECK_OPEN") {
             let deck = shell.read(cx).active_deck().downgrade();

@@ -1502,6 +1502,7 @@ name = "devdeck-app"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "devdeck-api",
  "devdeck-core",
  "devdeck-kube",
  "devdeck-ui",
@@ -1509,10 +1510,13 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "libc",
  "notify-debouncer-full",
  "rustix",
+ "serde",
  "serde_json",
  "signal-hook",
+ "uuid",
 ]
 
 [[package]]
