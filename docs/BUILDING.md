@@ -22,6 +22,13 @@ A working Vulkan driver is needed at runtime (GPUI renders through wgpu).
 cargo run --release -p devdeck-app
 ```
 
+That runs the `devdeck` binary (the package's `default-run`); the snapshot tool needs
+`--bin devdeck-snapshot --features snapshot`.
+
+GPUI needs the desktop session's `XDG_RUNTIME_DIR` (and `WAYLAND_DISPLAY` or `DISPLAY`):
+a shell that lacks it, like one in a tmux server started outside the session, panics with
+"XDG_RUNTIME_DIR is not set".
+
 ## Tests and lints
 
 ```sh

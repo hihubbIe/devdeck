@@ -4,6 +4,8 @@ description = "devdeck desktop app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+# `cargo run -p devdeck-app` runs the app, not the snapshot tool.
+default-run = "devdeck"
 
 [[bin]]
 name = "devdeck"
