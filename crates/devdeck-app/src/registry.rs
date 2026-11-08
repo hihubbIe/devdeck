@@ -10,7 +10,7 @@
 use crate::actions::*;
 use crate::shell::ConfirmQuit;
 use crate::sidebar as sb;
-use crate::views::{app_view as av, logs_view as lv, matrix_view as mv, run_view as rv, service_view as sv};
+use crate::views::{app_view as av, git_view as gv, logs_view as lv, matrix_view as mv, run_view as rv, service_view as sv};
 use devdeck_ui::overlay as ov;
 use devdeck_ui::terminal as term;
 use devdeck_ui::text_input as ti;
@@ -144,6 +144,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("app_view.restart", "restart", "App view", Some("AppView && !TextInput"), ["r"], av::RestartSelected),
         spec!("app_view.output", "output", "App view", Some("AppView && !TextInput"), ["o"], av::OpenOutput),
         spec!("app_view.hidden", "hidden commands", "App view", Some("AppView && !TextInput"), ["h"], av::ToggleHidden),
+        spec!("app_view.git", "git panel", "App view", Some("AppView && !TextInput"), ["g"], av::OpenGit),
         // Run view
         spec!("run.run", "run", "Run output", Some("RunView && !TextInput"), ["enter", "ctrl-shift-enter"], rv::RunAgain),
         spec!("run.stop", "stop", "Run output", Some("RunView && !TextInput"), ["s", "ctrl-shift-x"], rv::Stop),
@@ -160,6 +161,15 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("svc.logs", "logs", "Service", Some("ServiceView && !TextInput"), ["l"], sv::OpenLogs),
         spec!("svc.tag", "edit tag", "Service", Some("ServiceView && !TextInput"), ["t"], sv::EditTag),
         spec!("svc.confirm", "confirm", "Service", Some("Modal && ServiceModal"), ["enter"], sv::ConfirmModal),
+        spec!("git.next", "next branch", "Git", Some("GitView && !TextInput"), ["down"], gv::SelectNext),
+        spec!("git.prev", "previous branch", "Git", Some("GitView && !TextInput"), ["up"], gv::SelectPrev),
+        spec!("git.switch", "switch to branch", "Git", Some("GitView && !TextInput"), ["enter"], gv::SwitchSelected),
+        spec!("git.fetch", "fetch", "Git", Some("GitView && !TextInput"), ["f"], gv::Fetch),
+        spec!("git.pull", "pull", "Git", Some("GitView && !TextInput"), ["p"], gv::Pull),
+        spec!("git.push", "push", "Git", Some("GitView && !TextInput"), ["shift-p"], gv::Push),
+        spec!("git.new", "new branch", "Git", Some("GitView && !TextInput"), ["n"], gv::NewBranch),
+        spec!("git.refresh", "refresh", "Git", Some("GitView && !TextInput"), ["r"], gv::Refresh),
+        spec!("git.confirm", "confirm", "Git", Some("Modal && GitModal"), ["enter"], gv::ConfirmGit),
         spec!("lifecycle.kill_leftovers", "pick", "App", Some("Modal && Leftovers"), ["enter"], crate::lifecycle::KillLeftovers),
         spec!("ports.confirm_stop", "stop", "Ports", Some("Modal && StopHolder"), ["enter"], crate::port_scan::ConfirmStopHolder),
         // Logs

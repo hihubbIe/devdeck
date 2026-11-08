@@ -31,6 +31,8 @@ Requirements: R1.5, R2.3, R7.1–R7.8, R6.10 (rewritten, below), R10.1, R11.1–
   read only: a service's repository, its branches and where each is deployed; no
   checkout, commit or editor features". Worktrees and a git page stay with the user's
   later ideas.
+  Changed 2026-11-08 (user): a git panel per app and service with switch, fetch, pull and
+  create branch; no commit or push (step 3).
 
 Seen on the real cluster (read only, 2026-11-07), and what it changes:
 - Some deployments run several containers (envoy-edge 3, frontendapp 2): a deployment
@@ -561,3 +563,272 @@ the watch made generic over deployments and pods, metrics), the app side by the 
    **Fixed** and tested.
 9. A refused env was read again only after a target change, not a reload. **Fixed**: a
    reload retries refused metrics.
+
+## Step 3 · Git panel (plan, 2026-11-08)
+
+Requirements: R6.10 (rewritten), R7.3 (branches as tag suggestions), R5.1, R5.5.
+
+### Decisions (user, 2026-11-08)
+
+- A git panel per app and service, "a proper useful UI": see branches, change branch,
+  etc. Not read only. No commit, no push (later if at all); worktrees stay a later idea.
+
+### How git runs
+
+- Through the `git` program, not a library: the user's SSH keys and agent, credential
+  helpers, hooks and config behave as in their terminal; no new dependency.
+- `devdeck-core::git` (new, GPUI-free): runs `git -C <repo> …` off the UI thread with the
+  login shell's environment (the toolbox's, else devdeck's own), stdin closed,
+  `GIT_TERMINAL_PROMPT=0` (never waits on a prompt), `GIT_OPTIONAL_LOCKS=0` for reads
+  (no index lock taken by a status), a timeout (reads 10 s, fetch and pull 60 s: then
+  killed, "… took too long"), output captured; a failure gives git's own message.
+- Reads: `status --porcelain=v2 --branch -z` (branch, upstream, ahead/behind, changes with
+  their kind, staged or not, conflicts) and `for-each-ref` over `refs/heads` and
+  `refs/remotes` with a fixed format (name, upstream, commit, subject, author, date),
+  remote `HEAD` symrefs left out.
+- Writes, one at a time per repo: `switch <branch>`; a remote branch without a local one:
+  `switch --track <remote>/<branch>` (creates the local branch); `fetch --prune`; `pull
+  --ff-only`; `switch -c <name>` (the name checked with `check-ref-format --branch`
+  first). Nothing forced: no `-f`, `reset`, `clean`, `--discard-changes`. When git refuses
+  (local changes would be overwritten, a pull that isn't a fast-forward), its message is
+  shown and nothing else happens.
+- The repo of an app: the nearest folder holding `.git` (a folder, or a file for a
+  worktree or submodule) from the app's folder up to its workspace folder; apps of one
+  monorepo share it.
+
+### The repo entity (devdeck-app)
+
+- `Repo` per repository root, shared by every view showing it (the services keep weak
+  ones by root): status and branches as last read, the operation running (and its
+  output), the last failure.
+- Refreshed when a view holding it opens or comes on screen, after each operation, on
+  `r`, and when git's files change: the git dir (`HEAD`, `index`, `FETCH_HEAD`,
+  `packed-refs`, non-recursive) and `refs/` (recursive) are watched while a holder lives
+  (a worktree's own and common git dirs both). Edits in the working tree alone aren't
+  watched (a repo can hold `node_modules`): the changes count updates on the next refresh.
+- No reads while nobody holds it: nothing runs while idle.
+
+### Services and apps linked
+
+- A service's app: the app whose folder name is the deployment's name, else the image's
+  short name; or an override, per app in the workspace file:
+  `[apps.<id>] deployments = ["canvasmodulesservice"]` (an app can deploy as several).
+- A branch's tag: the branch name with every character a Docker tag can't hold
+  (`[A-Za-z0-9_.-]` only) made `-` (`feature/x` → `feature-x`). A branch runs on an env
+  when its service there runs that tag (heuristic: the CI's naming isn't known; exact
+  names match first).
+
+### Views
+
+- **Git panel** (`git/<app id>`, tab "<app> · git"), opened from the app view, the service
+  view (its app), the palette and their menus:
+  - header: the repo (`~/…`), the current branch (or "detached at <commit>"), its
+    upstream with ahead/behind, clean or "N changes";
+  - actions: fetch, pull, new branch…, refresh; busy while one runs ("fetching…"), its
+    failure shown under the header with git's message (also a toast);
+  - changes: the changed files (kind, staged), up to a screenful, then "and N more";
+  - branches: local, then remote ones without a local branch of the same name, each with
+    its last commit (subject, author, age) and the envs running it (env chips,
+    protected in red); the current one marked; switch with ⏎, a double click or the row
+    menu; new branch asks a name (modal, ⏎ creates and switches);
+  - keys registered as actions (palette, cheat sheet): `f` fetch, `p` pull, `n` new
+    branch, `r` refresh, ⏎ switch.
+- **Service view**: a line under the header: its app and repo, the branch checked out
+  locally, and "N commits on origin/<branch> since this rollout" when the running tag is
+  a branch of the repo (counted from the rollout's time: `rev-list --count --since`);
+  a "git" action opening the panel; unlinked: "no app of this workspace deploys as <name>"
+  with how to link it (the override).
+- **Tag suggestions**: the linked repo's branches as tags ("branch"), after the tags on
+  other envs.
+- **App view**: a "git" action and the current branch next to the app's folder.
+
+### Tests
+
+- Core, against real temporary repositories made with `git` in a `TempDir` (a bare
+  "origin" and a clone): status (clean, changes of each kind, staged, conflict,
+  detached, upstream ahead/behind); branches (local, remote, upstream, remote HEAD left
+  out); switch, track a remote branch, fetch (a new remote branch appears), pull
+  fast-forward, pull refused when diverged (git's message, nothing changed), create (bad
+  name refused), switch refused over local changes; timeout kills; tag of a branch; repo
+  root (dir, `.git` file, none).
+- App: one `Repo` per root shared and released; refreshed on git dir changes (real
+  watcher); operations one at a time; the panel's states (loading, clean, changes,
+  detached, busy, failure); service ↔ app link (name, image, override, none); branch ↔
+  envs; suggestions; keys.
+- Snapshots: panel clean on main with branches and env chips, with changes and a failure,
+  the new branch modal; service view with its repo line.
+- By hand: a panel on one of the user's real repos, reads only (no switch, fetch or pull
+  on the user's repos by devdeck's checks).
+
+### Out of scope
+
+Commit, push, stash, merge, rebase, delete branch, diff viewer, worktrees (later); logs,
+shell, port-forward, k9s (step 4); writes to the cluster (step 5).
+
+### Review of the step 3 plan (subagent, 2026-11-08) and assessment
+
+The plan above reads with these changes; every point accepted unless said.
+1. `switch` overwrites ignored files (a local `.env` a branch tracks). **Accepted**: every
+   switch and merge gets `--no-overwrite-ignore`; tested.
+2. `pull` follows the user's config (`pull.rebase=true` in front-end; autostash leaves a
+   conflict and reports success). **Accepted**: pull is `fetch` then `merge --ff-only
+   --no-autostash --no-overwrite-ignore @{u}`; tested with those configs.
+3. Killing git mid-merge or mid-switch leaves a half tree and lock files. **Accepted**: only
+   fetch times out (60 s, SIGTERM then SIGKILL after 5 s); anything touching the working
+   tree is never killed ("still running…").
+4. Hangs and the runner. **Accepted**: a git runner of its own: `setsid` (no terminal, so
+   ssh can't prompt), stdin closed, `GIT_TERMINAL_PROMPT=0`, stderr and exit status kept,
+   `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` removed from the environment.
+5. The service ↔ app link misses on real names. **Accepted**: names compared lowercased
+   without non-alphanumerics; a project's `.gitlab-ci.yml` `variables: IMAGE_NAME` is
+   read (boardservice, nestjs-canvasmodules → nestjscanvasmodules…); an override
+   (`deployments = [...]`) wins and removes implicit matches; two apps matching is no
+   link and a workspace problem; hidden apps don't link.
+6. The CI tags `${IMAGE_NAME}:${CI_COMMIT_REF_NAME}`: exact names. **Accepted**: exact
+   match is the rule (the sanitized form stays a fallback); the running tag is also
+   looked up in `refs/tags`; tag suggestions offer remote branches only.
+7. Missing states. **Accepted**: rebasing, merging, cherry-picking, bisecting (from the
+   git dir), upstream gone, no upstream, unborn branch, a branch checked out in another
+   worktree; each action gives its reason when unavailable (R5.5).
+8. Idle cost and refresh storms. **Accepted**: refresh only while a holder is visible
+   (else marked stale, read when it shows), 300 ms debounce, one read at a time plus a
+   dirty flag, events during devdeck's own operation ignored, render only on change; the
+   service view's line reads HEAD and the running tag only.
+9. Watch mechanics. **Accepted**: watch directories and filter by name; the dirs from
+   `rev-parse --path-format=absolute --git-dir --git-common-dir --show-toplevel`;
+   `reftable/` when present; one shared debouncer (the app's watcher, a route like the
+   kubeconfigs folder).
+10. Repo lifecycle. **Accepted**: an operation's task holds the repo until git exits, and
+    the services keep one lock per root; watch callbacks hold weak handles.
+11. "N commits since this rollout" can mislead. **Accepted**: dropped; the line says the
+    remote branch's last commit date and the last fetch's time, next to the rollout's.
+12. Branch list. **Accepted**: `uniform_list` with a filter; remote HEAD left out by
+    `%(symref)`.
+13. Branch name check. **Accepted**: `check-ref-format refs/heads/<name>`, `@` refused,
+    `--` before names.
+14. Monorepos. **Accepted**: the panel is keyed by repo root (`git/<root>`); each app
+    opens its repo's.
+15. Env chips. **Accepted**: an open panel wants every env (as the matrix); idle watches
+    cost no CPU.
+16. Tests. **Accepted**: isolated (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`,
+    fixed identity, `LC_ALL=C` where messages are checked); tests for 1–3, 7, renames
+    under `-z`, no lock files after a fetch timeout. A switch with local changes that
+    come along asks first ("N changes come along to <branch>").
+
+### Interfaces (fixed before building)
+
+`devdeck-core::git` (builder):
+```rust
+pub struct Git { root: PathBuf, vars: Vec<(String, String)> }   // vars: the toolbox's
+impl Git {
+    pub fn open(dir: &Path, vars) -> Result<(Git, GitDirs), String>; // rev-parse
+    pub fn status(&self) -> Result<Status, String>;
+    pub fn branches(&self) -> Result<Vec<Branch>, String>;
+    pub fn head(&self) -> Result<Head, String>;           // light: branch or detached
+    pub fn has_ref(&self, name: &str) -> bool;            // heads, remotes, tags
+    pub fn run(&self, op: &Op) -> Result<String, String>; // git's message on failure
+}
+pub struct GitDirs { pub root: PathBuf, pub git_dir: PathBuf, pub common_dir: PathBuf }
+pub struct Status { head: Head, upstream: Option<Upstream>, changes: Vec<Change>, doing: Option<Doing> }
+pub enum Head { Branch(String), Detached(String), Unborn(String) }
+pub struct Upstream { name: String, ahead: u32, behind: u32, gone: bool }
+pub struct Change { path: String, from: Option<String>, kind: ChangeKind, staged: bool }
+pub enum Doing { Rebasing, Merging, CherryPicking, Reverting, Bisecting }
+pub struct Branch { name, remote: Option<String>, upstream: Option<String>, commit, subject, author, at: u64, current: bool, worktree: Option<PathBuf> }
+pub enum Op { Fetch, Pull, Switch(String), Track(String /* origin/x */), Create(String) }
+pub fn check_branch_name(git: &Git, name: &str) -> Result<(), String>;
+```
+`devdeck-core` apps: `App.images: Vec<String>` (from `.gitlab-ci.yml` `IMAGE_NAME`),
+`AppOverride.deployments: Vec<String>`; `links::app_for(deployment, image, apps) ->
+Result<Option<String>, String>` (the app id, or a problem when ambiguous).
+
+### More decisions (user, 2026-11-08), "super extra careful"
+
+- **Every operation that changes branches, files or the remote asks first** in a modal
+  saying in plain words what will happen (switch, new branch, pull, push, abort). Fetch
+  doesn't ask (it changes neither your branches nor your files) but shows what came in.
+- **Push comes in, as a smart one** (commit stays out):
+  1. it fetches the remote first, so the decision is made on its real state;
+  2. the branch isn't on the remote: "Publish <branch> to <remote>; later pushes go
+     there" (`push --set-upstream`);
+  3. the remote is behind (its tip is in your branch): "Send N commits of <branch> to
+     <remote>" (a plain push);
+  4. history was rewritten (a rebase or an amend) and every commit on the remote is in
+     your branch's history (its reflog): "Replace <remote>'s <branch> with yours: the N
+     commits there are already in your history, nothing is lost; refused if someone
+     pushed meanwhile" (`push --force-with-lease=<branch>:<the tip just fetched>
+     --force-if-includes`);
+  5. the remote has commits you never had: refused, "pull them first, or handle it in a
+     terminal". **Never a force push that can lose anything**; anything else is done by
+     hand in a terminal;
+  6. up to date: says so, nothing to do.
+  The remote: the branch's upstream remote, else its `pushRemote`, `remote.pushDefault`,
+  else the only remote; several and none chosen: refused with the reason.
+- **An operation under way (rebase, merge, cherry-pick, revert, bisect) is shown, and
+  blocks every write**: the only action is **Abort** (`rebase --abort`, `merge --abort`,
+  `cherry-pick --abort`, `revert --abort`, `bisect reset`), behind a modal saying what
+  goes back and what's lost (conflict resolutions made so far). No rebase button: the
+  user rebases through Claude or by hand.
+
+Interface additions: `Op::Push(PushPlan)`, `Op::Abort(Doing)`, `Git::push_plan() ->
+Result<PushPlan, String>` (fetches, then decides), `enum PushPlan { Publish { remote,
+branch }, Send { remote, branch, commits }, Replace { remote, branch, expected: String,
+commits }, Behind { remote, branch, commits }, UpToDate { remote, branch } }` (`Behind`:
+the remote has commits you don't have, refused), and `Git::writes_blocked() -> Option<String>`
+(the reason, from `Status::doing`).
+
+### Step 3 outcome (2026-11-08)
+
+Built with the review's changes and the user's later decisions (push, abort only during
+an operation, every write confirmed); the core by a builder, the app side by the lead.
+- git 2.53 facts: `switch -c -- <name>` takes `--` as the name (names starting with `-`
+  are refused instead); `check-ref-format refs/heads/<n>` accepts `@` and `-x` (refused by
+  hand); `--force-if-includes` does nothing when the lease names its commit, so devdeck's
+  own reflog check decides a replace (the flag stays).
+- Fetch is refused too during an operation under way (only abort); switch adds
+  `--no-guess` (a remote-only branch is tracked explicitly).
+- The git tests live in their own binary (`crates/devdeck-core/tests/git.rs`): in the
+  unit binary, their many processes made a port test fail on full runs.
+- Read-only check on the user's repos (no fetch, switch, pull or push): devdeck,
+  front-end (graph-perf-x, 14 ahead and 6 behind origin, 36 local and 206 remote branches,
+  read in 189 ms), nestjs-canvasmodules and dev-environments match `git status`.
+- Snapshot `97-git-panel` (a throwaway repository: changes, local and remote branches,
+  pull unavailable with its reason).
+
+### Review of the step 3 diff (subagent, 2026-11-08, data safety first) and assessment
+
+1. A replace could drop a colleague's commit only left in the reflog (pulled, then
+   `reset --hard`). **Fixed**: a replace also needs every commit on the remote to be the
+   user's (their author identity) or already in the branch as the same patch; else
+   refused. A backup ref `refs/devdeck/replaced/<branch>/<time>` keeps the old tip; the
+   modal lists the replaced commits. Tested (both ways).
+2. `fetch --prune` with `fetch.pruneTags` deleted local-only tags. **Fixed**:
+   `--no-prune-tags` on every fetch; tested.
+3. The abort modal understated what's reset. **Fixed**: it lists the tracked files whose
+   changes the abort resets.
+4. A cherry-pick sequence resolved with `git commit` (only `sequencer/` left) and `git
+   am` weren't seen. **Fixed**: detected (`am` aborts with `am --abort`), watched; tested.
+5. Stale operations at confirm time. **Fixed**: push sends the planned commit and is
+   refused if HEAD moved; pull carries its branch and re-checks after its fetch; the
+   switch modal reads the status fresh.
+6. Two `Repo`s for one repository (two workspaces, a symlink). **Fixed** in the core: one
+   write at a time per repository, process-wide (canonical common dir); tested.
+7. Repository discovery went above the workspace folder. **Fixed**: bounded there (and
+   `GIT_CEILING_DIRECTORIES`).
+8. Hangs and kills. **Fixed**: working-tree operations write to files, not pipes (quitting
+   devdeck can't kill git mid-checkout), never time out and show their elapsed time; push
+   allows 600 s (pre-push hooks); no GUI askpass. No cancel for a working-tree operation
+   (killing it is what would break the repository): **accepted**.
+9. Links: an explicit image now wins over folder names; CI values with `$` skipped.
+   **Fixed**; tested.
+10. Service and app views read the full state. **Fixed**: they read the branches only
+    (no working-tree scan). Looking the running tag up among git tags: **not done** (only
+    the line's wording depends on it: "no branch <tag> on the remote").
+11. Released repositories stayed watched; remote names with `/`. **Fixed** (the watch goes
+    with the repository); remote names with `/`: **accepted** (rare).
+12. Test holes. **Fixed** as listed; plus an app test refusing a second operation while
+    one runs.
+
+Found while checking snapshots: the demo's apps point at made-up folders that exist on the
+user's machine, so the demo opened their real repositories. **Fixed**: the demo opens only
+throwaway repositories in the temp folder.

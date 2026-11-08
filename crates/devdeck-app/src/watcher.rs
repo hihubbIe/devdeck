@@ -20,9 +20,12 @@
 //!   there reloads that cluster's kubeconfigs (envs whose target changed reconnect), not
 //!   the apps. A folder missing at start is tried again whenever the watched folders are
 //!   looked at again (after any rescan); starting to watch it reloads too.
+//! - The git dirs of the repositories views hold (their `HEAD`, `index`, refs…) are watched
+//!   on a route of their own: a change there tells the repository (read again if a view
+//!   looks, else later), never a rescan.
 //! - The watcher's thread hands paths to the UI thread over a channel; nothing blocks it.
 
-use crate::services::{Rescanned, Services};
+use crate::services::{GitWatches, Rescanned, Services};
 use crate::shell::Shell;
 use devdeck_core::config::{MACHINE_FILE, WORKSPACES_DIR, load_machine, load_workspaces};
 use std::ffi::OsStr;
@@ -70,7 +73,7 @@ pub fn start(shell: &Entity<Shell>, config_dir: PathBuf, cx: &mut App) -> Option
     follow(shell, &config_dir, &watching, cx);
     let files = RefCell::new(workspace_files(&config_dir));
     let workspaces: Vec<Entity<Services>> = shell.read(cx).workspaces.iter().map(|w| w.services.clone()).collect();
-    let rescans = workspaces
+    let mut rescans: Vec<Subscription> = workspaces
         .iter()
         .map(|s| {
             let (shell, config_dir, watching) = (shell.clone(), config_dir.clone(), watching.clone());
@@ -81,6 +84,12 @@ pub fn start(shell: &Entity<Shell>, config_dir: PathBuf, cx: &mut App) -> Option
             })
         })
         .collect();
+    rescans.extend(workspaces.iter().map(|s| {
+        let (shell, config_dir, watching) = (shell.clone(), config_dir.clone(), watching.clone());
+        cx.subscribe(s, move |_, _: &GitWatches, cx| {
+            follow(&shell, &config_dir, &watching, cx);
+        })
+    }));
     let shell = shell.clone();
     let task = cx.spawn(async move |cx| {
         while let Ok(mut paths) = rx.recv().await {
@@ -109,16 +118,24 @@ struct Watching {
 
 /// Watches what should be watched now, and stops watching what shouldn't. The first
 /// folder that can't be watched (other than a missing one) is reported, once. Whether
-/// it started watching a folder.
+/// it started watching a folder of projects (git dirs don't count: no rescan for them).
 fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>, cx: &mut App) -> bool {
     let mut wanted: BTreeSet<PathBuf> = [config_dir.to_path_buf(), config_dir.join(WORKSPACES_DIR)].into();
     let mut kubeconfigs: Vec<(PathBuf, Entity<Services>)> = Vec::new();
+    let (mut git, mut recursive) = (BTreeSet::new(), BTreeSet::new());
     for w in &shell.read(cx).workspaces {
         let s = w.services.read(cx);
         wanted.extend(s.watch.iter().cloned());
         if let Some(k) = s.kubeconfigs() {
             wanted.insert(k.to_path_buf());
             kubeconfigs.push((k.to_path_buf(), w.services.clone()));
+        }
+        for (dir, deep) in s.git_watch(cx) {
+            if deep {
+                recursive.insert(dir.clone());
+            }
+            git.insert(dir.clone());
+            wanted.insert(dir);
         }
     }
     let (mut failed, mut started) = (None, false);
@@ -131,10 +148,11 @@ fn follow(shell: &Entity<Shell>, config_dir: &Path, watching: &RefCell<Watching>
         }
         // A folder that doesn't exist yet (no `workspaces/`) is tried again next time.
         for new in wanted.difference(&w.watched.clone()) {
-            match w.debouncer.watch(new, RecursiveMode::NonRecursive) {
+            let mode = if recursive.contains(new) { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+            match w.debouncer.watch(new, mode) {
                 Ok(()) => {
                     w.watched.insert(new.clone());
-                    started = true;
+                    started |= !git.contains(new);
                     reload.extend(kubeconfigs.iter().filter(|(k, _)| k == new).map(|(_, s)| s.clone()));
                 }
                 Err(e) if new.exists() && !w.warned => {
@@ -177,6 +195,10 @@ fn changed(shell: &Entity<Shell>, config_dir: &Path, files: &RefCell<BTreeSet<St
     let machine_changed = paths.iter().any(|p| *p == config_dir.join(MACHINE_FILE));
     let workspaces_changed = paths.iter().any(|p| p.parent() == Some(workspaces_dir.as_path()));
     reload_kubeconfigs(shell, paths, cx);
+    let workspaces: Vec<_> = shell.read(cx).workspaces.iter().map(|w| w.services.clone()).collect();
+    for s in workspaces {
+        s.update(cx, |s, cx| s.git_changed(paths, cx));
+    }
     if !machine_changed && !workspaces_changed {
         return rescan_concerned(shell, paths, cx);
     }

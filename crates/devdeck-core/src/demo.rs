@@ -36,6 +36,7 @@ fn app(id: &str, folder: String, kind: &str, commands: Vec<Command>, env: EnvApp
         commands,
         env,
         urls: Vec::new(),
+        images: Vec::new(),
     }
 }
 

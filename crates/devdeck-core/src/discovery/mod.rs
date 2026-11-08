@@ -18,6 +18,8 @@
 //! App ids are the folder relative to the workspace folder (`front-end/mastertadaapp`);
 //! the same id found under two workspace folders is reported and the second skipped.
 //! Unreadable folders, broken manifests and symlink loops are problems, not panics.
+//! An app's own `.gitlab-ci.yml` gives the image it's deployed as (`variables:
+//! IMAGE_NAME`); that file isn't devdeck's, so a broken one is ignored silently.
 //! Watched: the workspace folders, every folder looked into, each project and package,
 //! and what toolchains ask for (glob folders, `.vscode`, Go's `cmd`, `node_modules`).
 
@@ -247,8 +249,32 @@ impl Cx<'_> {
             commands,
             env: EnvApply::None,
             urls: Vec::new(),
+            images: ci_image(dir).into_iter().collect(),
         });
         Some(project)
+    }
+}
+
+/// The `IMAGE_NAME` of the top-level `variables` in `dir/.gitlab-ci.yml`, when it's a
+/// plain string (one holding `$` uses variables: left out). Anything else in the file is
+/// left alone; unreadable or broken is `None`.
+fn ci_image(dir: &Path) -> Option<String> {
+    #[derive(Default, serde::Deserialize)]
+    struct Ci {
+        #[serde(default)]
+        variables: BTreeMap<String, Var>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Var {
+        Text(String),
+        Other(serde::de::IgnoredAny),
+    }
+    let text = fs::read_to_string(dir.join(".gitlab-ci.yml")).ok()?;
+    let ci: Ci = crate::toolchains::yaml(&text).ok()?;
+    match ci.variables.get("IMAGE_NAME") {
+        Some(Var::Text(name)) if !name.trim().is_empty() && !name.contains('$') => Some(name.trim().to_string()),
+        _ => None,
     }
 }
 

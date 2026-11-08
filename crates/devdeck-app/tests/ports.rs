@@ -82,6 +82,7 @@ fn catalog(commands: Vec<Command>) -> Catalog {
         commands,
         env: EnvApply::None,
         urls: Vec::new(),
+        images: Vec::new(),
     };
     Catalog { apps: vec![app], tools: Tools::new(&[]), ..Catalog::default() }
 }

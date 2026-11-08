@@ -209,6 +209,30 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Writes: patch the container image, rollout restart, scale. Protected envs need an
   unlock (R7.6).
 
+### Git
+
+- Through the `git` program (`devdeck-core::git`), not a library: the user's keys, agent,
+  credential helpers, hooks and config behave as in their terminal. Each call in its own
+  session (no terminal, so nothing can prompt), stdin closed, `GIT_TERMINAL_PROMPT=0`,
+  stderr and exit status kept; reads take no optional lock and time out at 10 s, fetch at
+  60 s and push at 120 s (SIGTERM, then SIGKILL); what touches the working tree (switch,
+  merge, abort) is never killed.
+- Writes are few and never forced: switch (`--no-overwrite-ignore`, `--no-guess`), track
+  a remote branch, create a branch (`check-ref-format` plus refusals of `-…`, `@`,
+  `HEAD`), pull as `fetch` then `merge --ff-only --no-autostash --no-overwrite-ignore`
+  (never `git pull`, which follows the user's rebase and autostash config), push, abort.
+  An operation under way (rebase, merge, cherry-pick, revert, bisect) refuses every write
+  but its abort, in the core, not only in the UI.
+- Push decides after fetching: publish, a plain push, or replacing a rewritten branch only
+  when the remote's commits are in the branch's reflog (`--force-with-lease` pinned to the
+  tip just fetched, plus `--force-if-includes`); a remote with commits never had is
+  refused. Never a force push that can lose anything.
+- Every write is confirmed in plain words in the panel (fetch isn't: it changes no branch
+  or file). One `Repo` entity per root, shared by its views, read only while one is
+  visible, when its git dir changes (the app's watcher) or after an operation.
+- A service's app: by its deployment's or image's name (normalized), a project's
+  `.gitlab-ci.yml` `IMAGE_NAME`, or the app's `deployments` override.
+
 ## Chosen libraries (to be pinned in M0)
 
 | need | choice | why | notes |
@@ -340,6 +364,10 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 (user, M3) Cluster envs are watched from first use until the workspace's
   cluster changes, not only while visible: an idle watch costs no CPU and lists show at
   once on return. Can be revisited.
+- 2026-11-08 (user, M3) Git isn't read only: a panel per app and service with switch,
+  new branch, fetch, pull, a push that never loses anything, and abort; every write
+  confirmed; an operation under way blocks everything but its abort. No commit, merge or
+  rebase button.
 - 2026-11-08 (user, M3) Pods are watched on demand: open services' own, and every pod of
   the list's env only with the list's **watch** toggle on (off by default).
 - 2026-11-07 (user, M3) Git comes back read only (R6.10): image tags are branch names, so

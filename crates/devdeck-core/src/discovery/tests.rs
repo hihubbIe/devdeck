@@ -183,3 +183,47 @@ fn projects_inside_plain_folders_are_found_down_to_the_depth() {
     }
     assert!(!found.watch.contains(&t.path("api/tools")), "a project's inside isn't walked");
 }
+
+#[test]
+fn the_ci_image_name_is_read_from_the_app_folder() {
+    let t = Tree::new("ci");
+    let ci = "\
+include:
+  - project: common/cicd-tooling
+    ref: latest
+    file:
+      - /templates/javascript/gitlab-ci-js.yml
+.dev-apps:
+  - ${IMAGE_NAME}:${CI_COMMIT_REF_NAME}
+.base: &base
+  script: [make]
+build:
+  <<: *base
+  script:
+    - !reference [.setup, script]
+    - make build
+variables:
+  NODE_MANAGER: pnpm
+  PORT: 3000
+  DEPLOY: { value: x, description: y }
+  IMAGE_NAME: nestjscanvasmodules
+";
+    t.file("nestjs-canvasmodules/package.json", r#"{"scripts": {"dev": "nest start"}}"#).file("nestjs-canvasmodules/.gitlab-ci.yml", ci);
+    t.file("quoted/Makefile", "run:\n\ttrue\n").file("quoted/.gitlab-ci.yml", "variables:\n  IMAGE_NAME: \"boardservice\"\n");
+    t.file("nested/Makefile", "run:\n\ttrue\n").file("nested/.gitlab-ci.yml", "job:\n  variables:\n    IMAGE_NAME: squish\n");
+    t.file("number/Makefile", "run:\n\ttrue\n").file("number/.gitlab-ci.yml", "variables:\n  IMAGE_NAME: 12\n");
+    t.file("broken/Makefile", "run:\n\ttrue\n").file("broken/.gitlab-ci.yml", "variables: [\n");
+    t.file("variable/Makefile", "run:\n\ttrue\n").file("variable/.gitlab-ci.yml", "variables:\n  IMAGE_NAME: ${CI_PROJECT_NAME}-api\n");
+    t.file("none/Makefile", "run:\n\ttrue\n");
+    t.file("mono/package.json", "{}").file("mono/pnpm-workspace.yaml", "packages: ['packages/*']\n");
+    t.file("mono/.gitlab-ci.yml", "variables:\n  IMAGE_NAME: monoimage\n");
+    t.file("mono/packages/web/package.json", r#"{"scripts": {"dev": "vite"}}"#);
+    let found = t.scan();
+    assert!(found.problems.is_empty(), "a CI file is never a problem: {:?}", found.problems);
+    assert_eq!(app(&found, "nestjs-canvasmodules").images, ["nestjscanvasmodules"], "tags, anchors and includes don't stop the read");
+    assert_eq!(app(&found, "quoted").images, ["boardservice"]);
+    assert_eq!(app(&found, "mono").images, ["monoimage"]);
+    for id in ["nested", "number", "broken", "variable", "none", "mono/packages/web"] {
+        assert!(app(&found, id).images.is_empty(), "{id}: no image");
+    }
+}

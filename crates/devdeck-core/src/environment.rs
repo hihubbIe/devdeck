@@ -238,7 +238,7 @@ mod tests {
     /// An app whose `.nvmrc` asks for `nvmrc`.
     fn app(nvmrc: Option<&str>) -> App {
         let facts = toolchains::Facts { node: nvmrc.map(|v| node::Facts { nvmrc: Some(v.into()), ..Default::default() }) };
-        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: "pnpm".into(), library: false, facts, commands: vec![], env: EnvApply::None, urls: vec![] }
+        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: "pnpm".into(), library: false, facts, commands: vec![], env: EnvApply::None, urls: vec![], images: vec![] }
     }
 
     fn cmd(tools: &[&str]) -> Command {

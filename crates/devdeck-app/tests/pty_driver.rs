@@ -49,6 +49,7 @@ fn setup(cx: &mut TestAppContext, dir: Option<PathBuf>, commands: &[(&str, &str)
         commands,
         env: EnvApply::Variable("APP_ENV".into()),
         urls: Vec::new(),
+        images: Vec::new(),
     };
     let catalog = Catalog { apps: vec![app], tools: Tools { toolbox: Some(toolbox.clone()), ..Tools::default() }, ..Catalog::default() };
     let runner = cx.update(|cx| {

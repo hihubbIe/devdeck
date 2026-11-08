@@ -200,6 +200,7 @@ impl Runner {
                 commands: Vec::new(),
                 env: devdeck_core::apps::EnvApply::None,
                 urls: Vec::new(),
+                images: Vec::new(),
             });
             let cmd = Command {
                 id: format!("shell:{n}"),

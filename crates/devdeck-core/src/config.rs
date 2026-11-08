@@ -19,6 +19,7 @@
 //!   hidden = false
 //!   env = { argument = "-s {env}" }   # or { variable = "DEV_ENV" }, { file = "x.yml" }, "none"
 //!   urls = ["http://localhost:5720/health"]
+//!   deployments = ["entityservice"]   # the cluster's names for it (else its CI's IMAGE_NAME)
 //!   [apps.entityservice.commands."task:run"]
 //!   line = "go run main.go serve -c configs"  # may hold `{env}` itself
 //!   ports = [5720]
@@ -88,6 +89,8 @@ pub struct AppOverride {
     pub hidden: bool,
     pub env: Option<EnvApply>,
     pub urls: Vec<String>,
+    /// The names it's deployed as: replace the found ones (its CI's `IMAGE_NAME`).
+    pub deployments: Vec<String>,
     /// By command id (`task:run`); an id that discovery didn't find adds a command.
     pub commands: BTreeMap<String, CommandOverride>,
 }
@@ -172,6 +175,9 @@ fn apply_app(mut app: App, o: &AppOverride, warnings: &mut Vec<String>) -> Optio
     }
     if !o.urls.is_empty() {
         app.urls = o.urls.clone();
+    }
+    if !o.deployments.is_empty() {
+        app.images = o.deployments.clone();
     }
     let mut added = Vec::new();
     for (id, c) in &o.commands {
@@ -391,6 +397,8 @@ struct RawApp {
     #[serde(default)]
     urls: Vec<String>,
     #[serde(default)]
+    deployments: Vec<String>,
+    #[serde(default)]
     commands: BTreeMap<String, RawCommand>,
 }
 
@@ -443,6 +451,7 @@ impl From<RawApp> for AppOverride {
                 RawEnv::None => EnvApply::None,
             }),
             urls: raw.urls,
+            deployments: raw.deployments,
             commands: raw.commands.into_iter().map(|(id, c)| (id, c.into())).collect(),
         }
     }
@@ -497,6 +506,7 @@ default_env = "dev35"
 name = "entity"
 env = { argument = "-s {env}" }
 urls = ["http://localhost:5720/health"]
+deployments = ["entityservice", "entityworker"]
 [apps.entityservice.commands."task:run"]
 line = "go run main.go serve -c configs"
 ports = [5720]
@@ -531,6 +541,7 @@ env = { file = "config/local.yml" }
         assert!(!entity.hidden);
         assert_eq!(entity.env, Some(EnvApply::Argument("-s {env}".into())));
         assert_eq!(entity.urls, ["http://localhost:5720/health"]);
+        assert_eq!(entity.deployments, ["entityservice", "entityworker"]);
         let run = &entity.commands["task:run"];
         assert_eq!(
             run,
@@ -588,6 +599,11 @@ env = { file = "config/local.yml" }
         let (_, line, message) = only_error(&e);
         assert_eq!(line, Some(5));
         assert!(message.contains("port"), "{message}");
+
+        let (_, _, e) = workspaces("unknown-app-key", &[("w.toml", "[apps.x]\ndeployment = [\"x\"]\n")]);
+        let (_, line, message) = only_error(&e);
+        assert_eq!(line, Some(2));
+        assert!(message.contains("deployment"), "{message}");
     }
 
     #[test]
@@ -737,6 +753,7 @@ env = { file = "config/local.yml" }
             commands,
             env: EnvApply::None,
             urls: vec!["http://found".into()],
+            images: Vec::new(),
         }
     }
 
@@ -772,6 +789,19 @@ env = { file = "config/local.yml" }
         assert_eq!(out[0].urls, ["http://a"], "configured URLs replace the found ones");
         assert_eq!(out[1].urls, ["http://found"], "no URLs configured: the found ones stay");
         assert_eq!((out[1].name.as_str(), &out[1].env), ("c", &EnvApply::None));
+    }
+
+    #[test]
+    fn deployments_replace_the_found_images() {
+        let mut found = app("a", vec![]);
+        found.images = vec!["fromci".into()];
+        let mut b = app("b", vec![]);
+        b.images = vec!["fromci".into()];
+        let o = overrides(vec![("a", AppOverride { deployments: vec!["one".into(), "two".into()], ..Default::default() })]);
+        let (out, warnings) = apply_overrides(vec![found, b], &o);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(out[0].images, ["one", "two"]);
+        assert_eq!(out[1].images, ["fromci"], "no deployments configured: the found ones stay");
     }
 
     #[test]

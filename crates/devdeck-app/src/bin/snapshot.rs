@@ -475,6 +475,65 @@ fn cluster_watch(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entit
     cx.update(|cx| s.update(cx, |s, cx| s.toggle_watch_pods(cx)));
 }
 
+/// A throwaway repository: an origin with main, feat and a fix branch, a clone on main with
+/// a local branch and two changes. Made with `git`, isolated from the machine's config.
+fn throwaway_repo() -> std::path::PathBuf {
+    let base = std::env::temp_dir().join(format!("devdeck-snapshot-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Ada")
+            .env("GIT_AUTHOR_EMAIL", "a@x")
+            .env("GIT_COMMITTER_NAME", "Ada")
+            .env("GIT_COMMITTER_EMAIL", "a@x")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "git {args:?}");
+    };
+    git(&base, &["init", "-q", "--bare", "-b", "main", "origin.git"]);
+    git(&base, &["clone", "-q", "origin.git", "entityservice"]);
+    let repo = base.join("entityservice");
+    std::fs::write(repo.join("main.go"), "package main\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "feat: entity search by type"]);
+    git(&repo, &["push", "-q", "-u", "origin", "main"]);
+    for b in ["ET-1502-oidc-session-cookie-scope", "lan-160"] {
+        git(&repo, &["push", "-q", "origin", &format!("main:{b}")]);
+    }
+    git(&repo, &["fetch", "-q"]);
+    git(&repo, &["branch", "fix-search-paging"]);
+    std::fs::write(repo.join("main.go"), "package main\n// wip\n").unwrap();
+    std::fs::write(repo.join("notes.md"), "todo\n").unwrap();
+    repo
+}
+
+fn git_panel(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let root = throwaway_repo();
+    open_view(cx, shell, ViewAddr::Git { root: root.display().to_string() });
+    maximize_focused(cx, shell);
+    // Git runs on real threads: wait for the read.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let addr = ViewAddr::Git { root: root.display().to_string() }.to_ref();
+    loop {
+        cx.advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+        let read = cx.update(|cx| {
+            deck.read(cx).view(&addr).and_then(|v| v.downcast::<devdeck_app::views::git_view::GitView>().ok()).is_some_and(|v| v.read(cx).repo.read(cx).snapshot().is_some())
+        });
+        if read || std::time::Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn maximize_focused(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) {
     let deck = cx.update(|cx| shell.read(cx).active_deck());
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.toggle_maximize(l.main().focused))));
@@ -816,6 +875,7 @@ fn states() -> Vec<State> {
         w("94-svc-lost-connection", "work", 1.0, Some(svc_lost_connection)),
         w("95-svc-kube-like", "work", 1.0, Some(svc_kube_like)),
         w("96-cluster-watch", "work", 1.0, Some(cluster_watch)),
+        w("97-git-panel", "work", 1.0, Some(git_panel)),
         w("93-port", "work", 1.0, Some(port)),
         w("A0-cheat-sheet", "work", 1.0, Some(cheat_sheet)),
         w("A1-cheat-sheet-filtered", "work", 1.0, Some(cheat_sheet_filtered)),

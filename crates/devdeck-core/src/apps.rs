@@ -149,6 +149,9 @@ pub struct App {
     pub env: EnvApply,
     /// Links to open (R6.4).
     pub urls: Vec<String>,
+    /// Image names it's deployed as (its CI's `IMAGE_NAME`, the config's `deployments`):
+    /// links a cluster's service to it (M3).
+    pub images: Vec<String>,
 }
 
 impl App {
@@ -223,7 +226,7 @@ mod tests {
     }
 
     fn app(kind: &str, commands: Vec<Command>, env: EnvApply) -> App {
-        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: kind.into(), library: false, facts: Default::default(), commands, env, urls: vec![] }
+        App { id: "a".into(), name: "a".into(), folder: "/a".into(), dir: "/a".into(), kind: kind.into(), library: false, facts: Default::default(), commands, env, urls: vec![], images: vec![] }
     }
 
     #[test]

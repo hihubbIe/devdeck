@@ -1,6 +1,7 @@
 //! App view (`app/<id>`, R6.3, R6.5, R6.6, R6.7): header with the env and how it
 //! applies, missing tools named, then commands by tier with their run state and
-//! actions. Keys (`AppView`): ↑↓ select, ⏎ run, s stop, r restart, o output, h hidden.
+//! actions, and its repository's branch with a way to its git panel. Keys (`AppView`): ↑↓
+//! select, ⏎ run, s stop, r restart, o output, h hidden, g git.
 
 use super::{ViewCx, run_mark};
 use crate::runner::RunKey;
@@ -12,7 +13,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
 };
 
-actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden]);
+actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit]);
 
 pub struct AppView {
     pub app: String,
@@ -22,13 +23,34 @@ pub struct AppView {
     pub show_hidden: bool,
     /// Top-left on screen (keyboard-opened menus are placed from it).
     origin: std::rc::Rc<std::cell::Cell<gpui::Point<gpui::Pixels>>>,
-    _observe: Subscription,
+    /// Its repository, when it's in one (read while the view is visible).
+    repo: Option<gpui::Entity<crate::repo::Repo>>,
+    looking: Option<crate::repo::Looking>,
+    _subs: Vec<Subscription>,
 }
 
 impl AppView {
     pub fn new(app: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&ctx.services, |_, _, cx| cx.notify());
-        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), _observe: observe }
+        let mut subs = vec![cx.observe(&ctx.services, |_, _, cx| cx.notify())];
+        let dir = ctx.services.read(cx).catalog.app(&app).map(|a| a.dir.clone());
+        let repo = dir.and_then(|d| ctx.services.update(cx, |s, cx| s.repo(&d, cx)));
+        if let Some(r) = &repo {
+            subs.push(cx.observe(r, |_, _, cx| cx.notify()));
+        }
+        subs.extend(ctx.on_visibility(cx, |this: &mut Self, visible, cx| {
+            this.looking = visible.then(|| this.repo.as_ref().map(|r| r.update(cx, |r, cx| r.glance(cx)))).flatten();
+        }));
+        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, _subs: subs }
+    }
+
+    /// Opens its repository's git panel.
+    pub fn open_git(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = &self.repo else {
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, format!("{} isn't in a git repository.", self.app), vec![], cx));
+            return;
+        };
+        let root = repo.read(cx).root.display().to_string();
+        self.ctx.open(ViewAddr::Git { root }, cx);
     }
 
     /// Commands in display order (hidden ones only when shown).
@@ -148,6 +170,11 @@ impl Render for AppView {
         let env = services.env.clone();
         let missing = tools.missing_for(&app);
         let focused = self.focus.contains_focused(window, cx);
+        let branch = self.repo.as_ref().and_then(|r| r.read(cx).snapshot()).map(|s| match &s.status.head {
+            devdeck_core::git::Head::Branch(b) => format!("on {b}"),
+            devdeck_core::git::Head::Detached(c) => format!("detached at {c}"),
+            devdeck_core::git::Head::Unborn(b) => format!("on {b}"),
+        });
 
         let env_line = match &env {
             Some(e) => div()
@@ -173,7 +200,11 @@ impl Render for AppView {
                     .min_w_0()
                     .child(div().flex_none().text_color(t.hi).child(app.name.clone()))
                     .child(div().flex_none().text_color(t.dim).child(app.kind.clone()))
-                    .child(label(app.folder.clone()).text_color(t.dim).min_w_0()),
+                    .child(label(app.folder.clone()).text_color(t.dim).min_w_0())
+                    .when_some(branch, |d, b| d.child(div().flex_none().text_color(t.mute).child(b)))
+                    .when(self.repo.is_some(), |d| {
+                        d.child(devdeck_ui::button("app-git", "git", &t).tooltip(devdeck_ui::tip("its repository's git panel")).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
+                    }),
             )
             .child(env_line)
             .children(missing.iter().map(|m| icon_text(Icon::Warning, t.warn, m.clone(), &t)));
@@ -289,6 +320,7 @@ impl Render for AppView {
                     devdeck_ui::open_menu(at, AppView::command_menu(&cx.entity(), &cmd), window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &OpenGit, _, cx| this.open_git(cx)))
             .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
                 this.show_hidden = !this.show_hidden;
                 cx.notify();

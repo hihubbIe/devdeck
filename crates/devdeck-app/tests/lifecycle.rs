@@ -200,6 +200,7 @@ fn quitting_waits_for_the_slowest_stop_sequence(cx: &mut TestAppContext) {
         commands: vec![command("compose:up", &["docker"]), command("make:dev", &["make"])],
         env: EnvApply::None,
         urls: vec![],
+        images: vec![],
     };
     let catalog = Rc::new(Catalog { apps: vec![app], tools: Tools::new(&["docker", "make"]), ..Catalog::default() });
     let runner = cx.new(|_| Runner::new("work".into(), catalog, Rc::new(Claims)));

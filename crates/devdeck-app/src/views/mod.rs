@@ -9,6 +9,7 @@
 
 pub mod app_view;
 pub mod demo;
+pub mod git_view;
 pub mod info_view;
 pub mod logs_view;
 pub mod matrix_view;
@@ -177,6 +178,17 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
         },
         (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None, save: None, missing: false },
         (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None, save: None, missing: false },
+        (ViewAddr::Git { root }, Some(ctx)) => {
+            let root = std::path::PathBuf::from(root);
+            let repo = ctx.services.update(cx, |s, cx| s.repo(&root, cx));
+            match repo {
+                Some(repo) if repo.read(cx).root == root => {
+                    let v = cx.new(|cx| git_view::GitView::new(root, repo, ctx.clone(), cx));
+                    focusable(v, cx)
+                }
+                _ => message(format!("{} isn't a git repository.", devdeck_core::config::shown(&root)), cx),
+            }
+        }
         (ViewAddr::Welcome, Some(_)) => Built { view: cx.new(|_| info_view::WelcomeView).into(), focus: None, save: None, missing: false },
     }
 }
@@ -202,6 +214,7 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Port { port } => format!(":{port}"),
         ViewAddr::Problems => "problems".into(),
         ViewAddr::Welcome => "welcome".into(),
+        ViewAddr::Git { root } => format!("{} · git", root.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Terminal { dir, .. } => format!("terminal · {}", dir.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Other(_) => demo::title(r),
     }

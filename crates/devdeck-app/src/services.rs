@@ -15,6 +15,7 @@
 use crate::cluster::{Cluster, new_cluster};
 use crate::fake_cluster::FakeCluster;
 use crate::kube_cluster::KubeCluster;
+use crate::repo::Repo;
 use crate::environment::Environment;
 use crate::port_scan::{PortHolder, Ports};
 use crate::runner::{RunKey, Runner, fake_runner};
@@ -36,6 +37,8 @@ pub struct Services {
     /// A config workspace's cluster and its driver, kept while `[cluster]` is gone: the
     /// one cluster of the workspace, which views keep, refilled when it comes back.
     kube: Option<(Entity<Cluster>, Rc<KubeCluster>)>,
+    /// The repositories views show, by root (one each, while a view holds it).
+    repos: BTreeMap<PathBuf, gpui::WeakEntity<Repo>>,
     /// The config it comes from; `None` for the demo.
     pub config: Option<WorkspaceConfig>,
     /// What discovery and the config overrides reported, shown on request.
@@ -60,6 +63,11 @@ fn unusable(catalog: &Catalog) -> BTreeMap<String, String> {
 pub struct Rescanned;
 
 impl EventEmitter<Rescanned> for Services {}
+
+/// The git dirs to watch changed (a repository opened).
+pub struct GitWatches;
+
+impl EventEmitter<GitWatches> for Services {}
 
 /// A port someone listens on: a run, a process a port view shows, or a demo holder.
 #[derive(Clone, Debug, PartialEq)]
@@ -90,7 +98,7 @@ impl Services {
                 cx.observe(c, |_, _, cx| cx.notify()).detach();
             }
             let unusable = unusable(&catalog);
-            Services { workspace: workspace.into(), catalog, env, runner, cluster, kube: None, config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
+            Services { workspace: workspace.into(), catalog, env, runner, cluster, kube: None, repos: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
         })
     }
 
@@ -132,7 +140,7 @@ impl Services {
             })
             .detach();
             let unusable = unusable(&catalog);
-            Services { workspace: config.id.clone(), catalog, env, runner, cluster, kube, config: Some(config), problems, watch, ports, scan: None, unusable }
+            Services { workspace: config.id.clone(), catalog, env, runner, cluster, kube, repos: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable }
         })
     }
 
@@ -199,6 +207,48 @@ impl Services {
             }
         }
         cx.notify();
+    }
+
+    /// The repository holding `dir`, shared with every view showing it; `None` outside a
+    /// repository.
+    pub fn repo(&mut self, dir: &Path, cx: &mut Context<Self>) -> Option<Entity<Repo>> {
+        // Never above the workspace folder holding it (a home folder that's a repository).
+        let ceiling = self.config.as_ref().and_then(|c| c.folders.iter().find(|f| dir.starts_with(f)).cloned());
+        let root = crate::repo::root_of(dir, ceiling.as_deref())?;
+        // The demo's apps point at made-up folders that may exist on this machine: it never
+        // opens a real repository, only throwaway ones in the temp folder (snapshots).
+        if self.config.is_none() && !root.starts_with(std::env::temp_dir()) {
+            return None;
+        }
+        if let Some(r) = self.repos.get(&root).and_then(gpui::WeakEntity::upgrade) {
+            return Some(r);
+        }
+        self.repos.retain(|_, r| r.upgrade().is_some());
+        let vars = crate::environment::environment(cx).read(cx).toolbox().map(|t| t.vars.clone()).unwrap_or_default();
+        let repo = cx.new(|cx| Repo::new(root.clone(), ceiling, vars, cx));
+        cx.subscribe(&repo, |_, _, _: &crate::repo::Opened, cx| cx.emit(GitWatches)).detach();
+        self.repos.insert(root, repo.downgrade());
+        Some(repo)
+    }
+
+    /// The git folders of the repositories views hold, and whether recursively.
+    pub fn git_watch(&self, cx: &App) -> Vec<(PathBuf, bool)> {
+        self.repos.values().filter_map(gpui::WeakEntity::upgrade).flat_map(|r| r.read(cx).watch()).collect()
+    }
+
+    /// Tells the repositories whose git files `paths` touch; a released repository's
+    /// folders stop being watched then.
+    pub fn git_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let before = self.repos.len();
+        self.repos.retain(|_, r| r.upgrade().is_some());
+        for repo in self.repos.values().filter_map(gpui::WeakEntity::upgrade) {
+            if paths.iter().any(|p| repo.read(cx).concerns(p)) {
+                repo.update(cx, |r, cx| r.changed(cx));
+            }
+        }
+        if self.repos.len() != before {
+            cx.emit(GitWatches);
+        }
     }
 
     /// The folder of the cluster's kubeconfigs, watched for changes.

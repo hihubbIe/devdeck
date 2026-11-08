@@ -9,6 +9,7 @@
 
 use super::{ViewCx, fmt_age};
 use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling};
+use crate::repo::{Looking, Repo};
 use devdeck_core::cluster::{Deployment, Pod, Remote, Rollout, unlock_matches};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
@@ -37,6 +38,12 @@ pub struct ServiceView {
     sampling: Option<Sampling>,
     /// Its pods are watched while it's open.
     _pods: PodsInterest,
+    /// The app it's deployed from and its repository, once linked (M3 step 3).
+    repo: Option<(String, Entity<Repo>)>,
+    /// Why it isn't linked to an app, when it isn't.
+    unlinked: Option<String>,
+    visible: bool,
+    looking: Option<Looking>,
     /// The window it last drew in: modals open there.
     window: Option<AnyWindowHandle>,
     _subs: Vec<Subscription>,
@@ -55,7 +62,24 @@ impl ServiceView {
         ];
         subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
         let pods = cluster.update(cx, |c, cx| c.pods_interest(&env, PodScope::Service(name.clone()), cx));
-        let mut this = Self { env, name, ctx, cluster, focus: cx.focus_handle(), tag, shown_tag: None, unlocked: false, sampling: None, _pods: pods, window: None, _subs: subs };
+        let mut this = Self {
+            env,
+            name,
+            ctx,
+            cluster,
+            focus: cx.focus_handle(),
+            tag,
+            shown_tag: None,
+            unlocked: false,
+            sampling: None,
+            _pods: pods,
+            repo: None,
+            unlinked: None,
+            visible: false,
+            looking: None,
+            window: None,
+            _subs: subs,
+        };
         this.cluster_changed(cx);
         this
     }
@@ -67,11 +91,53 @@ impl ServiceView {
     /// Holds a sampling handle only while on screen.
     fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         let env = self.env.clone();
+        self.visible = visible;
         self.sampling = visible.then(|| self.cluster.update(cx, |c, cx| c.sample(&env, cx)));
+        self.looking = visible.then(|| self.repo.as_ref().map(|(_, r)| r.update(cx, |r, cx| r.glance(cx)))).flatten();
+    }
+
+    /// Links it to the app it's deployed from (by name, image, or the app's
+    /// `deployments`), and that app's repository.
+    fn link(&mut self, cx: &mut Context<Self>) {
+        if self.repo.is_some() {
+            return;
+        }
+        let Some(d) = self.deployment(cx) else { return };
+        let image = d.main().image.short_name().to_string();
+        let found = devdeck_core::links::app_for(&d.name, &image, &self.ctx.services.read(cx).catalog.apps);
+        let id = match found {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                self.unlinked = Some(format!("no app of this workspace deploys as {}: add `deployments = [\"{}\"]` to its app in the workspace file", d.name, d.name));
+                return;
+            }
+            Err(problem) => {
+                self.unlinked = Some(problem);
+                return;
+            }
+        };
+        let Some(dir) = self.ctx.services.read(cx).catalog.app(&id).map(|a| a.dir.clone()) else { return };
+        let Some(repo) = self.ctx.services.update(cx, |s, cx| s.repo(&dir, cx)) else {
+            self.unlinked = Some(format!("{id} isn't in a git repository"));
+            return;
+        };
+        self.unlinked = None;
+        self._subs.push(cx.observe(&repo, |_, _, cx| cx.notify()));
+        if self.visible {
+            self.looking = Some(repo.update(cx, |r, cx| r.glance(cx)));
+        }
+        self.repo = Some((id, repo));
+    }
+
+    fn open_git(&mut self, cx: &mut Context<Self>) {
+        let Some((_, repo)) = &self.repo else { return };
+        let root = repo.read(cx).root.display().to_string();
+        self.ctx.open(ViewAddr::Git { root }, cx);
     }
 
     /// Keeps the editor on the deployed tag unless the user changed it.
     fn cluster_changed(&mut self, cx: &mut Context<Self>) {
+        self.link(cx);
         let current = self.deployment(cx).map(|d| d.tag());
         if current != self.shown_tag {
             let dirty = self.dirty(cx);
@@ -201,7 +267,17 @@ impl ServiceView {
 
     fn suggestions(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
         let s = this.read(cx);
-        let list = s.cluster.read(cx).tag_suggestions(&s.env, &s.name);
+        let mut list = s.cluster.read(cx).tag_suggestions(&s.env, &s.name);
+        // The repository's remote branches: a branch only local was never built.
+        if let Some(snapshot) = s.repo.as_ref().and_then(|(_, r)| r.read(cx).snapshot()) {
+            for b in snapshot.branches.iter().filter(|b| b.remote.is_some()) {
+                let remote = b.remote.as_deref().unwrap_or_default();
+                let name = b.name.strip_prefix(&format!("{remote}/")).unwrap_or(&b.name).to_string();
+                if !list.iter().any(|(t, _)| *t == name) && Some(&name) != s.shown_tag.as_ref() {
+                    list.push((name, format!("branch on {remote}")));
+                }
+            }
+        }
         if list.is_empty() {
             return vec![MenuItem::new("no other tags known", |_, _| {}).disabled("deploy history is empty")];
         }
@@ -360,6 +436,7 @@ impl Render for ServiceView {
             .border_b_1()
             .border_color(t.line_soft)
             .child(action("logs", "logs", logs.err().map(|why| format!("logs: {why}"))).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
+            .child(action("git", "git", self.repo.is_none().then(|| self.unlinked.clone().unwrap_or_else(|| "linking to its app…".into()))).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
             .child(action("restart", "restart", later()))
             .child(action("scale", "replicas", later()))
             .child(action("port-forward", "port-forward", later()))
@@ -406,6 +483,32 @@ impl Render for ServiceView {
             .child(label(d.main().image.repo.clone()).text_color(t.dim).flex_1());
         // A list kept over a lost connection: what's wrong, above it.
         let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pb_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
+        // Its app's repository: the branch checked out, and the running tag's branch on the
+        // remote (its last commit, and when the remote was last fetched).
+        let repo_text = match (&self.repo, &self.unlinked) {
+            (Some((id, repo)), _) => Some(match repo.read(cx).snapshot() {
+                None => format!("app {id} · reading its repository…"),
+                Some(s) => {
+                    let now = c.now_s();
+                    let head = match &s.status.head {
+                        devdeck_core::git::Head::Branch(b) => format!("on {b} locally"),
+                        devdeck_core::git::Head::Detached(commit) => format!("detached at {commit} locally"),
+                        devdeck_core::git::Head::Unborn(b) => format!("on {b} (no commit) locally"),
+                    };
+                    let tag = d.tag();
+                    let remote = s.branches.iter().find(|b| b.remote.as_ref().is_some_and(|r| b.name == format!("{r}/{tag}")));
+                    let running = match remote {
+                        Some(b) => format!("{}: last commit {} ago", b.name, fmt_age(now.saturating_sub(b.at))),
+                        None => format!("no branch {tag} on the remote"),
+                    };
+                    let fetched = s.fetched.map_or_else(|| "never fetched".to_string(), |f| format!("fetched {} ago", fmt_age(now.saturating_sub(f))));
+                    format!("app {id} · {head} · {running} · {fetched}")
+                }
+            }),
+            (None, Some(why)) => Some(why.clone()),
+            (None, None) => None,
+        };
+        let repo_line = repo_text.map(|text| div().flex_none().px_3().pb_1().child(label(text).text_color(t.dim)).debug_selector(|| "svc-repo".into()));
 
         let rollout_line = rollout.map(|r| {
             let (mark, text, color, undo) = match &r {
@@ -593,7 +696,7 @@ impl Render for ServiceView {
             .child(hist);
 
         self.window = Some(window.window_handle());
-        root.child(header).child(actions).child(editor).children(problem_line).children(rollout_line).child(body)
+        root.child(header).child(actions).child(editor).children(repo_line).children(problem_line).children(rollout_line).child(body)
     }
 }
 

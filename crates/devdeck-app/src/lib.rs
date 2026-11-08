@@ -19,6 +19,7 @@ pub mod places;
 pub mod port_scan;
 pub mod pty_driver;
 pub mod registry;
+pub mod repo;
 pub mod runner;
 pub mod send_to;
 pub mod services;

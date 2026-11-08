@@ -18,6 +18,8 @@ pub enum ViewAddr {
     Welcome,
     /// A shell in a folder: terminal `n` of the workspace.
     Terminal { n: u32, dir: String },
+    /// The git panel of the repository rooted at `root` (an absolute path).
+    Git { root: String },
     /// Anything else (demo views, refs from older versions).
     Other(String),
 }
@@ -43,6 +45,7 @@ impl ViewAddr {
             ViewAddr::Problems => "problems".to_string(),
             ViewAddr::Welcome => "welcome".to_string(),
             ViewAddr::Terminal { n, dir } => format!("term/{n}/{}", esc(dir)),
+            ViewAddr::Git { root } => format!("git/{}", esc(root)),
             ViewAddr::Other(s) => s.clone(),
         })
     }
@@ -61,6 +64,7 @@ impl ViewAddr {
             ["port", port] => ViewAddr::Port { port: port.to_string() },
             ["problems"] => ViewAddr::Problems,
             ["welcome"] => ViewAddr::Welcome,
+            ["git", root] => ViewAddr::Git { root: root.to_string() },
             ["term", n, dir] if n.parse::<u32>().is_ok() => ViewAddr::Terminal { n: n.parse().unwrap_or_default(), dir: dir.to_string() },
             _ => ViewAddr::Other(s.to_string()),
         }
@@ -78,6 +82,7 @@ mod tests {
             ViewAddr::Run { app: "front-end/mastertadaapp".into(), cmd: "start:dev".into() },
             ViewAddr::Run { app: "odd%2Fname".into(), cmd: "a/b".into() },
             ViewAddr::Svc { env: "dev35".into(), name: "entityservice".into() },
+            ViewAddr::Git { root: "/home/me/repos/front-end".into() },
             ViewAddr::Logs { env: "hades".into(), name: "graphservice".into() },
             ViewAddr::Pod { env: "dev35".into(), pod: "entityservice-7d9f-x2k4p".into() },
             ViewAddr::Matrix,
