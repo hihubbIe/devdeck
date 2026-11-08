@@ -25,7 +25,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R3.1** The window body is one tree of splits. Every leaf is a pane. There are no special docks: any pane can sit anywhere.
 - [~] **R3.2** A pane is a generic container of tabs. A tab shows exactly one view. Any view type can open in any pane.
 - [~] **R3.3** Views are implemented once and registered natively (examples: command output, app details, service inspector, pod, logs, file, note, branch matrix, ports). Adding a view type must not require touching the layout engine.
-- [~] **R3.4** Tabs move by drag and drop: into another pane's tab strip or header, or onto a pane edge to split it. Panes move the same way (drag the pane by the handle of its tab strip or header).
+- [~] **R3.4** Tabs move by drag and drop: into another pane's tab strip or header, onto a pane's edge to split it, or beside a whole column or row (R3.13). Panes move the same way (drag the pane by the handle of its tab strip or header).
 - [~] **R3.5** Dividers are resizable by dragging.
 - [~] **R3.6** A pane can collapse to only its tab strip (or header), giving its space to its neighbours. Clicking a tab (or a key) expands it again.
 - [~] **R3.7** A pane can be maximized and restored.
@@ -34,6 +34,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R3.9** Panes never overlap. Each pane clips its own content; content wider than the pane scrolls inside it.
 - [x] **R3.10** Named layouts per workspace: save the current arrangement, switch between layouts. A view can be marked "keep in every layout".
 - [x] **R3.12** A pane with one tab, or none, shows a header instead of a tab strip (decided 2026-11-08, user): the same height and place, so bodies stay aligned and nothing jumps when a second tab comes or goes. It names the view (no tab shape) and holds the pane's buttons, then × at its far right, which closes the tab. Its title is the tab: drag, double-click to maximize, middle-click to close, right-click for the tab's menu. Focus is a line across the whole header. A tab dropped on it joins the pane, which then shows its tab strip. An empty pane's header has no title and its menu is the pane's.
+- [~] **R3.13** A dragged tab, pane, list row or file lands beside a pane or beside any column or row its edge belongs to, up to the whole window, taking half of it: two stacked panes and a tab dropped at the window's right edge give a full-height column on the right in one drop. While dragging, the highlight is the exact rectangle it will take. The same by keyboard: "move tab to window edge" (decided 2026-11-08, user).
 
 ## 4. Lists and text
 

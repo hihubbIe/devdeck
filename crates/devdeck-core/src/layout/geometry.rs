@@ -1,7 +1,8 @@
-//! Pane rectangles computed from the model, used for directional focus and for
-//! converting pixel drags into weights.
+//! Pane and split rectangles computed from the model as the app draws it, used for
+//! directional focus, drops (where they land and what they would make) and converting
+//! pixel drags into weights.
 
-use super::{Axis, Node, Pane, PaneId};
+use super::{Axis, Node, NodeRef, Pane, PaneId};
 use std::collections::BTreeMap;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -13,11 +14,30 @@ pub struct Rect {
 }
 
 impl Rect {
-    fn right(&self) -> f32 {
+    pub fn right(&self) -> f32 {
         self.x + self.w
     }
-    fn bottom(&self) -> f32 {
+    pub fn bottom(&self) -> f32 {
         self.y + self.h
+    }
+    pub fn contains(&self, (x, y): (f32, f32)) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
+}
+
+/// The sizes the app draws a layout with: the grab area between split children, a pane
+/// collapsed in a row (its rail) and in a column (its header or tab strip).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Metrics {
+    pub divider: f32,
+    pub rail: f32,
+    pub header: f32,
+}
+
+impl Metrics {
+    /// No dividers, collapsed panes `strip` long either way.
+    pub fn uniform(strip: f32) -> Self {
+        Self { divider: 0.0, rail: strip, header: strip }
     }
 }
 
@@ -29,26 +49,30 @@ pub enum Direction {
     Down,
 }
 
-pub(super) fn rects(node: &Node, r: Rect, strip: f32, panes: &BTreeMap<PaneId, Pane>, out: &mut Vec<(PaneId, Rect)>) {
+/// Rectangles of every node under `node` (itself included), drawn in `r`: dividers
+/// between children, collapsed panes at their fixed size, the rest shared by weight.
+pub(super) fn rects(node: &Node, r: Rect, m: Metrics, panes: &BTreeMap<PaneId, Pane>, out: &mut Vec<(NodeRef, Rect)>) {
     let s = match node {
         Node::Pane(p) => {
-            out.push((*p, r));
+            out.push((NodeRef::Pane(*p), r));
             return;
         }
         Node::Split(s) => s,
     };
+    out.push((NodeRef::Split(s.id), r));
     let collapsed = |n: &Node| matches!(n, Node::Pane(p) if panes.get(p).is_some_and(|p| p.collapsed));
-    let total = match s.axis {
-        Axis::Row => r.w,
-        Axis::Column => r.h,
+    let (total, fixed) = match s.axis {
+        Axis::Row => (r.w, m.rail),
+        Axis::Column => (r.h, m.header),
     };
     let n_collapsed = s.children.iter().filter(|c| collapsed(&c.node)).count() as f32;
-    let remaining = (total - strip * n_collapsed).max(0.0);
+    let dividers = m.divider * (s.children.len() as f32 - 1.0);
+    let remaining = (total - dividers - fixed * n_collapsed).max(0.0);
     let weight_sum: f32 = s.children.iter().filter(|c| !collapsed(&c.node)).map(|c| c.weight).sum();
     let mut offset = 0.0;
     for c in &s.children {
         let len = if collapsed(&c.node) {
-            strip.min(total)
+            fixed.min(total)
         } else if weight_sum > 0.0 {
             remaining * c.weight / weight_sum
         } else {
@@ -58,8 +82,8 @@ pub(super) fn rects(node: &Node, r: Rect, strip: f32, panes: &BTreeMap<PaneId, P
             Axis::Row => Rect { x: r.x + offset, y: r.y, w: len, h: r.h },
             Axis::Column => Rect { x: r.x, y: r.y + offset, w: r.w, h: len },
         };
-        rects(&c.node, child, strip, panes, out);
-        offset += len;
+        rects(&c.node, child, m, panes, out);
+        offset += len + m.divider;
     }
 }
 

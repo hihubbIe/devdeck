@@ -156,17 +156,9 @@ pub enum Moving {
     Group(String),
 }
 
-/// Opens `view` at `drop` (into a pane or at its edge); an open view moves there.
+/// Opens `view` at `drop` (into a pane or beside something); an open view moves there.
 pub fn open_at(l: &mut Layout, view: ViewRef, drop: Drop) -> LayoutResult<()> {
-    if let Some((p, i)) = l.find_view(&view) {
-        return l.move_tab(p, i, drop);
-    }
-    let pane = l.open(view.clone(), drop.pane())?;
-    if let Drop::Edge(..) = drop {
-        let i = l.pane(pane)?.tabs.iter().position(|r| *r == view).expect("just opened");
-        l.move_tab(pane, i, drop)?;
-    }
-    Ok(())
+    l.open_at(view, drop)
 }
 
 pub struct Sidebar {

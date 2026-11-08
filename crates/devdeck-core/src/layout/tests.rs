@@ -379,15 +379,15 @@ fn rects_honour_weights_and_collapse() {
     let (b, _) = l.find_view(&v("b")).unwrap();
     l.move_tab(p, 1, Drop::Edge(b, Edge::Bottom)).unwrap();
     let (c, _) = l.find_view(&v("c")).unwrap();
-    let r: BTreeMap<_, _> = l.pane_rects(MAIN_WINDOW, (1000.0, 600.0), 32.0).unwrap().into_iter().collect();
+    let r: BTreeMap<_, _> = l.pane_rects(MAIN_WINDOW, (1000.0, 600.0), Metrics::uniform(32.0)).unwrap().into_iter().collect();
     assert_eq!(r[&p], Rect { x: 0.0, y: 0.0, w: 500.0, h: 600.0 });
     assert_eq!(r[&b], Rect { x: 500.0, y: 0.0, w: 500.0, h: 300.0 });
     l.toggle_collapse(c).unwrap();
-    let r: BTreeMap<_, _> = l.pane_rects(MAIN_WINDOW, (1000.0, 600.0), 32.0).unwrap().into_iter().collect();
+    let r: BTreeMap<_, _> = l.pane_rects(MAIN_WINDOW, (1000.0, 600.0), Metrics::uniform(32.0)).unwrap().into_iter().collect();
     assert_eq!(r[&c].h, 32.0);
     assert_eq!(r[&b].h, 568.0);
     l.toggle_maximize(b).unwrap();
-    let r = l.pane_rects(MAIN_WINDOW, (1000.0, 600.0), 32.0).unwrap();
+    let r = l.pane_rects(MAIN_WINDOW, (1000.0, 600.0), Metrics::uniform(32.0)).unwrap();
     assert_eq!(r, vec![(b, Rect { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 })]);
 }
 
@@ -400,12 +400,12 @@ fn directional_neighbor() {
     l.move_tab(p, 1, Drop::Edge(b, Edge::Bottom)).unwrap();
     let (c, _) = l.find_view(&v("c")).unwrap();
     let size = (1000.0, 600.0);
-    assert_eq!(l.neighbor(p, Direction::Right, size, 32.0).unwrap(), Some(b));
-    assert_eq!(l.neighbor(b, Direction::Down, size, 32.0).unwrap(), Some(c));
-    assert_eq!(l.neighbor(c, Direction::Up, size, 32.0).unwrap(), Some(b));
-    assert_eq!(l.neighbor(c, Direction::Left, size, 32.0).unwrap(), Some(p));
-    assert_eq!(l.neighbor(p, Direction::Left, size, 32.0).unwrap(), None);
-    assert_eq!(l.neighbor(p, Direction::Up, size, 32.0).unwrap(), None);
+    assert_eq!(l.neighbor(p, Direction::Right, size, Metrics::uniform(32.0)).unwrap(), Some(b));
+    assert_eq!(l.neighbor(b, Direction::Down, size, Metrics::uniform(32.0)).unwrap(), Some(c));
+    assert_eq!(l.neighbor(c, Direction::Up, size, Metrics::uniform(32.0)).unwrap(), Some(b));
+    assert_eq!(l.neighbor(c, Direction::Left, size, Metrics::uniform(32.0)).unwrap(), Some(p));
+    assert_eq!(l.neighbor(p, Direction::Left, size, Metrics::uniform(32.0)).unwrap(), None);
+    assert_eq!(l.neighbor(p, Direction::Up, size, Metrics::uniform(32.0)).unwrap(), None);
 }
 
 #[test]
@@ -461,7 +461,8 @@ enum Op {
 }
 
 fn op() -> impl Strategy<Value = Op> {
-    let e = proptest::option::of(0u8..4);
+    // 0..4: beside the pane; 4..8: around a split of its window.
+    let e = proptest::option::of(0u8..8);
     prop_oneof![
         3 => (any::<u8>(), 0u8..24).prop_map(|(p, x)| Op::Open(p, x)),
         2 => (any::<u8>(), any::<u8>()).prop_map(|(p, i)| Op::Close(p, i)),
@@ -485,8 +486,18 @@ fn edge(e: u8) -> Edge {
     [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom][e as usize % 4]
 }
 
-fn drop_for(target: PaneId, e: Option<u8>) -> Drop {
-    e.map_or(Drop::Into(target), |e| Drop::Edge(target, edge(e)))
+fn drop_for(l: &Layout, target: PaneId, e: Option<u8>) -> Drop {
+    match e {
+        None => Drop::Into(target),
+        Some(e) if e < 4 => Drop::Edge(target, edge(e)),
+        Some(e) => {
+            let mut all = Vec::new();
+            if let Ok(w) = l.window_of(target) {
+                splits(&l.window(w).unwrap().root, &mut all);
+            }
+            all.get(target.0 as usize % all.len().max(1)).map_or(Drop::Edge(target, edge(e)), |(s, _)| Drop::Around(*s, edge(e)))
+        }
+    }
 }
 
 fn splits(node: &Node, out: &mut Vec<(SplitId, usize)>) {
@@ -519,11 +530,24 @@ fn apply(l: &mut Layout, op: &Op) {
         Op::MoveTab(a, i, b, e) => {
             let a = nth(&panes, a);
             if let Some(i) = tab(l, a, i) {
-                let _ = l.move_tab(a, i, drop_for(nth(&panes, b), e));
+                // The preview is where the tab really lands.
+                let (size, m) = ((1000.0, 700.0), Metrics { divider: 5.0, rail: 28.0, header: 32.0 });
+                let d = drop_for(l, nth(&panes, b), e);
+                let view = l.panes[&a].tabs[i].clone();
+                let want = l.preview(&Moved::Tab(a, i), d, size, m);
+                if l.move_tab(a, i, d).is_ok() {
+                    let (p, _) = l.find_view(&view).unwrap();
+                    let w = l.window_of(p).unwrap();
+                    let got = l.pane_rects(w, size, m).unwrap().into_iter().find(|(q, _)| *q == p).map(|(_, r)| r);
+                    assert_eq!(want, got, "preview of {d:?}");
+                } else {
+                    assert_eq!(want, None, "a refused drop has no preview: {d:?}");
+                }
             }
         }
         Op::MovePane(a, b, e) => {
-            let _ = l.move_pane(nth(&panes, a), drop_for(nth(&panes, b), e));
+            let d = drop_for(l, nth(&panes, b), e);
+            let _ = l.move_pane(nth(&panes, a), d);
         }
         Op::Collapse(p) => {
             let _ = l.toggle_collapse(nth(&panes, p));
@@ -546,7 +570,8 @@ fn apply(l: &mut Layout, op: &Op) {
             }
         }
         Op::Attach(w, p, e) => {
-            let _ = l.attach(nth(&windows, w), drop_for(nth(&panes, p), e));
+            let d = drop_for(l, nth(&panes, p), e);
+            let _ = l.attach(nth(&windows, w), d);
         }
         Op::CloseWindow(w) => {
             if let Ok(CloseOutcome::Closed(views)) = l.close_window(nth(&windows, w)) {
@@ -642,4 +667,186 @@ fn tabs_reorder_within_a_pane_and_land_at_a_place_in_another() {
     assert_eq!(l.main().focused, q);
     assert!(l.move_tab_to(p, 9, q, 0).is_err() && l.move_tab_to(p, 0, q, 9).is_err());
     ok(&l);
+}
+
+// ------------------------------------------------------------------ drops beside a split (R3.13)
+
+const M: Metrics = Metrics { divider: 5.0, rail: 28.0, header: 32.0 };
+const SIZE: (f32, f32) = (1000.0, 605.0);
+
+/// `[a / b]` (stacked), b holding `b` and `x`; the root split's id.
+fn stacked() -> (Layout, PaneId, PaneId, SplitId) {
+    let (mut l, a) = with_tabs(&["a", "b", "x"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Bottom)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Into(b)).unwrap();
+    let root = root_split(&l).id;
+    (l, a, b, root)
+}
+
+fn rect_of(l: &Layout, view: &str) -> Rect {
+    let (p, _) = l.find_view(&v(view)).unwrap();
+    l.pane_rects(MAIN_WINDOW, SIZE, M).unwrap().into_iter().find(|(q, _)| *q == p).unwrap().1
+}
+
+#[test]
+fn a_tab_dropped_around_two_stacked_panes_gets_a_full_height_column() {
+    let (mut l, _, b, root) = stacked();
+    let i = l.pane(b).unwrap().tabs.iter().position(|t| *t == v("x")).unwrap();
+    let want = l.preview(&Moved::Tab(b, i), Drop::Around(root, Edge::Right), SIZE, M);
+    l.move_tab(b, i, Drop::Around(root, Edge::Right)).unwrap();
+    ok(&l);
+    let x = rect_of(&l, "x");
+    assert_eq!(x, Rect { x: 502.5, y: 0.0, w: 497.5, h: 605.0 }, "full height, half the width");
+    assert_eq!(want, Some(x));
+    assert_eq!(rect_of(&l, "a").w, 497.5, "the stack keeps its two panes on the left");
+    assert_eq!(rect_of(&l, "a").x, rect_of(&l, "b").x);
+}
+
+#[test]
+fn beside_a_split_running_along_the_edge_takes_half_its_expanded_space() {
+    // [a(collapsed) | b], a tab dropped right of the whole row.
+    let (mut l, a) = with_tabs(&["a", "b", "x"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Into(b)).unwrap();
+    l.toggle_collapse(a).unwrap();
+    let root = root_split(&l).id;
+    let i = l.pane(b).unwrap().tabs.iter().position(|t| *t == v("x")).unwrap();
+    l.move_tab(b, i, Drop::Around(root, Edge::Right)).unwrap();
+    ok(&l);
+    let expanded = SIZE.0 - 28.0 - 2.0 * 5.0;
+    assert!((rect_of(&l, "x").w - expanded / 2.0).abs() < 0.01, "{:?}", rect_of(&l, "x"));
+}
+
+#[test]
+fn a_pane_moved_beside_its_own_column_and_a_one_tab_pane_beside_itself() {
+    // [a | [b / c]]: c beside the whole right column, then a no-op.
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Edge(b, Edge::Bottom)).unwrap();
+    let (c, _) = l.find_view(&v("c")).unwrap();
+    let Node::Split(root) = &l.main().root else { panic!() };
+    let Node::Split(col) = &root.children[1].node else { panic!() };
+    let col = col.id;
+    let want = l.preview(&Moved::Pane(c), Drop::Around(col, Edge::Right), SIZE, M);
+    l.move_pane(c, Drop::Around(col, Edge::Right)).unwrap();
+    ok(&l);
+    assert_eq!(want, Some(rect_of(&l, "c")));
+    assert_eq!(rect_of(&l, "c").h, SIZE.1, "full height");
+    let before = l.clone();
+    assert_eq!(l.preview(&Moved::Tab(c, 0), Drop::Edge(c, Edge::Left), SIZE, M), Some(rect_of(&l, "c")), "no-op: where it is");
+    l.move_tab(c, 0, Drop::Edge(c, Edge::Left)).unwrap();
+    assert_eq!(l, before);
+}
+
+#[test]
+fn a_drop_beside_shows_the_whole_tree_again_and_a_gone_split_is_refused() {
+    let (mut l, a, b, root) = stacked();
+    l.toggle_maximize(a).unwrap();
+    let i = l.pane(b).unwrap().tabs.iter().position(|t| *t == v("x")).unwrap();
+    let want = l.preview(&Moved::Tab(b, i), Drop::Edge(a, Edge::Right), SIZE, M);
+    l.move_tab(b, i, Drop::Edge(a, Edge::Right)).unwrap();
+    assert_eq!(l.main().maximized, None, "the new pane is seen");
+    assert_eq!(want, Some(rect_of(&l, "x")));
+    let gone = SplitId(root.0 + 1000);
+    assert!(matches!(l.move_tab(b, 0, Drop::Around(gone, Edge::Left)), Err(LayoutError::UnknownSplit(_))));
+    assert_eq!(l.preview(&Moved::Tab(b, 0), Drop::Around(gone, Edge::Left), SIZE, M), None);
+}
+
+#[test]
+fn drop_at_reads_centre_bands_strips_headers_and_dividers() {
+    let (l, a, b, root) = stacked();
+    let at = |x: f32, y: f32| l.drop_at(MAIN_WINDOW, SIZE, M, 16.0, (x, y)).unwrap();
+    // a: y 0..300 (body 32..300), divider 300..305, b: 305..605 (body 337..605).
+    assert_eq!(at(500.0, 160.0), Some(Drop::Into(a)), "centre");
+    assert_eq!(at(500.0, 10.0), None, "a header");
+    assert_eq!(at(500.0, 302.0), None, "the divider");
+    assert_eq!(at(960.0, 470.0), Some(Drop::Edge(b, Edge::Right)), "the band, inside the strips");
+    assert_eq!(at(995.0, 470.0), Some(Drop::Around(root, Edge::Right)), "the strip at the edge: the whole window");
+    assert_eq!(at(500.0, 600.0), Some(Drop::Around(root, Edge::Bottom)), "b ends the column: its bottom is the window's");
+    assert_eq!(at(500.0, 580.0), Some(Drop::Edge(b, Edge::Bottom)));
+    assert_eq!(at(500.0, 290.0), Some(Drop::Edge(a, Edge::Bottom)), "a's bottom is inside the column: no strip");
+}
+
+#[test]
+fn every_level_sharing_the_edge_gets_a_strip_the_outermost_at_the_edge() {
+    // [[a | b] / c]: b's right side is the row's and the window's.
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 2, Drop::Edge(a, Edge::Bottom)).unwrap();
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    let col = root_split(&l).id;
+    let Node::Split(row) = &root_split(&l).children[0].node else { panic!() };
+    let row = row.id;
+    let at = |x: f32| l.drop_at(MAIN_WINDOW, SIZE, M, 16.0, (x, 150.0)).unwrap();
+    assert_eq!(at(998.0), Some(Drop::Around(col, Edge::Right)), "outermost");
+    assert_eq!(at(984.0), Some(Drop::Around(row, Edge::Right)));
+    assert_eq!(at(960.0), Some(Drop::Edge(b, Edge::Right)));
+    // a's right side is inside the row: its own edge only.
+    assert_eq!(l.drop_at(MAIN_WINDOW, SIZE, M, 16.0, (495.0, 150.0)).unwrap(), Some(Drop::Edge(a, Edge::Right)));
+    // A narrow pane: the strips share 2/3 of the band, the pane's own edge keeps the rest.
+    let narrow = (120.0, 605.0);
+    let band = (120.0 - 5.0) / 2.0 * 0.25;
+    let near = |d: f32| l.drop_at(MAIN_WINDOW, narrow, M, 16.0, (120.0 - d, 150.0)).unwrap();
+    assert_eq!(near(band * 2.0 / 3.0 + 0.5), Some(Drop::Edge(b, Edge::Right)));
+    assert_eq!(near(0.5), Some(Drop::Around(col, Edge::Right)));
+}
+
+#[test]
+fn a_lone_tab_moved_beside_its_own_split_takes_half_like_its_pane_would() {
+    // [a | b], a's only tab to the right of the whole row: the pane moves, half and half.
+    let (mut l, a) = with_tabs(&["a", "b"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let root = root_split(&l).id;
+    let want = l.preview(&Moved::Tab(a, 0), Drop::Around(root, Edge::Right), SIZE, M);
+    l.move_tab(a, 0, Drop::Around(root, Edge::Right)).unwrap();
+    ok(&l);
+    assert_eq!(rect_of(&l, "a").w, (SIZE.0 - 5.0) / 2.0);
+    assert!(rect_of(&l, "a").x > rect_of(&l, "b").x, "now on the right");
+    assert_eq!(want, Some(rect_of(&l, "a")));
+}
+
+#[test]
+fn opening_beside_a_split_leaves_every_other_pane_as_it_was() {
+    // [a(collapsed, tabs a and c, a active) / b]: a row opened right of the whole column.
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Bottom)).unwrap();
+    l.activate(a, 0).unwrap();
+    l.toggle_collapse(a).unwrap();
+    let root = root_split(&l).id;
+    let before = l.pane(a).unwrap().clone();
+    l.open_at(v("new"), Drop::Around(root, Edge::Right)).unwrap();
+    ok(&l);
+    assert_eq!(l.pane(a).unwrap(), &before, "the first pane untouched");
+    let (p, _) = l.find_view(&v("new")).unwrap();
+    assert_eq!(l.pane(p).unwrap().tabs, [v("new")]);
+    assert_eq!(l.main().focused, p);
+}
+
+#[test]
+fn drop_at_offers_nothing_on_collapsed_panes_no_strips_while_maximized_and_only_into_when_detached() {
+    // [a / b / c], c collapsed at the bottom: b ends the column for the bottom strip.
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Bottom)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Edge(b, Edge::Bottom)).unwrap();
+    let (c, _) = l.find_view(&v("c")).unwrap();
+    l.toggle_collapse(c).unwrap();
+    let root = root_split(&l).id;
+    let rects: BTreeMap<_, _> = l.pane_rects(MAIN_WINDOW, SIZE, M).unwrap().into_iter().collect();
+    let at = |l: &Layout, x: f32, y: f32| l.drop_at(MAIN_WINDOW, SIZE, M, 16.0, (x, y)).unwrap();
+    assert_eq!(at(&l, 500.0, rects[&c].y + 10.0), None, "a collapsed pane: its strip takes drops itself");
+    assert_eq!(at(&l, 500.0, rects[&b].bottom() - 2.0), Some(Drop::Around(root, Edge::Bottom)), "past a collapsed pane");
+    l.toggle_maximize(b).unwrap();
+    assert_eq!(at(&l, 998.0, 300.0), Some(Drop::Edge(b, Edge::Right)), "maximized: its own edge, no strips");
+    let w = l.detach(b, 0).unwrap();
+    let (d, _) = l.find_view(&v("b")).unwrap();
+    assert_eq!(l.drop_at(w, SIZE, M, 16.0, (998.0, 300.0)).unwrap(), Some(Drop::Into(d)), "detached: into only");
+    // Its pane goes beside the main window's column, and the detached window with it.
+    l.move_pane(d, Drop::Around(root, Edge::Right)).unwrap();
+    ok(&l);
+    assert_eq!(l.windows.len(), 1);
+    assert_eq!(rect_of(&l, "b").h, SIZE.1);
 }

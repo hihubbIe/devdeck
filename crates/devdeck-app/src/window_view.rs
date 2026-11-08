@@ -15,12 +15,12 @@ use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
 use devdeck_ui::{APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
-use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Node, PaneId, SplitId, ViewRef, WindowId};
+use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Metrics, Moved, Node, PaneId, Rect, SplitId, ViewRef, WindowId};
 use gpui::{
     AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId, ExternalPaths,
     FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Point, Render, ResizeEdge, SharedString, Stateful, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
-    Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, img, point, prelude::*, relative,
+    Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, img, point, prelude::*,
     size,
 };
 use std::cell::Cell;
@@ -104,6 +104,9 @@ pub struct WindowView {
     remembered: HashMap<EntityId, WeakFocusHandle>,
     /// While a tab is dragged over a tab strip: the pane and the place it would land at.
     tab_insert: Rc<Cell<Option<(PaneId, usize)>>>,
+    /// While a tab, a pane or a list item is dragged over the panes: the drop under the
+    /// pointer and the rectangle it lands in (R3.13).
+    drop_hint: Rc<Cell<Option<(Drop, Rect)>>>,
     /// Where focus was when Settings opened.
     before_settings: Option<WeakFocusHandle>,
     deck_sub: Subscription,
@@ -186,7 +189,6 @@ struct Frame<'a> {
     /// What each pane's active view offers now (R12.4), for its header.
     actions: &'a HashMap<PaneId, Vec<views::ViewAction>>,
     t: &'a Theme,
-    dragging: bool,
     tab_insert: &'a Rc<Cell<Option<(PaneId, usize)>>>,
 }
 
@@ -266,6 +268,7 @@ impl WindowView {
             settings: None,
             remembered: HashMap::new(),
             tab_insert: Rc::default(),
+            drop_hint: Rc::default(),
             before_settings: None,
             deck_sub,
             sidebar: None,
@@ -397,7 +400,7 @@ impl WindowView {
         let (rect, active) = {
             let d = self.deck.read(cx);
             let size = self.body_size(window, &t, cx);
-            let rect = d.layout().pane_rects(self.id, size, f32::from(t.tab_h)).ok().and_then(|r| r.into_iter().find(|(q, _)| *q == p)).map(|(_, r)| r);
+            let rect = d.layout().pane_rects(self.id, size, metrics(&t)).ok().and_then(|r| r.into_iter().find(|(q, _)| *q == p)).map(|(_, r)| r);
             (rect, d.layout().pane(p).map(|p| p.active).unwrap_or(0))
         };
         let origin = self.panes_origin.get();
@@ -513,9 +516,9 @@ impl WindowView {
     fn focus_dir(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.focused_pane(cx) else { return };
         let t = theme(cx);
-        let (size, strip) = (self.body_size(window, t, cx), f32::from(t.tab_h));
+        let (size, m) = (self.body_size(window, t, cx), metrics(t));
         self.apply(cx, |l| {
-            if let Some(n) = l.neighbor(p, dir, size, strip)? {
+            if let Some(n) = l.neighbor(p, dir, size, m)? {
                 l.focus(n)?;
             }
             Ok(())
@@ -525,13 +528,13 @@ impl WindowView {
     fn move_tab_dir(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.focused_pane(cx) else { return };
         let t = theme(cx);
-        let (size, strip) = (self.body_size(window, t, cx), f32::from(t.tab_h));
+        let (size, m) = (self.body_size(window, t, cx), metrics(t));
         self.apply(cx, |l| {
             if l.pane(p)?.tabs.is_empty() {
                 return Ok(());
             }
             let idx = l.pane(p)?.active;
-            match l.neighbor(p, dir, size, strip)? {
+            match l.neighbor(p, dir, size, m)? {
                 Some(n) => l.move_tab(p, idx, Drop::Into(n)),
                 None => {
                     let edge = match dir {
@@ -543,6 +546,19 @@ impl WindowView {
                     l.move_tab(p, idx, Drop::Edge(p, edge))
                 }
             }
+        });
+    }
+
+    /// The focused tab beside everything in the window, on `edge` (R3.13 by keyboard).
+    fn move_tab_to_edge(&mut self, edge: Edge, cx: &mut Context<Self>) {
+        let id = self.id;
+        self.with_focused(cx, |l, p| {
+            // A detached window is a single pane: no edges (R3.8).
+            if l.pane(p)?.tabs.is_empty() || l.is_detached(id) {
+                return Ok(());
+            }
+            let (i, drop) = (l.pane(p)?.active, l.window_edge(id, edge)?);
+            l.move_tab(p, i, drop)
         });
     }
 
@@ -569,6 +585,12 @@ impl WindowView {
         let id = self.id;
         self.deck.update(cx, |d, cx| d.reattach(id, cx));
     }
+}
+
+/// How the panes are drawn, for the layout's geometry: dividers' grab area, a collapsed
+/// pane's rail (in a row) and header (in a column).
+fn metrics(t: &Theme) -> Metrics {
+    Metrics { divider: f32::from(t.divider_grab), rail: f32::from(t.rail_w), header: f32::from(t.tab_h) }
 }
 
 fn split_active(l: &mut Layout, p: PaneId, edge: Edge) -> devdeck_core::layout::Result<()> {
@@ -635,7 +657,6 @@ impl Render for WindowView {
             titles: &titles,
             actions: &actions,
             t: &t,
-            dragging: cx.has_active_drag(),
             tab_insert: &self.tab_insert,
         };
         let deck_id = self.deck.entity_id();
@@ -797,6 +818,10 @@ impl Render for WindowView {
             .on_action(cx.listener(|this, _: &MoveTabRight, w, cx| this.move_tab_dir(Direction::Right, w, cx)))
             .on_action(cx.listener(|this, _: &MoveTabUp, w, cx| this.move_tab_dir(Direction::Up, w, cx)))
             .on_action(cx.listener(|this, _: &MoveTabDown, w, cx| this.move_tab_dir(Direction::Down, w, cx)))
+            .on_action(cx.listener(|this, _: &MoveTabToLeftEdge, _, cx| this.move_tab_to_edge(Edge::Left, cx)))
+            .on_action(cx.listener(|this, _: &MoveTabToRightEdge, _, cx| this.move_tab_to_edge(Edge::Right, cx)))
+            .on_action(cx.listener(|this, _: &MoveTabToTopEdge, _, cx| this.move_tab_to_edge(Edge::Top, cx)))
+            .on_action(cx.listener(|this, _: &MoveTabToBottomEdge, _, cx| this.move_tab_to_edge(Edge::Bottom, cx)))
             .on_action(cx.listener(|this, _: &NextTab, _, cx| this.with_focused(cx, |l, p| l.cycle_tab(p, 1))))
             .on_action(cx.listener(|this, _: &PrevTab, _, cx| this.with_focused(cx, |l, p| l.cycle_tab(p, -1))))
             .on_action(cx.listener(|this, _: &CloseTab, _, cx| {
@@ -827,7 +852,40 @@ impl Render for WindowView {
             .on_action(cx.listener(|this, _: &GrowPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, 0.05))))
             .on_action(cx.listener(|this, _: &ShrinkPane, _, cx| this.with_focused(cx, |l, p| l.grow(p, -0.05))))
             // Per-workspace id, so element state never carries over between workspaces.
-            .child(div().id(("ws", deck_id.as_u64())).debug_selector(|| "panes".into()).size_full().min_w_0().min_h_0().flex().child(tree))
+            .child({
+                // The drop layer is painted first, under the panes: tab strips and headers
+                // take their own drops (GPUI gives a drop to the topmost taker), the rest
+                // falls to it. The preview has no listeners, so no hitbox.
+                let dragging = cx.has_active_drag();
+                if !dragging {
+                    self.drop_hint.set(None);
+                }
+                let hint = self.drop_hint.get().filter(|_| dragging);
+                div()
+                    .id(("ws", deck_id.as_u64()))
+                    .debug_selector(|| "panes".into())
+                    .relative()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .when(dragging, |d| d.child(drop_layer(&self.deck, self.id, &self.drop_hint, &t)))
+                    .child(tree)
+                    .when_some(hint, |d, (_, r)| {
+                        d.child(
+                            div()
+                                .debug_selector(|| "drop-preview".into())
+                                .absolute()
+                                .left(logical(r.x))
+                                .top(logical(r.y))
+                                .w(logical(r.w))
+                                .h(logical(r.h))
+                                .bg(t.drop_bg)
+                                .border_2()
+                                .border_color(t.accent),
+                        )
+                    })
+            })
             .child({
                 let origin = self.panes_origin.clone();
                 canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {}).absolute().size_full()
@@ -1627,7 +1685,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
     // Body, with drop zones while something is dragged.
     let d_focus = f.deck.clone();
     let window = f.window;
-    let mut body = div()
+    let body = div()
         .id(("body", pane.0))
         .debug_selector(move || format!("pane-body-{}", pane.0))
         .relative()
@@ -1668,61 +1726,94 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .child(label("Empty pane. Drop a tab here.").debug_selector(|| "empty-message".into()))
                 .into_any_element(),
         });
-    if f.dragging {
-        for (zone, edge) in [
-            ("center", None),
-            ("left", Some(Edge::Left)),
-            ("right", Some(Edge::Right)),
-            ("top", Some(Edge::Top)),
-            ("bottom", Some(Edge::Bottom)),
-        ] {
-            body = body.child(drop_zone(pane, zone, edge, f.deck, t));
-        }
-    }
-
     div().size_full().flex().flex_col().min_w_0().min_h_0().child(strip).child(body).into_any_element()
 }
 
 
-fn drop_zone(pane: PaneId, name: &'static str, edge: Option<Edge>, deck: &Entity<Deck>, t: &Theme) -> impl IntoElement {
-    let zone = div().id((name, pane.0)).absolute();
-    let zone = match edge {
-        None => zone.left(relative(0.25)).top(relative(0.25)).w(relative(0.5)).h(relative(0.5)),
-        Some(Edge::Left) => zone.left_0().top_0().w(relative(0.25)).h_full(),
-        Some(Edge::Right) => zone.right_0().top_0().w(relative(0.25)).h_full(),
-        Some(Edge::Top) => zone.left(relative(0.25)).top_0().w(relative(0.5)).h(relative(0.25)),
-        Some(Edge::Bottom) => zone.left(relative(0.25)).bottom_0().w(relative(0.5)).h(relative(0.25)),
-    };
-    let drop = match edge {
-        None => Drop::Into(pane),
-        Some(e) => Drop::Edge(pane, e),
-    };
-    let (bg, accent) = (t.drop_bg, t.accent);
-    let (d_tab, d_pane) = (deck.clone(), deck.clone());
+/// Under the panes while something is dragged (a tab, a pane, a list row, files from
+/// outside): shows where it lands (R3.4, R3.13) and, on release, drops it at the pointer.
+fn drop_layer(deck: &Entity<Deck>, window: WindowId, hint: &Rc<Cell<Option<(Drop, Rect)>>>, t: &Theme) -> impl IntoElement {
+    let (m, strip) = (metrics(t), f32::from(t.size(16.)));
     let deck_id = deck.entity_id();
-    let (d_item, d_files) = (deck.clone(), deck.clone());
-    zone.drag_over::<DraggedTab>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
-        .drag_over::<DraggedPane>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
-        .drag_over::<DraggedListItem>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
-        .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(bg).border_2().border_color(accent))
-        // Files from a file manager (R12.2).
-        .on_drop(move |paths: &ExternalPaths, _, cx| crate::drops::open_files(&d_files, paths.paths(), drop, cx))
-        .on_drop(move |item: &DraggedListItem, _, cx| {
-            if item.deck == deck_id {
+    let bounds: Rc<Cell<Bounds<Pixels>>> = Rc::default();
+    // The drop under `at` in the layer drawn at `b`.
+    let drop_at = move |l: &Layout, b: Bounds<Pixels>, at: Point<Pixels>| {
+        if !b.contains(&at) {
+            return None;
+        }
+        let size = (f32::from(b.size.width), f32::from(b.size.height));
+        let local = (f32::from(at.x - b.origin.x), f32::from(at.y - b.origin.y));
+        l.drop_at(window, size, m, strip, local).ok()?
+    };
+    // While dragging: the drop and its landing rectangle (none out of the layer, or for
+    // another deck's drag), redrawn only when they change.
+    let track = move |deck: &Entity<Deck>, hint: &Rc<Cell<Option<(Drop, Rect)>>>, b: Bounds<Pixels>, at: Point<Pixels>, moved: Option<Moved>, w: &mut Window, cx: &App| {
+        let l = deck.read(cx).layout();
+        let drop = moved.as_ref().and_then(|_| drop_at(l, b, at));
+        if drop.is_some() && hint.get().map(|(d, _)| d) == drop {
+            return;
+        }
+        // The preview does the drop on a copy: only when the drop changes.
+        let next = moved.zip(drop).and_then(|(moved, drop)| Some((drop, l.preview(&moved, drop, (f32::from(b.size.width), f32::from(b.size.height)), m)?)));
+        if hint.get() != next {
+            hint.set(next);
+            w.refresh();
+        }
+    };
+    // On release: the drop at the pointer.
+    let release = move |deck: &Entity<Deck>, bounds: &Rc<Cell<Bounds<Pixels>>>, w: &Window, cx: &App| drop_at(deck.read(cx).layout(), bounds.get(), w.mouse_position());
+    let d = |_: u8| deck.clone();
+    let h = |_: u8| hint.clone();
+    let b = |_: u8| bounds.clone();
+    let (d1, d2, d3, d4, a1, a2, a3, a4) = (d(1), d(2), d(3), d(4), d(5), d(6), d(7), d(8));
+    let (h1, h2, h3, h4) = (h(1), h(2), h(3), h(4));
+    let (b1, b2, b3, b4, b5) = (b(1), b(2), b(3), b(4), b(5));
+    div()
+        .id("drop-layer")
+        .absolute()
+        .size_full()
+        .child(canvas(move |r, _, _| b5.set(r), |_, _, _, _| {}).size_full())
+        .on_drag_move::<DraggedTab>(move |e, w, cx| {
+            let tab = e.drag(cx);
+            let moved = (tab.deck == deck_id).then_some(Moved::Tab(tab.pane, tab.index));
+            track(&d1, &h1, e.bounds, e.event.position, moved, w, cx);
+        })
+        .on_drag_move::<DraggedPane>(move |e, w, cx| {
+            let pane = e.drag(cx);
+            let moved = (pane.deck == deck_id).then_some(Moved::Pane(pane.pane));
+            track(&d2, &h2, e.bounds, e.event.position, moved, w, cx);
+        })
+        .on_drag_move::<DraggedListItem>(move |e, w, cx| {
+            let item = e.drag(cx);
+            let moved = (item.deck == deck_id).then(|| Moved::View(item.view.clone()));
+            track(&d3, &h3, e.bounds, e.event.position, moved, w, cx);
+        })
+        .on_drag_move::<ExternalPaths>(move |e, w, cx| {
+            // Files land where their first one does (they share its pane); nothing is read
+            // from the disk outside the panes, and nothing shows where they can't open.
+            let inside = e.bounds.contains(&e.event.position) && d4.read(cx).has_services();
+            let moved = inside.then(|| crate::drops::sort(e.drag(cx).paths()).0.into_iter().next().map(Moved::View)).flatten();
+            track(&d4, &h4, e.bounds, e.event.position, moved, w, cx);
+        })
+        .on_drop(move |tab: &DraggedTab, w, cx| {
+            if let Some(drop) = release(&a1, &b1, w, cx).filter(|_| tab.deck == deck_id) {
+                apply_on(&a1, cx, |l| l.move_tab(tab.pane, tab.index, drop));
+            }
+        })
+        .on_drop(move |pane: &DraggedPane, w, cx| {
+            if let Some(drop) = release(&a2, &b2, w, cx).filter(|_| pane.deck == deck_id) {
+                apply_on(&a2, cx, |l| l.move_pane(pane.pane, drop));
+            }
+        })
+        .on_drop(move |item: &DraggedListItem, w, cx| {
+            if let Some(drop) = release(&a3, &b3, w, cx).filter(|_| item.deck == deck_id) {
                 let view = item.view.clone();
-                apply_on(&d_item, cx, |l| sidebar::open_at(l, view, drop));
+                apply_on(&a3, cx, |l| sidebar::open_at(l, view, drop));
             }
         })
-        .on_drop(move |tab: &DraggedTab, _, cx| {
-            if tab.deck == deck_id {
-                let tab = tab.clone();
-                apply_on(&d_tab, cx, |l| l.move_tab(tab.pane, tab.index, drop));
-            }
-        })
-        .on_drop(move |dragged: &DraggedPane, _, cx| {
-            if dragged.deck == deck_id {
-                let p = dragged.pane;
-                apply_on(&d_pane, cx, |l| l.move_pane(p, drop));
+        .on_drop(move |paths: &ExternalPaths, w, cx| {
+            if let Some(drop) = release(&a4, &b4, w, cx) {
+                crate::drops::open_files(&a4, paths.paths(), drop, cx);
             }
         })
 }

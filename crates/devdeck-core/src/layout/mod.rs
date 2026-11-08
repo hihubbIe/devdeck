@@ -15,7 +15,7 @@ mod geometry;
 #[cfg(test)]
 mod tests;
 
-pub use geometry::{Direction, Rect};
+pub use geometry::{Direction, Metrics, Rect};
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,16 +91,32 @@ impl Edge {
 pub enum Drop {
     /// Into the pane's tab strip.
     Into(PaneId),
-    /// Next to the pane, splitting it.
+    /// Next to the pane, taking half of it.
     Edge(PaneId, Edge),
+    /// Next to a whole split (a column, a row, the window), taking half of it (R3.13).
+    Around(SplitId, Edge),
 }
 
 impl Drop {
-    pub fn pane(self) -> PaneId {
-        match self {
-            Drop::Into(p) | Drop::Edge(p, _) => p,
-        }
+    /// Whether it makes a new pane beside something.
+    pub fn splits(self) -> bool {
+        !matches!(self, Drop::Into(_))
     }
+}
+
+/// A part of a window's tree.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NodeRef {
+    Pane(PaneId),
+    Split(SplitId),
+}
+
+/// What a drop moves: a tab, a whole pane, or a view not yet in the layout (a sidebar row).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Moved {
+    Tab(PaneId, usize),
+    Pane(PaneId),
+    View(ViewRef),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -316,7 +332,83 @@ impl Layout {
             .ok_or(LayoutError::UnknownSplit(id))
     }
 
+    /// The window a split is in.
+    pub fn window_of_split(&self, id: SplitId) -> Result<WindowId> {
+        self.windows.iter().find(|w| find_split(&w.root, id).is_some()).map(|w| w.id).ok_or(LayoutError::UnknownSplit(id))
+    }
+
+    /// The pane a drop is at: its pane, or a split's first pane.
+    pub fn anchor(&self, drop: Drop) -> Result<PaneId> {
+        match drop {
+            Drop::Into(p) | Drop::Edge(p, _) => self.pane(p).map(|_| p),
+            Drop::Around(s, _) => {
+                let mut ids = Vec::new();
+                collect_panes(&Node::Split(self.split(s)?.clone()), &mut ids);
+                Ok(ids[0])
+            }
+        }
+    }
+
+    /// The drop at a window's `edge`, beside everything in it (R3.13, R5.1).
+    pub fn window_edge(&self, window: WindowId, edge: Edge) -> Result<Drop> {
+        Ok(match &self.window(window)?.root {
+            Node::Split(s) => Drop::Around(s.id, edge),
+            Node::Pane(p) => Drop::Edge(*p, edge),
+        })
+    }
+
+    /// The window a drop lands in.
+    pub fn drop_window(&self, drop: Drop) -> Result<WindowId> {
+        match drop {
+            Drop::Into(p) | Drop::Edge(p, _) => self.window_of(p),
+            Drop::Around(s, _) => self.window_of_split(s),
+        }
+    }
+
+    /// Puts pane `new` beside `drop`'s target in `window` (Edge or Around), and shows the
+    /// whole tree again (a maximized pane would hide the new one).
+    fn place_beside(&mut self, window: WindowId, drop: Drop, new: PaneId) -> Result<()> {
+        let (target, edge) = match drop {
+            Drop::Edge(p, e) => (NodeRef::Pane(p), e),
+            Drop::Around(s, e) => (NodeRef::Split(s), e),
+            Drop::Into(_) => return Err(LayoutError::Invalid("not a drop beside".into())),
+        };
+        let collapsed: BTreeSet<PaneId> = self.panes.iter().filter(|(_, p)| p.collapsed).map(|(id, _)| *id).collect();
+        let sid = SplitId(self.alloc());
+        let w = self.window_mut(window)?;
+        let expanded = |n: &Node| !matches!(n, Node::Pane(p) if collapsed.contains(p));
+        if !insert_beside(&mut w.root, target, &Node::Pane(new), edge, sid, &expanded) {
+            return Err(match target {
+                NodeRef::Pane(p) => LayoutError::UnknownPane(p),
+                NodeRef::Split(s) => LayoutError::UnknownSplit(s),
+            });
+        }
+        w.maximized = None;
+        Ok(())
+    }
+
     // ---------------------------------------------------------------- tabs
+
+    /// Opens `view` at `drop` (into a pane or beside something); an open view moves there.
+    pub fn open_at(&mut self, view: ViewRef, drop: Drop) -> Result<()> {
+        if let Some((p, i)) = self.find_view(&view) {
+            return self.move_tab(p, i, drop);
+        }
+        let drop = self.land_in_empty(drop)?;
+        if let Drop::Into(p) = drop {
+            return self.open(view, p).map(|_| ());
+        }
+        // Beside something: a pane of its own, no other pane touched.
+        let window = self.drop_window(drop)?;
+        if self.is_detached(window) {
+            return Err(LayoutError::DetachedWindowIsSinglePane);
+        }
+        let np = self.new_pane(vec![view]);
+        self.place_beside(window, drop, np)?;
+        self.focus(np)?;
+        self.repair();
+        Ok(())
+    }
 
     /// Opens `view` in `target`, or activates it where it already is.
     /// Returns the pane that shows it.
@@ -407,18 +499,22 @@ impl Layout {
     /// Moves one tab into a pane or onto a pane's edge.
     pub fn move_tab(&mut self, from: PaneId, idx: usize, drop: Drop) -> Result<()> {
         let drop = self.land_in_empty(drop)?;
-        let target = drop.pane();
-        let target_window = self.window_of(target)?;
+        let target_window = self.drop_window(drop)?;
         let tabs = self.pane(from)?.tabs.len();
         if idx >= tabs {
             return Err(LayoutError::TabOutOfRange);
         }
-        if let Drop::Edge(_, _) = drop {
+        if drop.splits() {
             if self.is_detached(target_window) {
                 return Err(LayoutError::DetachedWindowIsSinglePane);
             }
-            if from == target && tabs == 1 {
+            if matches!(drop, Drop::Edge(t, _) if t == from) && tabs == 1 {
                 return Ok(());
+            }
+            // Its only tab: the pane itself moves, leaving its place first, so what it
+            // lands beside is measured without it.
+            if tabs == 1 {
+                return self.move_pane(from, drop);
             }
         }
         if drop == Drop::Into(from) {
@@ -433,11 +529,9 @@ impl Layout {
                 p.collapsed = false;
                 t
             }
-            Drop::Edge(t, edge) => {
+            Drop::Edge(..) | Drop::Around(..) => {
                 let np = self.new_pane(vec![view]);
-                let sid = SplitId(self.alloc());
-                let w = self.window_mut(target_window)?;
-                insert_beside(&mut w.root, t, np, edge, sid);
+                self.place_beside(target_window, drop, np)?;
                 np
             }
         };
@@ -450,13 +544,12 @@ impl Layout {
     /// Moves a whole pane (all its tabs) into another pane or beside it.
     pub fn move_pane(&mut self, pane: PaneId, drop: Drop) -> Result<()> {
         let drop = self.land_in_empty(drop)?;
-        let target = drop.pane();
-        if pane == target {
+        if matches!(drop, Drop::Into(t) | Drop::Edge(t, _) if t == pane) {
             return Ok(());
         }
         let from_window = self.window_of(pane)?;
-        let target_window = self.window_of(target)?;
-        if matches!(drop, Drop::Edge(..)) && self.is_detached(target_window) {
+        let target_window = self.drop_window(drop)?;
+        if drop.splits() && self.is_detached(target_window) {
             return Err(LayoutError::DetachedWindowIsSinglePane);
         }
         if from_window == MAIN_WINDOW && self.panes_in(MAIN_WINDOW)?.len() == 1 {
@@ -474,11 +567,9 @@ impl Layout {
                 self.remove_pane_if_empty(pane)?;
                 self.focus(t)?;
             }
-            Drop::Edge(t, edge) => {
+            Drop::Edge(..) | Drop::Around(..) => {
                 self.detach_node(from_window, pane)?;
-                let sid = SplitId(self.alloc());
-                let w = self.window_mut(target_window)?;
-                insert_beside(&mut w.root, t, pane, edge, sid);
+                self.place_beside(target_window, drop, pane)?;
                 self.pane_mut(pane)?.collapsed = false;
                 self.focus(pane)?;
             }
@@ -633,7 +724,7 @@ impl Layout {
         if !self.is_detached(window) {
             return Err(LayoutError::NotDetached);
         }
-        if self.window_of(drop.pane())? == window {
+        if self.drop_window(drop)? == window {
             return Err(LayoutError::SameWindow);
         }
         let Node::Pane(pane) = self.window(window)?.root else {
@@ -677,7 +768,7 @@ impl Layout {
         windows.sort_by_key(|w| (*w != MAIN_WINDOW, w.0));
         let mut out = Vec::new();
         for w in windows {
-            let mut rects = plain.pane_rects(w, (1000.0, 1000.0), 0.0).unwrap_or_default();
+            let mut rects = plain.pane_rects(w, (1000.0, 1000.0), Metrics::uniform(0.0)).unwrap_or_default();
             rects.sort_by(|a, b| (a.1.y, a.1.x).partial_cmp(&(b.1.y, b.1.x)).unwrap_or(std::cmp::Ordering::Equal));
             out.extend(rects.into_iter().map(|(p, _)| (p, w)));
         }
@@ -720,24 +811,127 @@ impl Layout {
 
     // ---------------------------------------------------------------- geometry
 
-    /// Pane rectangles of a window for a given size, honouring weights, collapsed
-    /// panes (fixed `strip` size along their split's axis) and maximize.
-    pub fn pane_rects(&self, window: WindowId, size: (f32, f32), strip: f32) -> Result<Vec<(PaneId, Rect)>> {
+    /// Rectangles of a window's panes and splits for a given size, as the app draws them
+    /// with `m`: weights, dividers, collapsed panes, maximize (only that pane).
+    pub fn node_rects(&self, window: WindowId, size: (f32, f32), m: Metrics) -> Result<Vec<(NodeRef, Rect)>> {
         let w = self.window(window)?;
         let full = Rect { x: 0.0, y: 0.0, w: size.0, h: size.1 };
-        if let Some(m) = w.maximized {
-            return Ok(vec![(m, full)]);
+        if let Some(p) = w.maximized {
+            return Ok(vec![(NodeRef::Pane(p), full)]);
         }
         let mut out = Vec::new();
-        geometry::rects(&w.root, full, strip, &self.panes, &mut out);
+        geometry::rects(&w.root, full, m, &self.panes, &mut out);
         Ok(out)
     }
 
+    /// The panes' rectangles of [`Layout::node_rects`].
+    pub fn pane_rects(&self, window: WindowId, size: (f32, f32), m: Metrics) -> Result<Vec<(PaneId, Rect)>> {
+        Ok(self
+            .node_rects(window, size, m)?
+            .into_iter()
+            .filter_map(|(n, r)| match n {
+                NodeRef::Pane(p) => Some((p, r)),
+                NodeRef::Split(_) => None,
+            })
+            .collect())
+    }
+
     /// The pane next to `pane` in `dir`, using rectangles for `size`.
-    pub fn neighbor(&self, pane: PaneId, dir: Direction, size: (f32, f32), strip: f32) -> Result<Option<PaneId>> {
+    pub fn neighbor(&self, pane: PaneId, dir: Direction, size: (f32, f32), m: Metrics) -> Result<Option<PaneId>> {
         let window = self.window_of(pane)?;
-        let rects = self.pane_rects(window, size, strip)?;
+        let rects = self.pane_rects(window, size, m)?;
         Ok(geometry::neighbor(&rects, pane, dir))
+    }
+
+    /// The drop under `at`, in a window drawn at `size` with `m` (R3.4, R3.13). Over a
+    /// pane's body: its centre is `Into`; nearer an edge than a quarter of the body, the
+    /// edge band is `Edge(pane)`, and at its very outside one strip per enclosing split
+    /// whose side is this pane's own (`Around`, the outermost at the edge). Strips are
+    /// `strip` wide but take at most 2/3 of the band. `None` over headers, dividers and
+    /// collapsed panes (their tab strips take drops themselves). A detached window and a
+    /// maximized pane offer no outer strips; a detached one no edges either.
+    pub fn drop_at(&self, window: WindowId, size: (f32, f32), m: Metrics, strip: f32, at: (f32, f32)) -> Result<Option<Drop>> {
+        let w = self.window(window)?;
+        let found = self.pane_rects(window, size, m)?.into_iter().find(|(_, r)| r.contains(at));
+        let Some((pane, r)) = found else { return Ok(None) };
+        if self.pane(pane)?.collapsed {
+            return Ok(None);
+        }
+        let body = Rect { x: r.x, y: r.y + m.header, w: r.w, h: r.h - m.header };
+        if body.w <= 0.0 || body.h <= 0.0 || !body.contains(at) {
+            return Ok(None);
+        }
+        let sides = [
+            (Edge::Left, at.0 - body.x, body.w),
+            (Edge::Right, body.right() - at.0, body.w),
+            (Edge::Top, at.1 - body.y, body.h),
+            (Edge::Bottom, body.bottom() - at.1, body.h),
+        ];
+        let (edge, d, len) = sides.into_iter().min_by(|a, b| (a.1 / a.2).total_cmp(&(b.1 / b.2))).expect("four sides");
+        if d / len >= 0.25 || self.is_detached(window) {
+            return Ok(Some(Drop::Into(pane)));
+        }
+        let outer = if w.maximized.is_some() { Vec::new() } else { self.outer_splits(window, pane, edge)? };
+        let total = (outer.len() as f32 * strip).min(len * 0.25 * 2.0 / 3.0);
+        if !outer.is_empty() && d < total {
+            let each = total / outer.len() as f32;
+            let k = ((d / each) as usize).min(outer.len() - 1);
+            return Ok(Some(Drop::Around(outer[outer.len() - 1 - k], edge)));
+        }
+        Ok(Some(Drop::Edge(pane, edge)))
+    }
+
+    /// The splits whose `edge` side is `pane`'s own, innermost first: every enclosing split
+    /// across the edge's axis, and one along it while `pane` is at its end on that side
+    /// (collapsed panes after it don't count). Worked out from the tree, not from rectangles.
+    fn outer_splits(&self, window: WindowId, pane: PaneId, edge: Edge) -> Result<Vec<SplitId>> {
+        fn path(node: &Node, pane: PaneId, out: &mut Vec<(SplitId, Axis, bool, bool)>, collapsed: &dyn Fn(&Node) -> bool) -> bool {
+            let Node::Split(s) = node else { return matches!(node, Node::Pane(p) if *p == pane) };
+            for (i, c) in s.children.iter().enumerate() {
+                if path(&c.node, pane, out, collapsed) {
+                    let first = s.children[..i].iter().all(|c| collapsed(&c.node));
+                    let last = s.children[i + 1..].iter().all(|c| collapsed(&c.node));
+                    out.push((s.id, s.axis, first, last));
+                    return true;
+                }
+            }
+            false
+        }
+        let collapsed = |n: &Node| matches!(n, Node::Pane(p) if self.panes.get(p).is_some_and(|p| p.collapsed));
+        let mut chain = Vec::new();
+        path(&self.window(window)?.root, pane, &mut chain, &collapsed);
+        let mut out = Vec::new();
+        for (id, axis, first, last) in chain {
+            if axis == edge.axis() && !(if edge.is_before() { first } else { last }) {
+                break;
+            }
+            out.push(id);
+        }
+        Ok(out)
+    }
+
+    /// Where `what` lands with `drop`: the rectangle of the pane holding it afterwards, in
+    /// the drop's window drawn at `size` with `m`. Computed by doing it on a copy, so it
+    /// is the real result; `None` when the drop would be refused.
+    pub fn preview(&self, what: &Moved, drop: Drop, size: (f32, f32), m: Metrics) -> Option<Rect> {
+        let window = self.drop_window(drop).ok()?;
+        let view = match what {
+            Moved::Tab(p, i) => self.pane(*p).ok()?.tabs.get(*i)?.clone(),
+            Moved::Pane(p) => self.pane(*p).ok()?.tabs.first()?.clone(),
+            Moved::View(v) => v.clone(),
+        };
+        let mut l = self.clone();
+        match what {
+            Moved::Tab(p, i) => l.move_tab(*p, *i, drop),
+            Moved::Pane(p) => l.move_pane(*p, drop),
+            Moved::View(v) => l.open_at(v.clone(), drop),
+        }
+        .ok()?;
+        let (pane, _) = l.find_view(&view)?;
+        if l.window_of(pane).ok()? != window {
+            return None;
+        }
+        l.pane_rects(window, size, m).ok()?.into_iter().find(|(p, _)| *p == pane).map(|(_, r)| r)
     }
 
     // ---------------------------------------------------------------- persistence
@@ -876,36 +1070,56 @@ fn remove_pane_node(node: &mut Node, pane: PaneId) -> bool {
     s.children.iter_mut().any(|c| remove_pane_node(&mut c.node, pane))
 }
 
-/// Puts `new` next to `target`, reusing the parent split when its axis matches.
-fn insert_beside(node: &mut Node, target: PaneId, new: PaneId, edge: Edge, sid: SplitId) -> bool {
-    let axis = edge.axis();
-    match node {
-        Node::Pane(p) if *p == target => {
-            let (a, b) = if edge.is_before() { (new, target) } else { (target, new) };
-            *node = Node::Split(Split {
-                id: sid,
-                axis,
-                children: vec![
-                    Child { node: Node::Pane(a), weight: 0.5 },
-                    Child { node: Node::Pane(b), weight: 0.5 },
-                ],
-            });
-            true
-        }
-        Node::Pane(_) => false,
-        Node::Split(s) => {
-            if s.axis == axis
-                && let Some(i) = s.children.iter().position(|c| matches!(c.node, Node::Pane(p) if p == target))
-            {
-                let half = s.children[i].weight / 2.0;
-                s.children[i].weight = half;
-                let at = if edge.is_before() { i } else { i + 1 };
-                s.children.insert(at, Child { node: Node::Pane(new), weight: half });
-                return true;
-            }
-            s.children.iter_mut().any(|c| insert_beside(&mut c.node, target, new, edge, sid))
+impl Node {
+    fn is(&self, r: NodeRef) -> bool {
+        match (self, r) {
+            (Node::Pane(p), NodeRef::Pane(q)) => *p == q,
+            (Node::Split(s), NodeRef::Split(id)) => s.id == id,
+            _ => false,
         }
     }
+}
+
+/// Puts `new` beside `target` on `edge`, taking half of it: a sibling (half the target's
+/// weight) when the parent runs along the edge, else in `target`'s place (see
+/// [`place_at`]). `expanded` tells collapsed panes apart.
+fn insert_beside(node: &mut Node, target: NodeRef, new: &Node, edge: Edge, sid: SplitId, expanded: &dyn Fn(&Node) -> bool) -> bool {
+    if node.is(target) {
+        place_at(node, new.clone(), edge, sid, expanded);
+        return true;
+    }
+    let Node::Split(s) = node else { return false };
+    if let Some(i) = s.children.iter().position(|c| c.node.is(target)) {
+        if s.axis == edge.axis() {
+            let half = s.children[i].weight / 2.0;
+            s.children[i].weight = half;
+            let at = if edge.is_before() { i } else { i + 1 };
+            s.children.insert(at, Child { node: new.clone(), weight: half });
+        } else {
+            place_at(&mut s.children[i].node, new.clone(), edge, sid, expanded);
+        }
+        return true;
+    }
+    s.children.iter_mut().any(|c| insert_beside(&mut c.node, target, new, edge, sid, expanded))
+}
+
+/// Puts `new` at `node`'s place on `edge`: a split running along the edge takes it as
+/// its first or last child, weighted as all its expanded children (so it gets half of
+/// the expanded space, whatever `tidy` and collapsed panes do); anything else is wrapped
+/// with it in a new split, half and half.
+fn place_at(node: &mut Node, new: Node, edge: Edge, sid: SplitId, expanded: &dyn Fn(&Node) -> bool) {
+    let axis = edge.axis();
+    if let Node::Split(s) = node
+        && s.axis == axis
+    {
+        let weight = s.children.iter().filter(|c| expanded(&c.node)).map(|c| c.weight).sum::<f32>().max(MIN_WEIGHT);
+        let at = if edge.is_before() { 0 } else { s.children.len() };
+        s.children.insert(at, Child { node: new, weight });
+        return;
+    }
+    let old = std::mem::replace(node, Node::Pane(PaneId(0)));
+    let (a, b) = if edge.is_before() { (new, old) } else { (old, new) };
+    *node = Node::Split(Split { id: sid, axis, children: vec![Child { node: a, weight: 0.5 }, Child { node: b, weight: 0.5 }] });
 }
 
 /// Simplifies one-child splits, flattens same-axis nesting and normalizes weights.

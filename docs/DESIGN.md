@@ -122,7 +122,17 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - View instances (GPUI entities) are owned by an app-level registry keyed by `ViewRef`,
   so they survive moving between panes and windows and are dropped on close.
 
-- Moving a tab onto a pane edge replaces that pane with a split.
+- Moving a tab onto a pane edge splits that pane (`Drop::Edge`); onto a column's or
+  row's edge it lands beside the whole split (`Drop::Around`, R3.13). Either takes half
+  of what it lands beside: a sibling when the parent runs along the edge, a new child of a
+  split that does (weighted as its expanded children), else the target wrapped in a new
+  split. A drop beside clears maximize.
+- Drops are one layer under the panes (painted first, so tab strips and headers above
+  it keep their own drops) while a tab, pane, list row or file is dragged. Where it
+  lands is `Layout::drop_at` (pure, from the tree and `Metrics`): a body's centre is
+  into the pane, its quarter bands its edges, and at the very edge one 16 px strip per
+  enclosing split sharing that side (2/3 of the band at most), the outermost at the edge.
+  The highlight is `Layout::preview`, the drop done on a copy, so it is the real result.
 - Removing the last tab removes the pane and collapses the split (except the last pane
   of a window).
 - A pane with one tab or none has a header instead of a tab strip (R3.12): same 32 px,
@@ -320,7 +330,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   own route like git dirs (no rescan). It reads in the background, only while shown, at
   most once a second; the editor is made on the first draw (gpui-component's editor needs
   a window, views are built without one).
-- Files dropped from outside (`ExternalPaths`) land through the same drop zones and tab
+- Files dropped from outside (`ExternalPaths`) land through the same drop layer and tab
   strips as tabs and list rows (`drops.rs`).
 - Notes live in `~/.local/share/devdeck/workspaces/<id>/notes/` (`index.json` and one
   `<id>.md` each; `DEVDECK_DATA_DIR` moves it), owned by a `Notes` entity per workspace
@@ -358,7 +368,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 The theme is global, like the UI scale, not per workspace (user decision).
 - 2026-11-07 A list row dragged onto a pane opens its item there (into the pane or at an
   edge). GPUI shows the pane drop zones for any drag, so rows use them instead of
-  hiding them.
+  hiding them. (2026-11-08: one drop layer under the panes replaced the zones, R3.13.)
 - 2026-11-07 Deployment pins are per service name and shared by every env; pins of
   items that no longer exist stay in the state file and are not shown.
 - 2026-11-07 Context menus open with `window.prevent_default()`, otherwise GPUI hands
