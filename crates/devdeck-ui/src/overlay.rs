@@ -12,6 +12,7 @@
 //! - Toasts expire on a single timer that stops when the stack is empty, so idle CPU
 //!   stays at zero.
 
+use crate::scroll::Scrolls;
 use crate::components::label;
 use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
@@ -267,7 +268,7 @@ impl Render for Menu {
             .min_w(t.size(220.))
             .max_w(t.size(420.))
             .max_h(max_h)
-            .overflow_y_scroll()
+            .scroll_y()
             .py_1()
             .bg(t.raised)
             .border_1()

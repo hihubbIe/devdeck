@@ -12,11 +12,11 @@ use crate::shell::{self, Shell};
 use devdeck_core::apps::Tier;
 use devdeck_core::fuzzy;
 use devdeck_core::view_addr::ViewAddr;
+use devdeck_ui::scroll_list;
 use devdeck_ui::{Icon, InputEvent, TextInput, ToastKind, dot, icon_text, label, modal_frame, pop_modal, push_modal, theme, toasts};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, Global, InteractiveElement, IntoElement, ParentElement, Render, ScrollStrategy,
     SharedString, StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*,
-    uniform_list,
 };
 
 actions!(palette, [PaletteDown, PaletteUp, PaletteDrill]);
@@ -328,7 +328,7 @@ impl Render for Palette {
             (None, Some(e)) => format!("runs on @{e}"),
             (None, None) => String::new(),
         };
-        let list = uniform_list(
+        let list = scroll_list(
             "palette-rows",
             n,
             cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {

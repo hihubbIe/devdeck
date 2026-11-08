@@ -49,6 +49,12 @@ The interactive HTML prototype that was approved is the visual reference
 - Envs use a distinct violet chip so the target env is always visible in labels:
   `start:dev @dev35`.
 - Text truncates, never wraps (R4.4). Middle truncation for paths and image names.
+- Scroll containers are `devdeck_ui::Scrolls` (`scroll_x`, `scroll_y`, `scroll_xy`) and
+  lists `devdeck_ui::scroll_list`: a trackpad gesture keeps the axis it starts on (GPUI's
+  `restrict_scroll_to_axis`, precise deltas only, so Wayland), nothing drifts diagonally
+  (R9.6); sideways-only areas take shift+wheel. A terminal filters its own wheel events
+  the same way (`gpui::OngoingScroll`). `clippy.toml` keeps GPUI's own scroll methods and
+  `uniform_list` out of the app.
 
 ### Theme tokens (dark, contrast raised from the prototype)
 
@@ -321,6 +327,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   of a maximized window behave as a resize border. Each edge has its own hitbox, so the
   cursor follows the pointer without a redraw. The window size is remembered only while
   no side is held, so a maximized or snapped size never becomes the size to reopen with.
+  Whether the main window is maximized is remembered too (2026-11-08, R9.8): it opens
+  `WindowBounds::Maximized` over its windowed size, which restoring gives back.
 - 2026-11-07 In a focused terminal a key goes to the process when it has terminal bytes
   (text, ⏎, ⌫, Tab, Esc, arrows, Home/End, PgUp/PgDn, Ins/Del, F1–F12, ctrl+letter and
   ctrl+`[\]^_/@`); `alt+…`, `ctrl+shift+…` and keys without bytes (ctrl+tab, ctrl+digit,
@@ -375,8 +383,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   (closing a shell never changes a layout, user). The deck tells the runner which
   terminals are shown; one not running and not shown is forgotten. Empty panes stay out
   (user): a pane still goes with its last tab.
-- 2026-11-08 The app calls itself **Kugelblitz** (user): the title bar (with its icon,
-  `assets/app/devdeck.svg`), window titles, an empty pane's welcome and every message
+- 2026-11-08 The app calls itself **Kugelblitz** (user): the title bar's icon
+  (`assets/app/devdeck.svg`, the name only as its tooltip since it read as a menu, R9.7), window titles, an empty pane's welcome and every message
   naming the app. The project, binary, crates, files, refs and app id stay `devdeck`.
 - 2026-11-08 Right-click menu (R5.7): a view passes its own items and the content
   (`context_menu::Content`, text for now); a list of action functions adds what applies

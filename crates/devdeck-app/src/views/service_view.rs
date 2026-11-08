@@ -12,6 +12,7 @@ use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling};
 use crate::repo::{Looking, Repo};
 use devdeck_core::cluster::{Deployment, Pod, Remote, Rollout, unlock_matches};
 use devdeck_core::view_addr::ViewAddr;
+use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
     Icon, InputEvent, MenuItem, ModalFocus, TextInput, Theme, ToastKind, button, dot, icon, icon_button, icon_text, label, modal_frame, open_menu,
@@ -704,7 +705,7 @@ impl Render for ServiceView {
             .id("service-body")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .scroll_y()
             .px_3()
             .pb_3()
             .flex()
@@ -714,7 +715,7 @@ impl Render for ServiceView {
             .child(metrics_el)
             .child(section("Pods", &t))
             // Wider than a narrow pane: scrolls sideways instead of clipping (R3.9).
-            .child(div().id("pods-scroll").w_full().overflow_x_scroll().child(pod_rows.min_w(t.size(1100.))))
+            .child(div().id("pods-scroll").w_full().scroll_x().child(pod_rows.min_w(t.size(1100.))))
             .child(section(if d.containers.len() > 1 { "Containers" } else { "Container" }, &t))
             .child(containers)
             .child(section("Deploy history", &t))

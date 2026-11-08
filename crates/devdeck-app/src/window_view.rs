@@ -116,11 +116,12 @@ pub struct WindowView {
     _observe: Vec<Subscription>,
 }
 
-/// Options shared by every devdeck window; `size` in logical pixels.
-pub fn window_options((w, h): (f32, f32), cx: &App) -> WindowOptions {
+/// Options shared by every devdeck window; `size` in logical pixels, the windowed size
+/// (restoring a `maximized` one gives it back, R9.8).
+pub fn window_options((w, h): (f32, f32), maximized: bool, cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, size(logical(w), logical(h)), cx);
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(if maximized { WindowBounds::Maximized(bounds) } else { WindowBounds::Windowed(bounds) }),
         window_decorations: Some(WindowDecorations::Client),
         app_id: Some("devdeck".into()),
         window_min_size: Some(size(logical(480.), logical(320.))),
@@ -202,9 +203,11 @@ impl WindowView {
         ];
         let size_shell = shell.downgrade();
         observe.push(cx.observe_window_bounds(window, move |_, window, cx| {
-            if let Some(size) = free_size(window) {
-                let _ = size_shell.update(cx, |s, _| s.main_size = Some(size));
-            }
+            let (size, maximized) = (free_size(window), window.is_maximized());
+            let _ = size_shell.update(cx, |s, _| {
+                s.main_size = size.or(s.main_size);
+                s.main_maximized = maximized;
+            });
         }));
         window.on_window_should_close(cx, |_, cx| {
             cx.defer(shell::request_quit);
@@ -644,16 +647,14 @@ impl Render for WindowView {
                     window.start_window_move();
                 }
             })
+            // The icon alone (R9.7): the name beside it read as a menu.
             .child(
                 div()
-                    .id("app-name")
+                    .id("app-icon")
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .text_color(t.hi)
                     .tooltip(tip(APP_NAME))
-                    .child(img(APP_ICON).flex_none().size(t.size(23.)))
-                    .child(APP_NAME),
+                    .child(img(APP_ICON).flex_none().size(t.size(23.))),
             )
             .when_some(menu_shell, |d, shell| {
                 d.child(

@@ -77,6 +77,8 @@ pub struct Shell {
     main: Option<WindowHandle<WindowView>>,
     /// Main window size in logical pixels, saved in `app.json`.
     pub main_size: Option<(f32, f32)>,
+    /// Whether the main window is maximized, saved in `app.json` (R9.8).
+    pub main_maximized: bool,
     /// The sidebar's width at UI scale 1, saved in `app.json` (`None`: the theme's).
     pub sidebar_w: Option<f32>,
     pub quit_state: QuitState,
@@ -187,6 +189,7 @@ impl Shell {
             store,
             main: None,
             main_size: app_state.main_size,
+            main_maximized: app_state.main_maximized,
             sidebar_w: app_state.sidebar_w,
             quit_state: QuitState::Idle,
             quit_for_real: true,
@@ -203,7 +206,7 @@ impl Shell {
         }
         let size = shell.read(cx).main_size.unwrap_or((1600., 1000.));
         let view_shell = shell.clone();
-        match cx.open_window(window_options(size, cx), |window, cx| cx.new(|cx| WindowView::main(view_shell, window, cx))) {
+        match cx.open_window(window_options(size, shell.read(cx).main_maximized, cx), |window, cx| cx.new(|cx| WindowView::main(view_shell, window, cx))) {
             Ok(h) => shell.update(cx, |s, _| s.main = Some(h)),
             Err(e) => problems.push(format!("could not open the main window: {e}")),
         }
@@ -386,7 +389,7 @@ impl Shell {
 
     fn save_app(&mut self, cx: &mut Context<Self>) {
         let Some(store) = &self.store else { return };
-        let state = AppState { active_workspace: Some(self.workspaces[self.active].id.clone()), main_size: self.main_size, sidebar_w: self.sidebar_w };
+        let state = AppState { active_workspace: Some(self.workspaces[self.active].id.clone()), main_size: self.main_size, main_maximized: self.main_maximized, sidebar_w: self.sidebar_w };
         match store.save_app(&state) {
             Ok(()) => self.app_save_failed = false,
             Err(e) if !self.app_save_failed => {

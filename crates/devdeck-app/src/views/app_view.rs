@@ -7,6 +7,7 @@ use super::{ViewCx, run_mark};
 use crate::runner::RunKey;
 use devdeck_core::apps::{Command, Tier};
 use devdeck_core::view_addr::ViewAddr;
+use devdeck_ui::Scrolls;
 use devdeck_ui::{Icon, ToastKind, action_button, icon, icon_text, label, section, theme, toasts};
 use gpui::{
     App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -209,7 +210,7 @@ impl Render for AppView {
             .child(env_line)
             .children(missing.iter().map(|m| icon_text(Icon::Warning, t.warn, m.clone(), &t)));
 
-        let mut body = div().id("app-commands").flex_1().min_h_0().overflow_y_scroll().px_3().pb_2().flex().flex_col();
+        let mut body = div().id("app-commands").flex_1().min_h_0().scroll_y().px_3().pb_2().flex().flex_col();
         for tier in Tier::ALL {
             let cmds = app.tier(tier);
             if cmds.is_empty() {

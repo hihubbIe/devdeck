@@ -245,7 +245,7 @@ fn saved_state_is_restored_and_broken_files_fall_back(cx: &mut TestAppContext) {
     let dir = temp(cx, "restore");
     let store = StateStore::new(dir.clone());
     store.save_layout("work", &custom_work()).unwrap();
-    store.save_app(&AppState { active_workspace: Some("personal".into()), main_size: None, sidebar_w: None }).unwrap();
+    store.save_app(&AppState { active_workspace: Some("personal".into()), main_size: None, main_maximized: false, sidebar_w: None }).unwrap();
     std::fs::create_dir_all(dir.join("workspaces/personal")).unwrap();
     std::fs::write(dir.join("workspaces/personal/layout.json"), "{oops").unwrap();
 
@@ -366,7 +366,7 @@ fn reopening_brings_views_back_and_restarts_what_ran(cx: &mut TestAppContext) {
     ]
     .into();
     store.save_views("work", &views).unwrap();
-    store.save_app(&AppState { active_workspace: Some("work".into()), main_size: None, sidebar_w: None }).unwrap();
+    store.save_app(&AppState { active_workspace: Some("work".into()), main_size: None, main_maximized: false, sidebar_w: None }).unwrap();
     let shell = start(cx, devdeck_app::demo_workspaces(), Some(store), "views-restore");
     let work = deck(&shell, cx, "work");
     let run = cx.read(|cx| work.read(cx).view(&run_ref()).unwrap().downcast::<RunView>().unwrap());

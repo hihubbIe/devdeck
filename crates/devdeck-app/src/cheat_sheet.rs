@@ -3,10 +3,11 @@
 
 use crate::registry::{self, ActionSpec};
 use devdeck_core::fuzzy;
+use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::ModalClose;
 use devdeck_ui::{InputEvent, TextInput, label, modal_frame, pop_modal, push_modal, section, theme};
 use gpui::{
-    App, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
+    App, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     Subscription, WeakFocusHandle, Window, div,
 };
 
@@ -57,7 +58,7 @@ impl Render for CheatSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let entries = self.entries(cx);
-        let mut list = div().id("cheat-list").max_h(t.size(560.)).w(t.size(640.)).overflow_y_scroll().flex().flex_col();
+        let mut list = div().id("cheat-list").max_h(t.size(560.)).w(t.size(640.)).scroll_y().flex().flex_col();
         let mut group = "";
         for s in &entries {
             if s.group != group {

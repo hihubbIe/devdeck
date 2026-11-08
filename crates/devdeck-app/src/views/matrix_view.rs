@@ -9,10 +9,11 @@ use super::ViewCx;
 use crate::cluster::Cluster;
 use devdeck_core::cluster::{Deployment, Remote};
 use devdeck_core::view_addr::ViewAddr;
+use devdeck_ui::{Scrolls, scroll_list};
 use devdeck_ui::{Icon, Theme, icon, label, theme, tip};
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*, uniform_list,
+    StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window, actions, div, prelude::*,
 };
 use std::rc::Rc;
 
@@ -149,7 +150,7 @@ impl Render for MatrixView {
         }
         let width = name_w + cell_w * c.envs.len() as f32;
         let rows = services.clone();
-        let list = uniform_list(
+        let list = scroll_list(
             "matrix-rows",
             services.len(),
             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
@@ -193,7 +194,7 @@ impl Render for MatrixView {
                     .id("matrix-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_x_scroll()
+                    .scroll_x()
                     .child(div().w(width + t.size(24.)).h_full().px_3().py_1().flex().flex_col().child(header).child(list)),
             )
     }

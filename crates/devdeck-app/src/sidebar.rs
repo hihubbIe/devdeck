@@ -21,11 +21,12 @@ use devdeck_core::view_addr::ViewAddr;
 use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, Result as LayoutResult, ViewRef};
 use devdeck_core::list::{self, Groups, Kids, ListItem, Row, Section, Shape, group_of_row, group_row_path};
 use devdeck_core::state::{SidebarState, StateStore};
+use devdeck_ui::scroll_list;
 use devdeck_ui::{DragGhost, Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, dot, icon, icon_text, label, open_menu, theme, tip, toasts, toggle_button, tree_row};
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, Focusable, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
-    UniformListScrollHandle, Window, actions, div, prelude::*, uniform_list,
+    UniformListScrollHandle, Window, actions, div, prelude::*,
 };
 
 actions!(
@@ -1108,7 +1109,7 @@ impl Render for Sidebar {
                 )
             });
 
-        let list = uniform_list(
+        let list = scroll_list(
             "sidebar-rows",
             count,
             cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {

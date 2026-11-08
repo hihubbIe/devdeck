@@ -5,6 +5,7 @@
 pub mod components;
 pub mod icons;
 pub mod overlay;
+pub mod scroll;
 pub mod terminal;
 pub mod text_buffer;
 pub mod text_input;
@@ -12,6 +13,7 @@ pub mod theme;
 
 pub use components::*;
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};
+pub use scroll::{Scrolls, scroll_list};
 pub use overlay::{MenuItem, ModalFocus, ToastKind, modal_frame, open_menu, pop_modal, push_modal, render_layer, toasts};
 pub use text_input::{InputEvent, TextInput};
 

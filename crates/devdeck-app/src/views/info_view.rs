@@ -3,6 +3,7 @@
 
 use super::ViewCx;
 use devdeck_core::config::{MACHINE_FILE, WORKSPACES_DIR};
+use devdeck_ui::Scrolls;
 use devdeck_ui::{Icon, icon, label, section, theme};
 use gpui::{Context, IntoElement, ParentElement, Render, Styled, Subscription, Window, div, prelude::*};
 
@@ -35,7 +36,7 @@ impl Render for ProblemsView {
                 div().flex().items_start().gap_1().text_color(t.warn).child(div().flex_none().h(t.line_height).flex().items_center().child(icon(Icon::Warning, t.warn, &t))).child(div().min_w_0().child(p))
             }))
         };
-        div().id("problems").size_full().overflow_y_scroll().p_3().child(section("Problems", &t)).child(body)
+        div().id("problems").size_full().scroll_y().p_3().child(section("Problems", &t)).child(body)
     }
 }
 
@@ -59,7 +60,7 @@ impl Render for WelcomeView {
         div()
             .id("welcome")
             .size_full()
-            .overflow_y_scroll()
+            .scroll_y()
             .p_3()
             .flex()
             .flex_col()

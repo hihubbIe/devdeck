@@ -64,6 +64,9 @@ pub struct RunView {
     size: Rc<Cell<Option<TermSize>>>,
     /// Wheel movement short of a row.
     wheel: f32,
+    /// The trackpad gesture under way: it keeps its axis (R9.6), so a sideways swipe
+    /// never scrolls the history.
+    gesture: gpui::OngoingScroll,
     /// The last redraw for output, a redraw waiting for its turn, the last input.
     drawn: Option<Instant>,
     pending: Option<gpui::Task<()>>,
@@ -124,6 +127,7 @@ impl RunView {
             geometry: Rc::default(),
             size: Rc::default(),
             wheel: 0.,
+            gesture: gpui::OngoingScroll::default(),
             drawn: None,
             pending: None,
             typed: None,
@@ -476,7 +480,11 @@ impl RunView {
     /// keys when the program asks for that (alternate scroll mode).
     fn scroll(&mut self, e: &ScrollEvent, cx: &mut Context<Self>) {
         let Some(g) = self.geometry.get() else { return };
-        let lines = terminal::wheel_rows(e.delta.pixel_delta(g.cell.height).y, g.cell.height, &mut self.wheel);
+        let mut delta = e.delta.pixel_delta(g.cell.height);
+        if e.delta.precise() {
+            self.gesture.filter(&mut delta, e.touch_phase);
+        }
+        let lines = terminal::wheel_rows(delta.y, g.cell.height, &mut self.wheel);
         let Some(run) = self.ctx.services.read(cx).runner.read(cx).run(&self.key) else { return };
         let (modes, rows, dropped) = (run.terminal.modes(), run.terminal.rows(), run.terminal.dropped());
         if lines == 0 {

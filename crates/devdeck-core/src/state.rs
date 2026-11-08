@@ -61,6 +61,9 @@ pub struct AppState {
     pub active_workspace: Option<String>,
     /// Main window size in logical pixels.
     pub main_size: Option<(f32, f32)>,
+    /// Whether the main window was maximized when last seen (R9.8); `main_size` stays
+    /// its windowed size.
+    pub main_maximized: bool,
     /// The sidebar's width in logical pixels at UI scale 1 (R4.9); `None`: the theme's.
     pub sidebar_w: Option<f32>,
 }
@@ -348,9 +351,12 @@ mod tests {
     fn app_state_and_safe_ids() {
         let s = store("app");
         assert_eq!(s.load_app(), Loaded::Missing);
-        let state = AppState { active_workspace: Some("personal".into()), main_size: Some((1600., 1000.)), sidebar_w: Some(360.) };
+        let state = AppState { active_workspace: Some("personal".into()), main_size: Some((1600., 1000.)), main_maximized: true, sidebar_w: Some(360.) };
         s.save_app(&state).unwrap();
         assert_eq!(s.load_app(), Loaded::Ok(state));
+        // Saved before the window's maximized state was kept: windowed.
+        std::fs::write(s.dir.join("app.json"), r#"{"active_workspace":"personal","main_size":[1600.0,1000.0]}"#).unwrap();
+        assert!(matches!(s.load_app(), Loaded::Ok(AppState { main_maximized: false, .. })));
         assert_eq!(safe_id("../evil name"), "___evil_name");
     }
 

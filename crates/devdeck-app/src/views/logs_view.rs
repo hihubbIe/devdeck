@@ -7,11 +7,12 @@ use super::ViewCx;
 use crate::cluster::Cluster;
 use devdeck_core::cluster::Pod;
 use devdeck_core::runs::{Level, Output};
+use devdeck_ui::{Scrolls, scroll_list};
 use devdeck_ui::{InputEvent, TextInput, label, theme, tip, toggle_button};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
     ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
-    Window, actions, div, prelude::*, uniform_list,
+    Window, actions, div, prelude::*,
 };
 use std::time::Duration;
 
@@ -284,7 +285,7 @@ impl Render for ServiceLogsView {
             let row_h = t.line_height;
             let current = self.current;
             let match_set: std::collections::HashSet<usize> = matches.into_iter().collect();
-            uniform_list(
+            scroll_list(
                 "logs-lines",
                 count,
                 cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
@@ -313,6 +314,7 @@ impl Render for ServiceLogsView {
                 }),
             )
             .track_scroll(&self.scroll)
+            .scroll_xy()
             .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
             .with_width_from_item(Some(longest))
             .flex_1()

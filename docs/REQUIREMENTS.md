@@ -97,6 +97,9 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R9.5** Buttons, marks and messages use real icons (one outline set, drawn in the theme's colors and sized by the UI scale), never font glyphs; status dots are drawn shapes (decided 2026-11-07).
 - [~] **R9.4** A Settings button in the title bar opens settings as a full-window view (not a tab). It holds global, per-machine choices: UI scale (for example 90–150 %, on top of the desktop's own scaling) and theme, and later more. Every size in the UI derives from the UI scale. Settings are saved to the config folder and apply immediately.
+- [~] **R9.6** A scroll gesture moves one axis, the one it starts on, even in an area that scrolls both ways, terminals included (decided 2026-11-08, user: a sideways swipe on a long line also scrolled down). A sideways-only area scrolls with a sideways gesture or shift+wheel. Trackpads on Wayland; X11 reports every scroll as wheel notches, which GPUI doesn't lock.
+- [~] **R9.7** The title bar shows the app's icon, not its name, which read as a menu (decided 2026-11-08, user). The name is the icon's tooltip and stays in window titles.
+- [~] **R9.8** The main window reopens as it closed: maximized, or windowed at its last size (decided 2026-11-08, user).
 
 ## 10. Configuration and setup
 

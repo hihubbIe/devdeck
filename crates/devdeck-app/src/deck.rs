@@ -704,7 +704,7 @@ fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
         }
     };
     let view_deck = deck.clone();
-    let result = cx.open_window(window_options(size, cx), |window, cx| cx.new(|cx| WindowView::detached(id, view_deck, window, cx)));
+    let result = cx.open_window(window_options(size, false, cx), |window, cx| cx.new(|cx| WindowView::detached(id, view_deck, window, cx)));
     deck.update(cx, |d, cx| match result {
         Ok(h) => {
             d.os_windows.insert(id, Some(h));

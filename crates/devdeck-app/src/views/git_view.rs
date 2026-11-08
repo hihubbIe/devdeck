@@ -14,6 +14,7 @@ use crate::cluster::Cluster;
 use crate::repo::{Looking, Repo};
 use devdeck_core::cluster::Remote;
 use devdeck_core::git::{Branch, ChangeKind, Doing, Head, Op, PushPlan};
+use devdeck_ui::scroll_list;
 use devdeck_ui::{
     Icon, InputEvent, ModalFocus, TextInput, Theme, ToastKind, button, icon, icon_text, label, modal_frame, pop_modal, push_modal, section, theme,
     tip, toasts,
@@ -21,7 +22,6 @@ use devdeck_ui::{
 use gpui::{
     AnyElement, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, WeakFocusHandle, Window, actions, div, prelude::*,
-    uniform_list,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -588,7 +588,7 @@ impl Render for GitView {
 
         let rows = self.rows(cx);
         let count = rows.len();
-        let list = uniform_list(
+        let list = scroll_list(
             "git-branches",
             count,
             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {

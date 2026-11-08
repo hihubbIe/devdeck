@@ -1,6 +1,7 @@
 //! Component gallery (`demo/gallery`): every shared component in its states, for the
 //! visual check and the manual test. Not part of the product.
 
+use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
     InputEvent, MenuItem, ModalFocus, TextInput, ToastKind, button, label, modal_frame, open_menu, pop_modal, push_modal,
@@ -68,7 +69,7 @@ impl Render for Gallery {
         div()
             .id("gallery")
             .size_full()
-            .overflow_y_scroll()
+            .scroll_y()
             .p_3()
             .flex()
             .flex_col()

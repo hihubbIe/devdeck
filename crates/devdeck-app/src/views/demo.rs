@@ -1,11 +1,12 @@
 //! Demo views from the M0 spike (logs stream, notes, gallery). Not part of the product;
 //! kept to exercise the pane engine and for the manual test.
 
+use devdeck_ui::{Scrolls, scroll_list};
 use devdeck_ui::{dot, theme};
 use devdeck_core::layout::ViewRef;
 use gpui::{
     AnyView, App, AppContext, Context, FocusHandle, Focusable, IntoElement, ListHorizontalSizingBehavior, ParentElement, Render, SharedString,
-    Styled, Task, UniformListScrollHandle, Window, div, prelude::*, uniform_list,
+    Styled, Task, UniformListScrollHandle, Window, div, prelude::*,
 };
 use std::time::Duration;
 
@@ -178,7 +179,7 @@ impl Render for LogsView {
                     ),
             )
             .child(
-                uniform_list(
+                scroll_list(
                     "log-lines",
                     count,
                     cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
@@ -197,6 +198,7 @@ impl Render for LogsView {
                     }),
                 )
                 .track_scroll(&self.scroll)
+                .scroll_xy()
                 .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
                 .with_width_from_item(Some(self.longest))
                 .flex_1()
@@ -232,7 +234,7 @@ impl Render for TextView {
         div()
             .id("text-scroll")
             .size_full()
-            .overflow_scroll()
+            .scroll_xy()
             .p_3()
             .text_color(t.fg)
             .children(lines.into_iter().map(|l| div().whitespace_nowrap().child(l)))

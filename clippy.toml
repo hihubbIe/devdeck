@@ -2,4 +2,9 @@
 disallowed-methods = [
     { path = "gpui::px", reason = "use a size from devdeck_ui::Theme (or Theme::size) so it follows the UI scale" },
     { path = "gpui::rems", reason = "use a size from devdeck_ui::Theme so it follows the UI scale" },
+    # Scroll containers lock a gesture to one axis (R9.6).
+    { path = "gpui::StatefulInteractiveElement::overflow_scroll", reason = "use devdeck_ui::Scrolls::scroll_xy" },
+    { path = "gpui::StatefulInteractiveElement::overflow_x_scroll", reason = "use devdeck_ui::Scrolls::scroll_x" },
+    { path = "gpui::StatefulInteractiveElement::overflow_y_scroll", reason = "use devdeck_ui::Scrolls::scroll_y" },
+    { path = "gpui::uniform_list", reason = "use devdeck_ui::scroll_list" },
 ]
