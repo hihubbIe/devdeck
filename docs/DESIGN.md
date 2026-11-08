@@ -8,7 +8,7 @@ The interactive HTML prototype that was approved is the visual reference
 ## Window anatomy
 
 ```
-┌ title bar ── workspace ▾ · layout ▾ ───── search (ctrl k) ───── env ▾ · ● 3 running · ✖ 1 · ? ┐
+┌ title bar ── workspace ▾ · layout ▾ ── search (ctrl k) ── env ▾ · ● 3 running · ? · ⚠ edit ┐
 │ activity │ sidebar (list) │ split tree of panes ……………………………………………………………………………………… │
 │   bar    │  Pinned        │ ┌ pane: tabs ───────────┐┌ pane: tabs ─────────────────────────┐ │
 │          │  All           │ │ view                  ││ view                                │ │
@@ -101,7 +101,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   converts pixel drags to weights and enforces a minimum pane size in pixels.
 - A detached window's root is always a single pane. Its title bar has ⇲ (send the
   tabs back to the main window's focused pane) next to × (close the window and its
-  tabs).
+  tabs), and edit mode's button like the main window's (its views may deploy).
 - "Send to…" moves a tab or a whole pane to any pane of any window, or to a new
   window: number badges appear on every pane, pick by key or click.
 - Each window has a focused pane; focus moves by pure rules after close, move and
@@ -208,6 +208,25 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   devdeck in its state folder, and failure reasons come from pod container states.
 - Writes: patch the container image, rollout restart, scale. Protected envs need an
   unlock (R7.6).
+
+### Edit mode
+
+- Potentially destructive actions run only in edit mode (R5.6): deploys (set image,
+  undo, restart, replicas), a git replace push or abort (not a bisect's), stopping a
+  process devdeck didn't start, a shell in a pod; k9s opens `--readonly` otherwise.
+  One switch for the app, off at every start; on after a modal, off without one; the
+  title bar of every window shows it (a dim warning icon, or a red "edit mode" chip).
+- Checked where the action happens (`Cluster::writes`, `Repo::refusal`, the stop of a
+  process), so no button, key, menu or modal left open gets around it; buttons say why.
+  Checked before a protected env asks its name.
+- Not gated: fetch, switch, pull, new branch, publish and plain pushes, stopping
+  devdeck's own runs, ending terminals, logs, port-forward, the leftovers dialog at start
+  (devdeck's own processes, while edit mode is off anyway). Commands and terminals can
+  still run anything themselves (kubectl, deploy scripts): edit mode guards devdeck's
+  own actions.
+- devdeck never pushes `main` or `master` (any case), edit mode or not. A remote whose
+  default branch has another name (`develop`, `trunk`) isn't protected by that rule: a
+  known limit (plain pushes to it stay allowed; a replace still needs edit mode).
 
 ### Git
 
@@ -364,6 +383,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - 2026-11-07 (user, M3) Cluster envs are watched from first use until the workspace's
   cluster changes, not only while visible: an idle watch costs no CPU and lists show at
   once on return. Can be revisited.
+- 2026-11-08 (user) Edit mode gates destructive actions; devdeck never pushes main or
+  master. No auto-off.
 - 2026-11-08 (user, M3) Git isn't read only: a panel per app and service with switch,
   new branch, fetch, pull, a push that never loses anything, and abort; every write
   confirmed; an operation under way blocks everything but its abort. No commit, merge or

@@ -223,7 +223,13 @@ impl Repo {
 
     /// Why `op` can't run now, if it can't: another operation running, or one under way
     /// in the repository (only an abort then).
-    pub fn refusal(&self, op: &Op) -> Option<String> {
+    pub fn refusal(&self, op: &Op, cx: &gpui::App) -> Option<String> {
+        // A replace rewrites the remote branch's history, an abort resets changes: edit
+        // mode only (R5.6). Aborting a bisect resets nothing.
+        let destructive = matches!(op, Op::Push(PushPlan::Replace { .. })) || matches!(op, Op::Abort(d) if *d != devdeck_core::git::Doing::Bisecting);
+        if destructive && let Some(why) = crate::edit_mode::refusal(cx) {
+            return Some(why);
+        }
         if let Some((busy, _)) = &self.busy {
             return Some(format!("{busy} first"));
         }
@@ -260,7 +266,7 @@ impl Repo {
     /// Runs `op` (`what`: it in words, `doing`: while it runs). The task holds the
     /// repository until git exits.
     pub fn run(&mut self, op: Op, what: String, doing: String, cx: &mut Context<Self>) -> Result<(), String> {
-        if let Some(why) = self.refusal(&op) {
+        if let Some(why) = self.refusal(&op, cx) {
             return Err(why);
         }
         let git = self.git.clone().ok_or("the repository isn't read yet")?;
@@ -285,7 +291,7 @@ impl Repo {
     /// Fetches the push remote and decides what a push would do ([`Repo::plan`] once
     /// known).
     pub fn plan_push(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        if let Some(why) = self.refusal(&Op::Fetch) {
+        if let Some(why) = self.refusal(&Op::Fetch, cx) {
             return Err(why);
         }
         let git = self.git.clone().ok_or("the repository isn't read yet")?;

@@ -17,7 +17,8 @@ pub struct PortView {
 
 impl PortView {
     pub fn new(port: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
-        let mut subs = vec![cx.observe(&ctx.services, |_, _, cx| cx.notify())];
+        let edit_mode = crate::edit_mode::edit_mode(cx);
+        let mut subs = vec![cx.observe(&ctx.services, |_, _, cx| cx.notify()), cx.observe(&edit_mode, |_, _, cx| cx.notify())];
         let ports = ctx.services.read(cx).ports.clone();
         let me = cx.entity_id();
         let number = port.parse::<u16>().ok();
@@ -63,7 +64,13 @@ impl Render for PortView {
                 .debug_selector(|| "stop-holder".into())
                 .when(holder.is_none(), |b| b.text_color(t.dim).tooltip(tip(why)))
                 .when_some(holder, move |b, holder| {
-                    b.tooltip(tip(format!("stop {holder}"))).on_click(move |_, window, cx| stop_holder(&runner, port, &holder, window, cx))
+                    // A process devdeck didn't start: only in edit mode (R5.6).
+                    let gated = matches!(holder, PortHolder::Process { .. }).then(|| crate::edit_mode::refusal(cx)).flatten();
+                    let b = match &gated {
+                        Some(why) => b.text_color(t.dim).tooltip(tip(why.clone())),
+                        None => b.tooltip(tip(format!("stop {holder}"))),
+                    };
+                    b.on_click(move |_, window, cx| stop_holder(&runner, port, &holder, window, cx))
                 })
         };
         let open_run = run.map(|key| {

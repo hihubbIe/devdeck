@@ -59,7 +59,10 @@ pub struct Row {
 impl GitView {
     pub fn new(root: PathBuf, repo: Entity<Repo>, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| TextInput::new("filter branches", cx));
+        // Its buttons say whether edit mode allows them.
+        let edit_mode = crate::edit_mode::edit_mode(cx);
         let mut subs = vec![
+            cx.observe(&edit_mode, |_, _, cx| cx.notify()),
             cx.observe(&repo, |this, _, cx| this.repo_changed(cx)),
             cx.subscribe(&filter, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Changed(_) => {
@@ -156,7 +159,7 @@ impl GitView {
     /// Why `op` can't run now, if it can't (R5.5).
     pub fn refusal(&self, op: &Op, cx: &App) -> Option<String> {
         let repo = self.repo.read(cx);
-        if let Some(why) = repo.refusal(op) {
+        if let Some(why) = repo.refusal(op, cx) {
             return Some(why);
         }
         let s = repo.full()?;
@@ -171,6 +174,10 @@ impl GitView {
                 Some(_) => None,
             },
             Op::Push(_) if !on_branch => Some("not on a branch".into()),
+            Op::Push(_) => match &s.status.head {
+                Head::Branch(b) => devdeck_core::git::never_pushed(b).err(),
+                _ => None,
+            },
             Op::Switch(b) | Op::Track(b) => {
                 let row = s.branches.iter().find(|x| &x.name == b);
                 match row {
@@ -236,6 +243,9 @@ impl GitView {
             }
             PushPlan::Send { remote, branch, commits, .. } => {
                 (format!("Push {branch}"), vec![format!("Sends {commits} commits of {branch} to {remote}."), "Refused if your branch moved since this check.".into()], "Push")
+            }
+            PushPlan::Replace { remote, branch, .. } if crate::edit_mode::refusal(cx).is_some() => {
+                return self.toast(format!("Push: your {branch} was rewritten, so pushing it replaces {remote}'s: {}.", crate::edit_mode::OFF), cx);
             }
             PushPlan::Replace { remote, branch, replaced, .. } => {
                 let mut lines = vec![
@@ -324,6 +334,9 @@ impl GitView {
 
     /// Asks to abort the operation under way, saying which files' changes it resets.
     pub fn abort(&mut self, doing: Doing, cx: &mut Context<Self>) {
+        if let Some(why) = self.refusal(&Op::Abort(doing), cx) {
+            return self.toast(format!("Abort: {why}"), cx);
+        }
         let Some(git) = self.repo.read(cx).git() else { return };
         cx.spawn(async move |this, cx| {
             let impact = cx.background_executor().spawn(async move { git.abort_impact() }).await;
@@ -500,7 +513,14 @@ impl Render for GitView {
                 let doing = status.doing;
                 d.child(
                     div().flex().items_center().gap_2().child(icon_text(Icon::Warning, t.warn, why, &t).flex_1()).when_some(doing, |d, doing| {
-                        d.child(button("git-abort", "abort", &t).debug_selector(|| "git-abort".into()).on_click(cx.listener(move |this, _, _, cx| this.abort(doing, cx))))
+                        let why = self.refusal(&Op::Abort(doing), cx);
+                        d.child(
+                            button("git-abort", "abort", &t)
+                                .debug_selector(|| "git-abort".into())
+                                .when(why.is_some(), |b| b.text_color(t.dim))
+                                .tooltip(tip(why.unwrap_or_else(|| "abort it, back to where it started".into())))
+                                .on_click(cx.listener(move |this, _, _, cx| this.abort(doing, cx))),
+                        )
                     }),
                 )
             })

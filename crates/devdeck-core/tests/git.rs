@@ -45,6 +45,12 @@ impl Repos {
         r
     }
 
+    /// `work` on a branch `dev`, published and tracked (devdeck never pushes main).
+    fn on_dev(&self) {
+        self.sh("work", &["switch", "-q", "-c", "dev"]);
+        self.sh("work", &["push", "-q", "-u", "origin", "dev"]);
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
         self.dir.join(rel)
     }
@@ -446,28 +452,52 @@ fn push_publishes_sends_and_says_up_to_date() {
 }
 
 #[test]
+fn main_and_master_are_never_pushed() {
+    let r = Repos::new("push-main");
+    let git = r.git("work");
+    r.commit("work", "m.txt", "m\n", "on main");
+    let before = r.rev("origin", "main");
+    assert!(git.push_plan().unwrap_err().contains("never pushes main"), "no plan, no fetch");
+    // A plan made elsewhere for main is refused too, whatever its kind.
+    let head = r.rev("work", "HEAD");
+    for plan in [
+        PushPlan::Publish { remote: "origin".into(), branch: "main".into() },
+        PushPlan::Send { remote: "origin".into(), branch: "main".into(), head: head.clone(), commits: 1 },
+        PushPlan::Replace { remote: "origin".into(), branch: "main".into(), expected: before.clone(), head: head.clone(), replaced: vec![] },
+    ] {
+        assert!(git.run(&Op::Push(plan)).unwrap_err().contains("never pushes main"));
+    }
+    assert_eq!(r.rev("origin", "main"), before, "nothing pushed");
+    r.sh("work", &["switch", "-q", "-c", "Master"]);
+    assert!(git.push_plan().unwrap_err().contains("never pushes Master"), "any case");
+}
+
+#[test]
 fn push_refuses_when_the_remote_is_ahead() {
     let r = Repos::new("push-behind");
+    r.on_dev();
     r.clone("other");
+    r.sh("other", &["switch", "-q", "dev"]);
     r.commit("other", "b.txt", "b\n", "theirs");
-    r.sh("other", &["push", "-q", "origin", "main"]);
-    let remote = r.rev("origin", "main");
+    r.sh("other", &["push", "-q", "origin", "dev"]);
+    let remote = r.rev("origin", "dev");
     let plan = plan_of(&r, "work");
-    assert_eq!(plan, PushPlan::Behind { remote: "origin".into(), branch: "main".into(), commits: 1 });
+    assert_eq!(plan, PushPlan::Behind { remote: "origin".into(), branch: "dev".into(), commits: 1 });
     assert!(r.git("work").run(&Op::Push(plan)).is_err());
-    assert_eq!(r.rev("origin", "main"), remote);
+    assert_eq!(r.rev("origin", "dev"), remote);
 
     // Diverged with commits never had locally: still refused.
     r.commit("work", "c.txt", "c\n", "mine");
     let plan = plan_of(&r, "work");
-    assert_eq!(plan, PushPlan::Behind { remote: "origin".into(), branch: "main".into(), commits: 1 });
+    assert_eq!(plan, PushPlan::Behind { remote: "origin".into(), branch: "dev".into(), commits: 1 });
     assert!(r.git("work").run(&Op::Push(plan)).is_err());
-    assert_eq!(r.rev("origin", "main"), remote);
+    assert_eq!(r.rev("origin", "dev"), remote);
 }
 
 #[test]
 fn push_replaces_after_an_amend() {
     let r = Repos::new("push-amend");
+    r.on_dev();
     r.commit("work", "b.txt", "b\n", "draft");
     r.sh("work", &["push", "-q"]);
     let old = r.rev("work", "HEAD");
@@ -475,10 +505,10 @@ fn push_replaces_after_an_amend() {
     r.sh("work", &["commit", "-q", "-a", "--amend", "-m", "final"]);
     let plan = plan_of(&r, "work");
     let replaced = vec![Commit { id: old.clone(), subject: "draft".into(), author: "Ada".into() }];
-    assert_eq!(plan, PushPlan::Replace { remote: "origin".into(), branch: "main".into(), expected: old.clone(), head: r.rev("work", "HEAD"), replaced });
+    assert_eq!(plan, PushPlan::Replace { remote: "origin".into(), branch: "dev".into(), expected: old.clone(), head: r.rev("work", "HEAD"), replaced });
     r.git("work").run(&Op::Push(plan)).unwrap();
-    assert_eq!(r.rev("origin", "main"), r.rev("work", "HEAD"));
-    let backup = r.sh("work", &["for-each-ref", "--format=%(objectname)", "refs/devdeck/replaced/main/"]);
+    assert_eq!(r.rev("origin", "dev"), r.rev("work", "HEAD"));
+    let backup = r.sh("work", &["for-each-ref", "--format=%(objectname)", "refs/devdeck/replaced/dev/"]);
     assert_eq!(backup, old, "a backup ref keeps the replaced tip");
 }
 
@@ -504,18 +534,20 @@ fn push_replaces_after_a_rebase() {
 #[test]
 fn a_replace_is_refused_when_someone_pushed_meanwhile() {
     let r = Repos::new("push-lease");
+    r.on_dev();
     r.commit("work", "b.txt", "b\n", "draft");
     r.sh("work", &["push", "-q"]);
     r.sh("work", &["commit", "-q", "--amend", "-m", "amended"]);
     let plan = plan_of(&r, "work");
     assert!(matches!(plan, PushPlan::Replace { .. }), "{plan:?}");
     r.clone("other");
+    r.sh("other", &["switch", "-q", "dev"]);
     r.commit("other", "o.txt", "o\n", "pushed meanwhile");
-    r.sh("other", &["push", "-q", "origin", "main"]);
+    r.sh("other", &["push", "-q", "origin", "dev"]);
     let theirs = r.rev("other", "HEAD");
     let e = r.git("work").run(&Op::Push(plan)).unwrap_err();
     assert!(e.contains("rejected"), "{e}");
-    assert_eq!(r.rev("origin", "main"), theirs);
+    assert_eq!(r.rev("origin", "dev"), theirs);
 }
 
 #[test]
@@ -530,8 +562,8 @@ fn the_push_remote_is_chosen_or_refused() {
     assert_eq!(plan_of(&r, "work"), PushPlan::Publish { remote: "mirror".into(), branch: "topic".into() });
     r.sh("work", &["config", "branch.topic.pushRemote", "origin"]);
     assert_eq!(plan_of(&r, "work"), PushPlan::Publish { remote: "origin".into(), branch: "topic".into() });
-    r.sh("work", &["switch", "-q", "main"]);
-    assert_eq!(plan_of(&r, "work"), PushPlan::UpToDate { remote: "origin".into(), branch: "main".into() }, "the upstream's remote first");
+    r.sh("work", &["switch", "-q", "feat"]);
+    assert_eq!(plan_of(&r, "work"), PushPlan::UpToDate { remote: "origin".into(), branch: "feat".into() }, "the upstream's remote first");
     r.sh("work", &["switch", "-q", "--detach"]);
     assert!(r.git("work").push_plan().unwrap_err().starts_with("detached at"));
 }
@@ -539,28 +571,31 @@ fn the_push_remote_is_chosen_or_refused() {
 #[test]
 fn a_push_plan_for_another_branch_is_refused() {
     let r = Repos::new("push-stale");
+    r.on_dev();
     let plan = PushPlan::Publish { remote: "origin".into(), branch: "elsewhere".into() };
     assert_eq!(r.git("work").run(&Op::Push(plan)), Err("elsewhere isn't the current branch any more".into()));
     let head = r.rev("work", "HEAD");
-    let plan = PushPlan::Replace { remote: "origin".into(), branch: "main".into(), expected: String::new(), head, replaced: vec![] };
+    let plan = PushPlan::Replace { remote: "origin".into(), branch: "dev".into(), expected: String::new(), head, replaced: vec![] };
     assert!(r.git("work").run(&Op::Push(plan)).unwrap_err().contains("full commit id"));
 }
 
 #[test]
 fn a_colleague_s_commit_dropped_locally_is_never_replaced() {
     let r = Repos::new("push-dropped");
+    r.on_dev();
     r.clone("other");
+    r.sh("other", &["switch", "-q", "dev"]);
     r.commit_as_bob("other", "x.txt", "x\n", "bob's work");
-    r.sh("other", &["push", "-q", "origin", "main"]);
-    let theirs = r.rev("origin", "main");
+    r.sh("other", &["push", "-q", "origin", "dev"]);
+    let theirs = r.rev("origin", "dev");
     let git = r.git("work");
-    git.run(&Op::Pull("main".into())).unwrap();
+    git.run(&Op::Pull("dev".into())).unwrap();
     r.sh("work", &["reset", "-q", "--hard", "HEAD~1"]);
     r.commit("work", "c.txt", "c\n", "mine");
     let plan = git.push_plan().unwrap();
-    assert_eq!(plan, PushPlan::Behind { remote: "origin".into(), branch: "main".into(), commits: 1 }, "in the reflog, but Bob's and not in the branch");
+    assert_eq!(plan, PushPlan::Behind { remote: "origin".into(), branch: "dev".into(), commits: 1 }, "in the reflog, but Bob's and not in the branch");
     assert!(git.run(&Op::Push(plan)).is_err());
-    assert_eq!(r.rev("origin", "main"), theirs);
+    assert_eq!(r.rev("origin", "dev"), theirs);
 }
 
 #[test]
@@ -588,34 +623,36 @@ fn a_colleague_s_commit_rebased_is_replaced() {
 #[test]
 fn a_plan_made_before_head_moved_is_refused() {
     let r = Repos::new("push-moved");
+    r.on_dev();
     let git = r.git("work");
     r.commit("work", "b.txt", "b\n", "one more");
     let plan = git.push_plan().unwrap();
     assert!(matches!(plan, PushPlan::Send { .. }), "{plan:?}");
-    let remote = r.rev("origin", "main");
+    let remote = r.rev("origin", "dev");
     r.commit("work", "c.txt", "c\n", "and another");
-    assert_eq!(git.run(&Op::Push(plan)), Err("main moved since this was planned: plan it again".into()));
-    assert_eq!(r.rev("origin", "main"), remote);
+    assert_eq!(git.run(&Op::Push(plan)), Err("dev moved since this was planned: plan it again".into()));
+    assert_eq!(r.rev("origin", "dev"), remote);
 
     r.sh("work", &["push", "-q"]);
     r.sh("work", &["commit", "-q", "--amend", "-m", "amended"]);
     let plan = git.push_plan().unwrap();
     assert!(matches!(plan, PushPlan::Replace { .. }), "{plan:?}");
-    let remote = r.rev("origin", "main");
+    let remote = r.rev("origin", "dev");
     r.sh("work", &["commit", "-q", "--amend", "-m", "amended again"]);
-    assert_eq!(git.run(&Op::Push(plan)), Err("main moved since this was planned: plan it again".into()));
-    assert_eq!(r.rev("origin", "main"), remote);
+    assert_eq!(git.run(&Op::Push(plan)), Err("dev moved since this was planned: plan it again".into()));
+    assert_eq!(r.rev("origin", "dev"), remote);
     assert_eq!(r.sh("work", &["for-each-ref", "refs/devdeck/"]), "", "no backup ref for a push not made");
 }
 
 #[test]
 fn fetches_never_prune_local_tags() {
     let r = Repos::new("prune-tags");
+    r.on_dev();
     r.sh("work", &["config", "fetch.pruneTags", "true"]);
     r.sh("work", &["tag", "mine"]);
     let git = r.git("work");
     git.run(&Op::Fetch).unwrap();
-    git.run(&Op::Pull("main".into())).unwrap();
+    git.run(&Op::Pull("dev".into())).unwrap();
     git.push_plan().unwrap();
     assert!(git.has_ref("mine"));
 }

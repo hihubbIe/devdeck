@@ -832,3 +832,100 @@ an operation, every write confirmed); the core by a builder, the app side by the
 Found while checking snapshots: the demo's apps point at made-up folders that exist on the
 user's machine, so the demo opened their real repositories. **Fixed**: the demo opens only
 throwaway repositories in the temp folder.
+
+## Step 3b · Edit mode (plan, 2026-11-08)
+
+Requirements: R5.6 (new), R5.5, R7.6, R6.10.
+
+### Decisions (user, 2026-11-08)
+
+- An **edit mode**: a warning button in the title bar. Turning it on asks first in a modal
+  saying what it allows; turning it off doesn't ask. Off at every start; no auto-off.
+  One switch for the whole app.
+- Only in edit mode can a potentially destructive action run: a deploy (set image,
+  undo, restart, replicas — step 5; the demo's simulated ones too), a git **replace**
+  push (it rewrites the remote branch's history), a git **abort** (it resets changes),
+  stopping a process that isn't one of devdeck's runs ("Stop holder"), a shell in a pod
+  (step 4); k9s opens `--readonly` unless edit mode is on (step 4). Not gated: fetch,
+  switch, pull, new branch, publish and plain pushes, stopping devdeck's own runs, ending
+  terminals, logs, port-forward.
+- **devdeck never pushes `main` or `master`**, not even in edit mode: refused in the
+  core (publish, send and replace alike), the push button says why.
+- A protected env still asks for its name on top of edit mode (R7.6).
+
+### Design
+
+- `edit_mode.rs` (app): a global (`EditMode { on: bool }`), `is_on(cx)`, `turn_on(cx)` (after
+  the modal), `turn_off(cx)`, observable (views redraw their buttons). Not saved.
+- `edit_mode::refusal(cx) -> Option<String>`: "turn on edit mode first (the warning button
+  in the title bar)" when off. The gated places check it themselves, below the UI:
+  `Cluster::set_image` and `Cluster::undo`, `Repo::run` for `Op::Abort` and
+  `Op::Push(PushPlan::Replace)`, `port_scan::stop_holder` for a process that isn't a run.
+  Their buttons show the reason disabled (R5.5); the palette and keys go through the same
+  checks.
+- Title bar: off, a dim warning icon ("edit mode is off: destructive actions are
+  refused"); on, a red chip "edit mode" with the icon. Click on → modal ("Turn on edit
+  mode?": what it allows, that protected envs still ask, Cancel / Turn on); click off →
+  off at once. An action "toggle edit mode" in the palette and cheat sheet, no key.
+- Core (`git.rs`): `push_plan` and `run(Push)` refuse a branch named `main` or `master`
+  ("devdeck never pushes main or master"); the panel's push button says so.
+
+### Tests
+
+- App: off at start; set image, undo, abort, replace push and stop-holder of a process
+  refused with the reason while off and allowed once on; the modal turns it on, a click
+  turns it off without one; the title bar's states; existing deploy tests turn it on
+  first.
+- Core: pushes of `main` and `master` refused (publish, send, replace), nothing pushed.
+- Snapshots: the title bar off and on, the modal.
+
+### Review of the edit mode plan (subagent, 2026-11-08) and assessment
+
+1. The stop-process confirmation killed even if edit mode went off while it was open.
+   **Fixed**: checked again at the kill (and before asking).
+2. A protected env asked for its name before edit mode refused. **Fixed**: edit mode is
+   checked first; Save and Undo show the reason.
+3. A replace is only known after the fetch. **Fixed**: refused there with a toast, no
+   confirmation; a confirmation confirmed after turning off goes through `Repo::run`'s
+   check.
+4. Where the cluster check sits. **Accepted**: in `Cluster::writes` (step 5's restart and
+   replicas can't forget it); clearing a failed rollout (nothing changes in the cluster)
+   stays allowed; the watch restart isn't gated.
+5. Tests that break. **Fixed** (they turn edit mode on, the snapshot scenes too).
+6. Detached windows. **Accepted**: their title bar has the button; its modal opens in the
+   window clicked.
+7. What stays ungated. **Accepted**: listed in DESIGN (the leftovers dialog; commands and
+   terminals can run anything themselves).
+8. main/master: any case; the push button says so before any fetch; another default
+   branch name is a known limit (DESIGN). **Accepted**.
+9. Bisect: aborting it resets nothing: **not gated**.
+
+### Step 3b outcome (2026-11-08)
+
+`edit_mode.rs` (global, off at start), the title bar button in every window, the gates in
+`Cluster::writes`, `Repo::refusal` and the stop of a foreign process, `never_pushed` in the
+core. Snapshots `98-edit-mode-modal`, `99-edit-mode-on`. The deploy, port and git tests
+turn edit mode on where they deploy, stop a foreign process or abort; new `edit_mode.rs`
+tests and a core test for main and master.
+
+### Review of the step 3b diff (subagent, 2026-11-08) and assessment
+
+No way found to run a gated action while edit mode is off: every gate sits below the UI
+(`Cluster::writes`, `Repo::refusal`, the stop of a foreign process checked at the kill).
+The holes were in the UI and the tests:
+
+1. The git abort button looked enabled while off. **Fixed**: dimmed with the reason;
+   `abort()` checks the refusal first.
+2. Snapshot states could leak edit mode into the next scene. **Fixed**: turned off per
+   state.
+3. The port refusal toast offered "Stop holder" for a foreign process while off.
+   **Fixed**: offered only for a run of devdeck's or once edit mode is on.
+4. Enter on the modal turned edit mode on. **Fixed**: focus starts on Cancel, so a stray
+   Enter cancels; Tab then Enter turns it on.
+5. The modal's git line left out merge, cherry-pick, revert and am. **Fixed**.
+6. Missing asserts. **Fixed**: the panel refuses a push of main; the port test checks the
+   offer and the direct call while off; `edit_mode.rs` covers the modal's keys, a deploy
+   confirmed after turning off, and the git refusals on a real repository.
+
+Not part of this step: the core test `ports::tests::a_real_ipv4_listener_is_found` fails
+now and then in full runs only (passes alone).

@@ -52,7 +52,10 @@ pub struct ServiceView {
 impl ServiceView {
     pub fn new(env: String, name: String, ctx: ViewCx, cluster: Entity<Cluster>, cx: &mut Context<Self>) -> Self {
         let tag = cx.new(|cx| TextInput::new("image tag", cx));
+        // Its buttons say whether edit mode allows them.
+        let edit_mode = crate::edit_mode::edit_mode(cx);
         let mut subs = vec![
+            cx.observe(&edit_mode, |_, _, cx| cx.notify()),
             cx.observe(&cluster, |this, _, cx| this.cluster_changed(cx)),
             cx.subscribe(&tag, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit(_) => this.save(cx),
@@ -166,7 +169,7 @@ impl ServiceView {
     /// Why Save can't go ahead now, if it can't.
     pub fn save_blocked(&self, cx: &App) -> Option<String> {
         let c = self.cluster.read(cx);
-        if let Err(why) = c.writes() {
+        if let Err(why) = c.writes(cx) {
             return Some(why);
         }
         if c.deployment(&self.env, &self.name).is_none() {
@@ -186,7 +189,8 @@ impl ServiceView {
 
     /// ctrl+s: on a locked protected env asks to unlock first; otherwise confirms.
     pub fn save(&mut self, cx: &mut Context<Self>) {
-        let writable = self.cluster.read(cx).writes().is_ok();
+        // Edit mode before the protected env's name: never ask the name to then refuse.
+        let writable = self.cluster.read(cx).writes(cx).is_ok();
         if writable && self.protected(cx) && !self.unlocked && self.dirty(cx) {
             self.request_unlock(cx);
             return;
@@ -216,7 +220,20 @@ impl ServiceView {
         cx.notify();
     }
 
+    /// Why Undo can't go ahead now, if it can't (clearing a failed rollout changes nothing
+    /// in the cluster and is always allowed).
+    pub fn undo_blocked(&self, cx: &App) -> Option<String> {
+        let c = self.cluster.read(cx);
+        let target = c.rollout(&self.env, &self.name).and_then(|r| r.undo_target())?;
+        let clears = c.deployment(&self.env, &self.name).is_some_and(|d| d.tag() == target);
+        if clears { None } else { c.writes(cx).err() }
+    }
+
     pub fn undo(&mut self, cx: &mut Context<Self>) {
+        if let Some(why) = self.undo_blocked(cx) {
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Not undone: {why}."), vec![], cx));
+            return;
+        }
         if self.protected(cx) && !self.unlocked {
             self.request_unlock(cx);
             return;
@@ -510,6 +527,7 @@ impl Render for ServiceView {
         };
         let repo_line = repo_text.map(|text| div().flex_none().px_3().pb_1().child(label(text).text_color(t.dim)).debug_selector(|| "svc-repo".into()));
 
+        let undo_why = self.undo_blocked(cx);
         let rollout_line = rollout.map(|r| {
             let (mark, text, color, undo) = match &r {
                 Rollout::Progressing { from, to, updated, of } => (Icon::Busy, format!("rolling out {from} → {to}: {updated}/{of} pods updated"), t.accent, false),
@@ -525,7 +543,14 @@ impl Render for ServiceView {
                 .gap_2()
                 .child(icon_text(mark, color, text, &t).flex_1())
                 .when(undo, |d| {
-                    d.child(button("undo", "undo", &t).debug_selector(|| "rollout-undo".into()).on_click(cx.listener(|this, _, _, cx| this.undo(cx))))
+                    let why = undo_why.clone();
+                    d.child(
+                        button("undo", "undo", &t)
+                            .debug_selector(|| "rollout-undo".into())
+                            .when(why.is_some(), |b| b.text_color(t.dim))
+                            .tooltip(tip(why.unwrap_or_else(|| "go back to the previous tag".into())))
+                            .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
+                    )
                 })
         });
 

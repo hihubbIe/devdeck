@@ -310,9 +310,14 @@ impl Cluster {
         self.driver.logs()
     }
 
-    /// Why deploys can't be made here, if they can't.
-    pub fn writes(&self) -> Result<(), String> {
-        self.driver.writes()
+    /// Why deploys can't be made now, if they can't: the driver can't, or edit mode is off
+    /// (R5.6). Every write to the cluster goes through it.
+    pub fn writes(&self, cx: &gpui::App) -> Result<(), String> {
+        self.driver.writes()?;
+        match crate::edit_mode::refusal(cx) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
     }
 
     /// Tags of `name` on every loaded env plus devdeck's history, newest history first,
@@ -343,7 +348,7 @@ impl Cluster {
     /// Starts a rollout to `tag`. Refuses where writes aren't possible, on a protected env
     /// that isn't unlocked, or while another rollout of the same service runs.
     pub fn set_image(&mut self, env: &str, name: &str, tag: &str, unlocked: bool, cx: &mut Context<Self>) -> Result<(), String> {
-        self.driver.writes()?;
+        self.writes(cx)?;
         let e = self.env(env).cloned().ok_or_else(|| format!("unknown env {env}"))?;
         check_write(&e, unlocked)?;
         let key = (env.to_string(), name.to_string());

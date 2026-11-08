@@ -33,6 +33,7 @@ actions!(
         DecreaseScale,
         ResetScale,
         ToggleSettings,
+        ToggleEditMode,
         CloseSettings,
         Quit,
         ShowApps,

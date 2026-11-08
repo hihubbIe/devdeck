@@ -7,6 +7,7 @@ pub mod cheat_sheet;
 pub mod cluster;
 pub mod cluster_pods;
 pub mod deck;
+pub mod edit_mode;
 pub mod environment;
 pub mod fake_cluster;
 pub mod fake_driver;
@@ -99,6 +100,7 @@ pub fn test_dir(tag: &str, cx: &mut App) -> std::path::PathBuf {
 pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     load_fonts(cx);
     app_settings::init(dir, cx);
+    edit_mode::edit_mode(cx);
     actions::bind(cx);
     cx.on_window_closed(|cx, id| devdeck_ui::overlay::forget_layer(id, cx)).detach();
 }

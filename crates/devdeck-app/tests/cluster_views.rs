@@ -16,6 +16,8 @@ use std::time::Duration;
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
     let config = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
+    // These deploy (the demo's simulated rollouts): edit mode on (R5.6, its own tests in edit_mode.rs).
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
     cx.run_until_parked();

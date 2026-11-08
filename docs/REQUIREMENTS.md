@@ -50,6 +50,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
 - [~] **R5.4** k9s-inspired single-key shortcuts. Shortcuts are not shown in the UI (no key hints in menus, tooltips, labels or a hint bar: it clutters); they are listed on one page, today the searchable cheat sheet (`?`, ctrl+/), to be redesigned later (changed 2026-11-07, user decision).
 - [~] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
+- [ ] **R5.6** Edit mode (user, 2026-11-08): potentially destructive actions (deploys, a replace push, a git abort, stopping a process devdeck didn't start, a shell in a pod) run only while edit mode is on: a title bar button, turned on after a modal saying what it allows, off without one, off at every start. k9s opens read only unless it's on. devdeck never pushes `main` or `master`, edit mode or not.
 
 ## 6. Local apps
 

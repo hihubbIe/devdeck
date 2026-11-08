@@ -348,6 +348,7 @@ fn deploy(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, env: &str, name: &
     });
     cx.advance_clock(Duration::from_millis(400));
     cx.run_until_parked();
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     cx.update(|cx| c.update(cx, |c, cx| c.set_image(env, name, tag, true, cx))).expect("deploys");
     cx.advance_clock(Duration::from_millis(wait_ms));
     cx.run_until_parked();
@@ -371,11 +372,13 @@ fn svc_failed(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<S
 }
 
 fn svc_protected(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let v = service(cx, shell, "hades", "proxyapi", true);
     cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-161", cx))));
 }
 
 fn svc_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let v = service(cx, shell, "dev35", "entityservice", true);
     cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-160", cx))));
     let _ = cx.update_window(w, |_, window, _| window.refresh());
@@ -532,6 +535,23 @@ fn git_panel(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Edit mode asked for: its modal over the window.
+fn edit_mode_modal(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| {
+        let main = shell.read(cx).main_window().expect("main");
+        cx.defer(move |cx| {
+            let _ = main.update(cx, |_, window, cx| devdeck_app::edit_mode::toggle(window, cx));
+        });
+    });
+    cx.run_until_parked();
+}
+
+/// Edit mode on: the title bar's red chip, a service view whose save is allowed.
+fn edit_mode_on(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    service(cx, shell, "dev35", "entityservice", true);
 }
 
 fn maximize_focused(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) {
@@ -876,6 +896,8 @@ fn states() -> Vec<State> {
         w("95-svc-kube-like", "work", 1.0, Some(svc_kube_like)),
         w("96-cluster-watch", "work", 1.0, Some(cluster_watch)),
         w("97-git-panel", "work", 1.0, Some(git_panel)),
+        w("98-edit-mode-modal", "work", 1.0, Some(edit_mode_modal)),
+        w("99-edit-mode-on", "work", 1.0, Some(edit_mode_on)),
         w("93-port", "work", 1.0, Some(port)),
         w("A0-cheat-sheet", "work", 1.0, Some(cheat_sheet)),
         w("A1-cheat-sheet-filtered", "work", 1.0, Some(cheat_sheet_filtered)),
@@ -908,6 +930,7 @@ fn main() -> Result<(), String> {
         cx.update(|cx| {
             app_settings::set_scale(state.scale, cx);
             app_settings::set_open(state.settings_open, cx);
+            devdeck_app::edit_mode::set(false, cx);
             toasts(cx).update(cx, |t, cx| {
                 t.queue.items.clear();
                 cx.notify();

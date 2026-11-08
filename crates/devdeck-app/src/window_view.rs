@@ -27,6 +27,23 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Edit mode's title bar button (R5.6): off, a dim warning icon; on, a red "edit mode"
+/// chip. On asks first; off doesn't.
+fn edit_mode_button(t: &Theme, cx: &App) -> gpui::Stateful<gpui::Div> {
+    let b = if crate::edit_mode::is_on(cx) {
+        devdeck_ui::button("edit-mode", "edit mode", t)
+            .text_color(t.err)
+            .child(icon(Icon::Warning, t.err, t))
+            .border_1()
+            .border_color(t.err)
+            .tooltip(devdeck_ui::tip("edit mode is on: destructive actions are allowed (click to turn it off)"))
+    } else {
+        // icon_button has its own tooltip.
+        icon_button("edit-mode", Icon::Warning, "edit mode is off: turn it on to allow destructive actions", t)
+    };
+    bar_control(b).debug_selector(|| "edit-mode-button".into()).on_click(|_, window, cx| crate::edit_mode::toggle(window, cx))
+}
+
 /// A control in the title bar: pressing it doesn't start a window move, which hands the
 /// pointer to the compositor and loses the release, and with it the click.
 fn bar_control(control: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
@@ -157,7 +174,9 @@ impl WindowView {
     /// The main window: shows the shell's active workspace. Closing it asks to quit.
     pub fn main(shell: Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let deck = shell.read(cx).active_deck();
+        let edit_mode = crate::edit_mode::edit_mode(cx);
         let mut observe = vec![
+            cx.observe(&edit_mode, |_, _, cx| cx.notify()),
             // Settings cover the panes: their views are off screen meanwhile.
             cx.observe(&app_settings::settings(cx), |this, _, cx| {
                 let open = app_settings::is_open(cx);
@@ -185,7 +204,8 @@ impl WindowView {
 
     /// A detached window of `deck`. Closing it closes its tabs.
     pub fn detached(id: WindowId, deck: Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut observe = vec![cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify())];
+        let edit_mode = crate::edit_mode::edit_mode(cx);
+        let mut observe = vec![cx.observe(&app_settings::settings(cx), |_, _, cx| cx.notify()), cx.observe(&edit_mode, |_, _, cx| cx.notify())];
         let size_deck = deck.downgrade();
         observe.push(cx.observe_window_bounds(window, move |_, window, cx| {
             if let Some(size) = free_size(window) {
@@ -680,6 +700,7 @@ impl Render for WindowView {
                         .on_click(cx.listener(|this, _, _, cx| this.reattach(cx))),
                 )
             })
+            .child(edit_mode_button(&t, cx))
             .child(bar_control(icon_button("min", Icon::WindowMinimize, "minimize", &t)).on_click(|_, window, _| window.minimize_window()))
             .child(
                 bar_control(icon_button("max", if window.is_maximized() { Icon::WindowRestore } else { Icon::WindowMaximize }, "maximize or restore", &t))
@@ -784,6 +805,7 @@ impl Render for WindowView {
             .on_action(|_: &DecreaseScale, _, cx| app_settings::decrease(cx))
             .on_action(|_: &ResetScale, _, cx| app_settings::reset(cx))
             .on_action(|_: &CheatSheet, window, cx| crate::cheat_sheet::open(window, cx))
+            .on_action(|_: &ToggleEditMode, window, cx| crate::edit_mode::toggle(window, cx))
             .on_action(cx.listener(|this, _: &Palette, w, cx| this.open_palette(w, cx)))
             // Only where they do something (R5.1: unavailable actions aren't offered).
             .when(is_main, |d| {

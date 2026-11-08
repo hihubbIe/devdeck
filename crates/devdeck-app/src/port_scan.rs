@@ -326,8 +326,10 @@ pub fn start_or_toast(runner: &Entity<Runner>, key: &RunKey, env: Option<String>
 pub fn refusal_toast(runner: &Entity<Runner>, key: &RunKey, why: &RunRefusal, cx: &mut App) {
     let text = format!("{}: {why}", runner.read(cx).title(key));
     let mut actions: Vec<(gpui::SharedString, devdeck_ui::overlay::MenuAction)> = Vec::new();
+    // A process devdeck didn't start is stopped only in edit mode (R5.6): not offered then.
     if let RunRefusal::PortHeld { port, holder } = why
         && holder.stoppable()
+        && (matches!(holder, PortHolder::Run { .. }) || crate::edit_mode::is_on(cx))
     {
         let (runner, port, holder) = (runner.downgrade(), *port, holder.clone());
         actions.push(("Stop holder".into(), Rc::new(move |window, cx| stop_holder(&runner, port, &holder, window, cx))));
@@ -341,6 +343,11 @@ pub fn stop_holder(runner: &WeakEntity<Runner>, port: u16, holder: &PortHolder, 
     match holder {
         PortHolder::Run { key, .. } => {
             let _ = runner.update(cx, |r, cx| r.stop(key, cx));
+        }
+        // Not one of devdeck's runs: only in edit mode (R5.6).
+        PortHolder::Process { .. } if crate::edit_mode::refusal(cx).is_some() => {
+            let why = crate::edit_mode::OFF;
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Stop holder: {why}."), vec![], cx));
         }
         PortHolder::Process { pid, command } => confirm_stop(port, *pid, command.clone(), window, cx),
         PortHolder::Unknown => {}
@@ -377,7 +384,10 @@ impl StopProcess {
         // The pid may have ended and been reused since the question: it must still hold
         // the port.
         let still = matches!(holder(self.port), Some(Holder::Process { pid, .. }) if pid == self.pid);
-        let result = if still { devdeck_core::process::terminate(self.pid) } else { Err(format!("pid {} no longer holds port {}", self.pid, self.port)) };
+        // Edit mode may have been turned off while this asked.
+        let result = if let Some(why) = crate::edit_mode::refusal(cx) {
+            Err(why)
+        } else if still { devdeck_core::process::terminate(self.pid) } else { Err(format!("pid {} no longer holds port {}", self.pid, self.port)) };
         if let Err(why) = result {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, why, vec![], cx));
         }

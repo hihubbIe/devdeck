@@ -246,7 +246,7 @@ fn a_cluster_section_brings_the_cluster_area_and_its_kubeconfig_problems(cx: &mu
     // Deploys, pods and metrics say why they aren't there (R5.5).
     cx.read(|cx| {
         let c = c.read(cx);
-        assert_eq!((c.writes(), c.logs()), (Err(NO_DEPLOYS.to_string()), Err(NO_LOGS.to_string())));
+        assert_eq!((c.writes(cx), c.logs()), (Err(NO_DEPLOYS.to_string()), Err(NO_LOGS.to_string())));
     });
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let r = ViewAddr::Svc { env: "hades".into(), name: "graphservice".into() }.to_ref();

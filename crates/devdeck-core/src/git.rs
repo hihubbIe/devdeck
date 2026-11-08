@@ -246,6 +246,7 @@ impl Git {
     }
 
     /// Fetches the push remote, then decides what a push of the current branch would do.
+    /// Never for `main` or `master` (see [`never_pushed`]).
     pub fn push_plan(&self) -> Result<PushPlan, String> {
         let _writing = self.writing()?;
         if let Some(why) = self.writes_blocked()? {
@@ -257,6 +258,7 @@ impl Git {
             Head::Unborn(b) => return Err(format!("{b} has no commit yet")),
         };
         plain(&branch)?;
+        never_pushed(&branch)?;
         let remote = self.push_remote(&branch)?;
         plain(&remote)?;
         self.write(&[&FETCH[..], &["--", &remote]].concat(), Mode::Network(FETCH_LIMIT))?;
@@ -491,6 +493,7 @@ impl Git {
         };
         plain(remote)?;
         plain(branch)?;
+        never_pushed(branch)?;
         let limit = Mode::Network(PUSH_LIMIT);
         match plan {
             PushPlan::Publish { .. } => {
@@ -893,6 +896,18 @@ fn change(xy: &str, path: &str, from: Option<String>) -> Change {
         _ => ChangeKind::Modified,
     };
     Change { path: path.to_string(), from, kind, staged }
+}
+
+/// The branches devdeck never pushes, edit mode or not (user, 2026-11-08): a push always
+/// goes to the branch of the same name, so these can't be written by devdeck.
+pub const NEVER_PUSHED: [&str; 2] = ["main", "master"];
+
+/// Refuses `main` and `master` (any case).
+pub fn never_pushed(branch: &str) -> Result<(), String> {
+    if NEVER_PUSHED.iter().any(|b| branch.eq_ignore_ascii_case(b)) {
+        return Err(format!("devdeck never pushes {branch}: push it from a terminal if you must"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

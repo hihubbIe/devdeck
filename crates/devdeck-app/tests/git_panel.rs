@@ -112,6 +112,9 @@ fn the_panel_reads_while_looked_at_and_switching_asks_first(cx: &mut TestAppCont
     let repo = cx.read(|cx| panel.read(cx).repo.clone());
     until(cx, "the repository read", |cx| head(&repo, cx).is_some());
     assert_eq!(head(&repo, cx), Some(Head::Branch("main".into())));
+    let probe = Op::Push(devdeck_core::git::PushPlan::UpToDate { remote: String::new(), branch: String::new() });
+    let why = cx.read(|cx| panel.read(cx).refusal(&probe, cx)).unwrap_or_default();
+    assert!(why.contains("never pushes main"), "the push button says why before any fetch: {why}");
     let rows: Vec<String> = cx.read(|cx| panel.read(cx).rows(cx).iter().map(|r| r.branch.name.clone()).collect());
     assert_eq!(rows, ["main", "origin/feat"], "a remote branch without a local one; origin/main is main's");
     // Switching to the remote branch: asked in a modal, nothing done before it's confirmed.
@@ -154,8 +157,10 @@ fn a_switch_made_in_a_terminal_shows_and_a_rebase_under_way_only_offers_its_abor
     cx.read(|cx| {
         let p = panel.read(cx);
         assert!(p.refusal(&Op::Fetch, cx).is_some() && p.refusal(&Op::Pull("feat".into()), cx).is_some() && p.refusal(&Op::Switch("main".into()), cx).is_some());
-        assert_eq!(p.refusal(&Op::Abort(Doing::Rebasing), cx), None, "only the abort");
+        assert_eq!(p.refusal(&Op::Abort(Doing::Rebasing), cx), Some(devdeck_app::edit_mode::OFF.into()), "an abort resets changes: edit mode only");
     });
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    cx.read(|cx| assert_eq!(panel.read(cx).refusal(&Op::Abort(Doing::Rebasing), cx), None, "only the abort"));
     cx.update(|cx| repo.update(cx, |r, cx| r.run(Op::Abort(Doing::Rebasing), "Abort".into(), "aborting…".into(), cx))).unwrap();
     until(cx, "aborted", |cx| cx.read(|cx| repo.read(cx).snapshot().is_some_and(|s| s.blocked.is_none())));
     assert_eq!(std::fs::read_to_string(web.join("a.txt")).unwrap(), "feat\n", "back where it was");
