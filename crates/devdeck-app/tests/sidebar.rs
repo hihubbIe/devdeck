@@ -428,3 +428,28 @@ fn the_watch_toggle_holds_the_envs_pods_and_marks_trouble(cx: &mut TestAppContex
     cx.update(|cx| s.update(cx, |s, cx| s.toggle_watch_pods(cx)));
     assert!(marks(cx).is_empty() && cx.read(|cx| !s.read(cx).watching_pods()));
 }
+
+/// App rows are quiet: no right text (toolchain, reason); a missing tool is ⚠ alone at
+/// the row's right, its reason on hover with the name. Other lists keep their right text.
+#[gpui::test]
+fn app_rows_show_a_missing_tool_as_a_mark_at_their_right(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "quiet");
+    let main = main_window(&shell, cx);
+    let s = sidebar(&shell, cx);
+    let items = cx.read(|cx| s.read(cx).items(cx));
+    assert!(items.iter().all(|i| i.detail.is_empty()), "no app has right text");
+    let blocked = items.iter().find(|i| i.warning.is_some()).expect("the demo has an app missing a tool");
+    assert_eq!(blocked.hint.as_deref(), Some(format!("{} · docker not found", blocked.label).as_str()));
+    let key = blocked.key.clone();
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    let row = vcx.debug_bounds(Box::leak(format!("row-{key}").into_boxed_str())).expect("row drawn");
+    let mark = vcx.debug_bounds("row-warning").expect("⚠ drawn");
+    let right = row.origin.x + row.size.width;
+    assert!(mark.origin.x > row.center().x && right - (mark.origin.x + mark.size.width) < logical(16.), "⚠ at the right end: {mark:?} in {row:?}");
+    // The Cluster list keeps its right text.
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    assert!(cx.read(|cx| s.read(cx).items(cx).iter().any(|i| !i.detail.is_empty())), "tags stay");
+}

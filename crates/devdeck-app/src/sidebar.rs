@@ -341,9 +341,11 @@ impl Sidebar {
                     .apps
                     .iter()
                     .map(|a| {
+                        // No right text (the toolchain, the reason): a missing tool is ⚠,
+                        // its reason on hover with the name.
                         let warning = s.unusable.get(&a.id).cloned();
                         ListItem::new(a.id.clone(), a.name.clone())
-                            .detail(a.kind.clone())
+                            .hint(warning.as_ref().map(|w| format!("{} · {w}", a.name)))
                             .running(runner.app_running(&a.id))
                             .warning(warning)
                             .path(a.id.clone())
@@ -1119,7 +1121,8 @@ impl Render for Sidebar {
                 let selected = this.selected_row(&items, &rows);
                 let focused = this.list_focus.is_focused(window);
                 let me = cx.entity();
-                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, groups: this.groups_allowed(), t };
+                let quiet_warning = this.activity() == Activity::Apps;
+                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, groups: this.groups_allowed(), quiet_warning, t };
                 range
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
                     .map(|(i, row)| {
@@ -1187,6 +1190,9 @@ struct Look {
     status: Option<String>,
     /// The list holds groups (a menu on the All header).
     groups: bool,
+    /// A warning is ⚠ alone at the row's right, its reason in the tooltip (the Apps
+    /// list); else ⚠ in the state slot and its reason as the right text.
+    quiet_warning: bool,
     t: Theme,
 }
 
@@ -1350,15 +1356,17 @@ fn render_row(
                 })
                 .when_some(drag, |el, drag| el.on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone()))))
                 .child(match &item.warning {
-                    Some(_) => icon(Icon::Warning, t.warn, t).into_any_element(),
-                    None => dot(if item.running { t.ok } else { t.dim }, item.running, t).into_any_element(),
+                    Some(_) if !look.quiet_warning => icon(Icon::Warning, t.warn, t).into_any_element(),
+                    _ => dot(if item.running { t.ok } else { t.dim }, item.running, t).into_any_element(),
                 })
                 .child(div().flex_1().min_w_0().truncate().text_color(text_color).child(label_text))
                 .when_some(kids.filter(|k| !k.open), |d, k| d.child(holds(k, t)))
                 .when(item.busy, |d| d.child(icon(Icon::Busy, t.accent, t)))
-                .when_some(item.warning.clone().or((!item.detail.is_empty()).then(|| item.detail.clone())), |d, detail| {
-                    let color = if item.warning.is_some() { t.warn } else { t.dim };
+                .when_some(item.warning.clone().filter(|_| !look.quiet_warning).map(|w| (w, t.warn)).or((!item.detail.is_empty()).then(|| (item.detail.clone(), t.dim))), |d, (detail, color)| {
                     d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(color).child(detail))
+                })
+                .when(look.quiet_warning && item.warning.is_some(), |d| {
+                    d.child(icon(Icon::Warning, t.warn, t).debug_selector(|| "row-warning".into()))
                 });
             row_drop(el).into_any_element()
         }
