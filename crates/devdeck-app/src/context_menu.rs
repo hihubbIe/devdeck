@@ -114,7 +114,7 @@ fn targets(runner: &Runner, tabs: &BTreeMap<u32, TerminalTabs>, source: Option<&
             // The tab a layout shows it by (so showing it never adds a second), else a new one.
             let view = tabs.get(&n).map(|t| t.view.clone()).unwrap_or_else(|| ViewAddr::Terminal { n, dir }.to_ref());
             let pastes = runner.run(&key).is_some_and(|r| r.terminal.modes().bracketed_paste);
-            Target { key, name: if twice { format!("{name} · {n}") } else { name.clone() }, view, refused: (!pastes).then_some("doesn't take pastes safely") }
+            Target { key, name: if twice { format!("{name} · {n}") } else { name.clone() }, view, refused: (!pastes).then_some(NO_SAFE_PASTE) }
         })
         .collect()
 }
@@ -125,17 +125,29 @@ fn clean(text: &str) -> String {
     text.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect()
 }
 
-/// Pastes `text` into terminal `to` (no Enter: the question is still to type) and shows
-/// it, keys going to it.
-pub fn share(text: &str, to: &RunKey, view: &ViewRef, origin: &Origin, window: &mut Window, cx: &mut App) {
-    let runner = origin.services.read(cx).runner.clone();
-    let bracketed = runner.read(cx).run(to).is_some_and(|r| r.terminal.modes().bracketed_paste);
-    if !bracketed {
-        return;
+/// Pastes `text` into terminal `to` as one block, control characters removed, no Enter
+/// (the question is still to type), and remembers it as where text went last. Needs no
+/// window: the UI and the control API share this. Refused unless the terminal takes
+/// pastes safely (bracketed paste).
+pub fn paste(runner: &Entity<Runner>, to: &RunKey, text: &str, cx: &mut App) -> Result<(), &'static str> {
+    if !runner.read(cx).run(to).is_some_and(|r| r.terminal.modes().bracketed_paste) {
+        return Err(NO_SAFE_PASTE);
     }
     let bytes = paste_bytes(&clean(text), true);
     runner.update(cx, |r, _| r.write(to, &bytes));
     cx.default_global::<LastShared>().0.insert(runner.entity_id(), to.clone());
+    Ok(())
+}
+
+/// Why a terminal can't take a paste.
+const NO_SAFE_PASTE: &str = "doesn't take pastes safely";
+
+/// [`paste`], then shows the terminal, keys going to it.
+pub fn share(text: &str, to: &RunKey, view: &ViewRef, origin: &Origin, window: &mut Window, cx: &mut App) {
+    let runner = origin.services.read(cx).runner.clone();
+    if paste(&runner, to, text, cx).is_err() {
+        return;
+    }
     if let Some(deck) = origin.deck.upgrade() {
         places::show(&deck, view, origin.window, window, cx);
     }

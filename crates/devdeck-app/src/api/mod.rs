@@ -209,7 +209,9 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
     };
     if let Status::Off(why) = &status {
         let text = format!("The control API is off: {why}");
-        cx.defer(move |cx| devdeck_ui::overlay::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::overlay::ToastKind::Warn, text, vec![], cx)));
+        cx.defer(move |cx| {
+            devdeck_ui::overlay::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::overlay::ToastKind::Warn, text, vec![], cx));
+        });
     }
     let state = cx.new(|_| ApiState {
         status,

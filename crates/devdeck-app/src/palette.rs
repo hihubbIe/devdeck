@@ -299,7 +299,10 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
             let env = services.read(cx).env.clone().unwrap_or_default();
             open(ViewAddr::Svc { env, name }, cx);
         }
-        Item::Env(env) => sidebar.update(cx, |s, cx| s.set_env(&env, cx)),
+        Item::Env(env) => {
+            // Listed from the envs: known.
+            let _ = sidebar.update(cx, |s, cx| s.set_env(&env, cx));
+        }
         Item::Workspace(i) => shell.update(cx, |s, cx| s.switch(i, cx)),
         Item::Layout(id) => {
             if let Err(e) = deck.update(cx, |d, cx| d.switch_layout(&id, cx)) {

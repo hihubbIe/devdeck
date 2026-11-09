@@ -596,14 +596,32 @@ pub fn toast_lifetime(kind: ToastKind) -> Duration {
 #[derive(Default)]
 pub struct ToastQueue {
     pub items: Vec<Toast>,
+    /// The last toasts shown, expired or not, oldest first (time order, not alphabetical:
+    /// what was said and when, for the control API's `ui.toasts`).
+    pub history: std::collections::VecDeque<Told>,
     next_id: u64,
+}
+
+/// A toast as it was shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Told {
+    pub id: u64,
+    pub kind: ToastKind,
+    pub text: SharedString,
 }
 
 impl ToastQueue {
     pub const MAX: usize = 4;
+    /// Toasts kept in the history.
+    pub const HISTORY: usize = 50;
 
+    /// Shows a toast; returns its id.
     pub fn push(&mut self, kind: ToastKind, text: SharedString, actions: Vec<(SharedString, MenuAction)>, now: Instant) -> u64 {
         self.next_id += 1;
+        if self.history.len() == Self::HISTORY {
+            self.history.pop_front();
+        }
+        self.history.push_back(Told { id: self.next_id, kind, text: text.clone() });
         self.items.push(Toast { id: self.next_id, kind, text, actions, deadline: now + toast_lifetime(kind) });
         if self.items.len() > Self::MAX {
             self.items.remove(0);
@@ -640,11 +658,13 @@ pub fn toasts(cx: &mut App) -> Entity<Toasts> {
 }
 
 impl Toasts {
-    pub fn push(&mut self, kind: ToastKind, text: impl Into<SharedString>, actions: Vec<(SharedString, MenuAction)>, cx: &mut Context<Self>) {
+    /// Shows a toast; returns its id.
+    pub fn push(&mut self, kind: ToastKind, text: impl Into<SharedString>, actions: Vec<(SharedString, MenuAction)>, cx: &mut Context<Self>) -> u64 {
         let now = cx.background_executor().now();
-        self.queue.push(kind, text.into(), actions, now);
+        let id = self.queue.push(kind, text.into(), actions, now);
         self.arm(cx);
         cx.notify();
+        id
     }
 
     pub fn dismiss(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -776,5 +796,21 @@ mod tests {
         let id = q.items[1].id;
         q.dismiss(id);
         assert_eq!(q.items.len(), ToastQueue::MAX - 1);
+    }
+
+    #[test]
+    fn toast_history_keeps_the_last_ones_with_their_ids() {
+        let t0 = Instant::now();
+        let mut q = ToastQueue::default();
+        let first = q.push(ToastKind::Warn, "first".into(), vec![], t0);
+        assert_eq!(q.history.front(), Some(&Told { id: first, kind: ToastKind::Warn, text: "first".into() }));
+        q.expire(t0 + Duration::from_secs(60));
+        assert_eq!(q.history.len(), 1, "expired, still told");
+        for i in 0..ToastQueue::HISTORY {
+            q.push(ToastKind::Info, format!("{i}").into(), vec![], t0);
+        }
+        assert_eq!(q.history.len(), ToastQueue::HISTORY);
+        assert_eq!(q.history.front().map(|t| t.text.as_ref()), Some("0"), "the oldest went");
+        assert_eq!(q.history.back().map(|t| t.id), Some(first + ToastQueue::HISTORY as u64));
     }
 }

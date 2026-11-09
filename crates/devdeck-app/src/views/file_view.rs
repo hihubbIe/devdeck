@@ -57,6 +57,8 @@ pub struct FileView {
     loading: Option<Task<()>>,
     /// The scroll to put back once the text is there (a restart).
     restore_scroll: Option<Point<Pixels>>,
+    /// The line to go to once the editor has the text.
+    go_to: Option<usize>,
     _subs: Vec<Subscription>,
 }
 
@@ -89,6 +91,7 @@ impl FileView {
             last_read: None,
             loading: None,
             restore_scroll: None,
+            go_to: None,
             _subs: subs,
         };
         view.load(cx);
@@ -237,7 +240,19 @@ impl FileView {
                 }
             });
         }
+        if matches!(self.shown, Shown::Text { .. })
+            && let Some(line) = self.go_to.take()
+        {
+            code.update(cx, |c, cx| c.go_to_line(line, cx));
+        }
         code
+    }
+
+    /// Shows line `line` (1 for the first), the caret at its start, once the source shows
+    /// (the text read, the editor drawn); never moves the focus (R13.1).
+    pub fn go_to_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        self.go_to = Some(line);
+        cx.notify();
     }
 
     /// The rendered Markdown, made now if it isn't yet, showing the text.

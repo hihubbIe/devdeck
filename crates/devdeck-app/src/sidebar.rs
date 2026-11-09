@@ -578,7 +578,12 @@ impl Sidebar {
     /// Lists but Terminals (their numbers come and go, as for pins) and Notes (they stay
     /// with their project) hold groups.
     pub fn groups_allowed(&self) -> bool {
-        !matches!(self.activity(), Activity::Terminals | Activity::Notes)
+        Self::groups_allowed_in(self.activity())
+    }
+
+    /// Whether `list` has groups: terminals come and go, notes go by project.
+    pub fn groups_allowed_in(list: Activity) -> bool {
+        !matches!(list, Activity::Terminals | Activity::Notes)
     }
 
     /// The shown list's groups.
@@ -586,9 +591,9 @@ impl Sidebar {
         self.groups_allowed().then(|| self.state.groups.get(self.activity().list_id())).flatten()
     }
 
-    /// The shown list's groups and open rows, to change.
-    fn groups_mut(&mut self) -> (&mut Groups, &mut std::collections::BTreeSet<String>) {
-        let id = self.activity().list_id();
+    /// A list's groups and open rows, to change.
+    fn groups_mut(&mut self, list: Activity) -> (&mut Groups, &mut std::collections::BTreeSet<String>) {
+        let id = list.list_id();
         (self.state.groups.entry(id.to_string()).or_default(), self.state.open.entry(id.to_string()).or_default())
     }
 
@@ -615,13 +620,13 @@ impl Sidebar {
         self.changed(cx);
     }
 
-    /// Makes a group in `parent` (or at the top), opened with the way to it; returns its
-    /// path.
-    pub fn create_group(&mut self, parent: Option<&str>, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
-        if !self.groups_allowed() {
-            return Err(format!("{} aren't grouped", self.activity().id()));
+    /// Makes a group of `list` in `parent` (or at the top), opened with the way to it;
+    /// returns its path. Every group change names its list, shown or not.
+    pub fn create_group(&mut self, list: Activity, parent: Option<&str>, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
+        if !Self::groups_allowed_in(list) {
+            return Err(format!("{} aren't grouped", list.id()));
         }
-        let (groups, open) = self.groups_mut();
+        let (groups, open) = self.groups_mut(list);
         let path = groups.create(parent, name)?;
         let mut at = Some(path.as_str());
         while let Some(p) = at {
@@ -634,19 +639,23 @@ impl Sidebar {
 
     /// Puts a node (an item's key, a folder's path) in a group, or at the top with
     /// `None`; a pinned item is unpinned into it.
-    pub fn put(&mut self, node: &str, group: Option<&str>, cx: &mut Context<Self>) {
-        if !self.groups_allowed() {
+    pub fn put(&mut self, list: Activity, node: &str, group: Option<&str>, cx: &mut Context<Self>) {
+        if !Self::groups_allowed_in(list) {
             return;
         }
-        if let Some(pins) = self.state.pins.get_mut(self.activity().list_id()) {
+        if let Some(pins) = self.state.pins.get_mut(list.list_id()) {
             pins.remove(node);
         }
-        self.groups_mut().0.assign(node, group);
+        self.groups_mut(list).0.assign(node, group);
         self.changed(cx);
     }
 
-    /// Keeps the selection on a group (or one inside it) that moved from `from` to `to`.
-    fn reselect_group(&mut self, from: &str, to: &str) {
+    /// Keeps the selection on a group (or one inside it) of the shown list that moved from
+    /// `from` to `to`.
+    fn reselect_group(&mut self, list: Activity, from: &str, to: &str) {
+        if list != self.activity() {
+            return;
+        }
         let Some(selected) = self.selected.as_deref().and_then(|k| group_of_row(k.strip_suffix('/')?)) else { return };
         let rest = if selected == from { Some("") } else { selected.strip_prefix(from).filter(|r| r.starts_with('/')) };
         if let Some(rest) = rest {
@@ -654,28 +663,28 @@ impl Sidebar {
         }
     }
 
-    pub fn rename_group(&mut self, path: &str, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
-        let (groups, open) = self.groups_mut();
+    pub fn rename_group(&mut self, list: Activity, path: &str, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
+        let (groups, open) = self.groups_mut(list);
         let to = groups.rename(path, name, open)?;
-        self.reselect_group(path, &to);
+        self.reselect_group(list, path, &to);
         self.changed(cx);
         Ok(to)
     }
 
     /// Moves a group into `parent` (or to the top).
-    pub fn move_group(&mut self, path: &str, parent: Option<&str>, cx: &mut Context<Self>) -> Result<String, String> {
-        let (groups, open) = self.groups_mut();
+    pub fn move_group(&mut self, list: Activity, path: &str, parent: Option<&str>, cx: &mut Context<Self>) -> Result<String, String> {
+        let (groups, open) = self.groups_mut(list);
         let to = groups.move_group(path, parent, open)?;
-        self.reselect_group(path, &to);
+        self.reselect_group(list, path, &to);
         self.changed(cx);
         Ok(to)
     }
 
     /// Deletes a group; what it holds moves to its parent.
-    pub fn delete_group(&mut self, path: &str, cx: &mut Context<Self>) {
-        let (groups, open) = self.groups_mut();
+    pub fn delete_group(&mut self, list: Activity, path: &str, cx: &mut Context<Self>) {
+        let (groups, open) = self.groups_mut(list);
         for (from, to) in groups.delete(path, open) {
-            self.reselect_group(&from, &to);
+            self.reselect_group(list, &from, &to);
         }
         self.changed(cx);
     }
@@ -724,9 +733,9 @@ impl Sidebar {
     pub fn apply_drop(&mut self, effect: Effect, cx: &mut Context<Self>) {
         match effect {
             Effect::TogglePin(key) => self.toggle_pin(&key, cx),
-            Effect::Put(node, g) => self.put(&node, g.as_deref(), cx),
+            Effect::Put(node, g) => self.put(self.activity(), &node, g.as_deref(), cx),
             Effect::MoveGroup(path, g) => {
-                if let Err(e) = self.move_group(&path, g.as_deref(), cx) {
+                if let Err(e) = self.move_group(self.activity(), &path, g.as_deref(), cx) {
                     toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e, vec![], cx));
                 }
             }
@@ -742,11 +751,11 @@ impl Sidebar {
         };
         let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| {
             me.update(cx, |s, cx| {
-                let path = s.create_group(parent.as_deref(), name, cx)?;
+                let path = s.create_group(s.activity(), parent.as_deref(), name, cx)?;
                 match &then {
-                    Some(Moving::Node(n)) => s.put(n, Some(&path), cx),
+                    Some(Moving::Node(n)) => s.put(s.activity(), n, Some(&path), cx),
                     Some(Moving::Group(g)) => {
-                        s.move_group(g, Some(&path), cx)?;
+                        s.move_group(s.activity(), g, Some(&path), cx)?;
                     }
                     None => {}
                 }
@@ -760,7 +769,7 @@ impl Sidebar {
         let me = this.clone();
         let name = path.rsplit_once('/').map_or(path.as_str(), |(_, l)| l).to_string();
         let title = format!("Rename group {path}");
-        let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| me.update(cx, |s, cx| s.rename_group(&path, name, cx).map(drop)));
+        let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| me.update(cx, |s, cx| s.rename_group(s.activity(), &path, name, cx).map(drop)));
         crate::name_prompt::open(title, &name, "group-name", submit, window, cx);
     }
 
@@ -777,9 +786,9 @@ impl Sidebar {
             let (me, what) = (this.clone(), what.clone());
             move |_: &mut Window, cx: &mut App| {
                 me.update(cx, |s, cx| match &what {
-                    Moving::Node(n) => s.put(n, group.as_deref(), cx),
+                    Moving::Node(n) => s.put(s.activity(), n, group.as_deref(), cx),
                     Moving::Group(g) => {
-                        if let Err(e) = s.move_group(g, group.as_deref(), cx) {
+                        if let Err(e) = s.move_group(s.activity(), g, group.as_deref(), cx) {
                             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e, vec![], cx));
                         }
                     }
@@ -805,7 +814,7 @@ impl Sidebar {
         vec![
             MenuItem::new("New group inside…", move |window, cx| Sidebar::prompt_new_group(&m1, Some(p1.clone()), None, window, cx)),
             MenuItem::new("Rename…", move |window, cx| Sidebar::prompt_rename_group(&m2, p2.clone(), window, cx)),
-            MenuItem::new("Delete", move |_, cx| m3.update(cx, |s, cx| s.delete_group(&p3, cx))),
+            MenuItem::new("Delete", move |_, cx| m3.update(cx, |s, cx| s.delete_group(s.activity(), &p3, cx))),
             MenuItem::separator(),
             Sidebar::move_menu(this, Moving::Group(path.to_string()), cx),
         ]
@@ -953,14 +962,24 @@ impl Sidebar {
     }
 
     pub fn toggle_pin(&mut self, key: &str, cx: &mut Context<Self>) {
+        let list = self.activity();
+        let pinned = self.state.pins.get(list.list_id()).is_some_and(|p| p.contains(key));
+        let _ = self.set_pinned(list, key, !pinned, cx);
+    }
+
+    /// Pins or unpins an item of `list`, shown or not; nothing changes when it already is.
+    pub fn set_pinned(&mut self, list: Activity, key: &str, pinned: bool, cx: &mut Context<Self>) -> Result<(), String> {
         // Terminals come and go with their numbers: nothing to pin.
-        if self.activity() == Activity::Terminals {
-            return;
+        if list == Activity::Terminals {
+            return Err("terminals aren't pinned".into());
         }
-        let pins = self.state.pins.entry(self.activity().list_id().to_string()).or_default();
-        list::toggle_pin(pins, key);
-        self.save(cx);
-        cx.notify();
+        let pins = self.state.pins.entry(list.list_id().to_string()).or_default();
+        if pins.contains(key) != pinned {
+            list::toggle_pin(pins, key);
+            self.save(cx);
+            cx.notify();
+        }
+        Ok(())
     }
 
     fn toggle_pin_selected(&mut self, cx: &mut Context<Self>) {
@@ -1000,8 +1019,13 @@ impl Sidebar {
         }
     }
 
-    pub fn set_env(&mut self, env: &str, cx: &mut Context<Self>) {
-        if self.envs(cx).iter().any(|e| e.name == env) && self.state.env.as_deref() != Some(env) {
+    /// Makes `env` the workspace's current env: the services, this list and what's saved,
+    /// together (the one way, UI and control API). Unknown envs are refused.
+    pub fn set_env(&mut self, env: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        if !self.envs(cx).iter().any(|e| e.name == env) {
+            return Err(format!("no env {env}"));
+        }
+        if self.state.env.as_deref() != Some(env) {
             self.state.env = Some(env.into());
             self.services.update(cx, |s, cx| s.set_env(env, cx));
             self.load_list(cx);
@@ -1009,6 +1033,7 @@ impl Sidebar {
             self.save(cx);
             cx.notify();
         }
+        Ok(())
     }
 
     pub fn toggle_running_only(&mut self, cx: &mut Context<Self>) {
@@ -1137,7 +1162,9 @@ impl Sidebar {
             .iter()
             .map(|e| {
                 let (sidebar, name) = (this.clone(), e.name.clone());
-                let item = MenuItem::new(e.name.clone(), move |_, cx| sidebar.update(cx, |s, cx| s.set_env(&name, cx))).checked(current.as_deref() == Some(&e.name));
+                let item = MenuItem::new(e.name.clone(), move |_, cx| {
+                    let _ = sidebar.update(cx, |s, cx| s.set_env(&name, cx));
+                }).checked(current.as_deref() == Some(&e.name));
                 if e.protected { item.icon(Icon::Protected, err) } else { item }
             })
             .collect()

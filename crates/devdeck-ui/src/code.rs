@@ -19,6 +19,7 @@ use gpui::{
     ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, SharedString, Styled, Subscription, Window, canvas, div, point,
 };
 use gpui_component::input::{Editor, EditorState, InputEvent};
+use gpui_component::RopeExt;
 use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
@@ -269,6 +270,24 @@ impl Code {
     /// Scrolls to `offset` (clamped once laid out).
     pub fn set_scroll_offset(&mut self, offset: Point<Pixels>, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| s.set_scroll_offset(offset, cx));
+    }
+
+    /// Puts the caret at the start of line `line` (1 for the first; past the end, the
+    /// last) and scrolls to it, without taking the focus.
+    pub fn go_to_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| {
+            let rows = s.text().lines_len();
+            let at = s.text().line_start_offset(line.saturating_sub(1).min(rows.saturating_sub(1)));
+            s.set_selected_range(at..at, cx);
+        });
+    }
+
+    /// Where the caret is: (line, column), 1 for the first.
+    pub fn caret(&self, cx: &App) -> (usize, usize) {
+        let s = self.state.read(cx);
+        let at = s.selected_range().start;
+        let p = s.text().offset_to_position(at);
+        (p.line as usize + 1, p.character as usize + 1)
     }
 
     /// The view opens the right-click menu from now on ([`MenuOpener`]).

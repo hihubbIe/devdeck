@@ -42,7 +42,9 @@ impl Notes {
             Some(Ok(index)) => index,
             Some(Err(e)) => {
                 let text = format!("Notes can't be read: {e}");
-                cx.defer(move |cx| toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![], cx)));
+                cx.defer(move |cx| {
+                    toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![], cx));
+                });
                 Vec::new()
             }
             None => Vec::new(),

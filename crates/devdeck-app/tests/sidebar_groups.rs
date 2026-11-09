@@ -115,7 +115,7 @@ fn folded_sections_and_groups_come_back(cx: &mut TestAppContext) {
     assert_eq!(r[0], "[Pinned 0 folded]");
     assert_eq!(&r[2..4], ["#back ▾1", "  vesselservice"], "groups first, open as saved");
     // Shared by every env, as pins are.
-    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev31", cx)));
+    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev31", cx))).unwrap();
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
     assert_eq!(&rows(&s, cx)[2..4], ["#back ▾1", "  vesselservice"]);
@@ -156,14 +156,14 @@ fn groups_are_made_through_the_prompt_renamed_and_deleted_without_losing_anythin
     // Inside, rename, delete: what it holds moves up.
     vcx.update(|_, cx| {
         s.update(cx, |s, cx| {
-            s.create_group(Some("back"), "api", cx).unwrap();
-            s.put("tadawebapi", Some("back/api"), cx);
-            s.put("graphservice", Some("back"), cx);
-            assert_eq!(s.rename_group("back", "BE", cx), Ok("BE".into()));
+            s.create_group(s.activity(), Some("back"), "api", cx).unwrap();
+            s.put(s.activity(), "tadawebapi", Some("back/api"), cx);
+            s.put(s.activity(), "graphservice", Some("back"), cx);
+            assert_eq!(s.rename_group(s.activity(), "back", "BE", cx), Ok("BE".into()));
         })
     });
     assert_eq!((group_of(&s, "tadawebapi", &vcx).as_deref(), group_of(&s, "graphservice", &vcx).as_deref()), (Some("BE/api"), Some("BE")));
-    vcx.update(|_, cx| s.update(cx, |s, cx| s.delete_group("BE", cx)));
+    vcx.update(|_, cx| s.update(cx, |s, cx| s.delete_group(s.activity(), "BE", cx)));
     assert_eq!((group_of(&s, "tadawebapi", &vcx).as_deref(), group_of(&s, "graphservice", &vcx)), (Some("api"), None));
     assert_eq!(vcx.read(|cx| s.read(cx).groups().unwrap().paths()), ["api"]);
 }
@@ -173,7 +173,7 @@ fn rows_dropped_on_a_group_go_in_it_and_back_to_the_top_on_the_all_header(cx: &m
     let shell = start(cx, None, "drop");
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
-    cx.update(|cx| s.update(cx, |s, cx| s.create_group(None, "back", cx).map(drop))).unwrap();
+    cx.update(|cx| s.update(cx, |s, cx| s.create_group(s.activity(), None, "back", cx).map(drop))).unwrap();
     cx.run_until_parked();
     let mut vcx = VisualTestContext::from_window(main, cx);
     drag(&mut vcx, "row-boardservice", "row-\u{1}back/");
@@ -195,9 +195,9 @@ fn what_a_drop_does_depends_on_where(cx: &mut TestAppContext) {
     let s = sidebar(&shell, cx);
     cx.update(|cx| {
         s.update(cx, |s, cx| {
-            s.create_group(None, "a", cx).unwrap();
-            s.create_group(Some("a"), "b", cx).unwrap();
-            s.put("graphservice", Some("a"), cx);
+            s.create_group(s.activity(), None, "a", cx).unwrap();
+            s.create_group(s.activity(), Some("a"), "b", cx).unwrap();
+            s.put(s.activity(), "graphservice", Some("a"), cx);
         })
     });
     let all = |g: Option<&str>| Target::All(g.map(String::from));
@@ -296,8 +296,8 @@ fn what_sits_in_a_moved_folder_stays_put_on_its_rows_and_goes_to_the_top_on_the_
     let s = sidebar(&shell, cx);
     cx.update(|cx| {
         s.update(cx, |s, cx| {
-            s.create_group(None, "design", cx).unwrap();
-            s.put("mono/packages", Some("design"), cx);
+            s.create_group(s.activity(), None, "design", cx).unwrap();
+            s.put(s.activity(), "mono/packages", Some("design"), cx);
         })
     });
     let all = |g: Option<&str>| Target::All(g.map(String::from));
@@ -318,7 +318,7 @@ fn what_sits_in_a_moved_folder_stays_put_on_its_rows_and_goes_to_the_top_on_the_
     // A pinned item dropped on the All header: unpinned to the top.
     cx.update(|cx| {
         s.update(cx, |s, cx| {
-            s.put("graphservice", Some("design"), cx);
+            s.put(s.activity(), "graphservice", Some("design"), cx);
             s.toggle_pin("graphservice", cx);
         })
     });
@@ -332,13 +332,40 @@ fn the_selection_follows_a_group_when_what_holds_it_changes(cx: &mut TestAppCont
     let key = |p: &str| Some(devdeck_core::list::folder_key(&group_row_path(p)));
     cx.update(|cx| {
         s.update(cx, |s, cx| {
-            s.create_group(None, "front", cx).unwrap();
-            s.create_group(Some("front"), "web", cx).unwrap();
+            s.create_group(s.activity(), None, "front", cx).unwrap();
+            s.create_group(s.activity(), Some("front"), "web", cx).unwrap();
             s.selected = key("front/web");
-            s.rename_group("front", "FE", cx).unwrap();
+            s.rename_group(s.activity(), "front", "FE", cx).unwrap();
         })
     });
     assert_eq!(cx.read(|cx| s.read(cx).selected.clone()), key("FE/web"), "renamed above it");
-    cx.update(|cx| s.update(cx, |s, cx| s.delete_group("FE", cx)));
+    cx.update(|cx| s.update(cx, |s, cx| s.delete_group(s.activity(), "FE", cx)));
     assert_eq!(cx.read(|cx| s.read(cx).selected.clone()), key("web"), "moved up by a delete");
+}
+
+/// The control API changes a list by name, whichever the sidebar shows (R13.1), and says
+/// the state it wants: asking twice changes nothing more.
+#[gpui::test]
+fn pins_and_groups_change_the_list_named_not_the_one_shown(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "list-by-name");
+    let s = sidebar(&shell, cx);
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Apps);
+    let pins = |cx: &TestAppContext, list: &str| cx.read(|cx| s.read(cx).state.pins.get(list).cloned().unwrap_or_default());
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.set_pinned(Activity::Layouts, "default", true, cx).unwrap();
+            s.set_pinned(Activity::Layouts, "default", true, cx).unwrap();
+            assert!(s.set_pinned(Activity::Terminals, "1", true, cx).is_err());
+            s.create_group(Activity::Cluster, None, "front", cx).unwrap();
+            assert!(s.create_group(Activity::Notes, None, "mine", cx).is_err(), "notes go by project");
+            assert_eq!(s.set_env("nope", cx), Err("no env nope".into()), "an unknown env is refused");
+        })
+    });
+    assert_eq!(pins(cx, "layouts"), BTreeSet::from(["default".to_string()]), "pinned once");
+    assert!(pins(cx, "apps").is_empty(), "the shown list is untouched");
+    let groups = |cx: &TestAppContext, list: &str| cx.read(|cx| s.read(cx).state.groups.get(list).map(|g| g.paths()).unwrap_or_default());
+    assert_eq!(groups(cx, "deployments"), ["front"]);
+    assert!(groups(cx, "apps").is_empty());
+    cx.update(|cx| s.update(cx, |s, cx| s.set_pinned(Activity::Layouts, "default", false, cx).unwrap()));
+    assert!(pins(cx, "layouts").is_empty());
 }

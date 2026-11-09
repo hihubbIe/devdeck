@@ -169,7 +169,7 @@ fn open_pin_rename_delete_from_the_list(cx: &mut TestAppContext) {
     assert_eq!(drop(true, Target::All(None), cx), Some(Effect::TogglePin(id.clone())));
     assert_eq!(drop(false, Target::All(None), cx), None);
     assert_eq!(drop(false, Target::Pinned, cx), Some(Effect::TogglePin(id.clone())));
-    assert!(cx.update(|cx| s.sidebar.update(cx, |sb, cx| sb.create_group(None, "mine", cx))).is_err(), "no groups");
+    assert!(cx.update(|cx| s.sidebar.update(cx, |sb, cx| sb.create_group(sb.activity(), None, "mine", cx))).is_err(), "no groups");
 
     // A rename shows in the list; a delete takes it away.
     cx.update(|cx| s.notes.update(cx, |n, cx| n.rename(&id, "bugs", cx)));

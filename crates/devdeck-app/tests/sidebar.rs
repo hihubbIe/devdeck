@@ -204,7 +204,7 @@ fn env_menu_changes_the_cluster_list(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let before = cx.read(|cx| s.read(cx).items(cx));
     assert!(!before.is_empty());
-    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev31", cx)));
+    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev31", cx))).unwrap();
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
     let after = cx.read(|cx| s.read(cx).items(cx));
@@ -480,7 +480,7 @@ fn the_cluster_list_can_show_another_env_than_the_workspaces(cx: &mut TestAppCon
     assert_eq!(cx.read(|cx| s.read(cx).view_ref("tadawebapi", cx)), Some(ViewRef::new("svc/dev31/tadawebapi")), "a service opens in the list's env");
     assert_eq!(cx.read(|cx| s.read(cx).state.cluster_env.clone()).as_deref(), Some("dev31"), "kept with the sidebar's state");
     // The workspace changes env: the list stays on its own.
-    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev32", cx)));
+    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev32", cx))).unwrap();
     assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some("dev31"));
     // An unknown env is ignored; sync follows the workspace again.
     cx.update(|cx| s.update(cx, |s, cx| s.set_list_env(Some("nope"), cx)));

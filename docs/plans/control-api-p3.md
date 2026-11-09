@@ -325,3 +325,25 @@ re-enters the deck; the ports check updates `Ports`, not the deck; env and size 
 when the tab is built, as before. Found in testing: a stopped terminal no tab shows is
 forgotten (R6.12), so opening it again rightly starts a new shell; the test checks a
 running one instead.
+
+## Step 3, as built (2026-11-09)
+
+Touches no OS code (R11.6).
+
+- Pins and groups name their list (`Activity`), shown or not: `Sidebar::set_pinned(list,
+  key, pinned)` (the state wanted: twice changes nothing more; terminals refused), and
+  `create_group`, `put`, `rename_group`, `move_group`, `delete_group` take the list; the
+  UI passes the one it shows. The selection follows a moved group only in the shown list.
+- `Sidebar::set_env(name)` stays the one way to set the current env (services, list,
+  saved together) and now refuses an unknown env.
+- Toasts: `Toasts::push` returns the id; `ToastQueue::history` keeps the last 50 told
+  (id, kind, text), expired or not, in time order (an exception to R4.1).
+- `context_menu::paste(runner, terminal, text)`: Share with's paste without a window
+  (one block, control characters removed, no Enter, bracketed paste only); `share` adds
+  showing the terminal.
+- `FileView::go_to_line(line)`: the caret at the line's start, scrolled to, once the text
+  is read and the source drawn (`Code::go_to_line` uses `set_selected_range`, which
+  scrolls without taking focus); a Markdown file shown rendered keeps the line until its
+  source shows. `Code::caret` reads it back.
+
+Review: by the lead (the subagent refused in step 2 wasn't tried again).

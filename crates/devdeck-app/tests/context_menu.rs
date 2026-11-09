@@ -370,3 +370,17 @@ fn a_notes_selection_offers_its_edits_copy_and_share_with(cx: &mut TestAppContex
     vcx.run_until_parked();
     assert_eq!(menu_labels(&s, &mut vcx), ["Cut", "Paste", "Select all", "", "Copy", "Share with"]);
 }
+
+/// The paste itself needs no window (the control API pastes too): one block, control
+/// characters gone, no Enter, and only into a terminal that takes pastes safely.
+#[gpui::test]
+fn pasting_needs_no_window(cx: &mut TestAppContext) {
+    let s = setup(cx, "paste-no-window", &["eventservice", "graphservice"]);
+    let to = s.terms[1].0.clone();
+    let out = cx.update(|cx| context_menu::paste(&s.runner, &to, "make\x03 test\n", cx));
+    assert_eq!(out, Err("doesn't take pastes safely"));
+    assert!(s.input(1).is_empty());
+    s.takes_pastes(1, cx);
+    cx.update(|cx| context_menu::paste(&s.runner, &to, "make\x03 test\n", cx)).unwrap();
+    assert_eq!(s.input(1), "\x1b[200~make test\r\x1b[201~", "lines as a terminal pastes them");
+}

@@ -316,3 +316,34 @@ fn a_closed_files_folder_stops_being_watched(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert!(vcx.read(|cx| services.read(cx).file_watch(cx)).is_empty());
 }
+
+/// A file shows a line asked for (the control API's `file.open`): once its text is read
+/// and the editor drawn, even if asked while hidden, and never moving the focus.
+#[gpui::test]
+fn a_file_goes_to_a_line_without_taking_the_focus(cx: &mut TestAppContext) {
+    let (deck, files) = setup(cx);
+    let a = files.join("long.rs");
+    std::fs::write(&a, (1..=80).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
+    let mut vcx = window(cx);
+    let pane = the_pane(&deck, &mut vcx);
+    let at = body(&mut vcx, pane).center();
+    drop_files(&mut vcx, std::slice::from_ref(&a), at);
+    let v = view(&deck, &a, &mut vcx);
+    let caret = |v: &Entity<FileView>, vcx: &mut VisualTestContext| vcx.read(|cx| v.read(cx).code.as_ref().map(|c| c.read(cx).caret(cx)));
+    // Hidden behind another tab when asked: it goes there once shown.
+    let notes = ViewRef::new("demo/notes");
+    vcx.update(|_, cx| deck.update(cx, |d, cx| d.apply(cx, |l| { let (p, i) = l.find_view(&notes).unwrap(); l.activate(p, i) })));
+    vcx.run_until_parked();
+    let focused = vcx.update(|window, cx| window.focused(cx));
+    vcx.update(|_, cx| v.update(cx, |v, cx| v.go_to_line(60, cx)));
+    vcx.run_until_parked();
+    assert_eq!(vcx.update(|window, cx| window.focused(cx)), focused, "the focus didn't move");
+    let r = file_ref(&a);
+    vcx.update(|_, cx| deck.update(cx, |d, cx| d.apply(cx, |l| { let (p, i) = l.find_view(&r).unwrap(); l.activate(p, i) })));
+    vcx.run_until_parked();
+    assert_eq!(caret(&v, &mut vcx), Some((60, 1)));
+    // Past the end: the last line.
+    vcx.update(|_, cx| v.update(cx, |v, cx| v.go_to_line(500, cx)));
+    vcx.run_until_parked();
+    assert_eq!(caret(&v, &mut vcx), Some((81, 1)), "the empty line after the last break");
+}

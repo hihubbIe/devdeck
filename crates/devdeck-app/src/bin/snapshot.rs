@@ -155,13 +155,13 @@ fn make_groups(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<S
     let s = sidebar(cx, shell);
     cx.update(|cx| {
         s.update(cx, |s, cx| {
-            s.create_group(None, "front-end", cx).unwrap();
-            s.create_group(Some("front-end"), "design", cx).unwrap();
-            s.create_group(None, "back-end", cx).unwrap();
-            s.put("mono", Some("front-end"), cx);
-            s.put("mono/packages", Some("front-end/design"), cx);
-            s.put("eventservice", Some("back-end"), cx);
-            s.put("graphservice", Some("back-end"), cx);
+            s.create_group(s.activity(), None, "front-end", cx).unwrap();
+            s.create_group(s.activity(), Some("front-end"), "design", cx).unwrap();
+            s.create_group(s.activity(), None, "back-end", cx).unwrap();
+            s.put(s.activity(), "mono", Some("front-end"), cx);
+            s.put(s.activity(), "mono/packages", Some("front-end/design"), cx);
+            s.put(s.activity(), "eventservice", Some("back-end"), cx);
+            s.put(s.activity(), "graphservice", Some("back-end"), cx);
             s.toggle_open(&devdeck_core::list::group_row_path("back-end"), cx);
             s.selected = Some("mono".into());
         })
@@ -184,7 +184,7 @@ fn sections_folded(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Enti
     let s = sidebar(cx, shell);
     cx.update(|cx| {
         s.update(cx, |s, cx| {
-            s.create_group(None, "back-end", cx).unwrap();
+            s.create_group(s.activity(), None, "back-end", cx).unwrap();
             s.toggle_section(devdeck_core::list::Section::Pinned, cx);
             s.toggle_section(devdeck_core::list::Section::All, cx);
         })
@@ -211,7 +211,7 @@ fn cluster_protected(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &E
     cx.update(|cx| {
         s.update(cx, |s, cx| {
             s.show(Activity::Cluster, cx);
-            s.set_env("hades", cx);
+            s.set_env("hades", cx).expect("the demo has hades");
         })
     });
 }
