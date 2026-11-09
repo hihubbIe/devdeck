@@ -2,9 +2,11 @@
 //! rendered; an icon in its header (or its tab's menu, the palette, ctrl+shift+e)
 //! switches. It opens rendered when the note has text, as source when it's empty. The
 //! text belongs to the workspace's [`Notes`]: typing goes there, which writes it. The tab
-//! is named "app · name" and follows a rename; a deleted note closes its tabs.
+//! is named "app · name" ("name" without a project) and follows a rename; a deleted note
+//! closes its tabs.
 //!
-//! Also here: making, renaming and deleting a note (the app view's Notes section).
+//! Also here: making, renaming and deleting a note (the app view's Notes section and the
+//! sidebar's Notes list).
 
 use super::{KeepsState, Live, ToggleRendered, ViewAction, ViewCx};
 use crate::notes::{NoteDeleted, Notes};
@@ -133,6 +135,9 @@ impl NoteView {
 impl Live for NoteView {
     fn title(&self, cx: &App) -> Option<String> {
         let meta = self.notes.read(cx).meta(&self.id)?;
+        if meta.app.is_empty() {
+            return Some(meta.name.clone());
+        }
         let app = meta.app.rsplit('/').next().unwrap_or(&meta.app);
         Some(format!("{app} · {}", meta.name))
     }
@@ -214,10 +219,15 @@ impl Render for NoteView {
 
 /// Asks a name, then makes a note for `app` and opens it (as source: it's empty).
 pub fn new_note(ctx: &ViewCx, app: &str, window: &mut Window, cx: &mut App) {
-    let (notes, app, ctx) = (ctx.services.read(cx).notes.clone(), app.to_string(), ctx.clone());
+    make_note(ctx.services.read(cx).notes.clone(), ctx.deck.clone(), app, window, cx);
+}
+
+/// Asks a name, then makes a note for `app` (empty: no project) and opens it in `deck`.
+pub fn make_note(notes: Entity<Notes>, deck: gpui::WeakEntity<crate::deck::Deck>, app: &str, window: &mut Window, cx: &mut App) {
+    let app = app.to_string();
     let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| {
         let id = notes.update(cx, |n, cx| n.create(&app, name, cx)).ok_or("the note wasn't made")?;
-        ctx.open(devdeck_core::view_addr::ViewAddr::Note { id }, cx);
+        super::open_in(&deck, devdeck_core::view_addr::ViewAddr::Note { id }, cx);
         Ok(())
     });
     crate::name_prompt::open("New note", "", "note-name", submit, window, cx);

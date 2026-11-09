@@ -52,6 +52,7 @@ actions!(
         ContextMenu,
         ShowLayouts,
         ShowTerminals,
+        ShowNotes,
         NewLayout,
         SaveLayoutAs,
     ]

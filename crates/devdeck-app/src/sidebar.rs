@@ -1,6 +1,6 @@
-//! The sidebar of one workspace (R4): the activity bar's choice (Apps, Cluster, Ports)
-//! and its list, Pinned then All, alphabetical, with a filter. Every workspace owns its
-//! own `Sidebar`; the main window shows the active one.
+//! The sidebar of one workspace (R4): the activity bar's choice (Apps, Cluster, Ports,
+//! Layouts, Terminals, Notes) and its list, Pinned then All, alphabetical, with a filter.
+//! Every workspace owns its own `Sidebar`; the main window shows the active one.
 //!
 //! Selection is keyed by item, so it survives filtering and reordering; an item that
 //! gets hidden drops the selection. Rows open their item as a tab in the main window's
@@ -11,6 +11,9 @@
 //! child), ← closes it (or goes to its parent), Enter or a double click toggles a folder,
 //! the chevron toggles any row. What's open is saved with the sidebar; while filtering,
 //! the matches show with their folders open and the saved state is left as it was.
+//!
+//! Notes (R12.3) are a tree too: one level of projects holding their notes, then the
+//! notes without a project; projects without notes don't show.
 
 use crate::deck::Deck;
 use crate::places::{self, Place};
@@ -44,6 +47,7 @@ actions!(
         ToggleRunningOnly,
         ToggleWatchPods,
         OpenListEnvMenu,
+        NewNote,
         SidebarEscape
     ]
 );
@@ -56,10 +60,12 @@ pub enum Activity {
     Layouts,
     /// Every shell of the workspace, shown or not.
     Terminals,
+    /// The workspace's notes, by project.
+    Notes,
 }
 
 impl Activity {
-    pub const ALL: [Activity; 5] = [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals];
+    pub const ALL: [Activity; 6] = [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals, Activity::Notes];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -68,6 +74,7 @@ impl Activity {
             Activity::Ports => "ports",
             Activity::Layouts => "layouts",
             Activity::Terminals => "terminals",
+            Activity::Notes => "notes",
         }
     }
 
@@ -83,6 +90,7 @@ impl Activity {
             Activity::Ports => "ports",
             Activity::Layouts => "layouts",
             Activity::Terminals => "terminals",
+            Activity::Notes => "notes",
         }
     }
 
@@ -93,6 +101,7 @@ impl Activity {
             Activity::Ports => "Ports",
             Activity::Layouts => "Layouts",
             Activity::Terminals => "Terminals",
+            Activity::Notes => "Notes",
         }
     }
 
@@ -103,6 +112,7 @@ impl Activity {
             Activity::Ports => Icon::Ports,
             Activity::Layouts => Icon::Layouts,
             Activity::Terminals => Icon::Terminals,
+            Activity::Notes => Icon::Note,
         }
     }
 }
@@ -206,9 +216,14 @@ impl Sidebar {
             state.cluster_env = None;
         }
         let filter = cx.new(|cx| TextInput::new("filter", cx));
+        let notes = services.read(cx).notes.clone();
         let subs = vec![
             // The Layouts list reads the deck's book.
             cx.observe(&deck, |_, _, cx| cx.notify()),
+            cx.observe(&notes, |this, _, cx| {
+                this.drop_hidden_selection(cx);
+                cx.notify();
+            }),
             cx.observe(&services, |this, _, cx| {
                 this.drop_hidden_selection(cx);
                 // The cluster may have come back, or the env changed under the list.
@@ -502,7 +517,27 @@ impl Sidebar {
                     })
                     .collect()
             }
+            Activity::Notes => self.notes_tree(cx).items,
         }
+    }
+
+    /// The Notes list: notes by project (named by its app, or its id once gone).
+    pub fn notes_tree(&self, cx: &App) -> devdeck_core::notes::Tree {
+        let s = self.services.read(cx);
+        devdeck_core::notes::tree(s.notes.read(cx).all(), |app| s.catalog.app(app).map(|a| a.name.clone()))
+    }
+
+    /// Asks a name and makes a note for `app` (empty: no project), opened in this deck.
+    pub fn new_note(this: &Entity<Self>, app: &str, window: &mut Window, cx: &mut App) {
+        let s = this.read(cx);
+        let (notes, deck) = (s.services.read(cx).notes.clone(), s.deck.downgrade());
+        crate::views::note_view::make_note(notes, deck, app, window, cx);
+    }
+
+    /// A project row's menu in the Notes list.
+    fn project_menu(this: &Entity<Self>, node: &str) -> Vec<MenuItem> {
+        let (me, app) = (this.clone(), devdeck_core::notes::project_of_node(node));
+        vec![MenuItem::new("New note…", move |window, cx| Sidebar::new_note(&me, &app, window, cx))]
     }
 
     fn pins(&self) -> std::collections::BTreeSet<String> {
@@ -519,21 +554,31 @@ impl Sidebar {
     }
 
     pub fn rows(&self, cx: &App) -> (Vec<ListItem>, Vec<Row>) {
-        let items = self.items(cx);
+        let notes = self.activity() == Activity::Notes;
+        let (items, names) = if notes {
+            let t = self.notes_tree(cx);
+            (t.items, t.names)
+        } else {
+            (self.items(cx), Default::default())
+        };
         let id = self.activity().list_id();
         let (none, no_groups) = (std::collections::BTreeSet::new(), Groups::default());
         let shape = Shape {
             open: self.state.open.get(id).unwrap_or(&none),
             groups: self.groups().unwrap_or(&no_groups),
             folded: self.state.collapsed.get(id).unwrap_or(&none),
+            names: &names,
+            // Projects, then the notes without one.
+            folders_first: notes,
         };
         let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), self.running_only(), shape);
         (items, rows)
     }
 
-    /// Lists but Terminals hold groups (their numbers come and go, as for pins).
+    /// Lists but Terminals (their numbers come and go, as for pins) and Notes (they stay
+    /// with their project) hold groups.
     pub fn groups_allowed(&self) -> bool {
-        self.activity() != Activity::Terminals
+        !matches!(self.activity(), Activity::Terminals | Activity::Notes)
     }
 
     /// The shown list's groups.
@@ -574,7 +619,7 @@ impl Sidebar {
     /// path.
     pub fn create_group(&mut self, parent: Option<&str>, name: &str, cx: &mut Context<Self>) -> Result<String, String> {
         if !self.groups_allowed() {
-            return Err("terminals aren't grouped".into());
+            return Err(format!("{} aren't grouped", self.activity().id()));
         }
         let (groups, open) = self.groups_mut();
         let path = groups.create(parent, name)?;
@@ -639,6 +684,11 @@ impl Sidebar {
     pub fn item_drop(&self, key: &str, pinned: bool, target: &Target) -> Option<Effect> {
         if self.activity() == Activity::Terminals {
             return None;
+        }
+        // Without groups a drop only pins or unpins.
+        if !self.groups_allowed() {
+            let to_pinned = *target == Target::Pinned;
+            return (to_pinned != pinned).then(|| Effect::TogglePin(key.into()));
         }
         match target {
             Target::Pinned => (!pinned).then(|| Effect::TogglePin(key.into())),
@@ -853,6 +903,7 @@ impl Sidebar {
             Activity::Layouts => return None,
             // The tab a layout shows it by, so opening it never adds a second one.
             Activity::Terminals => return self.deck.read(cx).terminals(cx).remove(&key.parse().ok()?).map(|t| t.view),
+            Activity::Notes => ViewAddr::Note { id: key.into() },
         }
         .to_ref())
     }
@@ -1044,6 +1095,20 @@ impl Sidebar {
         }
         let (open, pin) = (this.clone(), this.clone());
         let (k1, k2) = (key.to_string(), key.to_string());
+        if this.read(cx).activity() == Activity::Notes {
+            // A project's row (the menu key on a selected folder).
+            if let Some(node) = key.strip_suffix('/') {
+                return Sidebar::project_menu(this, node);
+            }
+            let notes = this.read(cx).services.read(cx).notes.clone();
+            let (n1, n2, k3, k4) = (notes.clone(), notes, key.to_string(), key.to_string());
+            return vec![
+                MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
+                MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
+                MenuItem::new("Rename…", move |window, cx| crate::views::note_view::rename_note(&n1, &k3, window, cx)),
+                MenuItem::new("Delete…", move |window, cx| crate::views::note_view::delete_note(&n2, &k4, window, cx)),
+            ];
+        }
         let mut items = vec![
             MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
             MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
@@ -1183,6 +1248,17 @@ impl Render for Sidebar {
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_watch_pods(cx))),
                 )
             })
+            .when(activity == Activity::Notes, |d| {
+                d.child(
+                    devdeck_ui::button("new-note", "new note", &t)
+                        .debug_selector(|| "sidebar-new-note".into())
+                        .tooltip(tip("a note without a project"))
+                        .on_click(cx.listener(|_, _, window, cx| {
+                            let me = cx.entity();
+                            window.defer(cx, move |window, cx| Sidebar::new_note(&me, "", window, cx));
+                        })),
+                )
+            })
             .when(activity == Activity::Apps, |d| {
                 d.child(
                     toggle_button("running-only", "running", running_only, &t)
@@ -1202,7 +1278,8 @@ impl Render for Sidebar {
                 let focused = this.list_focus.is_focused(window);
                 let me = cx.entity();
                 let quiet_warning = this.activity() == Activity::Apps;
-                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, groups: this.groups_allowed(), quiet_warning, t };
+                let notes = (this.activity() == Activity::Notes).then(|| this.notes_tree(cx));
+                let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, groups: this.groups_allowed(), quiet_warning, notes, t };
                 range
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
                     .map(|(i, row)| {
@@ -1238,6 +1315,12 @@ impl Render for Sidebar {
             .on_action(cx.listener(|this, _: &ToggleRunningOnly, _, cx| this.toggle_running_only(cx)))
             .on_action(cx.listener(|this, _: &ToggleWatchPods, _, cx| this.toggle_watch_pods(cx)))
             .on_action(cx.listener(|this, _: &OpenListEnvMenu, window, cx| this.open_list_env_menu(window, cx)))
+            .on_action(cx.listener(|this, _: &NewNote, window, cx| {
+                if this.activity() == Activity::Notes {
+                    let me = cx.entity();
+                    window.defer(cx, move |window, cx| Sidebar::new_note(&me, "", window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.read(cx).focus_handle(cx).focus(window, cx);
             }))
@@ -1274,6 +1357,8 @@ struct Look {
     /// A warning is ⚠ alone at the row's right, its reason in the tooltip (the Apps
     /// list); else ⚠ in the state slot and its reason as the right text.
     quiet_warning: bool,
+    /// The Notes list's tree: its folders are projects (named, hinted, dim once gone).
+    notes: Option<devdeck_core::notes::Tree>,
     t: Theme,
 }
 
@@ -1351,10 +1436,15 @@ fn render_row(
                 .text_color(t.dim)
                 .text_size(t.text_small)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| m_click.update(cx, |s, cx| s.toggle_section(section, cx)))
-                .when(section == Section::All && look.groups, |d| {
+                .when(section == Section::All && (look.groups || look.notes.is_some()), |d| {
+                    let notes = look.notes.is_some();
                     d.on_mouse_down(MouseButton::Right, move |e, window, cx| {
                         let m = m_menu.clone();
-                        let items = vec![MenuItem::new("New group…", move |window, cx| Sidebar::prompt_new_group(&m, None, None, window, cx))];
+                        let items = if notes {
+                            vec![MenuItem::new("New note…", move |window, cx| Sidebar::new_note(&m, "", window, cx))]
+                        } else {
+                            vec![MenuItem::new("New group…", move |window, cx| Sidebar::prompt_new_group(&m, None, None, window, cx))]
+                        };
                         open_menu(e.position, items, window, cx);
                     })
                 })
@@ -1370,7 +1460,12 @@ fn render_row(
             let k_menu = key.clone();
             let menu_path = path.clone();
             let drag = DraggedFolder { sidebar: sidebar_id, path: path.clone(), label: name.clone().into() };
-            let hint: SharedString = group_of_row(&path).map_or_else(|| path.clone(), |g| format!("group {g}")).into();
+            let project = look.notes.as_ref();
+            let hint: SharedString = match project.and_then(|n| n.hints.get(&path)) {
+                Some(h) => h.clone().into(),
+                None => group_of_row(&path).map_or_else(|| path.clone(), |g| format!("group {g}")).into(),
+            };
+            let gone = project.is_some_and(|n| n.gone.contains(&path));
             let el = tree(&key, depth, Some(kids), Some(path.clone()))
                 .tooltip(tip(hint))
                 .on_drag(drag, |d, _, _, cx| cx.new(|_| DragGhost(d.label.clone())))
@@ -1379,7 +1474,9 @@ fn render_row(
                         s.selected = Some(k_menu.clone());
                         cx.notify();
                     });
+                    let notes = m_menu.read(cx).activity() == Activity::Notes;
                     let items = match group_of_row(&menu_path) {
+                        None if notes => Sidebar::project_menu(&m_menu, &menu_path),
                         Some(g) => Sidebar::group_menu(&m_menu, g, cx),
                         None if m_menu.read(cx).groups_allowed() => vec![Sidebar::move_menu(&m_menu, Moving::Node(menu_path.clone()), cx)],
                         None => Vec::new(),
@@ -1400,7 +1497,7 @@ fn render_row(
                     });
                 })
                 .when(group, |d| d.child(icon(Icon::Group, t.mute, t)))
-                .child(div().flex_1().min_w_0().truncate().text_color(t.mute).child(if group { name } else { format!("{name}/") }))
+                .child(div().flex_1().min_w_0().truncate().text_color(if gone { t.dim } else { t.mute }).child(if group || project.is_some() { name } else { format!("{name}/") }))
                 .when(!kids.open, |d| d.child(holds(kids, t)));
             row_drop(el).into_any_element()
         }

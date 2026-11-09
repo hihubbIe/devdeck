@@ -221,6 +221,12 @@ pub struct Shape<'a> {
     pub groups: &'a Groups,
     /// Sections folded (by [`Section::id`]).
     pub folded: &'a BTreeSet<String>,
+    /// Folder rows' names by path, where a folder's last segment isn't its name (the
+    /// Notes list's projects); sorted by that name.
+    pub names: &'a BTreeMap<String, String>,
+    /// Folders before items at each level, after the groups (the Notes list: projects,
+    /// then the notes without one).
+    pub folders_first: bool,
 }
 
 /// The rows to draw: Pinned header, pinned items (flat), All header, the groups and
@@ -240,7 +246,7 @@ pub fn rows(items: &[ListItem], pins: &BTreeSet<String>, filter: &str, running_o
         out.extend(pinned.into_iter().map(|index| Row::Item { index, pinned: true, depth: 0, kids: None }));
     }
     let rest: Vec<usize> = (0..items.len()).filter(|&i| !pins.contains(&items[i].key)).collect();
-    let tree = Tree::new(items, &rest, shape.groups);
+    let tree = Tree::new(items, &rest, shape);
     out.push(Row::Header { section: Section::All, open: open(Section::All), count: tree.count(&shown) });
     if open(Section::All) {
         let before = out.len();
@@ -266,10 +272,12 @@ struct Node {
 struct Tree<'a> {
     items: &'a [ListItem],
     nodes: BTreeMap<Vec<String>, Node>,
+    folders_first: bool,
 }
 
 impl<'a> Tree<'a> {
-    fn new(items: &'a [ListItem], idx: &[usize], groups: &Groups) -> Self {
+    fn new(items: &'a [ListItem], idx: &[usize], shape: Shape) -> Self {
+        let groups = shape.groups;
         let mut nodes: BTreeMap<Vec<String>, Node> = BTreeMap::new();
         // Groups, with their parents.
         let place_of_group = |g: &str| -> Vec<String> { g.split('/').map(|s| format!("{GROUP_TAG}{s}")).collect() };
@@ -308,19 +316,23 @@ impl<'a> Tree<'a> {
             }
             let last = places.len() - 1;
             for (n, (place, path, name)) in places.into_iter().enumerate() {
+                let name = shape.names.get(&path).cloned().unwrap_or(name);
                 let node = nodes.entry(place).or_insert_with(|| Node { item: None, path, name, group: false });
                 if n == last {
                     node.item = Some(i);
                 }
             }
         }
-        Self { items, nodes }
+        Self { items, nodes, folders_first: shape.folders_first }
     }
 
     fn children(&self, parent: &[String]) -> Vec<&Vec<String>> {
         let mut kids: Vec<&Vec<String>> = self.nodes.keys().filter(|k| k.len() == parent.len() + 1 && k.starts_with(parent)).collect();
-        // Groups first, then by name.
-        kids.sort_by_key(|k| (!self.nodes[*k].group, self.name(k).to_lowercase(), k.last().cloned()));
+        // Groups first, then (when asked) folders, then by name.
+        kids.sort_by_key(|k| {
+            let node = &self.nodes[*k];
+            (!node.group, self.folders_first && node.item.is_some(), self.name(k).to_lowercase(), k.last().cloned())
+        });
         kids
     }
 
@@ -631,7 +643,7 @@ mod tests {
     }
 
     fn rows_open(items: &[ListItem], pins: &BTreeSet<String>, filter: &str, running_only: bool, open: &BTreeSet<String>) -> Vec<Row> {
-        rows(items, pins, filter, running_only, Shape { open, groups: &Groups::default(), folded: &none() })
+        rows(items, pins, filter, running_only, Shape { open, groups: &Groups::default(), folded: &none(), names: &BTreeMap::new(), folders_first: false })
     }
 
     #[test]
@@ -762,7 +774,7 @@ mod tests {
         let open: BTreeSet<String> = open.iter().map(|s| s.to_string()).collect();
         let folded: BTreeSet<String> = folded.iter().map(|s| s.to_string()).collect();
         let pins: BTreeSet<String> = pins.iter().map(|s| s.to_string()).collect();
-        let r = rows(&it, &pins, filter, false, Shape { open: &open, groups, folded: &folded });
+        let r = rows(&it, &pins, filter, false, Shape { open: &open, groups, folded: &folded, names: &BTreeMap::new(), folders_first: false });
         (it, r)
     }
 
@@ -808,7 +820,7 @@ mod tests {
         ];
         let g = groups(&["g", "h"], &[("fe/apps", "g"), ("be/apps", "g"), ("be/apps/c", "h")]);
         let open = BTreeSet::from([group_row_path("g"), group_row_path("h")]);
-        let r = rows(&it, &none(), "", false, Shape { open: &open, groups: &g, folded: &none() });
+        let r = rows(&it, &none(), "", false, Shape { open: &open, groups: &g, folded: &none(), names: &BTreeMap::new(), folders_first: false });
         assert_eq!(labels(&it, &r), ["[Pinned]", "(Pinned empty)", "[All]", "#g ▾2", "  be/apps/ ▸1", "  fe/apps/ ▸1", "#h ▾1", "  c"]);
     }
 
@@ -834,7 +846,7 @@ mod tests {
         let it = items();
         let g = groups(&["mine"], &[("e", "mine")]);
         let open = BTreeSet::from([group_row_path("mine")]);
-        let r = rows(&it, &none(), "", false, Shape { open: &open, groups: &g, folded: &none() });
+        let r = rows(&it, &none(), "", false, Shape { open: &open, groups: &g, folded: &none(), names: &BTreeMap::new(), folders_first: false });
         assert_eq!(labels(&it, &r), ["[Pinned]", "(Pinned empty)", "[All]", "#mine ▾1*", "  entityservice", "authservice", "Boardservice", "vesselservice"]);
         assert_eq!(node_path(&it[2]), "e");
     }
@@ -906,5 +918,23 @@ mod tests {
         assert_eq!(g.paths(), ["web", "Été"]);
         assert_eq!(g.group_of("api"), Some("web"));
         assert_eq!(g.create(None, "été"), Err("a group called Été exists here".into()), "case ignored beyond ASCII");
+    }
+
+    #[test]
+    fn folders_can_be_named_and_come_first() {
+        let it = vec![
+            ListItem::new("n1", "alpha"),
+            ListItem::new("n2", "todo").path("p1/n2"),
+            ListItem::new("n3", "bugs").path("p2/n3"),
+            ListItem::new("n4", "zeta"),
+        ];
+        let names = BTreeMap::from([("p1".to_string(), "Zed".to_string()), ("p2".to_string(), "web".to_string())]);
+        let open = BTreeSet::from(["p1".to_string()]);
+        let (groups, folded) = (Groups::default(), none());
+        let shape = |folders_first| Shape { open: &open, groups: &groups, folded: &folded, names: &names, folders_first };
+        let r = rows(&it, &none(), "", false, shape(true));
+        assert_eq!(labels(&it, &r), ["[Pinned]", "(Pinned empty)", "[All]", "web/ ▸1", "Zed/ ▾1", "  todo", "alpha", "zeta"]);
+        let r = rows(&it, &none(), "", false, shape(false));
+        assert_eq!(labels(&it, &r), ["[Pinned]", "(Pinned empty)", "[All]", "alpha", "web/ ▸1", "Zed/ ▾1", "  todo", "zeta"]);
     }
 }

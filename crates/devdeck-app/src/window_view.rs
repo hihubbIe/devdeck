@@ -984,6 +984,7 @@ impl Render for WindowView {
                     .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowLayouts, w, cx| this.show_activity(Activity::Layouts, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowTerminals, w, cx| this.show_activity(Activity::Terminals, w, cx)))
+                    .on_action(cx.listener(|this, _: &ShowNotes, w, cx| this.show_activity(Activity::Notes, w, cx)))
                     .on_action(cx.listener(|this, _: &NewLayout, w, cx| crate::layouts::open_new(this.deck.clone(), w, cx)))
                     .on_action(cx.listener(|this, _: &SaveLayoutAs, w, cx| crate::layouts::open_save_as(this.deck.clone(), w, cx)))
                     .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {

@@ -67,10 +67,10 @@ fn list_focused(s: &Entity<Sidebar>, w: AnyWindowHandle, cx: &mut TestAppContext
 fn cluster_and_env_only_where_configured(cx: &mut TestAppContext) {
     let shell = start(cx, None, "r23");
     let work = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals]);
+    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals, Activity::Notes]);
     switch_to(&shell, cx, "personal");
     let personal = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Apps, Activity::Ports, Activity::Layouts, Activity::Terminals]);
+    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Apps, Activity::Ports, Activity::Layouts, Activity::Terminals, Activity::Notes]);
     assert!(cx.read(|cx| personal.read(cx).env(cx).is_none()), "no env button without envs");
     let main = main_window(&shell, cx);
     cx.simulate_keystrokes(main, "ctrl-2");

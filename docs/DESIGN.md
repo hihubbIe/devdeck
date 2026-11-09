@@ -19,10 +19,11 @@ The interactive HTML prototype that was approved is the visual reference
 ```
 
 - **Activity bar**: one icon per activity contributed by the workspace (Apps; Cluster
-  only when configured; Ports; Layouts). Clicking the active one hides the sidebar.
+  only when configured; Ports; Layouts; Terminals; Notes). Clicking the active one hides
+  the sidebar.
 - **Sidebar**: the activity's list. Always Pinned + All, alphabetical, filter field.
   Both sections fold from their header. All holds the groups the user makes (folders,
-  nested, first at each level, each list but Terminals; Cluster groups shared by every
+  nested, first at each level, each list but Terminals and Notes; Cluster groups shared by every
   env, as pins are): an item, or a folder of the Apps tree with all it holds, goes in
   by a drop on the group or "Move to group ▸", and keeps its real path for opening and
   selection. Dropping on a row lands in its group, on the All header at the top; a
@@ -348,6 +349,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   `Shell::flush`. The demo's notes stay in memory. The note view hands focus on to its
   editor when it's drawn focused (the editor is made on the first draw); Esc in the
   editor gives the keys back to the view until the view loses focus.
+- A note without a project has an empty app in the same index (older indexes read the
+  same); its tab is named by its name alone. The sidebar's Notes list is the generic list
+  (`core::list`) fed by `core::notes::tree`: a project is a folder row one segment deep
+  (`notes::project_node`, its app id with `/` replaced), named by the list's `names` and
+  put before the notes without a project by `folders_first`; no groups (notes don't
+  move), and a drop only pins or unpins.
 
 ## Control API
 

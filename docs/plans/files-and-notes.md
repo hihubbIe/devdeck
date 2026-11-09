@@ -210,8 +210,8 @@ drop from a file manager on Wayland and on X11.
 ## Out of scope
 
 File explorer; editing files other than notes; HTML; images; notes not tied to an app;
-notes in the sidebar or the palette; LSP, completion, go to definition; the Claude control
-(MCP), next.
+notes in the sidebar or the palette (the first two came later: the sidebar's Notes list,
+2026-11-09, R12.3); LSP, completion, go to definition; the Claude control (MCP), next.
 
 ## Step 1 spike results (2026-11-08)
 
