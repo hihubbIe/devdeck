@@ -77,7 +77,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 7. Cluster (optional per workspace)
 
-- [~] **R7.1** Per env: list of deployments (alphabetical, Pinned and All) with status, image tag, ready count, restarts, running since.
+- [~] **R7.1** Per env: list of deployments (alphabetical, Pinned and All) with status, image tag, ready count, restarts, running since. The Cluster list has its own env (user, 2026-11-09): a dropdown whose first choice syncs it with the workspace's env (the default, following it), the others show another env's deployments without changing the workspace's (the one runs use); a service opens in the list's env.
 - [~] **R7.2** Service inspector: header and actions; live CPU and memory against request and limit; pods (status, ready, restarts, last termination reason, age, node, cpu, memory); container (image, ports, resources, configmap); deploy history recorded by devdeck.
 - [~] **R7.3** Image tag editor with suggestions (tags deployed on other envs, devdeck history, free text), an unsaved marker, save with ctrl+s or a button, and a confirmation that states the exact change and the exact command.
 - [~] **R7.4** Rollout follow-up: progress, success, and failure detection (image pull errors) with one-action undo.

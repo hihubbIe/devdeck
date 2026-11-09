@@ -43,6 +43,7 @@ actions!(
         FocusFilter,
         ToggleRunningOnly,
         ToggleWatchPods,
+        OpenListEnvMenu,
         SidebarEscape
     ]
 );
@@ -200,6 +201,10 @@ impl Sidebar {
         let activity = if activity == Activity::Cluster && !has_cluster { Activity::Apps } else { activity };
         state.activity = activity.id().into();
         state.env = services.read(cx).env.clone();
+        // An env the catalog no longer has: back to following the workspace's.
+        if state.cluster_env.as_ref().is_some_and(|e| services.read(cx).catalog.env(e).is_none()) {
+            state.cluster_env = None;
+        }
         let filter = cx.new(|cx| TextInput::new("filter", cx));
         let subs = vec![
             // The Layouts list reads the deck's book.
@@ -243,8 +248,9 @@ impl Sidebar {
     /// on and the list on screen, its pods (a new handle before the old one goes, so a same-env refresh keeps the
     /// watch).
     fn load_list(&mut self, cx: &mut Context<Self>) {
+        let list_env = self.list_env(cx);
         let s = self.services.read(cx);
-        let target = match (self.activity(), s.cluster.clone(), s.env.clone()) {
+        let target = match (self.activity(), s.cluster.clone(), list_env) {
             (Activity::Cluster, Some(cluster), Some(env)) => Some((cluster, env)),
             _ => None,
         };
@@ -290,9 +296,69 @@ impl Sidebar {
         self.services.read(cx).catalog.envs.clone()
     }
 
+    /// The workspace's env (runs, the title bar).
     pub fn env(&self, cx: &App) -> Option<Env> {
         let name = self.services.read(cx).env.clone()?;
         self.envs(cx).into_iter().find(|e| e.name == name)
+    }
+
+    /// The env the Cluster list shows: its own when one is picked, else the workspace's.
+    pub fn list_env(&self, cx: &App) -> Option<String> {
+        self.state.cluster_env.clone().filter(|e| self.envs(cx).iter().any(|x| &x.name == e)).or_else(|| self.services.read(cx).env.clone())
+    }
+
+    /// Whether the Cluster list follows the workspace's env.
+    pub fn list_synced(&self) -> bool {
+        self.state.cluster_env.is_none()
+    }
+
+    /// The Cluster list shows `env` (the workspace's stays), or follows the workspace's
+    /// again (`None`).
+    pub fn set_list_env(&mut self, env: Option<&str>, cx: &mut Context<Self>) {
+        // An env the workspace doesn't have changes nothing.
+        if env.is_some_and(|e| !self.envs(cx).iter().any(|x| x.name == e)) {
+            return;
+        }
+        let env = env.map(str::to_string);
+        if env == self.state.cluster_env {
+            return;
+        }
+        self.state.cluster_env = env;
+        self.load_list(cx);
+        self.drop_hidden_selection(cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// The Cluster list's env menu by key, under the list's header.
+    pub fn open_list_env_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.activity() != Activity::Cluster || self.envs(cx).is_empty() {
+            return;
+        }
+        let t = theme(cx);
+        let at = gpui::point(t.size(160.), t.title_h + t.toolbar_h);
+        // The menu reads the sidebar: once this update is over.
+        let me = cx.entity();
+        window.defer(cx, move |window, cx| open_menu(at, Sidebar::list_env_menu(&me, cx), window, cx));
+    }
+
+    /// The Cluster list's env menu: following the workspace's, or one of the envs.
+    pub fn list_env_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
+        let s = this.read(cx);
+        let err = theme(cx).err;
+        let workspace = s.services.read(cx).env.clone().unwrap_or_else(|| "-".into());
+        let sync = {
+            let sidebar = this.clone();
+            MenuItem::new(format!("sync with workspace (@{workspace})"), move |_, cx| sidebar.update(cx, |s, cx| s.set_list_env(None, cx))).checked(s.list_synced())
+        };
+        let own = s.state.cluster_env.clone();
+        std::iter::once(sync)
+            .chain(s.envs(cx).iter().map(|e| {
+                let (sidebar, name) = (this.clone(), e.name.clone());
+                let item = MenuItem::new(e.name.clone(), move |_, cx| sidebar.update(cx, |s, cx| s.set_list_env(Some(&name), cx))).checked(own.as_deref() == Some(&e.name));
+                if e.protected { item.icon(Icon::Protected, err) } else { item }
+            }))
+            .collect()
     }
 
     /// What's wrong with the cluster list's env while its last list stays shown (a lost
@@ -301,8 +367,9 @@ impl Sidebar {
         if self.activity() != Activity::Cluster {
             return None;
         }
+        let env = self.list_env(cx)?;
         let s = self.services.read(cx);
-        let (c, env) = (s.cluster.as_ref()?.read(cx), s.env.as_deref()?);
+        let (c, env) = (s.cluster.as_ref()?.read(cx), env.as_str());
         let deployments = matches!(c.peek(env), Remote::Ready(_)).then(|| c.problem(env).map(str::to_string)).flatten();
         let pods = self.state.watch_pods.then(|| c.pods_problem(env).map(|p| format!("pods: {p}"))).flatten();
         deployments.or(pods)
@@ -313,8 +380,9 @@ impl Sidebar {
         if self.activity() != Activity::Cluster {
             return None;
         }
+        let env = self.list_env(cx);
         let s = self.services.read(cx);
-        match (s.cluster.as_ref(), s.env.as_deref()) {
+        match (s.cluster.as_ref(), env.as_deref()) {
             (Some(c), Some(env)) => match c.read(cx).peek(env) {
                 Remote::Loading => Some("loading…".into()),
                 Remote::Error(e) => Some(e),
@@ -325,6 +393,7 @@ impl Sidebar {
     }
 
     pub fn items(&self, cx: &App) -> Vec<ListItem> {
+        let list_env = self.list_env(cx);
         let s = self.services.read(cx);
         match self.activity() {
             Activity::Apps => {
@@ -345,7 +414,7 @@ impl Sidebar {
                     })
                     .collect()
             }
-            Activity::Cluster => match (s.cluster.as_ref(), s.env.as_deref()) {
+            Activity::Cluster => match (s.cluster.as_ref(), list_env.as_deref()) {
                 (Some(c), Some(env)) => {
                     let c = c.read(cx);
                     let watch = self.state.watch_pods;
@@ -779,7 +848,7 @@ impl Sidebar {
     pub fn view_ref(&self, key: &str, cx: &App) -> Option<ViewRef> {
         Some(match self.activity() {
             Activity::Apps => ViewAddr::App { app: key.into() },
-            Activity::Cluster => ViewAddr::Svc { env: self.services.read(cx).env.clone().unwrap_or_default(), name: key.into() },
+            Activity::Cluster => ViewAddr::Svc { env: self.list_env(cx).unwrap_or_default(), name: key.into() },
             Activity::Ports => ViewAddr::Port { port: key.into() },
             Activity::Layouts => return None,
             // The tab a layout shows it by, so opening it never adds a second one.
@@ -1072,8 +1141,27 @@ impl Render for Sidebar {
             .gap_2()
             .child(div().flex_1().min_w_0().truncate().text_color(t.hi).child(activity.title()))
             .when(activity == Activity::Cluster, |d| {
-                let protected = self.env(cx).is_some_and(|e| e.protected);
-                d.child(label(format!("@{}", self.state.env.as_deref().unwrap_or("-"))).text_color(if protected { t.err } else { t.env }))
+                // The list's own env (a dropdown, with "sync with workspace"); the
+                // workspace's stays in the title bar (user, 2026-11-09).
+                let env = self.list_env(cx);
+                let protected = env.as_ref().is_some_and(|e| self.envs(cx).iter().any(|x| &x.name == e && x.protected));
+                let synced = self.list_synced();
+                let workspace = self.services.read(cx).env.clone().unwrap_or_else(|| "-".into());
+                let why = if synced { "the env this list shows: the workspace's".to_string() } else { format!("this list's own env; the workspace targets @{workspace}") };
+                let me = cx.entity();
+                // Its own env: the button highlighted (the tooltip says the workspace's).
+                let text = format!("@{}", env.as_deref().unwrap_or("-"));
+                let button = if synced { devdeck_ui::button("cluster-env", text, &t) } else { toggle_button("cluster-env", text, true, &t) };
+                d.child(
+                    button
+                        .flex_none()
+                        .text_color(if protected { t.err } else { t.env })
+                        .debug_selector(|| "cluster-env".into())
+                        .tooltip(tip(why))
+                        .on_click(move |e, window, cx| open_menu(e.position(), Sidebar::list_env_menu(&me, cx), window, cx))
+                        .child(icon(Icon::Open, t.dim, &t)),
+                )
+
                     .child(
                         devdeck_ui::button("open-matrix", "matrix", &t)
                             .tooltip(tip("tags of every service on every env"))
@@ -1149,6 +1237,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(|this, _: &TogglePin, _, cx| this.toggle_pin_selected(cx)))
             .on_action(cx.listener(|this, _: &ToggleRunningOnly, _, cx| this.toggle_running_only(cx)))
             .on_action(cx.listener(|this, _: &ToggleWatchPods, _, cx| this.toggle_watch_pods(cx)))
+            .on_action(cx.listener(|this, _: &OpenListEnvMenu, window, cx| this.open_list_env_menu(window, cx)))
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.read(cx).focus_handle(cx).focus(window, cx);
             }))

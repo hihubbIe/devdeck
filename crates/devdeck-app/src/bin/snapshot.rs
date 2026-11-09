@@ -216,6 +216,23 @@ fn cluster_protected(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &E
     });
 }
 
+/// The Cluster list on its own env (a protected one) while the workspace keeps dev35,
+/// and its env menu open.
+fn cluster_list_env(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| {
+        s.update(cx, |s, cx| {
+            s.show(Activity::Cluster, cx);
+            s.set_list_env(Some("hades"), cx);
+        })
+    });
+    cx.run_until_parked();
+    let _ = cx.update_window(w, |_, window, cx| {
+        let items = Sidebar::list_env_menu(&s, cx);
+        open_menu(point(logical(160.), logical(80.)), items, window, cx);
+    });
+}
+
 fn sidebar_hidden(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     let s = sidebar(cx, shell);
     cx.update(|cx| s.update(cx, |s, cx| s.set_visible(false, cx)));
@@ -1091,6 +1108,7 @@ fn states() -> Vec<State> {
         w("53-running-only", "work", 1.0, Some(running_only)),
         w("54-cluster-env-menu", "work", 1.0, Some(cluster_env_menu)),
         w("55-cluster-protected-env", "work", 1.0, Some(cluster_protected)),
+        w("56-cluster-list-own-env", "work", 1.0, Some(cluster_list_env)),
         w("56-personal-no-cluster", "personal", 1.0, None),
         w("57-sidebar-hidden", "work", 1.0, Some(sidebar_hidden)),
         w("58-apps-150", "work", 1.5, Some(apps_pinned)),

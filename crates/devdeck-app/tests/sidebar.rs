@@ -453,3 +453,46 @@ fn app_rows_show_a_missing_tool_as_a_mark_at_their_right(cx: &mut TestAppContext
     cx.run_until_parked();
     assert!(cx.read(|cx| s.read(cx).items(cx).iter().any(|i| !i.detail.is_empty())), "tags stay");
 }
+
+/// The Cluster list's own env (user, 2026-11-09): it follows the workspace's until
+/// another is picked, then shows that one while the workspace keeps its own for runs.
+#[gpui::test]
+fn the_cluster_list_can_show_another_env_than_the_workspaces(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "list-env");
+    let main = main_window(&shell, cx);
+    let s = sidebar(&shell, cx);
+    let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
+    let workspace_env = |cx: &TestAppContext| cx.read(|cx| services.read(cx).env.clone());
+    cx.simulate_keystrokes(main, "ctrl-2");
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let first = workspace_env(cx);
+    assert!(cx.read(|cx| s.read(cx).list_synced()));
+    assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)), first, "synced: the workspace's");
+    let synced_items = cx.read(|cx| s.read(cx).items(cx));
+    // Another env for the list only.
+    cx.update(|cx| s.update(cx, |s, cx| s.set_list_env(Some("dev31"), cx)));
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some("dev31"));
+    assert_eq!(workspace_env(cx), first, "the workspace keeps its env for runs");
+    assert_ne!(cx.read(|cx| s.read(cx).items(cx)), synced_items, "the list shows dev31's tags");
+    assert_eq!(cx.read(|cx| s.read(cx).view_ref("tadawebapi", cx)), Some(ViewRef::new("svc/dev31/tadawebapi")), "a service opens in the list's env");
+    assert_eq!(cx.read(|cx| s.read(cx).state.cluster_env.clone()).as_deref(), Some("dev31"), "kept with the sidebar's state");
+    // The workspace changes env: the list stays on its own.
+    cx.update(|cx| s.update(cx, |s, cx| s.set_env("dev32", cx)));
+    assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some("dev31"));
+    // An unknown env is ignored; sync follows the workspace again.
+    cx.update(|cx| s.update(cx, |s, cx| s.set_list_env(Some("nope"), cx)));
+    assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some("dev31"));
+    cx.update(|cx| s.update(cx, |s, cx| s.set_list_env(None, cx)));
+    assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some("dev32"));
+    // The key opens its menu: sync first, then every env.
+    let menu = cx.read(|cx| Sidebar::list_env_menu(&s, cx));
+    assert!(menu[0].label.starts_with("sync with workspace (@dev32)"));
+    assert_eq!(menu.len(), 1 + cx.read(|cx| s.read(cx).envs(cx).len()));
+    cx.update_window(main, |_, window, cx| gpui::Focusable::focus_handle(s.read(cx), cx).focus(window, cx)).unwrap();
+    cx.simulate_keystrokes(main, "e");
+    cx.run_until_parked();
+    assert!(cx.update(|cx| layer_state(main, cx).0), "e opens the list's env menu");
+}

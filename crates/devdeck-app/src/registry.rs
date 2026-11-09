@@ -112,6 +112,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("sidebar.filter", "filter", "Sidebar", SIDEBAR_LIST, ["/"], sb::FocusFilter),
         spec!("sidebar.running", "running only", "Sidebar", SIDEBAR_LIST, ["r"], sb::ToggleRunningOnly),
         spec!("sidebar.watch_pods", "watch pods", "Sidebar", SIDEBAR_LIST, [], sb::ToggleWatchPods),
+        spec!("sidebar.list_env", "cluster list's env", "Sidebar", SIDEBAR_LIST, ["e"], sb::OpenListEnvMenu),
         spec!("sidebar.escape", "back", "Sidebar", SIDEBAR, ["escape"], sb::SidebarEscape),
         // Panes
         spec!("pane.focus_left", "focus left", "Panes", PANES, ["alt-left"], FocusLeft),

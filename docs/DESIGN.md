@@ -527,6 +527,12 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   0.9.0 (Lucide): git-branch, git-branch-plus, scroll-text, box, table-2, file-code,
   download, arrow-down-to-line, arrow-up-from-line, refresh-cw.
 
+- 2026-11-09 The Cluster list's env is its own (user): `SidebarState.cluster_env`
+  (`None`: synced, following the workspace's), picked from a dropdown in its header
+  ("sync with workspace (@env)", then every env) or with `e`; the button is highlighted
+  while it isn't synced, its tooltip naming the workspace's env. The title bar's env
+  stays the workspace's, for runs.
+
 ## Open questions
 
 - 2026-11-07 Views stay in `devdeck-app/src/views/` for M1 (one module per view, the

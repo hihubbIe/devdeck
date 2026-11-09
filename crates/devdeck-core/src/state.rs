@@ -47,11 +47,14 @@ pub struct SidebarState {
     pub collapsed: BTreeMap<String, BTreeSet<String>>,
     /// The groups the user made per list id (R4.8); their open state is in `open`.
     pub groups: BTreeMap<String, crate::list::Groups>,
+    /// The env the Cluster list shows when it isn't the workspace's (user, 2026-11-09);
+    /// `None`: it follows the workspace's env (synced).
+    pub cluster_env: Option<String>,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new() }
+        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new(), cluster_env: None }
     }
 }
 
