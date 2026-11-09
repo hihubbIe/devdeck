@@ -461,7 +461,8 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   first row the run wrote (`Terminal::dropped`), so both stay on their text while old
   rows fall off the 2 000-line history; a restart or a resize (rows rewrap) clears the
   selection. The wheel scrolls the history, or sends cursor keys on a full-screen
-  program's screen when it asks for that (alternate scroll).
+  program's screen when it asks for that (alternate scroll); superseded on 2026-11-09
+  for programs that ask for mouse reports.
 - 2026-11-07 Colour and size queries are answered with the theme and the cell size, one
   look for every terminal (`core::terminal::set_look`, set by the view): the theme and
   the UI scale are global, and a restarted run's fresh terminal answers right away.
@@ -532,6 +533,13 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   ("sync with workspace (@env)", then every env) or with `e`; the button is highlighted
   while it isn't synced, its tooltip naming the workspace's env. The title bar's env
   stays the workspace's, for runs.
+- 2026-11-09 The wheel goes to a terminal's program when it asks for mouse reports
+  (modes 1000/1002/1003, written as SGR, UTF-8 or X10), as xterm does: Claude Code's
+  full-screen mode scrolls with it instead of getting arrow keys. Otherwise cursor keys
+  on a full-screen program's screen (alternate scroll), else the history; scrolled back
+  on the main screen, the wheel keeps scrolling the history. Clicks and drags stay
+  devdeck's (selection, shift+click on links): reporting them is its own decision.
+  `core::terminal::wheel_input` holds the rules.
 - 2026-11-09 "Keep in every layout" removed (user: no use case). A layout shows only
   its own tabs; a saved `layouts.json` with `keep` still loads, the field dropped.
 

@@ -5,8 +5,8 @@
 //! Rows are numbered from the oldest history line (0) to the last used line, so a view
 //! can list them like lines. Replies the emulator owes the process (cursor position,
 //! device attributes, colours, the text area's size) are collected for the caller to
-//! write back. Keys and pastes become bytes for the process here too ([`key_bytes`],
-//! [`paste_bytes`]), so the rules are tested without a UI.
+//! write back. Keys, pastes and the wheel become bytes for the process here too
+//! ([`key_bytes`], [`paste_bytes`], [`wheel_input`]), so the rules are tested without a UI.
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -166,6 +166,19 @@ pub struct Modes {
     /// On the alternate screen, the wheel sends cursor keys.
     pub alternate_scroll: bool,
     pub show_cursor: bool,
+    /// The program asked for mouse reports (any of modes 1000, 1002, 1003).
+    pub mouse_report: bool,
+    pub mouse_encoding: MouseEncoding,
+}
+
+/// How mouse reports are written: X10's bytes (the default), UTF-8 (mode 1005) or SGR
+/// (mode 1006).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MouseEncoding {
+    #[default]
+    X10,
+    Utf8,
+    Sgr,
 }
 
 /// Where the cursor is: its row (numbered as [`Terminal::row`]), its column, and the byte
@@ -321,7 +334,23 @@ impl Terminal {
             alt_screen: m.contains(TermMode::ALT_SCREEN),
             alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
             show_cursor: m.contains(TermMode::SHOW_CURSOR),
+            mouse_report: m.intersects(TermMode::MOUSE_MODE),
+            mouse_encoding: if m.contains(TermMode::SGR_MOUSE) {
+                MouseEncoding::Sgr
+            } else if m.contains(TermMode::UTF8_MOUSE) {
+                MouseEncoding::Utf8
+            } else {
+                MouseEncoding::X10
+            },
         }
+    }
+
+    /// The screen cell (0-based line and column) of row `row` (numbered as
+    /// [`Terminal::row`]) and column `col`, kept on the screen: what mouse reports name.
+    pub fn screen_cell(&self, row: usize, col: usize) -> (usize, usize) {
+        let grid = self.term.grid();
+        let line = row.saturating_sub(self.history()).min(grid.screen_lines().saturating_sub(1));
+        (line, col.min(grid.columns().saturating_sub(1)))
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -837,6 +866,44 @@ fn ctrl_code(key: &str) -> Option<u8> {
     }
 }
 
+/// What the wheel does in a terminal: bytes for the process, or rows of its history to
+/// scroll (positive: back, towards older rows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wheel {
+    Send(Vec<u8>),
+    Scroll(isize),
+}
+
+/// What `rows` of wheel (positive: up) over screen cell `cell` (0-based line and column)
+/// do, as xterm does it: a report per row when the program asked for mouse reports
+/// (buttons 64 and 65, plus shift 4, alt 8, ctrl 16), else cursor keys on the alternate
+/// screen with alternate scroll, else nothing there; on the main screen, the history
+/// scrolls.
+pub fn wheel_input(rows: isize, cell: (usize, usize), mods: Mods, modes: Modes) -> Wheel {
+    let n = rows.unsigned_abs();
+    if modes.mouse_report {
+        let button = if rows > 0 { 64 } else { 65 } + 4 * mods.shift as u32 + 8 * mods.alt as u32 + 16 * mods.ctrl as u32;
+        let (line, col) = (cell.0 as u32 + 1, cell.1 as u32 + 1);
+        let report = match modes.mouse_encoding {
+            MouseEncoding::Sgr => format!("\x1b[<{button};{col};{line}M").into_bytes(),
+            // One byte per value: a cell past 223 can't be named.
+            MouseEncoding::X10 if col > 223 || line > 223 => Vec::new(),
+            MouseEncoding::X10 => vec![0x1b, b'[', b'M', (32 + button) as u8, (32 + col) as u8, (32 + line) as u8],
+            MouseEncoding::Utf8 => {
+                let char_of = |v: u32| char::from_u32(32 + v).map(String::from).unwrap_or_default();
+                format!("\x1b[M{}{}{}", char_of(button), char_of(col), char_of(line)).into_bytes()
+            }
+        };
+        return Wheel::Send(report.repeat(n));
+    }
+    if modes.alt_screen {
+        let key = if rows > 0 { "up" } else { "down" };
+        let bytes = if modes.alternate_scroll { key_bytes(key, None, Mods::default(), modes.app_cursor).unwrap_or_default().repeat(n) } else { Vec::new() };
+        return Wheel::Send(bytes);
+    }
+    Wheel::Scroll(rows)
+}
+
 /// What pasting `text` sends: line breaks become ⏎ (`\r`), and in bracketed-paste mode
 /// the text goes between the markers, without escape characters that could end it early.
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
@@ -1046,6 +1113,56 @@ mod tests {
     }
 
     #[test]
+    fn mouse_modes_follow_the_program() {
+        let mut t = term(20, 5);
+        t.feed(b"\x1b[?1000h\x1b[?1006h");
+        assert!(t.modes().mouse_report);
+        assert_eq!(t.modes().mouse_encoding, MouseEncoding::Sgr);
+        t.feed(b"\x1b[?1006l\x1b[?1005h\x1b[?1003h");
+        assert!(t.modes().mouse_report);
+        assert_eq!(t.modes().mouse_encoding, MouseEncoding::Utf8);
+        t.feed(b"\x1b[?1003l\x1b[?1005l");
+        assert!(!t.modes().mouse_report);
+        assert_eq!(t.modes().mouse_encoding, MouseEncoding::X10);
+    }
+
+    #[test]
+    fn screen_cells_skip_the_history_and_stay_on_the_screen() {
+        let mut t = term(20, 3);
+        for i in 0..10 {
+            t.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let first_on_screen = t.rows() - 3;
+        assert_eq!(t.screen_cell(first_on_screen, 4), (0, 4));
+        assert_eq!(t.screen_cell(first_on_screen + 2, 19), (2, 19));
+        assert_eq!(t.screen_cell(0, 50), (0, 19), "history rows and far columns are kept on the screen");
+        assert_eq!(t.screen_cell(first_on_screen + 9, 0), (2, 0));
+    }
+
+    #[test]
+    fn the_wheel_reports_to_the_program_or_scrolls() {
+        let none = Mods::default();
+        let ctrl = Mods { ctrl: true, ..none };
+        let report = |encoding| Modes { mouse_report: true, mouse_encoding: encoding, ..Modes::default() };
+        let send = |s: &str| Wheel::Send(s.as_bytes().to_vec());
+        let sgr = report(MouseEncoding::Sgr);
+        assert_eq!(wheel_input(1, (0, 0), none, sgr), send("\x1b[<64;1;1M"));
+        assert_eq!(wheel_input(-1, (4, 9), none, sgr), send("\x1b[<65;10;5M"), "line 4, column 9");
+        assert_eq!(wheel_input(1, (0, 0), ctrl, sgr), send("\x1b[<80;1;1M"));
+        assert_eq!(wheel_input(3, (0, 0), none, sgr), send(&"\x1b[<64;1;1M".repeat(3)), "a report per row");
+        assert_eq!(wheel_input(1, (0, 0), none, Modes { alt_screen: true, ..sgr }), send("\x1b[<64;1;1M"), "reports win over arrows");
+        assert_eq!(wheel_input(1, (0, 0), none, report(MouseEncoding::X10)), Wheel::Send(b"\x1b[M`!!".to_vec()));
+        assert_eq!(wheel_input(1, (0, 300), none, report(MouseEncoding::X10)), send(""), "past 223 X10 can't say");
+        assert_eq!(wheel_input(1, (0, 300), none, report(MouseEncoding::Utf8)), send("\x1b[M`\u{14d}!"));
+        // Without reports: arrows on the alternate screen, the history on the main one.
+        let alt = Modes { alt_screen: true, alternate_scroll: true, ..Modes::default() };
+        assert_eq!(wheel_input(3, (0, 0), none, alt), send("\x1b[A\x1b[A\x1b[A"));
+        assert_eq!(wheel_input(-1, (0, 0), none, Modes { app_cursor: true, ..alt }), send("\x1bOB"));
+        assert_eq!(wheel_input(1, (0, 0), none, Modes { alternate_scroll: false, ..alt }), send(""));
+        assert_eq!(wheel_input(-2, (0, 0), none, Modes::default()), Wheel::Scroll(-2));
+    }
+
+    #[test]
     fn the_cursor_knows_its_row_column_and_byte() {
         let mut t = term(10, 3);
         t.feed(b"a\r\nb\r\nc\r\nd\xc3\xa9f\x1b[2D");
@@ -1106,6 +1223,7 @@ mod tests {
             ("space", None, ctrl, "\0"),
             ("up", None, none, "\x1b[A"),
             ("left", None, ctrl, "\x1b[1;5D"),
+            ("right", None, ctrl, "\x1b[1;5C"),
             ("end", None, shift, "\x1b[1;2F"),
             ("pageup", None, none, "\x1b[5~"),
             ("delete", None, ctrl, "\x1b[3;5~"),

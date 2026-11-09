@@ -22,7 +22,7 @@ use super::{ViewCx, run_mark};
 use crate::context_menu::{self, Content, Origin};
 use crate::runner::{RunKey, RunnerEvent};
 use devdeck_core::runs::RunState;
-use devdeck_core::terminal::{Mods, TermSize, key_bytes, paste_bytes};
+use devdeck_core::terminal::{Mods, TermSize, Wheel, paste_bytes, wheel_input};
 use devdeck_ui::terminal::{self, Frame, Geometry, Scrollback};
 use devdeck_ui::{Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, action_button, icon, icon_text, label, open_menu, theme, tip, toasts, toggle_button};
 use gpui::{
@@ -486,21 +486,30 @@ impl RunView {
         }
         let lines = terminal::wheel_rows(delta.y, g.cell.height, &mut self.wheel);
         let Some(run) = self.ctx.services.read(cx).runner.read(cx).run(&self.key) else { return };
-        let (modes, rows, dropped) = (run.terminal.modes(), run.terminal.rows(), run.terminal.dropped());
+        let (mut modes, rows, dropped) = (run.terminal.modes(), run.terminal.rows(), run.terminal.dropped());
         if lines == 0 {
             return;
         }
-        if modes.alt_screen {
-            if modes.alternate_scroll {
-                let key = if lines > 0 { "up" } else { "down" };
-                let bytes = key_bytes(key, None, Mods::default(), modes.app_cursor).unwrap_or_default().repeat(lines.unsigned_abs());
-                let runner = self.ctx.services.read(cx).runner.clone();
-                runner.update(cx, |r, _| r.write(&self.key, &bytes));
-            }
-            return;
+        // Scrolled back on the main screen, the wheel keeps scrolling the history.
+        if !modes.alt_screen && !self.follow {
+            modes.mouse_report = false;
         }
-        self.follow = self.scrollback.scroll(self.follow, lines, rows, dropped, g.shown);
-        cx.notify();
+        let (row, col) = g.at(e.position);
+        let cell = run.terminal.screen_cell(row.saturating_sub(dropped) as usize, col);
+        let m = &e.modifiers;
+        let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift, meta: m.platform };
+        match wheel_input(lines, cell, mods, modes) {
+            Wheel::Send(bytes) => {
+                if !bytes.is_empty() {
+                    let runner = self.ctx.services.read(cx).runner.clone();
+                    runner.update(cx, |r, _| r.write(&self.key, &bytes));
+                }
+            }
+            Wheel::Scroll(lines) => {
+                self.follow = self.scrollback.scroll(self.follow, lines, rows, dropped, g.shown);
+                cx.notify();
+            }
+        }
     }
 }
 

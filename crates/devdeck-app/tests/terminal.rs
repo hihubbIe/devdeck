@@ -102,6 +102,10 @@ fn keys_in_the_terminal_go_to_the_process_not_to_devdeck(cx: &mut TestAppContext
     assert_eq!(s.state(cx), Some(RunState::Running), "s didn't stop it");
     let tab = ViewAddr::Run { app: s.key.app.clone(), cmd: s.key.cmd.clone() }.to_ref();
     assert!(cx.read(|cx| s.deck.read(cx).view(&tab).is_some()), "ctrl+w didn't close the tab");
+    // Word keys go through as xterm sends them: shells and full-screen programs read them.
+    cx.simulate_keystrokes(s.window, "ctrl-left ctrl-right ctrl-delete");
+    cx.run_until_parked();
+    assert_eq!(s.input(), "\x1b[1;5D\x1b[1;5C\x1b[3;5~");
     // Application cursor mode changes what arrows send.
     s.output(cx, b"\x1b[?1h");
     cx.simulate_keystrokes(s.window, "up");
@@ -121,6 +125,30 @@ fn leaving_the_terminal_gives_the_keys_back_to_the_run_view(cx: &mut TestAppCont
     cx.run_until_parked();
     assert_eq!(s.input(), "");
     assert_eq!(s.state(cx), Some(RunState::Stopping), "s stops again");
+}
+
+#[gpui::test]
+fn the_wheel_goes_to_a_program_that_asks_for_the_mouse(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, VisualTestContext, point};
+    let s = setup(cx, "wheel");
+    let mut vcx = VisualTestContext::from_window(s.window, cx);
+    vcx.run_until_parked();
+    let wheel = |vcx: &mut VisualTestContext, at, lines: f32| {
+        let delta = ScrollDelta::Lines(point(0., lines));
+        vcx.simulate_event(ScrollEvent { position: at, delta, modifiers: Modifiers::none(), touch_phase: TouchPhase::Moved, source: ScrollSource::Pointer });
+        vcx.run_until_parked();
+    };
+    // A full-screen program without mouse reports gets arrows (alternate scroll).
+    s.output(&mut vcx, b"\x1b[?1049h");
+    let at = vcx.read(|cx| s.view.read(cx).cell_center(0, 2)).expect("drawn");
+    wheel(&mut vcx, at, 1.);
+    assert_eq!(s.input(), "\x1b[A");
+    // Once it asks for SGR reports, it gets the wheel at the cell under the pointer.
+    s.output(&mut vcx, b"\x1b[?1000h\x1b[?1006h");
+    wheel(&mut vcx, at, 1.);
+    assert_eq!(s.input(), "\x1b[<64;3;1M");
+    wheel(&mut vcx, at, -2.);
+    assert_eq!(s.input(), "\x1b[<65;3;1M\x1b[<65;3;1M");
 }
 
 #[gpui::test]
