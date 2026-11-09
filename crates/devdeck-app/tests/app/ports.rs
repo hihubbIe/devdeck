@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 const WS: &str = "ws";
 
@@ -123,6 +124,17 @@ fn bind() -> (TcpListener, u16) {
     (l, port)
 }
 
+/// Waits until nothing holds `port`. A process another test spawns meanwhile holds a copy
+/// of a dropped listener's descriptor from its fork until its exec closes it
+/// (close-on-exec): free within moments.
+fn wait_free(port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while holder(port).is_some() {
+        assert!(Instant::now() < deadline, "port {port} free again");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn try_start(s: &Setup, cx: &mut TestAppContext, cmd: &str) -> Result<(), RunRefusal> {
     let r = cx.update(|cx| s.runner.update(cx, |r, cx| r.try_start(&key(cmd), None, cx)));
     cx.run_until_parked();
@@ -210,6 +222,7 @@ fn a_start_is_refused_while_its_port_is_held_and_names_the_holder(cx: &mut TestA
     assert!(vcx.debug_bounds("stop-holder-confirm").is_some());
 
     drop(held);
+    wait_free(port);
     assert_eq!(try_start(&s, cx, "a:serve"), Ok(()), "free again");
 }
 
@@ -241,7 +254,7 @@ fn stop_holder_on_our_own_run_stops_it(cx: &mut TestAppContext) {
     toast_action(cx, w, "Stop holder");
     assert_eq!(cx.update(|cx| layer_state(w, cx)), (false, 0), "no confirmation for our own run");
     assert_eq!(state(&s, cx, "a:serve"), Some(RunState::Stopped));
-    assert_eq!(holder(port), None, "the port is free");
+    wait_free(port);
     assert_eq!(try_start(&s, cx, "a:other"), Ok(()));
 }
 

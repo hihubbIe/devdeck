@@ -3,7 +3,7 @@
 //! headings stay on one line and truncate (R4.4); tree rows indent by level and their
 //! chevron toggles without reaching the row.
 
-mod common;
+use crate::common;
 
 use common::{host, the_theme};
 use devdeck_ui::{TREE_INDENT, button, icon_button, label, logical, section, tip, toggle_button, tree_row};

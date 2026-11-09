@@ -3,7 +3,7 @@
 //! opens our menu (R5.2); our theme reaches gpui-component's; the note editor's own keys
 //! are all known to devdeck's key rule.
 
-mod common;
+use crate::common;
 
 use common::host;
 use devdeck_ui::code::{self, Code, CodeEvent, EDITOR_KEYS, editor_takes};

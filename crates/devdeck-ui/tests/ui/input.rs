@@ -4,7 +4,7 @@
 //! several code points. Keys are bound here as the app binds them (its registry), in the
 //! `TextInput` context; the clipboard is left to the app's tests.
 
-mod common;
+use crate::common;
 
 use common::host;
 use devdeck_ui::text_input::*;

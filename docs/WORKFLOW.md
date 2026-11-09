@@ -62,9 +62,9 @@ snapshots take about 3 s.
 ## Components are tested on their own
 
 `devdeck-ui` is the component library every view draws with (R9.3). Each component has
-tests in `crates/devdeck-ui/tests/`, in a host window (`tests/common`) with nothing of the
-app: every interaction by mouse (click, hover, drag, wheel) and by keyboard, disabled
-states, focus. A new component or a change to one comes with its tests. The app's own
+tests in `crates/devdeck-ui/tests/ui/`, in a host window (`tests/ui/common`) with nothing
+of the app: every interaction by mouse (click, hover, drag, wheel) and by keyboard,
+disabled states, focus. A new component or a change to one comes with its tests. The app's own
 tests cover only how components fit in it (menus over panes, modals blocking app keys).
 
 ## Tests leave nothing behind

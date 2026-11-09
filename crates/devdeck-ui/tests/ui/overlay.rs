@@ -4,7 +4,7 @@
 //! the focused element, as a bound key would. Rows and buttons are found from the theme's
 //! sizes, the way the components lay them out.
 
-mod common;
+use crate::common;
 
 use common::{host, the_theme};
 use devdeck_ui::overlay::{

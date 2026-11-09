@@ -158,7 +158,7 @@ pub fn editor_takes(key: &'static str) -> bool {
 }
 
 /// The editor's own keys with ctrl or alt (gpui-component's `Input` bindings on Linux,
-/// less [`GIVEN_BACK`]; `tests/code.rs` checks the list against them both ways).
+/// less [`GIVEN_BACK`]; `tests/ui/code.rs` checks the list against them both ways).
 pub const EDITOR_KEYS: &[&str] = &[
     "ctrl-a",
     "ctrl-c",

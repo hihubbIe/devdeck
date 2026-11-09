@@ -1,6 +1,6 @@
 //! The test host itself: a component draws and takes clicks.
 
-mod common;
+use crate::common;
 
 use common::host;
 use devdeck_ui::button;

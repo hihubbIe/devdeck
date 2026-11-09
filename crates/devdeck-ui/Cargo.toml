@@ -13,5 +13,5 @@ gpui-component.workspace = true
 gpui-kit-assets.workspace = true
 
 [dev-dependencies]
-# Components are tested on their own, in a host window (tests/common).
+# Components are tested on their own, in a host window (tests/ui/common).
 gpui = { workspace = true, features = ["test-support"] }

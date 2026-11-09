@@ -178,6 +178,23 @@ Check: the same number of tests pass as before the move (259 app, 68 ui, from th
 output); the whole suite three times in a row; Step 0's measurements again, including the
 edit of one test file (now the whole `app` test crate recompiles: the cost to watch).
 
+Measured 2026-11-09, cargo 1.99.0, capped scope (`api_waits.rs`, committed meanwhile, makes
+32 app files):
+
+| | After Step 1 | After Step 2 |
+|---|---|---|
+| cold `cargo test --workspace --no-run` | 73 s, 14 GB, 48 executables, peak 7.8 GB | 69 s, 6.2 GB, 12 executables, peak 4.9 GB |
+| one-line app edit, `cargo test --workspace` | 32 s, peak 8.5 GB | 9.6 s, peak 0.9 GB |
+| the whole suite again, nothing changed | 24 s | 12 s, peak 0.3 GB |
+| one-line edit in a test file, rebuild | 0.9 s | 1.9 s |
+
+777 tests pass, as before the move. The first run had two failures in `ports.rs`, of the
+fork class above: a dropped listener still held by another test's child for a moment
+(`a_start_is_refused…` after `drop(held)`, `stop_holder_on_our_own_run…` right after the
+stop). Both now wait for the port to be free, as `lifecycle.rs` does for its lock
+(`wait_free`); five runs in a row then passed. The fix is in the Step 2 commit rather than
+its own: it only fails with the move, and every commit passes the suite.
+
 ### Step 3: one way to build (commands, rules, docs)
 
 - A rule in `CLAUDE.md` "Rules that are easy to break", and in `WORKFLOW.md`: cargo runs

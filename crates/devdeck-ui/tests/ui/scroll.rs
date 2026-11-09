@@ -5,7 +5,7 @@
 //! Events are `TouchPhase::Moved`, as Linux sends them: a gesture is the run of events
 //! closer than GPUI's separation (28 ms), so each test sends its gesture at once.
 
-mod common;
+use crate::common;
 
 use common::host;
 use devdeck_ui::{Scrolls, logical, scroll_list};
