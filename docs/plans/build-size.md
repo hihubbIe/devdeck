@@ -184,7 +184,7 @@ Measured 2026-11-09, cargo 1.99.0, capped scope (`api_waits.rs`, committed meanw
 | | After Step 1 | After Step 2 |
 |---|---|---|
 | cold `cargo test --workspace --no-run` | 73 s, 14 GB, 48 executables, peak 7.8 GB | 69 s, 6.2 GB, 12 executables, peak 4.9 GB |
-| one-line app edit, `cargo test --workspace` | 32 s, peak 8.5 GB | 9.6 s, peak 0.9 GB |
+| one-line app edit, `cargo test --workspace` | 32 s, peak 8.5 GB | 15 s, peak 0.9 GB (first measured 9.6 s: that run had the two failures below, and cargo stops at the first failing binary) |
 | the whole suite again, nothing changed | 24 s | 12 s, peak 0.3 GB |
 | one-line edit in a test file, rebuild | 0.9 s | 1.9 s |
 
@@ -238,9 +238,12 @@ Done 2026-11-09, with two changes from the above, found while doing it:
 - `PLATFORMS.md`'s macOS cross-check keeps `-p devdeck-sys`: the rest of the workspace does
   not build for macOS yet, and another target has its own folder.
 
-`scripts/test_changed.py` is removed: the whole suite after an app edit is 9.6 s, under the
-old loop's 10.4 s. Each kind of build (tests, one area's tests, check, clippy, `cargo
-build`, `cargo run`) run again after an app edit compiled no dependency.
+`scripts/test_changed.py` is removed: it selected crates with `-p`, the cause above. (The
+reason first written here, "the whole suite after an app edit is 9.6 s, under the old
+loop's 10.4 s", came from a run cut short by two failures; the whole suite is 15 s, the
+old loop tested the app only. Phase 2 works on that.) Each kind of build (tests, one
+area's tests, check, clippy, `cargo build`, `cargo run`) run again after an app edit
+compiled no dependency.
 
 A review of the result (2026-11-09, one fresh subagent; two more were not allowed to run)
 found nothing broken and three doc points, taken into this step: the loop ran `cargo
@@ -258,6 +261,66 @@ Step 0), and `--profile dbg` with `target/dbg` deleted after. In `WORKFLOW.md`: 
 clean` at the end of every milestone (it already ends with a full suite and release
 builds) and after `rustup update`; installed binaries are copies (`install.sh`), so
 nothing breaks. Can go in the Step 3 commit.
+
+## Phase 2: a faster loop (asked 2026-11-09, after a review of the result)
+
+Now about 12 s of the whole suite's 15 s is running tests, not compiling, and every test
+build does work nothing uses. Each change is measured against a clean baseline: one cold
+`cargo test --workspace --no-run`, then five times each, median, min, max and peak memory,
+after a one-line edit in `devdeck-app/src/deck.rs` (changed each time): `cargo test
+--workspace`, `cargo test --workspace --test app deck::`, clippy; and `cargo test
+--workspace` with nothing changed, and `--doc`.
+
+1. **No doctests.** No library has a Rust code block in its docs (checked: the only other
+   blocks are `toml` in `devdeck-core/src/config.rs`, which rustdoc doesn't run, and one in
+   `devdeck-ctl/src/main.rs`, a binary, never doctested), yet `cargo test` runs rustdoc on
+   each of the 6 libraries every time. `[lib] doctest = false` in each, and `WORKFLOW.md`
+   says so (a doctest written later would not run).
+2. **The app binary in a package of its own**, `crates/devdeck` (Zed's `crates/zed`):
+   Cargo builds a package's binaries with its integration tests, so every test build also
+   links the 340 MB `devdeck` (seen in `target/`: built within two seconds of the `app`
+   test binary, twice), which no test uses (`CARGO_BIN_EXE_` only names `devdeck-ctl` and
+   `devdeck-mcp`). `src/main.rs` moves with its `profile` feature (the one its
+   `cfg(feature = "profile")` reads; `devdeck-app` had it only for `main.rs`, so it goes:
+   one spelling, `--features devdeck/profile`); `devdeck-app` loses `default-run` (its
+   only binary left is the snapshot tool); `PLATFORMS.md` and `DESIGN.md` follow.
+   `install.sh` and the measure scripts use `target/release/devdeck`, unchanged.
+3. **The loop's commands** (no check before the tests): done in steps 3–4.
+4. **The slow tests found.** Each test of each binary run alone, timed, from the test
+   list (`--list`); the slowest named with what they wait for. Fixing them is a decision of
+   its own, per test.
+
+Measured 2026-11-09, cargo 1.99, capped scope, medians of five:
+
+| | Baseline | No doctests | + binary package |
+|---|---|---|---|
+| app edit, whole suite | 15.4 s (2 of 5 runs failed) | 14.9 s | 15.0 s |
+| app edit, one area (`deck::`) | 3.4 s | 3.5 s | 3.4 s |
+| app edit, clippy | 1.9 s | 2.0 s | 2.0 s |
+| whole suite, nothing changed | 12.2 s | 11.7 s | 11.8 s |
+| cold test build | 69 s, 6.2 GB, peak 5.0 GB | | |
+
+- No doctests: 0.5 s off every whole suite; the suite's output has no `Doc-tests` left.
+- The binary package: a test build no longer relinks `target/debug/devdeck` (checked: its
+  file untouched through ten test builds), but no time comes off: that link ran beside the
+  `app` test binary's, never after it. What it saves is a 340 MB link of CPU and disk per
+  test build. Dependency features unchanged (`cargo tree` against `HEAD`: same features;
+  only `(*)` repeat lines for `gpui-pre-platform`, now also a dependency of `devdeck`).
+- The baseline's failures: two of its five whole-suite runs failed; the benchmark kept no
+  names. Six more whole-suite runs found one, once: `devdeck-core`'s
+  `ports::tests::a_real_ipv4_listener_is_found`, the fork class above, in a test binary that
+  was always one process (core's unit tests), so older than this plan. It now waits for the
+  port as `lifecycle.rs` does, and fails at once if the holder is this process itself; ten
+  whole-suite runs in a row then passed. The other failure is not identified.
+- `cargo test` no longer compiles `main.rs` (the `devdeck` package has no test target);
+  clippy and `cargo build` do, and `WORKFLOW.md` says so.
+- Where the 12 s of running goes (each test alone: 777 tests, 73.7 s summed, 35 of them
+  0.5 s or more, 35.8 s): binaries run one after another, each as long as its slowest test
+  or its share of the work. `app` 6.4 s (274 tests, 54.8 s summed, median 0.09 s; watcher,
+  terminals, service and api_reads hold a third), `devdeck-core`'s unit tests 2.2 s (its
+  slowest, `process::tests::a_run_that_ends_on_its_own…`, 2.19 s, real processes and
+  sleeps), `tests/git.rs` 2.3 s (`one_write_at_a_time_per_repository`, 2.06 s: a hook that
+  runs `sleep 2`); the nine others 0.5 s together.
 
 ## Done when
 

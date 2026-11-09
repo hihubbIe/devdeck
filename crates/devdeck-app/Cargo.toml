@@ -4,25 +4,20 @@ description = "devdeck desktop app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-# The package's binary for a plain `cargo run`: the app, not the snapshot tool.
-default-run = "devdeck"
 
-[[bin]]
-name = "devdeck"
-path = "src/main.rs"
-# No unit tests in it: not built a second time as a test executable.
-test = false
+[lib]
+# No doctests: `cargo test` does not run rustdoc on this crate (docs/WORKFLOW.md).
+doctest = false
 
-# Renders layout states to PNG files offscreen for visual checks (docs/WORKFLOW.md).
+# The app's own binary is the `devdeck` package (crates/devdeck). This one renders layout
+# states to PNG files offscreen for visual checks (docs/WORKFLOW.md).
 [[bin]]
 name = "devdeck-snapshot"
 path = "src/bin/snapshot.rs"
 required-features = ["snapshot"]
 
 [features]
-# Builds GPUI with its profiler so input-to-present latency can be reported
-# (DEVDECK_LATENCY=1). Memory is measured without it.
-profile = ["gpui/profiler"]
+# The `profile` build is the binary's feature (crates/devdeck).
 snapshot = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
 
 [dependencies]

@@ -1,0 +1,27 @@
+[package]
+name = "devdeck"
+description = "devdeck's binary: main.rs only, the app is devdeck-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# A package of its own (as Zed's `crates/zed`): Cargo builds a package's binaries for its
+# integration tests, so inside devdeck-app every test build linked this one too.
+[[bin]]
+name = "devdeck"
+path = "src/main.rs"
+# No unit tests in it, so `cargo test` doesn't build it at all: clippy and `cargo build` do.
+test = false
+
+[features]
+# Builds GPUI with its profiler so input-to-present latency can be reported
+# (DEVDECK_LATENCY=1): `cargo build --release --features devdeck/profile`. Memory is
+# measured without it.
+profile = ["gpui/profiler"]
+
+[dependencies]
+devdeck-app.workspace = true
+devdeck-core.workspace = true
+devdeck-ui.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true

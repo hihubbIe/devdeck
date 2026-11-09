@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/devdeck-core", "crates/devdeck-ui", "crates/devdeck-kube", "crates/devdeck-app", "crates/devdeck-api", "crates/devdeck-ctl", "crates/devdeck-mcp"]
+members = ["crates/devdeck", "crates/devdeck-core", "crates/devdeck-ui", "crates/devdeck-kube", "crates/devdeck-app", "crates/devdeck-api", "crates/devdeck-ctl", "crates/devdeck-mcp"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,6 +8,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+devdeck-app = { path = "crates/devdeck-app" }
 devdeck-core = { path = "crates/devdeck-core" }
 devdeck-ui = { path = "crates/devdeck-ui" }
 devdeck-kube = { path = "crates/devdeck-kube" }

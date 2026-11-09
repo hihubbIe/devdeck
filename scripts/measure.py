@@ -6,7 +6,8 @@ Usage: scripts/measure.py <scenario> [options]
 Scenarios
   idle      start, 20 s streaming a 50k-line log, then 10 s idle (Wayland or X11)
   latency   X11 only: sends real key presses with xdotool and reads GPUI's
-            input-to-frame histogram (needs the `profile` build)
+            input-to-frame histogram (needs the `profile` build:
+            cargo build --release --features devdeck/profile)
   terminal  a run's terminal under load: the demo's three servers write 2 000 lines/s
             each, one shown in a run view; CPU, and memory against the same start at
             the normal rate (the difference is three full terminals of history)

@@ -34,9 +34,12 @@
 
 ## Keep the step loop fast
 
-Measured 2026-11-09 (cargo 1.99) after a one-line edit in `devdeck-app`: clippy 2.0 s,
-one area's tests 3.5 s, the whole suite (build and run, 777 tests) 9.6 s, peak memory
-under 1 GB. Rendering every snapshot takes
+Measured 2026-11-09 (cargo 1.99), medians of five, after a one-line edit in
+`devdeck-app`: clippy 2.0 s, one area's tests 3.4 s, the whole suite (777 tests) 15.0 s,
+of which about 12 s is running the tests; peak memory under 1 GB. The test binaries run
+one after another, each as long as its slowest test or its share of the work: the app's
+6.4 s, `devdeck-core`'s unit tests 2.2 s and its `tests/git.rs` 2.3 s (tests that wait on
+real processes and hooks), the rest under 1 s. Rendering every snapshot takes
 45 s (it was 133 s before the PNG crates were optimized in debug builds, see
 `Cargo.toml`); two snapshots take about 3 s.
 
@@ -46,14 +49,18 @@ a crate's folder: which packages are selected changes the features of shared dep
 (GPUI among them), so each selection is a full build of its own, kept next to the others
 in `target/` (`docs/BUILDING.md`). Each crate has one integration test binary: a new test
 file is a module of `tests/<crate>/main.rs` (`tests/app/`, `tests/ui/`), never a new file
-in `tests/` (a new binary) and never a file without its `mod` line (never compiled).
+in `tests/` (a new binary) and never a file without its `mod` line (never compiled). No
+crate runs doctests (`doctest = false` in each `[lib]`, 0.5 s off every whole suite): an
+example in a doc comment is not tested, so a test goes in a test file.
 
 - **While building:** the tests of the area being changed, by name: `cargo test
   --workspace --test app deck::` (a name is a substring: `sidebar::` also runs
   `notes_sidebar::`); a crate's unit tests with `--lib`: `cargo test --workspace --lib
   layout`. For errors without tests, clippy (`cargo clippy --workspace --all-targets`),
   not `cargo check`: the two keep separate results for our crates, so running both
-  repeats the work, and a test build already reports every compile error.
+  repeats the work, and a test build already reports every compile error except the
+  binary's (`crates/devdeck/src/main.rs`, which only clippy and `cargo build` compile):
+  after changing an API it uses, run clippy.
 - **Before the commit:** the whole suite and clippy (step 6), and the snapshots of the
   states the step adds or touches (the snapshot tool takes a name filter:
   `-- <out-dir> 01-,20-`).

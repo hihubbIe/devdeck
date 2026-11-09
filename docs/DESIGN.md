@@ -87,7 +87,9 @@ crates/
   devdeck-ui        shared components + theme. The only place that styles anything.
   devdeck-views     one module per view type (app, run output, logs, service, pod,
                     text, matrix, ports…), each registered in a view registry.
-  devdeck-app       the binary: windows, pane tree rendering, activities, palette, menus.
+  devdeck-app       the app: windows, pane tree rendering, activities, palette, menus.
+  devdeck           the binary: `main.rs` only, starting devdeck-app (a package of its
+                    own so test builds don't link it).
 ```
 
 Rules:

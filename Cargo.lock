@@ -1489,6 +1489,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "devdeck"
+version = "0.1.0"
+dependencies = [
+ "devdeck-app",
+ "devdeck-core",
+ "devdeck-ui",
+ "gpui-pre",
+ "gpui-pre-platform",
+]
+
+[[package]]
 name = "devdeck-api"
 version = "0.1.0"
 dependencies = [
