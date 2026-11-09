@@ -926,6 +926,11 @@ pub fn ignored(path: &Path) -> Ignored {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
         return Ignored::Unknown(format!("{}: no file name", path.display()));
     };
+    // git reads its argument as a pattern (check-ignore takes no literal paths): a name
+    // that would be one (`:(exclude)x`, `*.json`) can't be asked about safely.
+    if name.starts_with(':') || name.contains(['*', '?', '[', '\\']) {
+        return Ignored::Unknown(format!("{name}: a name git would read as a pattern"));
+    }
     let args = ["-c", "core.fsmonitor=false", "check-ignore", "-q", "--", name];
     match exec(dir, &[], None, &args, Mode::ReadWithin(IGNORED_LIMIT)) {
         Err(why) => Ignored::Unknown(why),
@@ -1031,6 +1036,10 @@ mod tests {
         std::fs::write(dir.join("main.rs"), "").unwrap();
         assert_eq!(ignored(&dir.join("local.json")), Ignored::Yes);
         assert_eq!(ignored(&dir.join("main.rs")), Ignored::No);
+        // Names git would read as patterns aren't asked about: refused.
+        for name in [":(exclude)x", "a*b", "what?", "[ab]", "back\\slash"] {
+            assert!(matches!(ignored(&dir.join(name)), Ignored::Unknown(_)), "{name}");
+        }
         let plain = TempDir::new("git-not-repo");
         std::fs::write(plain.join("a.txt"), "").unwrap();
         // A temporary folder may sit inside a repository on some machines; here it doesn't.

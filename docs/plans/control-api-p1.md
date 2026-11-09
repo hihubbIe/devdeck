@@ -321,4 +321,6 @@ excludes, the user's global ones) is refused too: names alone always miss some.
 `git check-ignore` runs with the repository's fsmonitor off, through core's git runner
 (its own session, `GIT_DIR` and the like removed) within 2 s; a file is read only when
 git says it isn't ignored or there's no repository: a failure or a timeout refuses it
-(second automated review).
+(second automated review). A name git would read as a pattern (a leading `:`, or `*`,
+`?`, `[`, `\`) isn't asked about and is refused: check-ignore takes no literal paths
+(third review).
