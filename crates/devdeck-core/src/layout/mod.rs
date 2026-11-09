@@ -998,8 +998,9 @@ impl Layout {
     /// Restores derived invariants after a structural change: flattens and normalizes
     /// splits, fixes focus and maximize, and keeps one expanded pane per window.
     fn repair(&mut self) {
+        let collapsed = self.collapsed();
         for w in &mut self.windows {
-            tidy(&mut w.root);
+            tidy(&mut w.root, &|n| !matches!(n, Node::Pane(p) if collapsed.contains(p)));
             let mut ids = Vec::new();
             collect_panes(&w.root, &mut ids);
             if !ids.contains(&w.focused) {
@@ -1194,11 +1195,14 @@ fn place_at(node: &mut Node, new: Node, edge: Edge, sid: SplitId, expanded: &dyn
     *node = Node::Split(Split { id: sid, axis, children: vec![Child { node: a, weight: 0.5 }, Child { node: b, weight: 0.5 }] });
 }
 
-/// Simplifies one-child splits, flattens same-axis nesting and normalizes weights.
-fn tidy(node: &mut Node) {
+/// Simplifies one-child splits, flattens same-axis nesting and normalizes weights. A
+/// flattened split's weight goes to its expanded children (`expanded`): a collapsed pane
+/// draws at its fixed size whatever its weight, so a share of it would be lost to the
+/// others; it keeps its own proportion, for when it opens again.
+fn tidy(node: &mut Node, expanded: &dyn Fn(&Node) -> bool) {
     let Node::Split(s) = node else { return };
     for c in &mut s.children {
-        tidy(&mut c.node);
+        tidy(&mut c.node, expanded);
     }
     let axis = s.axis;
     let mut flat = Vec::with_capacity(s.children.len());
@@ -1206,8 +1210,10 @@ fn tidy(node: &mut Node) {
         match c.node {
             Node::Split(inner) if inner.axis == axis => {
                 let total: f32 = inner.children.iter().map(|x| x.weight).sum();
+                let open: f32 = inner.children.iter().filter(|x| expanded(&x.node)).map(|x| x.weight).sum();
                 for ic in inner.children {
-                    flat.push(Child { weight: c.weight * ic.weight / total, node: ic.node });
+                    let of = if open > 0.0 && expanded(&ic.node) { open } else { total };
+                    flat.push(Child { weight: c.weight * ic.weight / of, node: ic.node });
                 }
             }
             other => flat.push(Child { node: other, weight: c.weight }),

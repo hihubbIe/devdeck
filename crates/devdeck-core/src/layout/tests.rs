@@ -865,7 +865,28 @@ fn drop_at_offers_nothing_on_collapsed_panes_no_strips_while_maximized_and_only_
 const DIVIDER: f32 = 5.0;
 
 fn near(a: f32, b: f32) -> bool {
-    (a - b).abs() <= DIVIDER + 0.01
+    near_by(a, b, 0.0)
+}
+
+fn near_by(a: f32, b: f32, slack: f32) -> bool {
+    (a - b).abs() <= DIVIDER + slack + 0.01
+}
+
+/// How many splits hold `pane` in `node`.
+fn depth_of(node: &Node, pane: PaneId) -> Option<usize> {
+    match node {
+        Node::Pane(p) => (*p == pane).then_some(0),
+        Node::Split(s) => s.children.iter().find_map(|c| depth_of(&c.node, pane)).map(|d| d + 1),
+    }
+}
+
+/// A collapsed pane folded up into its parent's split draws its fixed size (rail or
+/// header, and a divider) there instead: no weight makes that exact at every size, so
+/// each one moved up a level may cost the others that much.
+fn moved_rails(before: &Layout, after: &Layout, window: WindowId, m: Metrics) -> f32 {
+    let (Ok(b), Ok(a)) = (before.window(window), after.window(window)) else { return 0.0 };
+    let moved = before.panes.iter().filter(|(_, p)| p.collapsed).filter(|(id, _)| matches!((depth_of(&b.root, **id), depth_of(&a.root, **id)), (Some(x), Some(y)) if y < x)).count();
+    moved as f32 * (m.rail.max(m.header) + m.divider)
 }
 
 /// After `source` merged into `target` (and went away): in its window, every pane outside
@@ -894,18 +915,19 @@ fn merge_keeps_others(before: &Layout, after: &Layout, source: PaneId, target: P
     let (size, m) = ((1000.0, 700.0), Metrics { divider: DIVIDER, rail: 28.0, header: 32.0 });
     let old: BTreeMap<_, _> = before.pane_rects(window, size, m).unwrap().into_iter().collect();
     let new: BTreeMap<_, _> = after.pane_rects(window, size, m).unwrap().into_iter().collect();
+    let slack = moved_rails(before, after, window, m);
     // The rule on its own: a target next to it in its split grows by the source.
     if matches!(&others[to].node, Node::Pane(p) if *p == target) && new.contains_key(&target) {
         let along = |r: &Rect| if s.axis == Axis::Row { r.w } else { r.h };
         let want = along(&old[&target]) + along(&old[&source]) + DIVIDER;
-        assert!(near(along(&new[&target]), want), "{target:?} took {source:?}: {:?} -> {:?}", old[&target], new[&target]);
+        assert!(near_by(along(&new[&target]), want, slack), "{target:?} took {source:?}: {:?} -> {:?}", old[&target], new[&target]);
     }
     for (p, r) in &old {
         if *p == source || receiving.contains(p) {
             continue;
         }
         let Some(n) = new.get(p) else { continue };
-        assert!(near(r.w, n.w) && near(r.h, n.h), "{p:?} resized: {r:?} -> {n:?}, {source:?} into {target:?}");
+        assert!(near_by(r.w, n.w, slack) && near_by(r.h, n.h, slack), "{p:?} resized: {r:?} -> {n:?}, {source:?} into {target:?}");
     }
 }
 
@@ -925,6 +947,30 @@ fn thirds() -> (Layout, PaneId, PaneId, PaneId) {
 
 fn rects(l: &Layout) -> BTreeMap<PaneId, Rect> {
     l.pane_rects(MAIN_WINDOW, SIZE, M).unwrap().into_iter().collect()
+}
+
+#[test]
+fn a_folded_split_gives_its_weight_to_its_expanded_panes() {
+    // [a | [b / [c | d (collapsed)]]], b into a: [c | d] folds into the top row. Its
+    // weight goes to c alone, so a keeps its width but for d's rail now in the row (it
+    // went to 641 px of 1000 when d's weight counted).
+    let (mut l, a) = with_tabs(&["a", "b", "c", "d"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let (b, _) = l.find_view(&v("b")).unwrap();
+    l.move_tab(a, 1, Drop::Edge(b, Edge::Bottom)).unwrap();
+    let (c, _) = l.find_view(&v("c")).unwrap();
+    l.move_tab(a, 1, Drop::Edge(c, Edge::Right)).unwrap();
+    let (d, _) = l.find_view(&v("d")).unwrap();
+    l.toggle_collapse(d).unwrap();
+    let r = rects(&l);
+    let before = l.clone();
+    l.move_pane(b, Drop::Into(a)).unwrap();
+    ok(&l);
+    let n = rects(&l);
+    assert_eq!((n[&a].h, n[&c].h, n[&d].w), (SIZE.1, SIZE.1, M.rail), "one row");
+    assert!(near_by(n[&a].w, r[&a].w, M.rail + M.divider), "a: {:?} -> {:?}", r[&a], n[&a]);
+    assert!(near_by(n[&c].w, r[&c].w, M.rail + M.divider), "c: {:?} -> {:?}", r[&c], n[&c]);
+    merge_keeps_others(&before, &l, b, a);
 }
 
 #[test]
