@@ -801,7 +801,8 @@ pub fn key_bytes(key: &str, text: Option<&str>, mods: Mods, app_cursor: bool) ->
         // Shift+Enter as Alt+Enter would be: a new line in Claude Code and the like.
         "enter" if mods.shift => "\x1b\r".into(),
         "enter" => "\r".into(),
-        "backspace" if mods.ctrl => "\x08".into(),
+        // ^W, not xterm's ^H (one character in bash): the previous word (user, 2026-11-09).
+        "backspace" if mods.ctrl => "\x17".into(),
         "backspace" => "\x7f".into(),
         "tab" if mods.ctrl => return None,
         "tab" if mods.shift => "\x1b[Z".into(),
@@ -1215,7 +1216,7 @@ mod tests {
             ("enter", None, none, "\r"),
             ("enter", None, shift, "\x1b\r"),
             ("backspace", None, none, "\x7f"),
-            ("backspace", None, ctrl, "\x08"),
+            ("backspace", None, ctrl, "\x17"),
             ("tab", None, none, "\t"),
             ("tab", None, shift, "\x1b[Z"),
             ("escape", None, none, "\x1b"),

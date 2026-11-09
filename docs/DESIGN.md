@@ -546,6 +546,9 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   on the main screen, the wheel keeps scrolling the history. Clicks and drags stay
   devdeck's (selection, shift+click on links): reporting them is its own decision.
   `core::terminal::wheel_input` holds the rules.
+- 2026-11-09 Ctrl+Backspace in a terminal sends ^W (user): xterm's ^H deletes one
+  character in bash; ^W deletes the previous word in shells, vim's insert mode and the
+  like (back to a space: `foo/bar` goes at once), as VS Code's terminal does.
 - 2026-11-09 "Keep in every layout" removed (user: no use case). A layout shows only
   its own tabs; a saved `layouts.json` with `keep` still loads, the field dropped.
 

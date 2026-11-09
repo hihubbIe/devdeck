@@ -102,10 +102,11 @@ fn keys_in_the_terminal_go_to_the_process_not_to_devdeck(cx: &mut TestAppContext
     assert_eq!(s.state(cx), Some(RunState::Running), "s didn't stop it");
     let tab = ViewAddr::Run { app: s.key.app.clone(), cmd: s.key.cmd.clone() }.to_ref();
     assert!(cx.read(|cx| s.deck.read(cx).view(&tab).is_some()), "ctrl+w didn't close the tab");
-    // Word keys go through as xterm sends them: shells and full-screen programs read them.
-    cx.simulate_keystrokes(s.window, "ctrl-left ctrl-right ctrl-delete");
+    // Word keys go through as xterm sends them: shells and full-screen programs read them;
+    // ctrl+backspace as ^W, the previous word.
+    cx.simulate_keystrokes(s.window, "ctrl-left ctrl-right ctrl-delete ctrl-backspace");
     cx.run_until_parked();
-    assert_eq!(s.input(), "\x1b[1;5D\x1b[1;5C\x1b[3;5~");
+    assert_eq!(s.input(), "\x1b[1;5D\x1b[1;5C\x1b[3;5~\x17");
     // Application cursor mode changes what arrows send.
     s.output(cx, b"\x1b[?1h");
     cx.simulate_keystrokes(s.window, "up");
