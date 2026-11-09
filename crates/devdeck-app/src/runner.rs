@@ -204,13 +204,15 @@ pub struct Runner {
     /// The terminals a layout shows (by number, the deck's report): one that isn't
     /// running and isn't shown is forgotten (R6.12).
     shown: std::collections::BTreeSet<u32>,
+    /// Shells to start once the tools are known: the env and who asked first.
+    waiting_shells: BTreeMap<RunKey, (Option<String>, Starter)>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), shown: Default::default() }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), shown: Default::default(), waiting_shells: BTreeMap::new() }
     }
 
     /// Makes terminal `n` known, a shell in `dir`, and returns its key; starting it is
@@ -244,6 +246,30 @@ impl Runner {
             self.terminals.insert(key.clone(), (app, cmd, uuid::Uuid::new_v4().to_string()));
         }
         key
+    }
+
+    /// Opens terminal `n` in `dir` and starts its shell as `starter` with `env`, now or
+    /// once the tools are known: a terminal runs without a view (R13.1). One the runner
+    /// already ran isn't started again (only ⏎ does that); one that can't run stays not
+    /// started. While it waits, who asked first keeps it.
+    pub fn open_shell(&mut self, n: u32, dir: &std::path::Path, env: Option<String>, starter: Starter, cx: &mut Context<Self>) -> RunKey {
+        let key = self.open_terminal(n, dir);
+        if !self.runs.contains_key(&key) {
+            self.waiting_shells.entry(key.clone()).or_insert((env, starter));
+            self.start_waiting_shells(cx);
+        }
+        key
+    }
+
+    fn start_waiting_shells(&mut self, cx: &mut Context<Self>) {
+        if self.tools().pending {
+            return;
+        }
+        for (key, (env, starter)) in std::mem::take(&mut self.waiting_shells) {
+            if self.terminals.contains_key(&key) && !self.runs.contains_key(&key) && self.refusal(&key).is_none() {
+                let _ = self.try_start_as(&key, env, starter, cx);
+            }
+        }
     }
 
     /// Every terminal of the workspace with its folder, by number.
@@ -330,6 +356,7 @@ impl Runner {
     /// keep going; they can't start again until their command is back.
     pub fn set_catalog(&mut self, catalog: Rc<Catalog>, cx: &mut Context<Self>) {
         self.catalog = catalog;
+        self.start_waiting_shells(cx);
         cx.notify();
     }
 

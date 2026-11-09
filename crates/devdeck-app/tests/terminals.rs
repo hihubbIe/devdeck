@@ -445,3 +445,62 @@ fn an_app_rows_menu_opens_a_terminal_in_its_folder(cx: &mut TestAppContext) {
     let focused = cx.read(|cx| deck.read(cx).layout().main().focused);
     assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tabs[0]).map(|(p, _)| p)), Some(focused), "in the main window's focused pane");
 }
+
+// ------------------------------------------------------------------ shells without a view (R13.1)
+
+use devdeck_app::runner::Starter;
+
+fn caller() -> Starter {
+    Starter::Caller { workspace: "work".into(), n: 9, uid: "u".into(), starts: 1 }
+}
+
+fn folder(shell: &Entity<Shell>, cx: &TestAppContext) -> std::path::PathBuf {
+    let deck = deck(shell, cx);
+    cx.read(|cx| deck.read(cx).terminal_folder(None, cx))
+}
+
+#[gpui::test]
+fn the_runner_starts_a_shell_no_tab_shows(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-no-view");
+    let r = runner(&shell, cx);
+    let dir = folder(&shell, cx);
+    let key = cx.update(|cx| r.update(cx, |r, cx| r.open_shell(40, &dir, None, caller(), cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), Some(RunState::Running));
+    assert_eq!(cx.read(|cx| r.read(cx).run(&key).map(|r| r.starter.clone())), Some(caller()));
+    assert!(terminal_tabs(&deck(&shell, cx), cx).iter().all(|t| !t.as_str().contains("/40")), "no tab was needed");
+}
+
+#[gpui::test]
+fn a_shell_waits_for_the_tools_and_keeps_who_asked_first(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-wait");
+    let r = runner(&shell, cx);
+    let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
+    let known = cx.read(|cx| services.read(cx).catalog.clone());
+    let mut waiting = (*known).clone();
+    waiting.tools = devdeck_core::apps::Tools::pending();
+    cx.update(|cx| r.update(cx, |r, cx| r.set_catalog(std::rc::Rc::new(waiting), cx)));
+    let dir = folder(&shell, cx);
+    let key = cx.update(|cx| r.update(cx, |r, cx| r.open_shell(41, &dir, None, caller(), cx)));
+    // A tab built meanwhile asks as the user: the caller asked first.
+    cx.update(|cx| r.update(cx, |r, cx| r.open_shell(41, &dir, None, Starter::User, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), None, "not before the tools are known");
+    cx.update(|cx| r.update(cx, |r, cx| r.set_catalog(known, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| r.read(cx).state(&key)), Some(RunState::Running));
+    assert_eq!(cx.read(|cx| r.read(cx).run(&key).map(|r| r.starter.clone())), Some(caller()));
+}
+
+#[gpui::test]
+fn a_shell_already_running_is_not_started_again(cx: &mut TestAppContext) {
+    let shell = start(cx, "term-once");
+    let r = runner(&shell, cx);
+    let dir = folder(&shell, cx);
+    let key = cx.update(|cx| r.update(cx, |r, cx| r.open_shell(42, &dir, None, Starter::User, cx)));
+    cx.run_until_parked();
+    cx.update(|cx| r.update(cx, |r, cx| r.open_shell(42, &dir, None, caller(), cx)));
+    cx.run_until_parked();
+    let run = cx.read(|cx| r.read(cx).run(&key).map(|r| (r.runs, r.starter.clone())));
+    assert_eq!(run, Some((1, Starter::User)), "the same shell, still the user's");
+}

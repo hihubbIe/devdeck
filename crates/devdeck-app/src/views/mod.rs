@@ -213,8 +213,11 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             keeping(v, saved, ctx, cx)
         }
         (ViewAddr::Terminal { n, dir }, Some(ctx)) => {
-            let runner = ctx.services.read(cx).runner.clone();
-            let key = runner.update(cx, |r, _| r.open_terminal(n, std::path::Path::new(&dir)));
+            let (runner, env) = {
+                let s = ctx.services.read(cx);
+                (s.runner.clone(), s.env.clone())
+            };
+            let key = runner.update(cx, |r, cx| r.open_shell(n, std::path::Path::new(&dir), env, crate::runner::Starter::User, cx));
             let v = cx.new(|cx| run_view::RunView::new(key.app, key.cmd, ctx.clone(), cx));
             keeping(v, saved, ctx, cx)
         }

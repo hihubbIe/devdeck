@@ -303,3 +303,25 @@ Diff review (subagent), assessed:
     workspace have no test yet (the test shell has one workspace).
 11. Nothing checks `focus: false` — rejected: GPUI's test platform doesn't record it.
 14. Three near-identical names — taken: `opening_quietly`, `open_unfocused`.
+
+## Step 2, as built (2026-11-09)
+
+Touches no OS code (R11.6): the shell is spawned by the existing driver, from another
+caller.
+
+- `Runner::open_shell(n, dir, env, starter)`: opens the terminal and starts its shell now,
+  or once the tools are known (`set_catalog`); while it waits, who asked first keeps it.
+  A terminal the runner already ran isn't started again (only ⏎); one that can't run
+  stays not started; a waiting one forgotten meanwhile (R6.12) is dropped.
+- A terminal tab, when built, calls it as the user; `RunView` never starts a shell (its
+  `start_if_restoring` is for runs restored as running only).
+- The size stays the runner's `DEFAULT_SIZE` until a view measures, as before (review
+  point 17).
+
+Diff review: the subagent was refused by Claude Code's permission classifier; reviewed by
+the lead instead: the start now runs inside the deck's update (`Deck::sync` builds the
+tab), and the runner's events and notifications reach observers after it, so nothing
+re-enters the deck; the ports check updates `Ports`, not the deck; env and size are read
+when the tab is built, as before. Found in testing: a stopped terminal no tab shows is
+forgotten (R6.12), so opening it again rightly starts a new shell; the test checks a
+running one instead.

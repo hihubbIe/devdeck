@@ -86,14 +86,6 @@ impl RunView {
     pub fn new(app: String, cmd: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
         let runner = ctx.services.read(cx).runner.clone();
         let key = RunKey::new(&app, &cmd);
-        let terminal = key.is_terminal();
-        if terminal {
-            // Once built: the tools may be known already, then nothing else would start it.
-            cx.spawn(async move |this, cx| {
-                let _ = this.update(cx, |v, cx| v.start_if_restoring(cx));
-            })
-            .detach();
-        }
         let me = cx.entity_id();
         let subs = vec![
             cx.observe(&runner, |this, _, cx| {
@@ -131,8 +123,8 @@ impl RunView {
             drawn: None,
             pending: None,
             typed: None,
-            // A terminal's shell starts with its tab (opened or restored), once it can.
-            restoring: terminal,
+            // A terminal's shell is the runner's to start (`Runner::open_shell`).
+            restoring: false,
             args_input: None,
             args_bounds: Rc::default(),
             links_on: false,
@@ -311,19 +303,18 @@ impl RunView {
         }
     }
 
-    /// A run restored as running, or a terminal's shell with its tab, starts as soon as it
-    /// can (the tools may still be being checked); if it can't run any more, it stays not
-    /// started. A terminal the runner already ran (running, or ended by `exit`) isn't
-    /// started again by its tab: only ⏎ does that.
+    /// A run restored as running starts as soon as it can (the tools may still be being
+    /// checked); if it can't run any more, it stays not started. A terminal's shell is the
+    /// runner's (`Runner::open_shell`), never its tab's.
     fn start_if_restoring(&mut self, cx: &mut Context<Self>) {
         if !self.restoring {
             return;
         }
-        let runner = self.ctx.services.read(cx).runner.read(cx);
-        if self.key.is_terminal() && runner.run(&self.key).is_some() {
+        if self.key.is_terminal() {
             self.restoring = false;
             return;
         }
+        let runner = self.ctx.services.read(cx).runner.read(cx);
         if runner.tools().pending {
             return;
         }
