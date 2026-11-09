@@ -533,6 +533,12 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   ("sync with workspace (@env)", then every env) or with `e`; the button is highlighted
   while it isn't synced, its tooltip naming the workspace's env. The title bar's env
   stays the workspace's, for runs.
+
+- 2026-11-09 A branch switch asks only when tracked files have uncommitted changes
+  (user): none, and it switches at once (a remote branch: tracked, then switched to);
+  else the modal keeps its question and lists those changes (`git::uncommitted`), one
+  line each cut with an ellipsis, eight then "and N more". Untracked files don't count.
+
 - 2026-11-09 The wheel goes to a terminal's program when it asks for mouse reports
   (modes 1000/1002/1003, written as SGR, UTF-8 or X10), as xterm does: Claude Code's
   full-screen mode scrolls with it instead of getting arrow keys. Otherwise cursor keys

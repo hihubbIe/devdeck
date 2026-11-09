@@ -116,6 +116,16 @@ fn change(path: &str, kind: ChangeKind, staged: bool) -> Change {
 }
 
 #[test]
+fn uncommitted_lists_tracked_changes_only() {
+    let renamed = Change { from: Some("old.rs".into()), ..change("new.rs", ChangeKind::Renamed, true) };
+    let changes = [change("a.rs", ChangeKind::Modified, false), change("b.rs", ChangeKind::Untracked, false), change("c.rs", ChangeKind::Added, true), renamed];
+    assert_eq!(uncommitted(&changes, 8), ["modified  a.rs", "added · staged  c.rs", "renamed · staged  old.rs → new.rs"]);
+    assert_eq!(uncommitted(&changes, 2), ["modified  a.rs", "added · staged  c.rs", "and 1 more"], "the untracked one isn't counted");
+    assert!(uncommitted(&[change("b.rs", ChangeKind::Untracked, false)], 8).is_empty(), "untracked files alone: nothing to ask");
+    assert!(uncommitted(&[], 8).is_empty());
+}
+
+#[test]
 fn open_finds_the_root_and_git_dirs() {
     let r = Repos::new("open");
     std::fs::create_dir(r.path("work/sub")).unwrap();

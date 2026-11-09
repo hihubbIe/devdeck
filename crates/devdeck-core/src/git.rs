@@ -69,6 +69,45 @@ pub struct Change {
     pub staged: bool,
 }
 
+impl ChangeKind {
+    /// How it's shown: "modified", "untracked"…
+    pub fn word(self) -> &'static str {
+        match self {
+            ChangeKind::Modified => "modified",
+            ChangeKind::Added => "added",
+            ChangeKind::Deleted => "deleted",
+            ChangeKind::Renamed => "renamed",
+            ChangeKind::Copied => "copied",
+            ChangeKind::TypeChanged => "type changed",
+            ChangeKind::Untracked => "untracked",
+            ChangeKind::Conflicted => "conflict",
+        }
+    }
+}
+
+impl Change {
+    /// Its path, a rename's as `from → to`.
+    pub fn shown_path(&self) -> String {
+        match &self.from {
+            Some(from) => format!("{from} → {}", self.path),
+            None => self.path.clone(),
+        }
+    }
+}
+
+/// The uncommitted changes to tracked files (untracked ones don't count), one line each
+/// ("modified · staged  a.rs"): the first `shown`, then "and N more". Empty when there
+/// are none: a switch then happens without asking (user, 2026-11-09).
+pub fn uncommitted(changes: &[Change], shown: usize) -> Vec<String> {
+    let tracked: Vec<&Change> = changes.iter().filter(|c| c.kind != ChangeKind::Untracked).collect();
+    let mut lines: Vec<String> =
+        tracked.iter().take(shown).map(|c| format!("{}{}  {}", c.kind.word(), if c.staged { " · staged" } else { "" }, c.shown_path())).collect();
+    if tracked.len() > shown {
+        lines.push(format!("and {} more", tracked.len() - shown));
+    }
+    lines
+}
+
 /// An operation under way in the repository (from its git dir).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Doing {

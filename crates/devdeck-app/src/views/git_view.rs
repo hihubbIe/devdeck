@@ -1,7 +1,8 @@
 //! Git panel (`git/<repo root>`, R6.10): a repository's branch, upstream and changes, its
 //! local and remote branches with their last commit and the envs running them, and the
 //! few operations devdeck makes, each asked first in plain words (fetch doesn't ask: it
-//! changes neither branches nor files). An operation under way in the repository (a
+//! changes neither branches nor files; a switch asks only when tracked files have
+//! uncommitted changes, and lists them). An operation under way in the repository (a
 //! rebase…) is shown, and only its abort is offered. Push never loses anything: it
 //! publishes, sends, or replaces a rewritten branch only when the remote's commits are in
 //! its history; anything else is refused (see `devdeck_core::git::PushPlan`).
@@ -17,7 +18,7 @@ use super::ViewCx;
 use crate::cluster::Cluster;
 use crate::repo::{Looking, Repo};
 use devdeck_core::cluster::Remote;
-use devdeck_core::git::{Branch, ChangeKind, Doing, Head, Op, PushPlan};
+use devdeck_core::git::{Branch, Change, ChangeKind, Doing, Head, Op, PushPlan};
 use devdeck_ui::scroll_list;
 use devdeck_ui::{
     Icon, InputEvent, ModalFocus, TextInput, Theme, ToastKind, button, icon, icon_text, label, modal_frame, pop_modal, push_modal, section, theme,
@@ -328,27 +329,28 @@ impl GitView {
         cx.spawn(async move |this, cx| {
             let status = cx.background_executor().spawn(async move { git.status() }).await;
             let _ = this.update(cx, |v, cx| match status {
-                Ok(s) => {
-                    let changes = s.changes.iter().filter(|c| c.kind != ChangeKind::Untracked).count();
-                    v.ask_switch(&row, op, changes, cx);
-                }
+                Ok(s) => v.switch_or_ask(&row, op, &s.changes, cx),
                 Err(e) => v.toast(format!("Switch to {}: {e}", row.local), cx),
             });
         })
         .detach();
     }
 
-    fn ask_switch(&mut self, row: &Row, op: Op, changes: usize, cx: &mut Context<Self>) {
-        let mut lines = vec![match &row.branch.remote {
-            None => format!("Switches to {}.", row.local),
-            Some(remote) => format!("Creates {} from {remote}'s and switches to it; it follows {} from then on.", row.local, row.branch.name),
-        }];
-        if changes > 0 {
-            lines.push(format!("Your {changes} uncommitted changes come along to {}. If any would be overwritten, git refuses and nothing changes.", row.local));
-        }
-        lines.push("Ignored files (a local .env) are never overwritten: git refuses instead.".into());
+    /// Switches at once when nothing tracked is uncommitted; else asks, listing what isn't
+    /// (user, 2026-11-09).
+    fn switch_or_ask(&mut self, row: &Row, op: Op, changes: &[Change], cx: &mut Context<Self>) {
         let local = row.local.clone();
-        self.confirm(op, format!("Switch to {local}"), format!("switching to {local}…"), "Switch", lines, cx);
+        let (title, doing) = (format!("Switch to {local}"), format!("switching to {local}…"));
+        let files = devdeck_core::git::uncommitted(changes, CHANGES_SHOWN);
+        if files.is_empty() {
+            if let Err(why) = self.repo.update(cx, |r, cx| r.run(op, title.clone(), doing, cx)) {
+                self.toast(format!("{title}: {why}"), cx);
+            }
+            return;
+        }
+        let count = changes.iter().filter(|c| c.kind != ChangeKind::Untracked).count();
+        let lines = vec![format!("Not committed ({count} files):")];
+        self.ask(op, title, doing, "Switch", lines, files, cx);
     }
 
     pub fn new_branch(&mut self, cx: &mut Context<Self>) {
@@ -404,9 +406,15 @@ impl GitView {
 
     /// Asks in a modal, then runs `op`.
     fn confirm(&mut self, op: Op, title: String, doing: String, confirm: &'static str, lines: Vec<String>, cx: &mut Context<Self>) {
+        self.ask(op, title, doing, confirm, lines, Vec::new(), cx);
+    }
+
+    /// `confirm`, with `files` listed after the lines, one line each.
+    #[allow(clippy::too_many_arguments)]
+    fn ask(&mut self, op: Op, title: String, doing: String, confirm: &'static str, lines: Vec<String>, files: Vec<String>, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
         self.in_window(cx, move |window, cx| {
-            let modal = cx.new(|cx| ConfirmModal::new(repo, op, title, doing, confirm, lines, window, cx));
+            let modal = cx.new(|cx| ConfirmModal::new(repo, op, title, doing, confirm, lines, files, window, cx));
             show(modal, window, cx);
         });
     }
@@ -601,20 +609,7 @@ impl Render for GitView {
 
         let mut changes = div().flex().flex_col();
         for c in status.changes.iter().take(CHANGES_SHOWN) {
-            let kind = match c.kind {
-                ChangeKind::Modified => "modified",
-                ChangeKind::Added => "added",
-                ChangeKind::Deleted => "deleted",
-                ChangeKind::Renamed => "renamed",
-                ChangeKind::Copied => "copied",
-                ChangeKind::TypeChanged => "type changed",
-                ChangeKind::Untracked => "untracked",
-                ChangeKind::Conflicted => "conflict",
-            };
-            let path = match &c.from {
-                Some(from) => format!("{from} → {}", c.path),
-                None => c.path.clone(),
-            };
+            let (kind, path) = (c.kind.word(), c.shown_path());
             let color = if c.kind == ChangeKind::Conflicted { t.err } else { t.mute };
             changes = changes.child(
                 div()
@@ -759,15 +754,27 @@ pub struct ConfirmModal {
     doing: String,
     confirm_label: &'static str,
     lines: Vec<String>,
+    /// File paths, each on one line cut with an ellipsis (R4.4).
+    files: Vec<String>,
     focus: ModalFocus,
     restore: Option<WeakFocusHandle>,
 }
 
 impl ConfirmModal {
     #[allow(clippy::too_many_arguments)]
-    fn new(repo: Entity<Repo>, op: Op, title: String, doing: String, confirm_label: &'static str, lines: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        repo: Entity<Repo>,
+        op: Op,
+        title: String,
+        doing: String,
+        confirm_label: &'static str,
+        lines: Vec<String>,
+        files: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let restore = window.focused(cx).map(|f| f.downgrade());
-        Self { repo, op, title, doing, confirm_label, lines, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore }
+        Self { repo, op, title, doing, confirm_label, lines, files, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore }
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -820,6 +827,7 @@ impl Render for ConfirmModal {
             .child(div().text_color(t.hi).debug_selector(|| "git-confirm-title".into()).child(format!("{}?", self.title)))
             // Text a modal shows whole (R4.4 allows a view to opt in): what happens matters.
             .children(self.lines.iter().map(|l| div().text_color(t.fg).child(l.clone())))
+            .children(self.files.iter().map(|f| label(f.clone()).text_color(t.fg)))
             .child(
                 div()
                     .flex()

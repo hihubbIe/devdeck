@@ -1,7 +1,8 @@
 //! M3 step 3: the git panel (R6.10) over real temporary repositories (a bare "origin" and a
 //! clone, made with `git`): one repository entity per root, read while looked at and when
-//! git's files change; switching asks first, then switches; an operation under way blocks
-//! every write but its abort. Git runs for real here, only in the tests' own folders.
+//! git's files change; a switch asks first only over uncommitted changes to tracked files;
+//! an operation under way blocks every write but its abort. Git runs for real here, only in
+//! the tests' own folders.
 
 use devdeck_app::repo::Repo;
 use devdeck_app::shell::{Shell, WorkspaceSpec};
@@ -105,7 +106,7 @@ fn one_repository_per_root_shared_by_its_views_and_released_with_them(cx: &mut T
 }
 
 #[gpui::test]
-fn the_panel_reads_while_looked_at_and_switching_asks_first(cx: &mut TestAppContext) {
+fn the_panel_reads_while_looked_at_and_a_switch_asks_only_over_uncommitted_changes(cx: &mut TestAppContext) {
     let (folder, web) = repos(cx);
     let (shell, _) = start(cx, &folder);
     let panel = open_panel(&shell, &web, cx);
@@ -120,20 +121,35 @@ fn the_panel_reads_while_looked_at_and_switching_asks_first(cx: &mut TestAppCont
     assert_eq!(cx.read(|cx| panel.read(cx).remote_count(cx)), 1);
     cx.update(|cx| panel.update(cx, |p, cx| p.toggle_remotes(cx)));
     assert_eq!(rows(cx), ["main", "origin/feat"], "a remote branch without a local one; origin/main is main's");
-    // Switching to the remote branch: asked in a modal, nothing done before it's confirmed.
+    // Nothing tracked is uncommitted (an untracked file doesn't count): no modal, the remote
+    // branch is switched to at once, as a local branch tracking it.
+    std::fs::write(web.join("notes.txt"), "mine\n").unwrap();
     let main = cx.read(|cx| shell.read(cx).main_window().expect("main"));
+    let modals = |cx: &mut TestAppContext| cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx).1);
     cx.update(|cx| {
         panel.update(cx, |p, cx| {
             p.selected = Some(1);
             p.switch_selected(cx);
         })
     });
-    cx.run_until_parked();
-    assert_eq!(cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx).1), 1, "a confirmation");
-    assert_eq!(head(&repo, cx), Some(Head::Branch("main".into())), "nothing yet");
-    cx.simulate_keystrokes(main.into(), "enter");
     until(cx, "on feat", |cx| head(&repo, cx) == Some(Head::Branch("feat".into())));
+    assert_eq!(modals(cx), 0, "nothing asked");
     assert_eq!(git(&web, &["rev-parse", "--abbrev-ref", "feat@{upstream}"]).trim(), "origin/feat", "tracking it");
+    // A tracked file changed: asked in a modal, nothing done before it's confirmed.
+    std::fs::write(web.join("a.txt"), "two\n").unwrap();
+    let main_row = cx.read(|cx| panel.read(cx).rows(cx).iter().position(|r| r.branch.name == "main")).expect("main listed");
+    cx.update(|cx| {
+        panel.update(cx, |p, cx| {
+            p.selected = Some(main_row);
+            p.switch_selected(cx);
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(modals(cx), 1, "a confirmation");
+    assert_eq!(head(&repo, cx), Some(Head::Branch("feat".into())), "nothing yet");
+    cx.simulate_keystrokes(main.into(), "enter");
+    until(cx, "on main", |cx| head(&repo, cx) == Some(Head::Branch("main".into())));
+    assert_eq!(std::fs::read_to_string(web.join("a.txt")).unwrap(), "two\n", "the change came along");
 }
 
 #[gpui::test]
