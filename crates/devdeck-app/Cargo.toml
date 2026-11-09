@@ -10,6 +10,8 @@ default-run = "devdeck"
 [[bin]]
 name = "devdeck"
 path = "src/main.rs"
+# No unit tests in it: not built a second time as a test executable.
+test = false
 
 # Renders layout states to PNG files offscreen for visual checks (docs/WORKFLOW.md).
 [[bin]]

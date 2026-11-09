@@ -8,6 +8,8 @@ publish.workspace = true
 [[bin]]
 name = "devdeck-mcp"
 path = "src/main.rs"
+# No unit tests in it: not built a second time as a test executable.
+test = false
 
 [dependencies]
 devdeck-api.workspace = true

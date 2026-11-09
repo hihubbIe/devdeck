@@ -63,6 +63,18 @@ lto = "thin"
 codegen-units = 4
 strip = true
 
+# Debug info stays in `.dwo` files next to the objects instead of being copied into every
+# binary; `limited` keeps file and line for backtraces, not variables (docs/BUILDING.md).
+[profile.dev]
+split-debuginfo = "unpacked"
+debug = "limited"
+
+# A debugger session with variables: `cargo build --profile dbg`, in its own folder
+# (`target/dbg`, deleted when done).
+[profile.dbg]
+inherits = "dev"
+debug = "full"
+
 # Snapshots spend most of their time compressing PNGs; unoptimized, that is ~2 s per image.
 # Only these small crates are optimized, so the app's own debug build is unchanged.
 [profile.dev.package]
