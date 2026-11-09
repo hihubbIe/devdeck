@@ -3,6 +3,27 @@
 Drafted 2026-11-09. Phase 3 of [control-api.md](control-api.md) (R13.1, R13.5–R13.8,
 R13.10, R13.11). API level 4 for the whole phase.
 
+## Where we are (paused 2026-11-09)
+
+- Done: steps 1–5 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`); each has an
+  "as built" section at the end of this file.
+- Next: step 6 (events), then 7 (interest handles), 8 (methods), 9 (clients), then the
+  phase's close (diff review, perf, docs, the user's manual test).
+- Open points carried forward:
+  - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
+    keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
+    windows are refused there.
+  - A workspace switch by the API keeping the user's focus needs its own rule (step 8,
+    `workspace.activate`).
+  - The notes' folder is watched only once it exists (made with the first note).
+  - `docs/PLATFORMS.md` should list the hang-up check (`recv` with `MSG_PEEK`) in
+    `api/transport.rs`.
+  - Steps 2–5 were reviewed by the lead, not a subagent (Claude Code's permission
+    classifier refused it): an independent review before the phase closes.
+  - No test yet for keys held in a detached window or an inactive workspace.
+  - Deleting a layout has no confirmation in the UI; whether to add one is the user's.
+- To resume: "continue the control API phase 3 from `docs/plans/control-api-p3.md`".
+
 ## What
 
 Claude can change what devdeck shows, open and stop its own terminals, set the current
