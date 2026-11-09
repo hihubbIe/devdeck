@@ -124,8 +124,8 @@ listens, timers only while something waits: idle CPU stays 0 (R1.3).
 - **Untrusted text is marked**: every free-text field (output, logs, notes, branch names,
   script names, tags) is flagged untrusted in the schema. Secrets devdeck knows of are
   hidden.
-- **Waiting is one mechanism, jobs**: long operations, approvals, questions to the user
-  and "wait until ready" all return a job (`job.get`, `job.wait`, `job.cancel`). A wait
+- **Waiting is one mechanism, jobs**: long operations, approvals and "wait until ready"
+  all return a job (`job.get`, `job.wait`, `job.cancel`). A wait
   that times out returns the state and the output so far; the process keeps running.
 - **Events**: `events.subscribe{topics}`. Notifications are numbered; each client has a
   bounded queue; when it overflows the client gets `lagged` and reads the state again.
@@ -208,7 +208,7 @@ approvals, and the UI's confirm, modal and menu actions.
   method, the exact arguments, and the state it was decided on (push plan, deployed
   tag, process holding the port). If that state changed when it runs: `conflict`.
 - **The card**:
-  - drawn in its own area, which `ui.notify` and `user.ask` can never draw in;
+  - drawn in its own area, which `ui.notify` can never draw in;
   - says which caller asks;
   - shows the arguments in full, wrapped, control and right-to-left characters shown
     escaped;
@@ -314,8 +314,8 @@ Methods are named `domain.verb`. The class is in brackets when not obvious.
 - `sidebar.show`; `file.toggle_rendered`; logs view state (pause, follow, level, find);
   matrix highlight; `settings.set{scale, theme}`
 - `ui.notify{text, kind}`: labelled with the caller
-- `user.ask{question, options}`: options only, no free text; the user answers in devdeck;
-  returns a job
+- No `user.ask`: a client asks the user in its own session (dropped by the user,
+  2026-11-09)
 
 ### Layouts and sidebar
 
@@ -392,7 +392,7 @@ the system's git config, not the repository's. Adding `-c core.fsmonitor=false` 
 ## MCP client
 
 - **Tools**: a few chosen ones for what agents do most (overview, runs with start, stop
-  and wait, output read and search, open, layout, notes, git, cluster, ask the user),
+  and wait, output read and search, open, layout, notes, git, cluster),
   plus **one generic tool per class** (`devdeck_observe`, `devdeck_run`,
   `devdeck_destructive`…) that reaches every method of that class. A new API method is
   usable at once, and Claude Code's "always allow" stays limited to one class.
@@ -413,8 +413,8 @@ Each ends with the user's manual test (WORKFLOW).
 | P0 | Decisions; R13 in REQUIREMENTS; DESIGN section; the catalog written out |
 | P1 | `devdeck-api`, socket server, identity by process tree, audit log, environment cleanup, observe methods, CLI, a first MCP with the per-class tools, API access panel (callers and audit, read only). **Claude can use it here** |
 | P2 | Bounded reads with untrusted marks and hidden secrets: output, screen, search, notes, files |
-| P3 | Operations layer, `Approvals` and its proofs, who-started-what, events, jobs, waits; present, run and organize methods |
-| P4 | Approval card; type, remote and destructive methods: git, ports, deletes, leftovers |
+| P3 | Operations layer, who-started-what, events, jobs, waits; present, run and organize methods |
+| P4 | `Approvals` and its proofs, the approval card; type, remote and destructive methods: git, ports, deletes, leftovers |
 | P5 | Chosen MCP tools, server instructions, setup docs |
 | P6 | Cluster methods, as M3 steps 4–5 land |
 

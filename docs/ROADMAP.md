@@ -56,8 +56,9 @@ Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), deci
    main commands, no arguments), `run.stop`/`run.restart` on runs the caller started,
    who started what, the `devdeck_run` tool — done 2026-11-08.
 2. Bounded reads: output, screen, search, notes, files — done 2026-11-08.
-3. Operations layer, approvals core, events, jobs, waits; present, run, organize.
-4. Approval card; type, remote and destructive methods.
+3. Operations layer, events, jobs, waits; present, run, organize
+   ([plans/control-api-p3.md](plans/control-api-p3.md)).
+4. Approvals and its proofs, the approval card; type, remote and destructive methods.
 5. Chosen MCP tools, instructions, setup docs.
 6. Cluster methods, as M3 steps 4–5 land.
 
