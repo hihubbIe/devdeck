@@ -239,15 +239,14 @@ fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut Tes
     cx.simulate_keystrokes(main, "escape");
     cx.run_until_parked();
     assert!(cx.read(|cx| deck.read(cx).is_visible(&deployments)));
-    // Layout b keeps deployments and drops notes; default has notes.
-    cx.update(|cx| deck.update(cx, |d, cx| d.toggle_keep(&deployments, cx)));
+    // Layout b drops notes; both have deployments.
     cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
     apply(&deck, cx, |l| l.close_view(&ViewRef::new("demo/notes")));
     let log = watch(&deck, cx);
     cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(devdeck_core::layout_book::DEFAULT_ID, cx))).unwrap();
     cx.run_until_parked();
     assert_eq!(take(&log, "demo/notes"), [true], "the other layout's tab comes on screen");
-    assert!(take(&log, "matrix").is_empty(), "the kept view never left the screen");
+    assert!(take(&log, "matrix").is_empty(), "in both layouts, it never left the screen");
 }
 
 #[gpui::test]

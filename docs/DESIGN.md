@@ -532,6 +532,8 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   ("sync with workspace (@env)", then every env) or with `e`; the button is highlighted
   while it isn't synced, its tooltip naming the workspace's env. The title bar's env
   stays the workspace's, for runs.
+- 2026-11-09 "Keep in every layout" removed (user: no use case). A layout shows only
+  its own tabs; a saved `layouts.json` with `keep` still loads, the field dropped.
 
 ## Open questions
 

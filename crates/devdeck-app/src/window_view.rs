@@ -431,7 +431,7 @@ impl WindowView {
         let items = if d.layout().pane(p).is_ok_and(|pane| pane.tabs.is_empty()) {
             pane_menu(&self.deck, p, d.layout(), cx)
         } else {
-            tab_menu(&self.deck, p, active, self.id, d.layout(), &d.book.keep, cx)
+            tab_menu(&self.deck, p, active, self.id, d.layout(), cx)
         };
         open_menu(at, items, window, cx);
     }
@@ -1302,15 +1302,13 @@ fn render_pane(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {
 }
 
 /// The menu of a tab (right-click, shift+F10).
-fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout, keep: &std::collections::BTreeSet<ViewRef>, cx: &App) -> Vec<MenuItem> {
+fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, layout: &Layout, cx: &App) -> Vec<MenuItem> {
     let Some(view) = layout.pane(pane).ok().and_then(|p| p.tabs.get(idx).cloned()) else { return Vec::new() };
     let alone = layout.is_detached(window) && layout.pane(pane).is_ok_and(|p| p.tabs.len() == 1);
     let maximized = layout.window(window).is_ok_and(|w| w.maximized == Some(pane));
     let d = |deck: &Entity<Deck>| deck.clone();
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
-    let (v1, v2, v3) = (view.clone(), view.clone(), view.clone());
-    let kept = keep.contains(&view);
-    let d7 = deck.clone();
+    let (v1, v2) = (view.clone(), view.clone());
     let terminal = open_terminal_item(deck, pane, window, Some(&view), cx);
     // What the view offers now (R12.4), first.
     let mut items: Vec<MenuItem> = deck
@@ -1348,13 +1346,6 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
         MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized),
         MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))),
         MenuItem::separator(),
-        MenuItem::new("Keep in every layout", move |_, cx| {
-            d7.update(cx, |d, cx| {
-                d.toggle_keep(&v3, cx);
-            })
-        })
-        .checked(kept),
-        MenuItem::separator(),
         terminal,
     ]);
     items
@@ -1387,7 +1378,7 @@ fn tab_handlers(el: Stateful<Div>, f: &Frame, pane: PaneId, i: usize, title: &Sh
     .on_mouse_down(MouseButton::Right, move |e, window, cx| {
         cx.stop_propagation();
         let d = d_menu.read(cx);
-        let items = tab_menu(&d_menu, pane, i, window_id, d.layout(), &d.book.keep, cx);
+        let items = tab_menu(&d_menu, pane, i, window_id, d.layout(), cx);
         open_menu(e.position, items, window, cx);
     })
     .on_drag(DraggedTab { deck: deck_id, pane, index: i, title: title.clone() }, |d, _, _, cx| cx.new(|_| DragGhost(d.title.clone())))
@@ -1492,7 +1483,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             let (deck, window_id) = (f.deck.clone(), f.window);
             move |e, window, cx| {
                 let d = deck.read(cx);
-                let items = if one { tab_menu(&deck, pane, 0, window_id, d.layout(), &d.book.keep, cx) } else { pane_menu(&deck, pane, d.layout(), cx) };
+                let items = if one { tab_menu(&deck, pane, 0, window_id, d.layout(), cx) } else { pane_menu(&deck, pane, d.layout(), cx) };
                 open_menu(e.position, items, window, cx);
             }
         })

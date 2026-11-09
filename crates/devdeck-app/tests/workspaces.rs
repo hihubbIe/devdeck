@@ -409,7 +409,7 @@ fn notes_only() -> Layout {
 }
 
 #[gpui::test]
-fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
+fn layouts_save_switch_and_persist(cx: &mut TestAppContext) {
     let dir = temp(cx, "layouts");
     let shell = start(cx, devdeck_app::demo_workspaces(), Some(StateStore::new(dir.clone())), "layouts");
     let work = deck(&shell, cx, "work");
@@ -418,7 +418,6 @@ fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
     let triage = cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("triage", cx))).unwrap();
     let logs = ViewRef::new("demo/logs");
     let logs_view = cx.read(|cx| work.read(cx).view(&logs).unwrap());
-    cx.update(|cx| work.update(cx, |d, cx| d.toggle_keep(&logs, cx)));
     let focus = cx.update(|cx| work.update(cx, |d, cx| d.save_layout_as("focus", cx))).unwrap();
     cx.update(|cx| {
         work.update(cx, |d, cx| {
@@ -429,9 +428,7 @@ fn layouts_save_switch_keep_and_persist(cx: &mut TestAppContext) {
         })
     });
     cx.run_until_parked();
-    assert!(cx.read(|cx| work.read(cx).book.keep.is_empty()), "closing a kept tab clears its mark");
-    cx.update(|cx| work.update(cx, |d, cx| d.toggle_keep(&ViewRef::new("demo/notes"), cx)));
-    // Switch to triage: its tabs come back, the kept notes tab follows.
+    // Switch to triage: its tabs come back.
     cx.update(|cx| work.update(cx, |d, cx| d.switch_layout(&triage, cx))).unwrap();
     cx.run_until_parked();
     let l = cx.read(|cx| work.read(cx).layout().clone());

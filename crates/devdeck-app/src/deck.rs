@@ -362,13 +362,6 @@ impl Deck {
             Ok(v) => {
                 self.last_error = None;
                 self.changed(cx);
-                // A kept view whose tab closed isn't kept any more.
-                let before = self.book.keep.len();
-                let layout = &self.layout;
-                self.book.keep.retain(|v| layout.find_view(v).is_some());
-                if self.book.keep.len() != before {
-                    self.save_book(cx);
-                }
                 Some(v)
             }
             Err(e) => {
@@ -440,7 +433,7 @@ impl Deck {
     }
 
     /// Shows another named layout: tabs that aren't in it close (their runs go on),
-    /// kept views follow, detached windows follow the layout.
+    /// detached windows follow the layout.
     pub fn switch_layout(&mut self, id: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
         if self.book.current == id {
             return Ok(());
@@ -485,13 +478,6 @@ impl Deck {
         self.save_book(cx);
         cx.notify();
         Ok(())
-    }
-
-    pub fn toggle_keep(&mut self, view: &ViewRef, cx: &mut Context<Self>) -> bool {
-        let kept = self.book.toggle_keep(view);
-        self.save_book(cx);
-        cx.notify();
-        kept
     }
 
     /// The one path for a change the deck refused or couldn't make: a toast, where the

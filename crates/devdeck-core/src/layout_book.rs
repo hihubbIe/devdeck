@@ -1,11 +1,10 @@
 //! Named layouts of one workspace (R3.10): save the arrangement under a name, switch
-//! between layouts, and keep some views in every layout. The live layout is the
-//! workspace's `layout.json`; the book holds the others. Layouts are known by an id;
+//! between layouts. The live layout is the workspace's `layout.json`; the book holds the others. Layouts are known by an id;
 //! their name is only a label, so renaming one keeps what refers to it (sidebar pins).
 
-use crate::layout::{Layout, ViewRef};
+use crate::layout::Layout;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub type LayoutId = String;
 
@@ -29,14 +28,12 @@ pub struct LayoutBook {
     /// Every layout (the current one's entry may be stale: the live layout is the
     /// truth for it).
     pub layouts: BTreeMap<LayoutId, Named>,
-    /// Views that follow into every layout.
-    pub keep: BTreeSet<ViewRef>,
 }
 
 impl Default for LayoutBook {
     fn default() -> Self {
         let layouts = BTreeMap::from([(DEFAULT_ID.to_string(), Named { name: DEFAULT_NAME.into(), layout: None })]);
-        Self { current: DEFAULT_ID.into(), layouts, keep: BTreeSet::new() }
+        Self { current: DEFAULT_ID.into(), layouts }
     }
 }
 
@@ -47,8 +44,6 @@ struct OldBook {
     current: String,
     #[serde(default)]
     layouts: BTreeMap<String, Layout>,
-    #[serde(default)]
-    keep: BTreeSet<ViewRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,7 +97,7 @@ impl LayoutBook {
             })
             .collect();
         // The old current is a name; `repair` finds its id or gives it an entry.
-        LayoutBook { current: old.current, layouts, keep: old.keep }
+        LayoutBook { current: old.current, layouts }
     }
 
     /// Makes `current` a key of `layouts`: a current that is a layout's name points at
@@ -160,32 +155,13 @@ impl LayoutBook {
     }
 
     /// Switches to `id`: stores the live layout under the current one and returns the
-    /// layout to show, with kept views it lacks added to its main focused pane.
+    /// layout to show.
     pub fn switch(&mut self, id: &str, live: &Layout) -> Result<Layout, BookError> {
         if !self.layouts.contains_key(id) {
             return Err(BookError::Unknown(id.into()));
         }
         self.store_live(live);
-        let mut target = self.layouts[id].layout.clone().unwrap_or_else(|| live.clone());
-        // Kept views land where they'll be seen: the maximized pane, else the focused
-        // pane, else the first expanded one; they don't take the active tab.
-        let main = target.main();
-        let into = main.maximized.unwrap_or(main.focused);
-        let into = if target.pane(into).is_ok_and(|p| p.collapsed) {
-            target.panes_in(crate::layout::MAIN_WINDOW).unwrap_or_default().into_iter().find(|p| target.pane(*p).is_ok_and(|p| !p.collapsed)).unwrap_or(into)
-        } else {
-            into
-        };
-        for v in &self.keep {
-            if live.find_view(v).is_some() && target.find_view(v).is_none() {
-                let active = target.pane(into).map(|p| p.active).unwrap_or(0);
-                let had_tabs = target.pane(into).is_ok_and(|p| !p.tabs.is_empty());
-                if target.open(v.clone(), into).is_ok() && had_tabs {
-                    let _ = target.activate(into, active);
-                }
-            }
-        }
-        // Kept views that the target doesn't have and the live layout dropped stay away.
+        let target = self.layouts[id].layout.clone().unwrap_or_else(|| live.clone());
         self.current = id.to_string();
         Ok(target)
     }
@@ -218,16 +194,6 @@ impl LayoutBook {
         Ok(())
     }
 
-    /// Marks or unmarks a view as kept in every layout; returns whether it is kept.
-    pub fn toggle_keep(&mut self, view: &ViewRef) -> bool {
-        if self.keep.remove(view) {
-            false
-        } else {
-            self.keep.insert(view.clone());
-            true
-        }
-    }
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
@@ -236,6 +202,7 @@ impl LayoutBook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::ViewRef;
 
     fn layout(views: &[&str]) -> Layout {
         let mut l = Layout::new();
@@ -265,26 +232,6 @@ mod tests {
         assert_eq!(book.layouts[&triage].layout, Some(changed.clone()), "the live layout is stored under the current id");
         let back = book.switch(&triage, &shown).unwrap();
         assert_eq!(back, changed);
-    }
-
-    #[test]
-    fn kept_views_follow_into_every_layout() {
-        let mut book = LayoutBook::default();
-        book.save_as("one", &layout(&["a"])).unwrap();
-        // The live layout changed to b, then is saved as two: "one" is stored as b too
-        // (the live layout always wins for the current one).
-        let two = book.save_as("two", &layout(&["b"])).unwrap();
-        let shown = book.switch(DEFAULT_ID, &layout(&["b"])).unwrap();
-        assert_eq!(shown, layout(&["a"]));
-        assert!(book.toggle_keep(&ViewRef::new("logs")));
-        let live = layout(&["a", "logs"]);
-        let shown = book.switch(&two, &live).unwrap();
-        assert!(shown.find_view(&ViewRef::new("logs")).is_some(), "kept view added");
-        assert!(shown.find_view(&ViewRef::new("b")).is_some() && shown.find_view(&ViewRef::new("a")).is_none());
-        let p = shown.main().focused;
-        assert_eq!(shown.pane(p).unwrap().active_view(), Some(&ViewRef::new("b")), "the kept view doesn't take the active tab");
-        assert!(shown.validate().is_ok());
-        assert!(!book.toggle_keep(&ViewRef::new("logs")));
     }
 
     #[test]
@@ -330,7 +277,6 @@ mod tests {
         assert_eq!(book.layouts[&focus].layout, Some(layout(&["b"])));
         assert_eq!(book.current_name(), "Triage", "the current one, never stored, gets an entry");
         assert_eq!(book.layouts[&book.current].layout, None);
-        assert!(book.keep.contains(&ViewRef::new("logs")));
         // Today's shape reads back as is.
         assert_eq!(LayoutBook::from_json(&book.to_json()), Ok(book));
         assert!(LayoutBook::from_json("{oops").is_err());

@@ -924,19 +924,6 @@ fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &En
     });
 }
 
-fn keep_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
-    let deck = with_layouts(cx, shell);
-    cx.update(|cx| {
-        deck.update(cx, |d, cx| {
-            d.toggle_keep(&ViewRef::new("demo/logs"), cx);
-            let triage = d.book.id_named("triage").unwrap_or_default();
-            let _ = d.switch_layout(&triage, cx);
-        })
-    });
-    cx.run_until_parked();
-    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::actions::ContextMenu), cx));
-}
-
 fn pane_of(l: &Layout, v: &str) -> devdeck_core::layout::PaneId {
     l.find_view(&ViewRef::new(v)).expect("view open").0
 }
@@ -1168,7 +1155,6 @@ fn states() -> Vec<State> {
         w("B0-layout-menu", "work", 1.0, Some(layout_menu)),
         w("B1-layouts-list", "work", 1.0, Some(layouts_list)),
         w("B2-layout-save-error", "work", 1.0, Some(layout_save_error)),
-        w("B3-keep-in-every-layout", "work", 1.0, Some(keep_menu)),
         w("C0-file-rust", "work", 1.0, Some(file_rust)),
         w("C1-file-md-rendered", "work", 1.0, Some(file_md_rendered)),
         w("C2-file-md-source", "work", 1.0, Some(file_md_source)),
