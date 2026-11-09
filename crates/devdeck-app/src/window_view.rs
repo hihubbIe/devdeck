@@ -6,7 +6,7 @@
 //! `render`, so drawing never holds a borrow of the deck.
 
 use crate::actions::*;
-use crate::deck::{Deck, SendSource};
+use crate::deck::{Deck, Held, Keys, SendSource};
 use crate::places::{self, Place};
 use crate::stats;
 use crate::app_settings;
@@ -100,15 +100,16 @@ pub struct WindowView {
     /// Pane area focus: pane keys only work while it (or something in it) has focus.
     panes_focus: FocusHandle,
     settings: Option<Entity<SettingsView>>,
-    /// Main window: where focus was in each workspace, restored on switching back.
-    remembered: HashMap<EntityId, WeakFocusHandle>,
+    /// Main window: where focus was in each workspace, restored on switching back, and
+    /// the pane that had the keys (kept for it by quiet changes).
+    remembered: HashMap<EntityId, (WeakFocusHandle, Option<Held>)>,
     /// While a tab is dragged over a tab strip: the pane and the place it would land at.
     tab_insert: Rc<Cell<Option<(PaneId, usize)>>>,
     /// While a tab, a pane or a list item is dragged over the panes: the drop under the
     /// pointer and the rectangle it lands in (R3.13).
     drop_hint: Rc<Cell<Option<(Drop, Rect)>>>,
-    /// Where focus was when Settings opened.
-    before_settings: Option<WeakFocusHandle>,
+    /// Where focus was when Settings opened, and the pane that had the keys.
+    before_settings: Option<(WeakFocusHandle, Option<Held>)>,
     /// The deck, and its runner (for the run tabs' icon colours).
     deck_sub: Vec<Subscription>,
     /// The run tabs' icon colours last drawn.
@@ -120,6 +121,25 @@ pub struct WindowView {
     /// Focused pane and its active view when keys last moved to a view.
     view_target: Option<(PaneId, Option<devdeck_core::layout::ViewRef>)>,
     _observe: Vec<Subscription>,
+}
+
+/// Where the user's keys are in `deck`, in each OS window: the pane they go to now, and
+/// the one they go back to when Settings closes or the workspace shows again
+/// ([`Deck::apply_quietly`]). Call it outside any update of `deck` or of a window showing
+/// it; `None` when such a window can't be asked (it's being updated).
+pub fn keys(deck: &Entity<Deck>, cx: &mut App) -> Option<Keys> {
+    let mut out = Keys::new();
+    for handle in cx.windows() {
+        let Some(h) = handle.downcast::<WindowView>() else { continue };
+        let w = h.read(cx).ok()?;
+        if w.deck != *deck {
+            out.extend(w.remembered.get(&deck.entity_id()).and_then(|(_, held)| held.clone()));
+            continue;
+        }
+        let held = h.update(cx, |w, window, cx| w.keys_view(window, cx).or_else(|| w.before_settings.as_ref().and_then(|(_, h)| h.clone()))).ok()?;
+        out.extend(held);
+    }
+    Some(out)
 }
 
 /// Options shared by every devdeck window; `size` in logical pixels, the windowed size
@@ -308,6 +328,20 @@ impl WindowView {
         subs
     }
 
+    /// The pane this window's keys go to, if they're in the pane area: the one whose view
+    /// has them, else the focused pane (its keys act on it).
+    fn keys_view(&self, window: &Window, cx: &App) -> Option<Held> {
+        let d = self.deck.read(cx);
+        let l = d.layout();
+        let in_view = l.panes_in(self.id).ok()?.into_iter().find(|p| d.view_focus(*p).is_some_and(|h| h.contains_focused(window, cx)));
+        let pane = match in_view {
+            Some(p) => p,
+            None if self.panes_focus.contains_focused(window, cx) => l.window(self.id).ok()?.focused,
+            None => return None,
+        };
+        Some(Held { window: self.id, pane, view: l.pane(pane).ok()?.active_view().cloned() })
+    }
+
     /// When the focused pane or its active tab changed while focus is in the pane area,
     /// gives focus to that view (if it takes keys) so its keys work without a click.
     fn sync_view_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -349,7 +383,8 @@ impl WindowView {
             if !app_settings::is_open(cx)
                 && let Some(f) = window.focused(cx)
             {
-                self.remembered.insert(self.deck.entity_id(), f.downgrade());
+                let held = self.keys_view(window, cx);
+                self.remembered.insert(self.deck.entity_id(), (f.downgrade(), held));
             }
             self.deck_sub = Self::observe_deck(&deck, window, cx);
             let open = app_settings::is_open(cx);
@@ -360,7 +395,7 @@ impl WindowView {
             self.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
             window.set_window_title(&format!("{APP_NAME} · {}", shell.read(cx).active_name()));
             if !app_settings::is_open(cx) {
-                match self.remembered.get(&self.deck.entity_id()).and_then(WeakFocusHandle::upgrade) {
+                match self.remembered.get(&self.deck.entity_id()).and_then(|(h, _)| h.upgrade()) {
                     Some(h) => h.focus(window, cx),
                     None => self.focus_panes(window, cx),
                 }
@@ -377,11 +412,11 @@ impl WindowView {
         }
         app_settings::set_open(open, cx);
         if open {
-            self.before_settings = window.focused(cx).map(|f| f.downgrade());
+            self.before_settings = window.focused(cx).map(|f| (f.downgrade(), self.keys_view(window, cx)));
             let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
             view.read(cx).focus_handle(cx).focus(window, cx);
         } else {
-            match self.before_settings.take().and_then(|h| h.upgrade()) {
+            match self.before_settings.take().and_then(|(h, _)| h.upgrade()) {
                 Some(h) => h.focus(window, cx),
                 None => self.focus_panes(window, cx),
             }

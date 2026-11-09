@@ -84,6 +84,42 @@ pub struct Deck {
     visible: HashSet<ViewRef>,
     /// The main window shows something else over its panes (Settings).
     covered: bool,
+    /// While a quiet change syncs: the OS windows it opens don't take the focus.
+    opening_quietly: bool,
+    /// Detached windows to open without taking the focus.
+    open_unfocused: HashSet<WindowId>,
+}
+
+/// Where the user's keys are in one window, or will be again when it shows the deck
+/// (Settings closed, the workspace shown): a pane, and the tab it shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    pub window: WindowId,
+    pub pane: PaneId,
+    pub view: Option<ViewRef>,
+}
+
+/// Every place the user's keys are in a deck ([`crate::window_view::keys`]).
+pub type Keys = Vec<Held>;
+
+/// Whether `h` is still where the keys were: its window's focused pane, showing the same
+/// tab, and not hidden unless it already was.
+fn keeps(before: &Layout, next: &Layout, h: &Held) -> bool {
+    let shown = |l: &Layout| {
+        l.window(h.window).is_ok_and(|w| w.maximized.is_none_or(|m| m == h.pane)) && l.pane(h.pane).is_ok_and(|p| !p.collapsed)
+    };
+    next.window(h.window).is_ok_and(|w| w.focused == h.pane)
+        && next.pane(h.pane).is_ok_and(|p| p.active_view() == h.view.as_ref())
+        && (shown(next) || !shown(before))
+}
+
+/// Why a quiet change was refused ([`Deck::apply_quietly`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Quiet {
+    /// The layout refused it, for this reason.
+    Refused(String),
+    /// It would hide or move the view the user is typing in.
+    Keys,
 }
 
 pub enum DeckEvent {
@@ -130,6 +166,8 @@ impl Deck {
             book: LayoutBook::default(),
             visible: HashSet::new(),
             covered: false,
+            opening_quietly: false,
+            open_unfocused: HashSet::new(),
         }
     }
 
@@ -292,17 +330,7 @@ impl Deck {
         }
         let l = &self.layout;
         let window_drawn = |w: WindowId| if w == MAIN_WINDOW { !self.covered } else { matches!(self.os_windows.get(&w), Some(Some(_))) };
-        l.windows
-            .iter()
-            .filter(|w| window_drawn(w.id))
-            .flat_map(|w| {
-                let panes = match w.maximized {
-                    Some(m) => vec![m],
-                    None => l.panes_in(w.id).unwrap_or_default(),
-                };
-                panes.into_iter().filter_map(|p| l.pane(p).ok().filter(|p| !p.collapsed).and_then(|p| p.active_view().cloned()))
-            })
-            .collect()
+        l.windows.iter().filter(|w| window_drawn(w.id)).flat_map(|w| l.shown_in(w.id)).collect()
     }
 
     /// Recomputes what is on screen; the one place visibility changes are announced.
@@ -369,10 +397,40 @@ impl Deck {
                 None
             }
         };
+        self.settle(cx);
+        out
+    }
+
+    /// A layout change the user didn't make (the control API, R13.1): no window's
+    /// focused pane changes, no pane shows another tab but `target`, the panes in `keys`
+    /// keep their tab and stay shown, and windows it opens don't take the focus (except on
+    /// Linux, see [`open_os_window`]). A refusal is the caller's to hear, not shown to the
+    /// user.
+    pub fn apply_quietly<T>(
+        &mut self,
+        keys: &Keys,
+        target: Option<PaneId>,
+        cx: &mut Context<Self>,
+        op: impl FnOnce(&mut Layout) -> Result<T, LayoutError>,
+    ) -> Result<T, Quiet> {
+        let mut next = self.layout.clone();
+        let out = next.in_background(target, op).map_err(|e| Quiet::Refused(describe(&e)))?;
+        if !keys.iter().all(|h| keeps(&self.layout, &next, h)) {
+            return Err(Quiet::Keys);
+        }
+        self.layout = next;
+        self.changed(cx);
+        self.opening_quietly = true;
+        self.settle(cx);
+        self.opening_quietly = false;
+        Ok(out)
+    }
+
+    /// After a change: views and windows brought in line, observers told.
+    fn settle(&mut self, cx: &mut Context<Self>) {
         debug_assert!(self.layout.validate().is_ok(), "{:?}", self.layout.validate());
         self.sync(cx);
         cx.notify();
-        out
     }
 
     /// Shows or hides the workspace: an inactive deck closes its detached OS windows
@@ -619,6 +677,9 @@ impl Deck {
                 // Opening a window renders it at once, and rendering reads the deck, so
                 // open it after this update finishes.
                 slot.insert(None);
+                if self.opening_quietly {
+                    self.open_unfocused.insert(id);
+                }
                 let deck = cx.entity();
                 cx.defer(move |cx| open_os_window(deck, id, cx));
             }
@@ -733,6 +794,8 @@ impl Deck {
 }
 
 fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
+    // GPUI's Linux backends don't honour `focus` (0.3.11): there the compositor decides.
+    let quiet = deck.update(cx, |d, _| d.open_unfocused.remove(&id));
     let size = {
         let d = deck.read(cx);
         let pending = d.os_windows.get(&id).is_some_and(Option::is_none);
@@ -748,7 +811,8 @@ fn open_os_window(deck: Entity<Deck>, id: WindowId, cx: &mut App) {
         }
     };
     let view_deck = deck.clone();
-    let result = cx.open_window(window_options(size, false, cx), |window, cx| cx.new(|cx| WindowView::detached(id, view_deck, window, cx)));
+    let options = gpui::WindowOptions { focus: !quiet, ..window_options(size, false, cx) };
+    let result = cx.open_window(options, |window, cx| cx.new(|cx| WindowView::detached(id, view_deck, window, cx)));
     deck.update(cx, |d, cx| match result {
         Ok(h) => {
             d.os_windows.insert(id, Some(h));

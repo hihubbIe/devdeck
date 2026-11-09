@@ -277,3 +277,132 @@ fn a_tab_dragged_along_its_strip_lands_where_it_is_dropped(cx: &mut TestAppConte
     expected.insert(1, moved);
     assert_eq!(after, expected, "before the third tab (its left half), not at the end");
 }
+
+// ------------------------------------------------------------------ quiet changes (R13.1)
+
+use devdeck_app::deck::{Held, Quiet};
+use devdeck_app::window_view;
+use devdeck_core::layout::{Edge, PaneId};
+
+/// Gives the keys to `view`: its pane focused, its tab shown, its focus in the main window.
+fn give_keys(deck: &Entity<Deck>, view: &str, cx: &mut TestAppContext) -> PaneId {
+    let view = ViewRef::new(view);
+    apply(deck, cx, |l| {
+        let (p, i) = l.find_view(&view).expect("open");
+        l.activate(p, i)
+    });
+    cx.run_until_parked();
+    let pane = cx.read(|cx| deck.read(cx).layout().main().focused);
+    let handle = cx.read(|cx| deck.read(cx).view_focus(pane)).expect("the view takes keys");
+    let main = cx.read(|cx| cx.windows()[0]);
+    cx.update(|cx| main.update(cx, |_, window, cx| handle.focus(window, cx))).unwrap();
+    cx.run_until_parked();
+    pane
+}
+
+fn keys(deck: &Entity<Deck>, cx: &mut TestAppContext) -> Vec<Held> {
+    cx.update(|cx| window_view::keys(deck, cx)).expect("every window answers")
+}
+
+fn quietly(
+    deck: &Entity<Deck>,
+    target: Option<PaneId>,
+    cx: &mut TestAppContext,
+    op: impl FnOnce(&mut devdeck_core::layout::Layout) -> devdeck_core::layout::Result<()>,
+) -> Result<(), Quiet> {
+    let held = keys(deck, cx);
+    let out = cx.update(|cx| deck.update(cx, |d, cx| d.apply_quietly(&held, target, cx, op)));
+    cx.run_until_parked();
+    out
+}
+
+#[gpui::test]
+fn the_view_holding_the_keys_is_known(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let pane = give_keys(&deck, "demo/logs", cx);
+    assert_eq!(keys(&deck, cx), [Held { window: MAIN_WINDOW, pane, view: Some(ViewRef::new("demo/logs")) }]);
+}
+
+#[gpui::test]
+fn keys_on_the_pane_area_hold_the_focused_pane(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    // Notes take no keys: focus stays on the pane area, and pane keys act on its pane.
+    let notes = ViewRef::new("demo/notes");
+    apply(&deck, cx, |l| {
+        let (p, i) = l.find_view(&notes).unwrap();
+        l.activate(p, i)
+    });
+    cx.run_until_parked();
+    let pane = cx.read(|cx| deck.read(cx).layout().main().focused);
+    assert_eq!(keys(&deck, cx), [Held { window: MAIN_WINDOW, pane, view: Some(notes) }]);
+    assert_eq!(quietly(&deck, Some(pane), cx, |l| l.open(ViewRef::new("demo/long2"), pane).map(|_| ())), Err(Quiet::Keys), "it would get the keys");
+}
+
+#[gpui::test]
+fn keys_waiting_behind_settings_are_kept(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let pane = give_keys(&deck, "demo/logs", cx);
+    let main = cx.read(|cx| cx.windows()[0]);
+    cx.dispatch_action(main, devdeck_app::actions::ToggleSettings);
+    cx.run_until_parked();
+    assert!(cx.read(devdeck_app::app_settings::is_open));
+    assert_eq!(keys(&deck, cx), [Held { window: MAIN_WINDOW, pane, view: Some(ViewRef::new("demo/logs")) }], "they go back there");
+    assert_eq!(quietly(&deck, None, cx, |l| l.close_view(&ViewRef::new("demo/logs"))), Err(Quiet::Keys));
+}
+
+#[gpui::test]
+fn a_quiet_change_leaves_the_keys_and_the_focused_pane_where_they_are(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let logs = give_keys(&deck, "demo/logs", cx);
+    let held = keys(&deck, cx);
+    let other = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().into_iter().find(|p| *p != logs).unwrap());
+    // Into the pane holding the keys, behind its tab; then shown in another pane; then a pane of its own.
+    quietly(&deck, None, cx, |l| l.open(ViewRef::new("demo/long2"), logs).map(|_| ())).unwrap();
+    quietly(&deck, Some(other), cx, |l| l.open(ViewRef::new("demo/long3"), other).map(|_| ())).unwrap();
+    quietly(&deck, None, cx, |l| l.open_at(ViewRef::new("demo/long4"), Drop::Edge(other, Edge::Bottom))).unwrap();
+    let l = cx.read(|cx| deck.read(cx).layout().clone());
+    assert_eq!(l.main().focused, logs);
+    assert_eq!(l.pane(logs).unwrap().active_view(), Some(&ViewRef::new("demo/logs")));
+    assert_eq!(l.pane(other).unwrap().active_view(), Some(&ViewRef::new("demo/long3")), "the target shows it");
+    assert_eq!(keys(&deck, cx), held, "the keys never moved");
+    assert_eq!(cx.read(|cx| deck.read(cx).last_error.clone()), None);
+}
+
+#[gpui::test]
+fn a_quiet_change_that_would_hide_or_move_the_keys_is_refused(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let logs = give_keys(&deck, "demo/logs", cx);
+    let other = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().into_iter().find(|p| *p != logs).unwrap());
+    let before = cx.read(|cx| deck.read(cx).layout().clone());
+    let logs_view = ViewRef::new("demo/logs");
+    type Op = Box<dyn FnOnce(&mut devdeck_core::layout::Layout) -> devdeck_core::layout::Result<()>>;
+    let refusals: [(&str, Option<PaneId>, Op); 7] = [
+        ("shows another tab there", Some(logs), Box::new(move |l| l.open(ViewRef::new("demo/long2"), logs).map(|_| ()))),
+        ("closes it", None, Box::new(|l| l.close_view(&ViewRef::new("demo/logs")))),
+        ("collapses its pane", None, Box::new(move |l| l.toggle_collapse(logs))),
+        ("maximizes another pane", None, Box::new(move |l| l.toggle_maximize(other))),
+        ("moves it beside another pane", None, Box::new(move |l| l.open_at(ViewRef::new("demo/logs"), Drop::Edge(other, Edge::Bottom)))),
+        ("moves it into another pane, shown", Some(other), Box::new(move |l| {
+            let (p, i) = l.find_view(&ViewRef::new("demo/logs")).unwrap();
+            l.move_tab_to(p, i, other, 0)
+        })),
+        ("moves it to a window", None, Box::new(move |l| {
+            let (p, i) = l.find_view(&logs_view).unwrap();
+            l.detach(p, i).map(|_| ())
+        })),
+    ];
+    for (what, target, op) in refusals {
+        assert_eq!(quietly(&deck, target, cx, op), Err(Quiet::Keys), "{what}");
+        assert_eq!(cx.read(|cx| deck.read(cx).layout().clone()), before, "{what}: nothing changed");
+    }
+    assert_eq!(cx.windows().len(), 1);
+    assert_eq!(cx.read(|cx| deck.read(cx).last_error.clone()), None, "a caller's refusal isn't the user's");
+}
+
+#[gpui::test]
+fn a_refused_quiet_change_says_why_without_telling_the_user(cx: &mut TestAppContext) {
+    let deck = setup(cx);
+    let out = quietly(&deck, None, cx, |l| l.attach(MAIN_WINDOW, Drop::Into(l.main().focused)));
+    assert!(matches!(out, Err(Quiet::Refused(_))), "{out:?}");
+    assert_eq!(cx.read(|cx| deck.read(cx).last_error.clone()), None);
+}

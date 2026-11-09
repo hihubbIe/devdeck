@@ -297,6 +297,17 @@ impl Layout {
             .find_map(|(id, p)| p.tabs.iter().position(|t| t == view).map(|i| (*id, i)))
     }
 
+    /// The views a window shows: the active tab of each expanded pane, or of its
+    /// maximized pane alone.
+    pub fn shown_in(&self, window: WindowId) -> Vec<ViewRef> {
+        let Ok(w) = self.window(window) else { return Vec::new() };
+        let panes = match w.maximized {
+            Some(m) => vec![m],
+            None => self.panes_in(window).unwrap_or_default(),
+        };
+        panes.into_iter().filter_map(|p| self.pane(p).ok().filter(|p| !p.collapsed).and_then(|p| p.active_view().cloned())).collect()
+    }
+
     /// Every open view, in no particular order.
     pub fn views(&self) -> BTreeSet<ViewRef> {
         self.panes.values().flat_map(|p| p.tabs.iter().cloned()).collect()
@@ -385,6 +396,35 @@ impl Layout {
         }
         w.maximized = None;
         Ok(())
+    }
+
+    // ---------------------------------------------------------------- background
+
+    /// Runs `op` as a change the user didn't make (the control API, R13.1): each window
+    /// keeps its focused pane and each pane its active tab, unless `op` took them away;
+    /// only `target` may show another tab (what the caller asked to show). All or
+    /// nothing: a refused `op` leaves the layout as it was.
+    pub fn in_background<T>(&mut self, target: Option<PaneId>, op: impl FnOnce(&mut Layout) -> Result<T>) -> Result<T> {
+        let mut next = self.clone();
+        let out = op(&mut next)?;
+        for w in &self.windows {
+            if next.window_of(w.focused) == Ok(w.id) {
+                next.window_mut(w.id)?.focused = w.focused;
+            }
+        }
+        for (id, p) in &self.panes {
+            let Some(view) = p.active_view() else { continue };
+            if Some(*id) == target {
+                continue;
+            }
+            if let Some(q) = next.panes.get_mut(id)
+                && let Some(i) = q.tabs.iter().position(|t| t == view)
+            {
+                q.active = i;
+            }
+        }
+        *self = next;
+        Ok(out)
     }
 
     // ---------------------------------------------------------------- tabs

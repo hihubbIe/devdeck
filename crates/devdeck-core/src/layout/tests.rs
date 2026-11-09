@@ -619,6 +619,98 @@ proptest! {
     }
 }
 
+proptest! {
+    #[test]
+    fn background_changes_keep_focus_and_active_tabs(ops in proptest::collection::vec(op(), 1..80)) {
+        let mut l = Layout::new();
+        for o in &ops {
+            let focused: Vec<(WindowId, PaneId)> = l.windows.iter().map(|w| (w.id, w.focused)).collect();
+            let active: Vec<(PaneId, ViewRef)> = l.panes.iter().filter_map(|(id, p)| p.active_view().map(|v| (*id, v.clone()))).collect();
+            let _ = l.in_background(None, |l| {
+                apply(l, o);
+                Ok(())
+            });
+            if let Err(e) = l.validate() {
+                prop_assert!(false, "after {o:?}: {e}\n{l:#?}");
+            }
+            for (w, p) in focused {
+                if l.window_of(p) == Ok(w) {
+                    prop_assert_eq!(l.window(w).unwrap().focused, p, "after {:?}", o);
+                }
+            }
+            for (p, view) in active {
+                if let Ok(pane) = l.pane(p) && pane.tabs.contains(&view) {
+                    prop_assert_eq!(pane.active_view(), Some(&view), "after {:?}", o);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_in_the_background_adds_a_tab_without_showing_it() {
+    let (mut l, a) = with_tabs(&["a", "b"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let b = l.find_view(&v("b")).unwrap().0;
+    l.focus(a).unwrap();
+    l.in_background(None, |l| l.open(v("c"), b)).unwrap();
+    assert_eq!(l.pane(b).unwrap().tabs, vec![v("b"), v("c")]);
+    assert_eq!(l.pane(b).unwrap().active_view(), Some(&v("b")), "c is there, not shown");
+    assert_eq!(l.main().focused, a);
+    l.in_background(None, |l| l.open_at(v("d"), Drop::Edge(b, Edge::Bottom))).unwrap();
+    assert_eq!(l.main().focused, a, "a pane opened beside another doesn't take the focus");
+    ok(&l);
+}
+
+#[test]
+fn the_target_of_a_background_change_shows_what_it_was_asked_to() {
+    let (mut l, a) = with_tabs(&["a", "b"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let b = l.find_view(&v("b")).unwrap().0;
+    l.focus(a).unwrap();
+    l.in_background(Some(b), |l| l.open(v("c"), b)).unwrap();
+    assert_eq!(l.pane(b).unwrap().active_view(), Some(&v("c")));
+    assert_eq!(l.main().focused, a, "shown, not focused");
+}
+
+#[test]
+fn moves_and_attaching_in_the_background_keep_the_focused_pane() {
+    let (mut l, a) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(a, 2, Drop::Edge(a, Edge::Right)).unwrap();
+    let c = l.find_view(&v("c")).unwrap().0;
+    l.focus(a).unwrap();
+    l.in_background(None, |l| l.move_tab(a, 0, Drop::Into(c))).unwrap();
+    assert_eq!(l.main().focused, a);
+    assert_eq!(l.pane(c).unwrap().active_view(), Some(&v("c")), "the moved tab lands behind");
+    let w = l.in_background(None, |l| l.detach(c, 0)).unwrap();
+    l.in_background(None, |l| l.attach(w, Drop::Edge(a, Edge::Bottom))).unwrap();
+    assert_eq!(l.main().focused, a);
+    ok(&l);
+}
+
+#[test]
+fn a_focused_pane_removed_in_the_background_hands_the_focus_on() {
+    let (mut l, a) = with_tabs(&["a", "b"]);
+    l.move_tab(a, 1, Drop::Edge(a, Edge::Right)).unwrap();
+    let b = l.find_view(&v("b")).unwrap().0;
+    l.focus(b).unwrap();
+    l.in_background(None, |l| l.close_view(&v("b"))).unwrap();
+    assert_eq!(l.main().focused, a);
+    ok(&l);
+}
+
+#[test]
+fn a_refused_background_change_changes_nothing() {
+    let (mut l, a) = with_tabs(&["a"]);
+    let before = l.clone();
+    let refused = l.in_background(None, |l| {
+        l.open(v("b"), a)?;
+        Err::<(), _>(LayoutError::TabOutOfRange)
+    });
+    assert_eq!(refused, Err(LayoutError::TabOutOfRange));
+    assert_eq!(l, before);
+}
+
 #[test]
 fn send_to_numbers_panes_in_reading_order_main_first() {
     let (mut l, a) = with_tabs(&["a", "b", "c", "d"]);

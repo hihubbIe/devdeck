@@ -261,3 +261,45 @@ Tests added: hang-up mid-wait; per-caller connection and wait caps; events arriv
 during a call kept; the notes watch ignoring devdeck's own write; going to a line
 without focus; every API layout op keeping `Window.focused`; topic and wait classes in
 the permission matrix.
+
+## Step 1, as built (2026-11-09)
+
+Touches no OS code (R11.6): the layout model, the deck and GPUI focus only.
+
+- `Layout::in_background(target, op)`: all or nothing; each window keeps its focused pane
+  and each pane its active tab unless `op` took them away; only `target` may show
+  another tab. `Layout::shown_in(window)` (also used by the deck's visibility).
+- `Deck::apply_quietly(keys, target, op)`: a change the user didn't make. Refused
+  (`Quiet::Keys`) when a pane holding the keys would stop being its window's focused
+  pane, show another tab, or be hidden (collapsed, maximized over); layout refusals are
+  the caller's (`Quiet::Refused`), never toasted. Windows it opens ask for no focus.
+- `window_view::keys(deck)`: where the keys are, per window: the pane whose view has
+  them, or the focused pane when they're on the pane area; and where they go back to
+  (Settings open, another workspace shown), recorded when the focus was put aside.
+- Built differently from the plan: instead of `sync_view_focus` telling the user's
+  changes from others, the panes holding the keys are guarded, so a quiet change can't
+  give `sync_view_focus` anything to follow there. "A workspace switch by the API
+  doesn't refocus" waits for `workspace.activate` (step 8): a switch hides every pane of
+  the workspace left, so it needs its own rule there.
+- Linux: GPUI 0.3.11's Linux backends ignore `WindowOptions::focus`, so a detached
+  window opened quietly may still take the keyboard there; step 8 decides whether
+  `window.detach` and a `layout.switch` that opens windows are refused on Linux.
+
+Diff review (subagent), assessed:
+1. Moving the keys' view within its window moved the keys (`sync_view_focus` followed
+   the restored focused pane's new tab) — taken: the guard holds the pane, its tab and
+   its focus, not just the view being shown.
+2. Keys on the pane area itself (a view that takes none) were unseen — taken.
+3. Focus put aside for Settings or another workspace wasn't guarded — taken: recorded
+   with the pane when put aside, and guarded.
+4. `focus: false` does nothing on Linux, unrecorded — taken: noted here; step 8 decides.
+5. `keys` panics inside an update of the deck and answers `None` during any window's
+   update — taken: said in its doc; windows of other decks are read without an update.
+6. Two layout clones per quiet change — rejected: a layout is small, and
+   `in_background` stays all or nothing for its other callers.
+7. A quiet change cleared the user's `last_error` — taken: it doesn't any more.
+10. No test for moving the keys' view within its window, keys on the pane area, or
+    behind Settings — taken: added. Keys in a detached window and in an inactive
+    workspace have no test yet (the test shell has one workspace).
+11. Nothing checks `focus: false` — rejected: GPUI's test platform doesn't record it.
+14. Three near-identical names — taken: `opening_quietly`, `open_unfocused`.
