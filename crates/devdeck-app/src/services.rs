@@ -264,14 +264,16 @@ impl Services {
         file
     }
 
-    /// The folders of the files views show.
+    /// The folders of the files views show, and the notes' folder.
     pub fn file_watch(&self, cx: &App) -> Vec<PathBuf> {
-        self.files.values().filter_map(gpui::WeakEntity::upgrade).filter_map(|f| f.read(cx).watch()).collect()
+        let files = self.files.values().filter_map(gpui::WeakEntity::upgrade).filter_map(|f| f.read(cx).watch());
+        files.chain(self.notes.read(cx).dir()).collect()
     }
 
-    /// Tells the shown files that `paths` touch; a released file's folder stops being
-    /// watched then.
+    /// Tells the shown files and the notes that `paths` touch; a released file's folder
+    /// stops being watched then.
     pub fn files_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        self.notes.update(cx, |n, cx| n.disk_changed(paths, cx));
         let before = self.files.len();
         self.files.retain(|_, f| f.upgrade().is_some());
         for file in self.files.values().filter_map(gpui::WeakEntity::upgrade) {

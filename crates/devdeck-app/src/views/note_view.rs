@@ -9,7 +9,7 @@
 //! sidebar's Notes list).
 
 use super::{KeepsState, Live, ToggleRendered, ViewAction, ViewCx};
-use crate::notes::{NoteDeleted, Notes};
+use crate::notes::{NoteDeleted, NoteWritten, Notes};
 use devdeck_ui::code::{Code, CodeEvent};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{Icon, ModalFocus, Rendered, Scrolls, button, label, modal_frame, pop_modal, push_modal, theme};
@@ -32,6 +32,9 @@ pub struct NoteView {
     focus: FocusHandle,
     /// Esc in the editor gives the keys back to the view: focus stays here then.
     leaving: bool,
+    /// The note was written other than in this editor: it takes the text at the next draw
+    /// (setting it needs the window).
+    reload: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -40,6 +43,7 @@ impl NoteView {
         let notes = ctx.services.read(cx).notes.clone();
         let rendered = !notes.update(cx, |n, _| n.text(&id)).trim().is_empty();
         let mine = id.clone();
+        let written = id.clone();
         let (deck, me) = (ctx.deck.clone(), ctx.view.clone());
         let keep = ctx.clone();
         let subs = vec![
@@ -50,16 +54,27 @@ impl NoteView {
                     let _ = deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&me)));
                 }
             }),
+            cx.subscribe(&notes, move |this, _, e: &NoteWritten, cx| {
+                if e.0 == written {
+                    this.reload = true;
+                    cx.notify();
+                }
+            }),
         ];
-        Self { id, ctx: keep, notes, code: None, rendered_view: None, rendered, focus: cx.focus_handle(), leaving: false, _subs: subs }
+        Self { id, ctx: keep, notes, code: None, rendered_view: None, rendered, focus: cx.focus_handle(), leaving: false, reload: false, _subs: subs }
     }
 
     /// The editor, made now if it isn't yet, holding the note's text. Focus on the view
     /// goes on to it while the source shows.
     fn editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Code> {
-        if let Some(c) = &self.code {
-            return c.clone();
+        if let Some(c) = self.code.clone() {
+            if std::mem::take(&mut self.reload) {
+                let text = self.notes.update(cx, |n, _| n.text(&self.id));
+                c.update(cx, |c, cx| c.set_text(&text, "markdown", window, cx));
+            }
+            return c;
         }
+        self.reload = false;
         let text = self.notes.update(cx, |n, _| n.text(&self.id));
         let code = cx.new(|cx| Code::note(window, cx));
         // Right-click and the menu key: Cut, Copy, Paste, Share with… (R5.7).

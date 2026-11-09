@@ -239,14 +239,18 @@ impl Code {
         Self { state, editable, quiet, scroll: OngoingScroll::default(), menu: None, origin: Rc::default(), _subs: subs }
     }
 
-    /// Replaces the text and its language (`text` for none), keeping the scroll.
+    /// Replaces the text and its language (`text` for none), keeping the scroll and the
+    /// caret (moved back inside a shorter text); the undo history goes with the old text.
     /// Doesn't report [`CodeEvent::Changed`]: only the user's edits do.
     pub fn set_text(&mut self, text: &str, language: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.quiet.set(true);
         self.state.update(cx, |s, cx| {
             let offset = s.scroll_offset();
+            let caret = s.selected_range().start;
             s.set_highlighter(language.to_string(), cx);
             s.set_value(text.to_string(), window, cx);
+            let caret = caret.min(s.text().len());
+            s.set_selected_range(caret..caret, cx);
             s.set_scroll_offset(offset, cx);
         });
         self.quiet.set(false);

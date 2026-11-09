@@ -347,3 +347,25 @@ Touches no OS code (R11.6).
   source shows. `Code::caret` reads it back.
 
 Review: by the lead (the subagent refused in step 2 wasn't tried again).
+
+## Step 4, as built (2026-11-09)
+
+Touches no OS code (R11.6): the notes' folder joins the watcher's existing route for the
+files views show.
+
+- `Notes::revision(id)`: raised by every change of a note's text (0 until the first).
+- `Notes::set_text` is the user's typing (records `typed_at`, for D3); `Notes::write` is
+  any other writer (the control API): written soon, its new revision returned, told with
+  `NoteWritten`. Unknown or unreadable notes are refused.
+- An open source editor takes a `NoteWritten` at its next draw: `Code::set_text` now
+  keeps the caret (moved back inside a shorter text) as well as the scroll, for file views
+  too; the editor's undo history goes with the old text (gpui-component has no way to
+  keep it). Rendered views read the model on every draw already.
+- Disk: `Services::file_watch` adds the notes' folder; `Notes::disk_changed` takes a read
+  note whose file now says something else (another program's change: a revision, told
+  to editors). devdeck's own atomic writes read back the same: nothing. A note whose
+  text waits to be written keeps it and writes over the file.
+- Not done: the folder is only watched once it exists (made with the first note); the
+  watcher picks it up at its next look at the watched folders (any rescan).
+
+Review: by the lead.

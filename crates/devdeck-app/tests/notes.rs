@@ -286,3 +286,83 @@ fn a_note_that_cant_be_read_is_never_written_over(cx: &mut TestAppContext) {
     assert_eq!(std::fs::read(file(&s, &id)).unwrap(), [0x63, 0x61, 0x66, 0xe9], "untouched");
 }
 
+
+// ------------------------------------------------------------------ revisions (R13.1)
+
+fn editor_text(v: &Entity<NoteView>, vcx: &mut VisualTestContext) -> String {
+    vcx.read(|cx| v.read(cx).code.as_ref().unwrap().read(cx).text(cx).to_string())
+}
+
+fn caret(v: &Entity<NoteView>, vcx: &mut VisualTestContext) -> (usize, usize) {
+    vcx.read(|cx| v.read(cx).code.as_ref().unwrap().read(cx).caret(cx))
+}
+
+#[gpui::test]
+fn a_write_from_elsewhere_reaches_the_open_editor_keeping_the_caret(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let mut vcx = window(cx);
+    let id = make(&s, "todo", &mut vcx);
+    let v = note_view(&s, &id, &mut vcx);
+    vcx.simulate_input("hello world");
+    vcx.run_until_parked();
+    let (typed, rev) = vcx.read(|cx| (s.notes.read(cx).typed_at(&id), s.notes.read(cx).revision(&id)));
+    assert!(typed.is_some() && rev > 0, "typing is the user's, and a revision");
+    assert_eq!(caret(&v, &mut vcx), (1, 12));
+    let new = vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.write(&id, "hello there, world!".into(), cx))).unwrap();
+    vcx.run_until_parked();
+    assert_eq!(new, rev + 1);
+    assert_eq!(vcx.read(|cx| s.notes.read(cx).typed_at(&id)), typed, "not typed by the user");
+    assert_eq!(editor_text(&v, &mut vcx), "hello there, world!", "the open editor took it");
+    assert_eq!(caret(&v, &mut vcx), (1, 12), "the caret stayed");
+    assert_eq!(vcx.read(|cx| s.notes.read(cx).revision(&id)), new, "taking it isn't a change");
+    vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.write(&id, "hi".into(), cx))).unwrap();
+    vcx.run_until_parked();
+    assert_eq!(caret(&v, &mut vcx), (1, 3), "inside a shorter text");
+    let same = vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.write(&id, "hi".into(), cx))).unwrap();
+    assert_eq!(same, new + 1, "the same text again changes nothing");
+    vcx.executor().advance_clock(SAVE_AFTER);
+    vcx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(file(&s, &id)).unwrap(), "hi", "written like typing");
+    assert!(vcx.update(|_, cx| s.notes.update(cx, |n, cx| n.write("nope", "x".into(), cx))).is_err());
+}
+
+#[gpui::test]
+fn another_programs_change_to_the_file_is_taken_devdecks_own_isnt_a_change(cx: &mut TestAppContext) {
+    let s = setup(cx);
+    let mut vcx = window(cx);
+    let id = make(&s, "todo", &mut vcx);
+    let v = note_view(&s, &id, &mut vcx);
+    vcx.simulate_input("mine");
+    vcx.executor().advance_clock(SAVE_AFTER);
+    vcx.run_until_parked();
+    let path = file(&s, &id);
+    let changed = |vcx: &mut VisualTestContext| {
+        let services = vcx.read(|cx| s.deck.read(cx).services().unwrap());
+        let p = path.clone();
+        vcx.update(|_, cx| services.update(cx, |sv, cx| sv.files_changed(&[p], cx)));
+        vcx.run_until_parked();
+    };
+    let rev = vcx.read(|cx| s.notes.read(cx).revision(&id));
+    changed(&mut vcx);
+    assert_eq!(vcx.read(|cx| s.notes.read(cx).revision(&id)), rev, "its own write read back: nothing");
+    assert!(vcx.read(|cx| s.services_watch(cx)).contains(&s.store.dir), "the notes' folder is watched");
+    std::fs::write(&path, "theirs").unwrap();
+    changed(&mut vcx);
+    assert_eq!(vcx.read(|cx| s.notes.read(cx).revision(&id)), rev + 1);
+    assert_eq!(editor_text(&v, &mut vcx), "theirs");
+    // While the user's text waits to be written, theirs is written over. (The caret
+    // stayed where it was in the text: after "thei".)
+    vcx.simulate_input("!");
+    std::fs::write(&path, "again theirs").unwrap();
+    changed(&mut vcx);
+    assert_eq!(editor_text(&v, &mut vcx), "thei!rs");
+    vcx.executor().advance_clock(SAVE_AFTER);
+    vcx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "thei!rs");
+}
+
+impl Setup {
+    fn services_watch(&self, cx: &gpui::App) -> Vec<PathBuf> {
+        self.deck.read(cx).services().unwrap().read(cx).file_watch(cx)
+    }
+}
