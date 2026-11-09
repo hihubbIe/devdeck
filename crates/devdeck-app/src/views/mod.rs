@@ -314,6 +314,99 @@ pub fn title(r: &ViewRef) -> String {
     }
 }
 
+/// How a tab names its view (user, 2026-11-09): an icon saying what kind of view it is,
+/// then a short name saying which one, like a browser's tab; the full title
+/// ([`crate::deck::Deck::title`]) is its tooltip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabLabel {
+    pub icon: Icon,
+    pub tint: Tint,
+    pub name: String,
+    /// A second word, dimmer (an env, a command).
+    pub detail: Option<String>,
+    /// The detail is a protected env: drawn in the error colour.
+    pub protected: bool,
+}
+
+/// The icon's colour: the tab's own, or a run's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tint {
+    Plain,
+    Running,
+    Stopping,
+    Failed,
+}
+
+/// The tab label of a view; `services` (its workspace's) names apps, notes and runs.
+pub fn tab_label(r: &ViewRef, services: Option<&Services>, cx: &App) -> TabLabel {
+    let last = |p: &str| p.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/").to_string();
+    let app_name = |id: &str| services.and_then(|s| s.catalog.app(id)).map_or_else(|| last(id), |a| a.name.clone());
+    let protected = |env: &str| services.and_then(|s| s.catalog.env(env)).is_some_and(|e| e.protected);
+    let plain = |icon: Icon, name: String| TabLabel { icon, tint: Tint::Plain, name, detail: None, protected: false };
+    let in_env = |icon: Icon, name: String, env: String| TabLabel { icon, tint: Tint::Plain, protected: protected(&env), name, detail: Some(env) };
+    match ViewAddr::parse(r) {
+        ViewAddr::App { app } => plain(Icon::Apps, app_name(&app)),
+        ViewAddr::Run { app, cmd } => {
+            let state = services.and_then(|s| s.runner.read(cx).state(&crate::runner::RunKey::new(&app, &cmd)));
+            let tint = match state {
+                Some(RunState::Running) => Tint::Running,
+                Some(RunState::Stopping) => Tint::Stopping,
+                Some(s) if s.failed().is_some() || s == RunState::NotStarted => Tint::Failed,
+                _ => Tint::Plain,
+            };
+            TabLabel { icon: Icon::Run, tint, name: app_name(&app), detail: Some(devdeck_core::apps::name_of(&cmd).to_string()), protected: false }
+        }
+        ViewAddr::Svc { env, name } => in_env(Icon::Cluster, name, env),
+        ViewAddr::Logs { env, name } => in_env(Icon::Logs, name, env),
+        ViewAddr::Pod { env, pod } => in_env(Icon::Pod, pod, env),
+        ViewAddr::Matrix => plain(Icon::Matrix, "matrix".into()),
+        ViewAddr::Port { port } => plain(Icon::Ports, format!(":{port}")),
+        ViewAddr::Problems => plain(Icon::Warning, "problems".into()),
+        ViewAddr::Welcome => plain(Icon::Apps, "welcome".into()),
+        ViewAddr::Note { id } => plain(Icon::Note, services.and_then(|s| s.notes.read(cx).meta(&id).map(|m| m.name.clone())).unwrap_or_else(|| "note".into())),
+        ViewAddr::File { path } => {
+            let lang = devdeck_ui::code::language_for(std::path::Path::new(&path));
+            plain(if matches!(lang, "text" | "markdown") { Icon::File } else { Icon::FileCode }, last(&path))
+        }
+        ViewAddr::Git { root } => plain(Icon::Git, last(&root)),
+        ViewAddr::Terminal { dir, .. } => plain(Icon::Output, terminal_name(&dir)),
+        ViewAddr::Other(_) => plain(Icon::File, demo::title(r)),
+    }
+}
+
+/// A label's icon colour: a run's state, else `color` (the text's).
+pub fn tint_color(l: &TabLabel, color: gpui::Hsla, t: &Theme) -> gpui::Hsla {
+    match l.tint {
+        Tint::Plain => color,
+        Tint::Running => t.ok,
+        Tint::Stopping => t.warn,
+        Tint::Failed => t.err,
+    }
+}
+
+/// The icon colours of the run tabs in `layout`: what a window redraws for, rather than
+/// for every line a run writes.
+pub fn run_tints(layout: &devdeck_core::layout::Layout, services: &Services, cx: &App) -> Vec<(ViewRef, Tint)> {
+    layout.views().into_iter().filter(|r| matches!(ViewAddr::parse(r), ViewAddr::Run { .. })).map(|r| (r.clone(), tab_label(&r, Some(services), cx).tint)).collect()
+}
+
+/// A tab's icon and short name, the name cut with an ellipsis (R4.4). `color`: the text's.
+pub fn tab_label_element(l: &TabLabel, color: gpui::Hsla, t: &Theme) -> gpui::Div {
+    let tint = tint_color(l, color, t);
+    use gpui::InteractiveElement;
+    // The name gives way first; a short detail (an env) stays.
+    let name = div().min_w_0().truncate().child(l.name.clone());
+    let detail = l.detail.clone().map(|d| div().flex_none().text_color(if l.protected { t.err } else { t.dim }).child(d));
+    div()
+        .flex()
+        .flex_1()
+        .min_w_0()
+        .items_center()
+        .gap(t.size(6.))
+        .child(icon(l.icon, tint, t))
+        .child(div().flex().flex_1().min_w_0().items_center().gap_1().debug_selector(|| "tab-title".into()).child(name).children(detail))
+}
+
 /// What a terminal is called wherever it's named: its folder's last part, as the apps
 /// list names apps (`entities-graph`, not `~/repos/mf-entities-graph/entities-graph`).
 pub fn terminal_name(dir: &str) -> String {

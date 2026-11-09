@@ -123,6 +123,28 @@ pub fn button_icon(i: Icon, t: &Theme) -> Svg {
     icon(i, t.mute, t).group_hover(BUTTON, move |s| s.text_color(fg))
 }
 
+/// [`icon_button`] for an action that may be refused now: its tooltip names it, or says
+/// why it can't run (R5.5), and its icon is dimmed then (still clickable: a click says
+/// why).
+pub fn icon_action(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedString>, enabled: bool, t: &Theme) -> Stateful<gpui::Div> {
+    let hover = t.hover;
+    let child = if enabled { button_icon(i, t) } else { icon(i, t.dim, t) };
+    div()
+        .id(id)
+        .group(BUTTON)
+        .w(t.icon_button)
+        .h(t.icon_button)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(t.radius_s)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .tooltip(tip(tooltip))
+        .child(child)
+}
+
 /// Square icon-sized button with a tooltip.
 pub fn icon_button(id: impl Into<ElementId>, i: Icon, tooltip: &'static str, t: &Theme) -> Stateful<gpui::Div> {
     let hover = t.hover;

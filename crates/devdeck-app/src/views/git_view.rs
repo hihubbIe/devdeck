@@ -21,7 +21,7 @@ use devdeck_core::git::{Branch, ChangeKind, Doing, Head, Op, PushPlan};
 use devdeck_ui::scroll_list;
 use devdeck_ui::{
     Icon, InputEvent, ModalFocus, TextInput, Theme, ToastKind, button, icon, icon_text, label, modal_frame, pop_modal, push_modal, section, theme,
-    tip, toasts, toggle_button,
+    icon_action, tip, toasts, toggle_button,
 };
 use gpui::{
     AnyElement, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
@@ -536,14 +536,18 @@ impl Render for GitView {
             .border_b_1()
             .border_color(t.line_soft)
             .child(
+                // The branch and the changes always show; the upstream, then the path,
+                // give way with an ellipsis in a narrow pane (R4.4).
                 div()
                     .flex()
                     .gap_2()
                     .min_w_0()
-                    .child(div().flex_none().text_color(t.hi).child(head))
-                    .child(label(upstream).text_color(t.mute).flex_none())
+                    .overflow_hidden()
+                    .debug_selector(|| "git-head-line".into())
+                    .child(label(head).flex_none().max_w(t.size(240.)).text_color(t.hi))
                     .child(label(if changed == 0 { "clean".to_string() } else { format!("{changed} changes") }).text_color(if changed == 0 { t.dim } else { t.warn }).flex_none())
-                    .child(label(devdeck_core::config::shown(&self.root)).text_color(t.dim).min_w_0()),
+                    .child(label(upstream).text_color(t.mute).flex_shrink(1.).min_w_0())
+                    .child(label(devdeck_core::config::shown(&self.root)).text_color(t.dim).flex_shrink(100.).min_w_0()),
             )
             .when_some(snapshot.blocked.clone(), |d, why| {
                 let doing = status.doing;
@@ -569,9 +573,11 @@ impl Render for GitView {
                 d.child(div().id("git-last").child(label(text).text_color(color)).tooltip(tip(if full.is_empty() { "nothing to say".to_string() } else { full })))
             });
 
-        let action = |id: &'static str, text: &'static str, why: Option<String>| {
+        // Icon buttons, so the row fits any pane: each names itself, or says why it can't
+        // run, in its tooltip.
+        let action = |id: &'static str, i: Icon, text: &'static str, why: Option<String>| {
             let enabled = why.is_none();
-            button(id, text, &t).when(!enabled, |b| b.text_color(t.dim)).tooltip(tip(why.unwrap_or_else(|| text.to_string())))
+            icon_action(id, i, why.map_or_else(|| text.to_string(), |w| format!("{text}: {w}")), enabled, &t).debug_selector(move || id.to_string())
         };
         let push_probe = Op::Push(PushPlan::UpToDate { remote: String::new(), branch: String::new() });
         let pull_branch = match &status.head {
@@ -587,11 +593,11 @@ impl Render for GitView {
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(action("git-fetch", "fetch", self.refusal(&Op::Fetch, cx)).on_click(cx.listener(|this, _, _, cx| this.fetch(cx))))
-            .child(action("git-pull", "pull", self.refusal(&Op::Pull(pull_branch), cx)).on_click(cx.listener(|this, _, _, cx| this.pull(cx))))
-            .child(action("git-push", "push", self.refusal(&push_probe, cx)).on_click(cx.listener(|this, _, _, cx| this.push(cx))))
-            .child(action("git-new", "new branch…", self.refusal(&Op::Create(String::new()), cx)).on_click(cx.listener(|this, _, _, cx| this.new_branch(cx))))
-            .child(action("git-refresh", "refresh", None).on_click(cx.listener(|this, _, _, cx| this.refresh(cx))));
+            .child(action("git-fetch", Icon::Fetch, "fetch", self.refusal(&Op::Fetch, cx)).on_click(cx.listener(|this, _, _, cx| this.fetch(cx))))
+            .child(action("git-pull", Icon::Pull, "pull", self.refusal(&Op::Pull(pull_branch), cx)).on_click(cx.listener(|this, _, _, cx| this.pull(cx))))
+            .child(action("git-push", Icon::Push, "push", self.refusal(&push_probe, cx)).on_click(cx.listener(|this, _, _, cx| this.push(cx))))
+            .child(action("git-new", Icon::NewBranch, "new branch", self.refusal(&Op::Create(String::new()), cx)).on_click(cx.listener(|this, _, _, cx| this.new_branch(cx))))
+            .child(action("git-refresh", Icon::Refresh, "refresh", None).on_click(cx.listener(|this, _, _, cx| this.refresh(cx))));
 
         let mut changes = div().flex().flex_col();
         for c in status.changes.iter().take(CHANGES_SHOWN) {

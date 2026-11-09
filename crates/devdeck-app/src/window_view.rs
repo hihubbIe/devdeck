@@ -109,7 +109,10 @@ pub struct WindowView {
     drop_hint: Rc<Cell<Option<(Drop, Rect)>>>,
     /// Where focus was when Settings opened.
     before_settings: Option<WeakFocusHandle>,
-    deck_sub: Subscription,
+    /// The deck, and its runner (for the run tabs' icon colours).
+    deck_sub: Vec<Subscription>,
+    /// The run tabs' icon colours last drawn.
+    run_tints: Vec<(ViewRef, views::Tint)>,
     /// Main window: the active workspace's sidebar.
     sidebar: Option<(Entity<Sidebar>, Subscription)>,
     /// Top-left of the pane area (keyboard-opened menus are placed from it).
@@ -184,8 +187,10 @@ struct Frame<'a> {
     views: &'a HashMap<PaneId, AnyView>,
     window: WindowId,
     deck: &'a Entity<Deck>,
-    /// Every tab's title, as its view says it (`Deck::title`).
+    /// Every tab's title, as its view says it (`Deck::title`): its tooltip.
     titles: &'a HashMap<ViewRef, SharedString>,
+    /// Every tab's icon and short name: what it shows.
+    labels: &'a HashMap<ViewRef, views::TabLabel>,
     /// What each pane's active view offers now (R12.4), for its header.
     actions: &'a HashMap<PaneId, Vec<views::ViewAction>>,
     t: &'a Theme,
@@ -271,6 +276,7 @@ impl WindowView {
             drop_hint: Rc::default(),
             before_settings: None,
             deck_sub,
+            run_tints: Vec::new(),
             sidebar: None,
             view_target: None,
             panes_origin: Rc::new(Cell::new(Point::default())),
@@ -280,11 +286,26 @@ impl WindowView {
         this
     }
 
-    fn observe_deck(deck: &Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Subscription {
-        cx.observe_in(deck, window, |this, _, window, cx| {
+    fn observe_deck(deck: &Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
+        let mut subs = vec![cx.observe_in(deck, window, |this, _, window, cx| {
             this.sync_view_focus(window, cx);
             cx.notify();
-        })
+        })];
+        // A run starting, stopping or failing recolours its tab's icon; output doesn't
+        // redraw the window.
+        if let Some(services) = deck.read(cx).services() {
+            let runner = services.read(cx).runner.clone();
+            subs.push(cx.observe(&runner, move |this, _, cx| {
+                let d = this.deck.read(cx);
+                let Some(s) = d.services() else { return };
+                let tints = views::run_tints(d.layout(), s.read(cx), cx);
+                if tints != this.run_tints {
+                    this.run_tints = tints;
+                    cx.notify();
+                }
+            }));
+        }
+        subs
     }
 
     /// When the focused pane or its active tab changed while focus is in the pane area,
@@ -640,12 +661,15 @@ impl Render for WindowView {
             let d = self.deck.read(cx);
             layout.panes.keys().map(|p| (*p, d.view_focus(*p).unwrap_or_else(|| self.panes_focus.clone()))).collect()
         };
-        let (titles, actions) = {
+        let (titles, labels, actions) = {
             let d = self.deck.read(cx);
             let titles: HashMap<ViewRef, SharedString> = layout.panes.values().flat_map(|p| p.tabs.iter()).map(|r| (r.clone(), d.title(r, cx).into())).collect();
+            let services = d.services();
+            let s = services.as_ref().map(|e| e.read(cx));
+            let labels: HashMap<ViewRef, views::TabLabel> = layout.panes.values().flat_map(|p| p.tabs.iter()).map(|r| (r.clone(), views::tab_label(r, s, cx))).collect();
             let actions: HashMap<PaneId, Vec<views::ViewAction>> =
                 layout.panes.iter().filter_map(|(id, p)| p.active_view().map(|r| (*id, d.view_actions(r, cx)))).filter(|(_, a)| !a.is_empty()).collect();
-            (titles, actions)
+            (titles, labels, actions)
         };
         let frame = Frame {
             layout: &layout,
@@ -655,6 +679,7 @@ impl Render for WindowView {
             window: self.id,
             deck: &self.deck,
             titles: &titles,
+            labels: &labels,
             actions: &actions,
             t: &t,
             tab_insert: &self.tab_insert,
@@ -1404,6 +1429,11 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
     let focused = win.is_some_and(|w| w.focused == pane);
     let maximized = win.is_some_and(|w| w.maximized == Some(pane));
     let titles: Vec<SharedString> = p.tabs.iter().map(|r| f.titles.get(r).cloned().unwrap_or_else(|| views::title(r).into())).collect();
+    let labels: Vec<views::TabLabel> = p
+        .tabs
+        .iter()
+        .map(|r| f.labels.get(r).cloned().unwrap_or_else(|| views::TabLabel { icon: Icon::File, tint: views::Tint::Plain, name: views::title(r), detail: None, protected: false }))
+        .collect();
     let deck_id = f.deck.entity_id();
 
     // Collapsed in a row split: a narrow rail of monograms (GPUI can't rotate text).
@@ -1412,8 +1442,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         for (i, title) in titles.iter().enumerate() {
             let deck = f.deck.clone();
             let full = title.clone();
-            let mono: String = title.chars().filter(|c| c.is_alphanumeric()).take(2).collect();
             let hover = t.hover;
+            let color = if i == p.active { t.fg } else { t.mute };
             rail = rail.child(
                 div()
                     .id(eid("rail-tab", pane.0, i))
@@ -1428,7 +1458,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     .cursor_pointer()
                     .tooltip(tip(full))
                     .on_click(move |_, _, cx| apply_on(&deck, cx, |l| l.activate(pane, i)))
-                    .child(mono),
+                    .child(icon(labels[i].icon, views::tint_color(&labels[i], color, t), t)),
             );
         }
         return rail.into_any_element();
@@ -1513,7 +1543,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .text_color(t.fg)
                 .cursor_pointer()
                 .tooltip(tip(title.clone()))
-                .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
+                .child(views::tab_label_element(&labels[0], t.fg, t))
                 .into_any_element(),
             None => div().flex_1().into_any_element(),
         });
@@ -1573,7 +1603,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                             apply_on(&d_drop, cx, |l| l.move_tab_to(tab.pane, tab.index, pane, at));
                         }
                     })
-                    .child(div().flex_1().min_w_0().truncate().debug_selector(|| "tab-title".into()).child(title.clone()))
+                    .child(views::tab_label_element(&labels[i], if active { t.fg } else { t.mute }, t))
                     .child(
                         div()
                             .id(eid("tab-x", pane.0, i))

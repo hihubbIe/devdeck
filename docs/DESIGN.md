@@ -517,6 +517,16 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   button or shift-r shows them (filtering with them hidden says how many would match);
   a row's message, then its name, give way so the author and age always show.
 
+- 2026-11-09 Tabs name their view with an icon and a short name (user, R3.14):
+  `views::tab_label` (from the address and the workspace's services), drawn by
+  `views::tab_label_element`; the full title stays the tooltip. A window redraws for run
+  tabs only when one's state colour changes (`views::run_tints` against the runner), not
+  for every line a run writes. The git panel's buttons are icons (`icon_action`: its
+  tooltip names it or says why it's refused), and its first line keeps the branch and
+  the changes, the upstream then the path giving way. Icons added from gpui-kit-assets
+  0.9.0 (Lucide): git-branch, git-branch-plus, scroll-text, box, table-2, file-code,
+  download, arrow-down-to-line, arrow-up-from-line, refresh-cw.
+
 ## Open questions
 
 - 2026-11-07 Views stay in `devdeck-app/src/views/` for M1 (one module per view, the

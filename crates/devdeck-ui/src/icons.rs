@@ -83,6 +83,23 @@ icons! {
     File => "file-text",
     Note => "sticky-note",
     To => "arrow-right",
+    // What a tab shows (with File, Note, Apps, Cluster, Ports, Warning, Output, Run).
+    /// A git panel.
+    Git => "git-branch",
+    /// A service's logs.
+    Logs => "scroll-text",
+    /// A pod.
+    Pod => "box",
+    /// The branch matrix.
+    Matrix => "table-2",
+    /// A code file.
+    FileCode => "file-code",
+    // The git panel's buttons.
+    Fetch => "download",
+    Pull => "arrow-down-to-line",
+    Push => "arrow-up-from-line",
+    NewBranch => "git-branch-plus",
+    Refresh => "refresh-cw",
     // Window controls.
     WindowMinimize => "minus",
     WindowMaximize => "square",
