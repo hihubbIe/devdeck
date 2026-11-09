@@ -115,8 +115,11 @@ fn the_panel_reads_while_looked_at_and_switching_asks_first(cx: &mut TestAppCont
     let probe = Op::Push(devdeck_core::git::PushPlan::UpToDate { remote: String::new(), branch: String::new() });
     let why = cx.read(|cx| panel.read(cx).refusal(&probe, cx)).unwrap_or_default();
     assert!(why.contains("never pushes main"), "the push button says why before any fetch: {why}");
-    let rows: Vec<String> = cx.read(|cx| panel.read(cx).rows(cx).iter().map(|r| r.branch.name.clone()).collect());
-    assert_eq!(rows, ["main", "origin/feat"], "a remote branch without a local one; origin/main is main's");
+    let rows = |cx: &TestAppContext| -> Vec<String> { cx.read(|cx| panel.read(cx).rows(cx).iter().map(|r| r.branch.name.clone()).collect()) };
+    assert_eq!(rows(cx), ["main"], "remote branches only on demand");
+    assert_eq!(cx.read(|cx| panel.read(cx).remote_count(cx)), 1);
+    cx.update(|cx| panel.update(cx, |p, cx| p.toggle_remotes(cx)));
+    assert_eq!(rows(cx), ["main", "origin/feat"], "a remote branch without a local one; origin/main is main's");
     // Switching to the remote branch: asked in a modal, nothing done before it's confirmed.
     let main = cx.read(|cx| shell.read(cx).main_window().expect("main"));
     cx.update(|cx| {

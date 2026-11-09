@@ -178,6 +178,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("git.push", "push", "Git", Some("GitView && !TextInput"), ["shift-p"], gv::Push),
         spec!("git.new", "new branch", "Git", Some("GitView && !TextInput"), ["n"], gv::NewBranch),
         spec!("git.refresh", "refresh", "Git", Some("GitView && !TextInput"), ["r"], gv::Refresh),
+        spec!("git.remotes", "show or hide remote branches", "Git", Some("GitView && !TextInput"), ["shift-r"], gv::ToggleRemotes),
         spec!("git.confirm", "confirm", "Git", Some("Modal && GitModal"), ["enter"], gv::ConfirmGit),
         spec!("lifecycle.kill_leftovers", "pick", "App", Some("Modal && Leftovers"), ["enter"], crate::lifecycle::KillLeftovers),
         spec!("ports.confirm_stop", "stop", "Ports", Some("Modal && StopHolder"), ["enter"], crate::port_scan::ConfirmStopHolder),

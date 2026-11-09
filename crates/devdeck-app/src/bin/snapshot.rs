@@ -672,6 +672,41 @@ fn git_panel(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
     }
 }
 
+/// The git panel with its remote branches shown.
+fn git_panel_remotes(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    git_panel(cx, w, shell);
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        let views: Vec<_> = deck.read(cx).layout().views().into_iter().collect();
+        for r in views {
+            if let Some(v) = deck.read(cx).view(&r).and_then(|v| v.downcast::<devdeck_app::views::git_view::GitView>().ok()) {
+                v.update(cx, |v, cx| v.toggle_remotes(cx));
+            }
+        }
+    });
+    cx.run_until_parked();
+}
+
+/// The git panel, remote branches shown, in a narrow pane: names and messages cut, the
+/// author and the age at each row's end.
+fn git_panel_narrow(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    git_panel_remotes(cx, w, shell);
+    // Back from maximized, and a pane beside it: the panel gets a narrow column.
+    maximize_focused(cx, shell);
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let p = l.main().focused;
+                l.open(ViewRef::new("demo/c"), p)?;
+                let i = l.pane(p)?.tabs.len() - 1;
+                l.move_tab(p, i, Drop::Edge(p, Edge::Right)).map(|_| ())
+            })
+        })
+    });
+    cx.run_until_parked();
+}
+
 /// Edit mode asked for: its modal over the window.
 fn edit_mode_modal(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     cx.update(|cx| {
@@ -1097,6 +1132,8 @@ fn states() -> Vec<State> {
         w("95-svc-kube-like", "work", 1.0, Some(svc_kube_like)),
         w("96-cluster-watch", "work", 1.0, Some(cluster_watch)),
         w("97-git-panel", "work", 1.0, Some(git_panel)),
+        w("98-git-panel-remotes", "work", 1.0, Some(git_panel_remotes)),
+        w("99-git-panel-narrow", "work", 1.0, Some(git_panel_narrow)),
         w("98-edit-mode-modal", "work", 1.0, Some(edit_mode_modal)),
         w("99-edit-mode-on", "work", 1.0, Some(edit_mode_on)),
         w("93-port", "work", 1.0, Some(port)),

@@ -190,7 +190,7 @@ impl Git {
         let format = ["%(refname)", "%(upstream:short)", "%(objectname:short)", "%(authorname)", "%(committerdate:unix)", "%(HEAD)", "%(symref)", "%(worktreepath)", "%(contents:subject)"].join("%00");
         let out = self.read_text(&["for-each-ref", &format!("--format={format}"), "refs/heads", "refs/remotes"])?;
         let mut branches: Vec<Branch> = out.lines().filter_map(|line| self.branch(line)).collect();
-        branches.sort_by(|a, b| (a.remote.is_some(), &a.name).cmp(&(b.remote.is_some(), &b.name)));
+        sort_branches(&mut branches);
         Ok(branches)
     }
 
@@ -905,6 +905,12 @@ fn change(xy: &str, path: &str, from: Option<String>) -> Change {
 /// goes to the branch of the same name, so these can't be written by devdeck.
 pub const NEVER_PUSHED: [&str; 2] = ["main", "master"];
 
+/// Local branches, then remote ones; each newest first (by their last commit), then by
+/// name (user, 2026-11-09: an exception to R4.1).
+pub fn sort_branches(branches: &mut [Branch]) {
+    branches.sort_by(|a, b| a.remote.is_some().cmp(&b.remote.is_some()).then(b.at.cmp(&a.at)).then_with(|| a.name.cmp(&b.name)));
+}
+
 /// What git says of a path ([`ignored`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ignored {
@@ -1047,5 +1053,24 @@ mod tests {
             assert_eq!(ignored(&plain.join("a.txt")), Ignored::No);
         }
         assert!(matches!(ignored(Path::new("/")), Ignored::Unknown(_)), "no file name: refused");
+    }
+
+    #[test]
+    fn branches_newest_first_locals_before_remotes() {
+        let b = |name: &str, remote: Option<&str>, at: u64| Branch {
+            name: name.into(),
+            remote: remote.map(Into::into),
+            upstream: None,
+            commit: String::new(),
+            subject: String::new(),
+            author: String::new(),
+            at,
+            current: false,
+            worktree: None,
+        };
+        let mut v = vec![b("old", None, 10), b("origin/new", Some("origin"), 50), b("new", None, 30), b("also-new", None, 30), b("origin/old", Some("origin"), 5)];
+        sort_branches(&mut v);
+        let names: Vec<&str> = v.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["also-new", "new", "old", "origin/new", "origin/old"]);
     }
 }

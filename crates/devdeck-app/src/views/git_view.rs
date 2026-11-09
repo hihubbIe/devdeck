@@ -6,8 +6,12 @@
 //! publishes, sends, or replaces a rewritten branch only when the remote's commits are in
 //! its history; anything else is refused (see `devdeck_core::git::PushPlan`).
 //!
+//! Branches are listed newest first; remote branches only on demand (the "remote" button,
+//! shift-r), user 2026-11-09.
+//!
 //! Keys (`GitView`): ↑↓ select, ⏎ switch, f fetch, p pull, shift-p push, n new branch,
-//! r refresh. Opened from an app's or a service's view; one panel per repository.
+//! r refresh, shift-r remote branches. Opened from an app's or a service's view; one
+//! panel per repository.
 
 use super::ViewCx;
 use crate::cluster::Cluster;
@@ -17,7 +21,7 @@ use devdeck_core::git::{Branch, ChangeKind, Doing, Head, Op, PushPlan};
 use devdeck_ui::scroll_list;
 use devdeck_ui::{
     Icon, InputEvent, ModalFocus, TextInput, Theme, ToastKind, button, icon, icon_text, label, modal_frame, pop_modal, push_modal, section, theme,
-    tip, toasts,
+    tip, toasts, toggle_button,
 };
 use gpui::{
     AnyElement, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
@@ -26,7 +30,7 @@ use gpui::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-actions!(git_view, [SelectNext, SelectPrev, SwitchSelected, Fetch, Pull, Push, NewBranch, Refresh, ConfirmGit]);
+actions!(git_view, [SelectNext, SelectPrev, SwitchSelected, Fetch, Pull, Push, NewBranch, Refresh, ToggleRemotes, ConfirmGit]);
 
 /// How many changed files are listed before "and N more".
 const CHANGES_SHOWN: usize = 8;
@@ -39,6 +43,8 @@ pub struct GitView {
     focus: FocusHandle,
     filter: Entity<TextInput>,
     pub selected: Option<usize>,
+    /// Remote branches listed too (off: local ones only).
+    pub show_remotes: bool,
     scroll: UniformListScrollHandle,
     /// A push plan asked for by this panel.
     wants_plan: bool,
@@ -85,6 +91,7 @@ impl GitView {
             focus: cx.focus_handle(),
             filter,
             selected: None,
+            show_remotes: false,
             scroll: UniformListScrollHandle::new(),
             wants_plan: false,
             envs_by_tag: BTreeMap::new(),
@@ -117,11 +124,40 @@ impl GitView {
         cx.notify();
     }
 
-    /// Branch rows: local ones, then remote ones without a local branch of their name,
-    /// filtered.
+    /// Shows or hides the remote branches.
+    pub fn toggle_remotes(&mut self, cx: &mut Context<Self>) {
+        self.show_remotes = !self.show_remotes;
+        self.selected = None;
+        cx.notify();
+    }
+
+    /// Remote branches without a local branch of their name (what the remote button adds).
+    pub fn remote_count(&self, cx: &App) -> usize {
+        self.all_rows(cx).iter().filter(|r| r.branch.remote.is_some()).count()
+    }
+
+    /// Branch rows: local ones, then (when shown) remote ones without a local branch of
+    /// their name; each newest first; filtered.
     pub fn rows(&self, cx: &App) -> Vec<Row> {
-        let Some(s) = self.repo.read(cx).snapshot() else { return Vec::new() };
         let filter = self.filter.read(cx).text().trim().to_lowercase();
+        self.all_rows(cx)
+            .into_iter()
+            .filter(|r| self.show_remotes || r.branch.remote.is_none())
+            .filter(|r| filter.is_empty() || r.branch.name.to_lowercase().contains(&filter))
+            .collect()
+    }
+
+    /// Remote branches the filter matches while they're hidden.
+    fn hidden_matches(&self, cx: &App) -> usize {
+        if self.show_remotes {
+            return 0;
+        }
+        let filter = self.filter.read(cx).text().trim().to_lowercase();
+        self.all_rows(cx).iter().filter(|r| r.branch.remote.is_some() && (filter.is_empty() || r.branch.name.to_lowercase().contains(&filter))).count()
+    }
+
+    fn all_rows(&self, cx: &App) -> Vec<Row> {
+        let Some(s) = self.repo.read(cx).snapshot() else { return Vec::new() };
         let locals: Vec<&str> = s.branches.iter().filter(|b| b.remote.is_none()).map(|b| b.name.as_str()).collect();
         s.branches
             .iter()
@@ -138,7 +174,6 @@ impl GitView {
                 };
                 Some(Row { branch: b.clone(), local })
             })
-            .filter(|r| filter.is_empty() || r.branch.name.to_lowercase().contains(&filter))
             .collect()
     }
 
@@ -461,7 +496,8 @@ impl Render for GitView {
             .on_action(cx.listener(|this, _: &Pull, _, cx| this.pull(cx)))
             .on_action(cx.listener(|this, _: &Push, _, cx| this.push(cx)))
             .on_action(cx.listener(|this, _: &NewBranch, _, cx| this.new_branch(cx)))
-            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(cx)));
+            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(cx)))
+            .on_action(cx.listener(|this, _: &ToggleRemotes, _, cx| this.toggle_remotes(cx)));
         let repo = self.repo.read(cx);
         let message = |text: String, color| div().flex_1().flex().items_center().justify_center().text_color(color).child(label(text));
         let snapshot = match (&repo.state, repo.full()) {
@@ -588,6 +624,12 @@ impl Render for GitView {
 
         let rows = self.rows(cx);
         let count = rows.len();
+        let remotes = self.remote_count(cx);
+        // Nothing local matches: say whether hidden remote branches do.
+        let empty = match (self.show_remotes, self.hidden_matches(cx)) {
+            (false, n) if n > 0 => format!("no local branch matches; {n} remote ones do"),
+            _ => "no branches match".to_string(),
+        };
         let list = scroll_list(
             "git-branches",
             count,
@@ -612,8 +654,21 @@ impl Render for GitView {
                 .gap_1()
                 .when(!status.changes.is_empty(), |d| d.child(section("Changes", &t)).child(changes))
                 .child(section("Branches", &t))
-                .child(div().flex_none().debug_selector(|| "git-filter".into()).child(self.filter.clone()))
-                .child(if count == 0 { label("no branches match").text_color(t.dim).into_any_element() } else { list.into_any_element() }),
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().debug_selector(|| "git-filter".into()).child(self.filter.clone()))
+                        .child(
+                            toggle_button("git-remotes", format!("remote · {remotes}"), self.show_remotes, &t)
+                                .flex_none()
+                                .debug_selector(|| "git-remotes".into())
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_remotes(cx))),
+                        ),
+                )
+                .child(if count == 0 { label(empty).text_color(t.dim).into_any_element() } else { list.into_any_element() }),
         )
     }
 }
@@ -633,6 +688,11 @@ impl GitView {
                 move || id.clone()
             })
             .h(t.row_h)
+            // Within the list's width: the message gives way first, then the name; the
+            // author and the age always show at the end (R4.4).
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .items_center()
             .gap_2()
@@ -642,13 +702,19 @@ impl GitView {
             .hover(move |s| s.bg(hover))
             .cursor_pointer()
             .child(div().flex_none().w(t.icon).child(if b.current { icon(Icon::Check, t.ok, t).into_any_element() } else { div().into_any_element() }))
-            .child(label(b.name.clone()).flex_none().max_w(t.size(320.)).text_color(if b.remote.is_some() { t.mute } else { t.fg }))
+            .child(label(b.name.clone()).min_w(t.size(48.)).max_w(t.size(320.)).text_color(if b.remote.is_some() { t.mute } else { t.fg }))
             .children(envs.into_iter().map(|(e, protected)| {
                 let color = if protected { t.err } else { t.env };
                 div().flex_none().px_1().rounded(t.radius_s).text_color(color).child(format!("@{e}"))
             }))
-            .child(label(b.subject.clone()).text_color(t.mute).flex_1().min_w_0())
-            .child(div().flex_none().text_color(t.dim).child(format!("{} · {}", b.author, age(now, b.at))))
+            .child(label(b.subject.clone()).text_color(t.mute).flex_1().min_w_0().debug_selector({
+                let id = format!("branch-subject-{}", b.name);
+                move || id.clone()
+            }))
+            .child(div().flex_none().text_color(t.dim).debug_selector({
+                let id = format!("branch-by-{}", b.name);
+                move || id.clone()
+            }).child(format!("{} · {}", b.author, age(now, b.at))))
             .when_some(b.worktree.clone(), |d, w| d.child(div().flex_none().text_color(t.dim).child(format!("in {}", devdeck_core::config::shown(&w)))))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
                 this.selected = Some(i);

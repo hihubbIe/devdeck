@@ -269,7 +269,7 @@ fn ahead_behind_gone_and_no_upstream() {
 }
 
 #[test]
-fn branches_local_then_remote() {
+fn branches_local_then_remote_newest_first() {
     let r = Repos::new("branches");
     r.sh("work", &["remote", "set-head", "origin", "main"]);
     r.sh("work", &["branch", "-q", "--track", "feat", "origin/feat"]);
@@ -277,6 +277,7 @@ fn branches_local_then_remote() {
     r.commit("wt", "w.txt", "w\n", "in the worktree");
     let branches = r.git("work").branches().unwrap();
     let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+    // Every commit here has the same date: newest first, then by name.
     assert_eq!(names, ["elsewhere", "feat", "main", "origin/feat", "origin/main"], "local first; the remote HEAD left out");
     let main = &branches[2];
     assert_eq!(

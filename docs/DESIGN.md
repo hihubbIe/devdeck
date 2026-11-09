@@ -512,6 +512,11 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   what, and by devdeck's own rules; risky calls wait for a card only the user answers.
   The six proposals of `plans/control-api.md` taken as they are.
 
+- 2026-11-09 Git panel branches (user): newest first by their last commit (locals,
+  then remotes), an exception to R4.1; remote branches hidden until the "remote · N"
+  button or shift-r shows them (filtering with them hidden says how many would match);
+  a row's message, then its name, give way so the author and age always show.
+
 ## Open questions
 
 - 2026-11-07 Views stay in `devdeck-app/src/views/` for M1 (one module per view, the
