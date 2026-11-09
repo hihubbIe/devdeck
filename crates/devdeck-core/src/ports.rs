@@ -251,7 +251,15 @@ mod tests {
         found_as_this_process(&l);
         let port = l.local_addr().unwrap().port();
         drop(l);
-        assert_eq!(holder(port), None, "nobody listens once closed");
+        // A process another test spawns meanwhile holds a copy of the listener's descriptor
+        // from its fork until its exec closes it (close-on-exec): free within moments.
+        // Never this process: it closed its own.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while let Some(h) = holder(port) {
+            assert!(!matches!(h, Holder::Process { pid, .. } if pid == std::process::id()), "still ours once closed");
+            assert!(std::time::Instant::now() < deadline, "nobody listens once closed");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]
