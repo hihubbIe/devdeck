@@ -6,6 +6,7 @@ Native Rust desktop cockpit to find, run and deploy apps. Read these before any 
 - `docs/DESIGN.md` look, architecture, layout model, decisions
 - `docs/WORKFLOW.md` how a step is planned, reviewed, built, checked, tested, committed
 - `docs/ROADMAP.md` milestones; stop after each one for the user's manual test
+- `docs/PLATFORMS.md` what is OS-specific, and the OS layer every feature goes through
 
 Rules that are easy to break:
 - Text never wraps unless a view opts in; truncate with an ellipsis instead (R4.4).
@@ -14,4 +15,5 @@ Rules that are easy to break:
 - Every user operation is an action usable by mouse and keyboard (R5.1).
 - Nothing machine-specific in code; it belongs in config (R1.5).
 - Files are view only; notes are the one thing devdeck edits (R12).
+- OS-specific code only in `devdeck-sys`, a backend or "unsupported" per OS (R11.6).
 - `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` pass before every commit.

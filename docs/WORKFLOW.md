@@ -4,9 +4,12 @@
 
 1. **Plan.** Write the step's plan in `docs/plans/<milestone>-<step>.md`: goal, the
    requirement ids it covers, files touched, the states to check visually, the tests
-   to add, what is out of scope.
-2. **Review.** A subagent reviews the plan against `REQUIREMENTS.md` and `DESIGN.md`
-   with fresh eyes: gaps, wrong assumptions, missing states, test holes.
+   to add, what is out of scope, and whether it touches the OS (R11.6). If it does, the
+   plan names the `devdeck-sys` capability and, per OS, a backend or "unsupported" with
+   its reason (`docs/PLATFORMS.md` §4).
+2. **Review.** A subagent reviews the plan against `REQUIREMENTS.md`, `DESIGN.md` and
+   `PLATFORMS.md` with fresh eyes: gaps, wrong assumptions, missing states, test holes,
+   OS-specific code outside `devdeck-sys`.
 3. **Assess.** Accept or reject each review point, with a one-line reason, appended to
    the plan file.
 4. **Build.** Implement. Tests come with the code, not after.
@@ -103,5 +106,7 @@ removes those of runs that crashed. Tests never touch real folders.
 - Every state has been seen on screen: empty, normal, long text (truncates, never
   wraps), error, unavailable with a reason.
 - Uses only shared components and theme tokens.
+- Touches the OS only through `devdeck-sys`, with each OS covered by a backend or an
+  "unsupported" reason, and a conformance test for any new capability (R11.6).
 - Unit tested; the whole suite passes.
 - Documented where a newcomer would look (view guide, config reference…).

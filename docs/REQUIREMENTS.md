@@ -116,6 +116,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R11.3** Dependencies are chosen deliberately (modern, fast, maintained) and pinned.
 - [~] **R11.4** Performance is measured at every milestone, not assumed: memory at idle and under load, CPU at idle and under load, input latency, binary size, and a leak test (repeated open/close cycles must plateau). Results go in `docs/perf/<milestone>.md` and regressions are fixed before the milestone closes.
 - [~] **R11.5** Development stops at the end of every milestone for the user's manual test.
+- [ ] **R11.6** OS-specific code lives in one crate, `devdeck-sys`, behind an OS-neutral API, one backend per OS chosen by the build target, as `docs/PLATFORMS.md` §4 describes. Every feature that touches the OS goes through it, with a Linux backend, a macOS backend, or an explicit "unsupported" with its reason; an unsupported action is shown disabled with that reason. Until the crate exists, a step that adds OS-specific code adds it to the inventory in `docs/PLATFORMS.md`.
 
 ## 12. Files and notes
 
