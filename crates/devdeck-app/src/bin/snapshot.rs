@@ -2,7 +2,7 @@
 //! writes one PNG per window per state. Used for the visual check step of every change
 //! (docs/WORKFLOW.md). Settings are isolated in a temporary config folder.
 //!
-//! `cargo run -p devdeck-app --features snapshot --bin devdeck-snapshot -- <out-dir> [filter]`
+//! `cargo run --bin devdeck-snapshot --features devdeck-app/snapshot -- <out-dir> [filter]`
 //! where `filter` is a comma-separated list of name fragments (`50-,51-`).
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, PodScope, PodUpdate};

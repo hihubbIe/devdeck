@@ -19,11 +19,16 @@ A working Vulkan driver is needed at runtime (GPUI renders through wgpu).
 ## Build and run
 
 ```sh
-cargo run --release -p devdeck-app
+cargo build --release
+target/release/devdeck
 ```
 
-That runs the `devdeck` binary (the package's `default-run`); the snapshot tool needs
-`--bin devdeck-snapshot --features snapshot`.
+The same release build `scripts/install.sh` makes. `cargo run --release` would make a
+second one: `cargo run` selects only the binary's package, and another selection resolves
+shared dependencies with other features ("The build folder"). For a debug run, `cargo build`
+then `target/debug/devdeck` (`cargo build`'s set; `cargo run` would keep one of its own);
+the snapshot tool: `cargo run --bin devdeck-snapshot --features devdeck-app/snapshot`
+(a set of its own anyway: its features change GPUI's).
 
 GPUI needs the desktop session's `XDG_RUNTIME_DIR` (and `WAYLAND_DISPLAY` or `DISPLAY`).
 A shell that lacks it (one in a tmux server started outside the session, for instance)
@@ -58,3 +63,34 @@ terminals get the login shell's on top (PATH, nvm, pnpm).
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+From the workspace root, with `--workspace`; one area's tests by name (`cargo test
+--workspace --test app deck::`), never with `-p` (`docs/WORKFLOW.md`, "One way to build").
+
+## The build folder
+
+`target/` is a cache: everything in it is rebuilt by cargo, and the installed binaries
+are copies (`scripts/install.sh`), so `cargo clean` never breaks anything. Each kind of
+build keeps one set there, rebuilt in place by the same command. Measured 2026-11-09,
+cargo 1.99, from a clean folder:
+
+| Build | Command | Adds |
+|---|---|---|
+| tests | `cargo test --workspace` | 6.2 GB (12 test binaries, peak memory 5.2 GB cold) |
+| check and clippy | `cargo clippy --workspace --all-targets` | 1.4 GB |
+| debug binaries | `cargo build` | 1.9 GB |
+| debug run, snapshot tool, release | `cargo run …`, `cargo build --release` | one set each |
+
+Before (2026-11-09 morning): a test binary per test file with full debug info, about
+1.1 GB each, and one full set per `-p` selection: 435 GB in three days, and builds that
+took more than 50 GB of memory.
+
+What is left behind: a dependency change (`Cargo.lock`) rebuilds the crates above it
+under new names and keeps the old ones (one bump of `itoa`: 42 crates, 3.5 GB), and a new
+rustc rebuilds everything. Cargo removes nothing itself (its `-Z gc` is nightly only), so
+`target/` is cleared at the end of every milestone and after every `rustup update`
+(`docs/WORKFLOW.md`), or whenever it grows past about 30 GB.
+
+Debug builds keep line tables only, split out of the binaries (`Cargo.toml`): backtraces
+name file and line; a debugger shows the stack, not variables. For variables, `cargo
+build --profile dbg` (full debug info, its own folder `target/dbg`, deleted when done).

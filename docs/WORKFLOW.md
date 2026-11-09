@@ -16,8 +16,9 @@
 5. **Check visually.** Run the app and look at every state listed in the plan (empty,
    loading, error, missing tool, protected env, collapsed, detached, narrow pane…).
    Fix what doesn't match the design before moving on.
-6. **Test.** `cargo test --workspace` must pass. `cargo clippy --workspace -- -D warnings`
-   must pass. New features ship with unit tests; bugs ship with a regression test.
+6. **Test.** `cargo test --workspace` must pass. `cargo clippy --workspace --all-targets
+   -- -D warnings` must pass. New features ship with unit tests; bugs ship with a
+   regression test.
 7. **Commit.** One commit per step, message naming the step and requirement ids.
    Update the requirement checkboxes in `REQUIREMENTS.md` in the same commit.
 
@@ -33,21 +34,31 @@
 
 ## Keep the step loop fast
 
-Measured 2026-11-07 after a one-file edit in `devdeck-app`: `cargo check -p devdeck-app`
-0.8 s, clippy on the workspace 1.1 s, building the tests 4.4 s, running them 6 s.
-Linking is not a cost (rustc links with lld). Rendering every snapshot takes 45 s (it
-was 133 s before the PNG crates were optimized in debug builds, see `Cargo.toml`); two
-snapshots take about 3 s.
+Measured 2026-11-09 (cargo 1.99) after a one-line edit in `devdeck-app`: clippy 2.0 s,
+one area's tests 3.5 s, the whole suite (build and run, 777 tests) 9.6 s, peak memory
+under 1 GB. Rendering every snapshot takes
+45 s (it was 133 s before the PNG crates were optimized in debug builds, see
+`Cargo.toml`); two snapshots take about 3 s.
 
-- **While building:** `cargo check -p <crate>` and the test file of the area being changed
-  (`cargo test -p devdeck-app --test deck`).
-- **Before the commit:** `scripts/test_changed.py`: clippy and the tests of the crates
-  the change touches and of the crates built on them (editing `devdeck-ui` tests it and
-  the app; editing only the app tests the app; `devdeck-core` or the Cargo files test
-  everything). And the snapshots of the states the step adds or touches (the snapshot
-  tool takes a name filter: `-- <out-dir> 01-,20-`).
-- **End of the milestone only:** the whole suite, every snapshot, release builds,
-  measurements, stress and leak runs.
+**One way to build.** Cargo runs from the workspace root with `--workspace`
+(`--all-targets` for check and clippy) and tests are chosen by name. Never `-p`, never from
+a crate's folder: which packages are selected changes the features of shared dependencies
+(GPUI among them), so each selection is a full build of its own, kept next to the others
+in `target/` (`docs/BUILDING.md`). Each crate has one integration test binary: a new test
+file is a module of `tests/<crate>/main.rs` (`tests/app/`, `tests/ui/`), never a new file
+in `tests/` (a new binary) and never a file without its `mod` line (never compiled).
+
+- **While building:** the tests of the area being changed, by name: `cargo test
+  --workspace --test app deck::` (a name is a substring: `sidebar::` also runs
+  `notes_sidebar::`); a crate's unit tests with `--lib`: `cargo test --workspace --lib
+  layout`. For errors without tests, clippy (`cargo clippy --workspace --all-targets`),
+  not `cargo check`: the two keep separate results for our crates, so running both
+  repeats the work, and a test build already reports every compile error.
+- **Before the commit:** the whole suite and clippy (step 6), and the snapshots of the
+  states the step adds or touches (the snapshot tool takes a name filter:
+  `-- <out-dir> 01-,20-`).
+- **End of the milestone only:** every snapshot, release builds, measurements, stress and
+  leak runs, then `cargo clean` (see "A milestone").
 - **Reviews:** the plan is reviewed before any code, by a reviewer who reads the GPUI source
   where the behaviour depends on it; then one review of the diff. Reviewers run in the
   same turn as the build, so one approval covers the step: build, review, fixing what the
@@ -56,16 +67,17 @@ snapshots take about 3 s.
 - **Parallel builders:** when a step splits into modules on separate files, the plan fixes
   their interfaces first; then one subagent builds each module with its tests, in this
   checkout (a worktree would need its own cold GPUI build), never two on the same file.
-  Builders run `cargo check` and their own tests; the lead runs the combined build, the
-  review and the commit.
+  Builders run their own tests by name and clippy (never `-p`); the lead runs the
+  combined build, the review and the commit. Builds share `target/`'s lock: they queue.
 
 ## Components are tested on their own
 
 `devdeck-ui` is the component library every view draws with (R9.3). Each component has
 tests in `crates/devdeck-ui/tests/ui/`, in a host window (`tests/ui/common`) with nothing
 of the app: every interaction by mouse (click, hover, drag, wheel) and by keyboard,
-disabled states, focus. A new component or a change to one comes with its tests. The app's own
-tests cover only how components fit in it (menus over panes, modals blocking app keys).
+disabled states, focus. A new component or a change to one comes with its tests. The
+app's own tests cover only how components fit in it (menus over panes, modals blocking
+app keys).
 
 ## Tests leave nothing behind
 
@@ -80,6 +92,8 @@ removes those of runs that crashed. Tests never touch real folders.
 - Before it closes: run `scripts/measure.sh` on a release build and record the numbers
   in `docs/perf/<milestone>.md` (RSS and CPU idle and under load, latency, binary size,
   leak test). Compare with the previous milestone; investigate any growth.
+- Then `cargo clean`, and after every `rustup update`: a dependency change or a new rustc
+  leaves the previous build behind in `target/` (`docs/BUILDING.md`, "The build folder").
 - At the end of every milestone, work stops and the user tests the app by hand.
   Feedback goes into `REQUIREMENTS.md` / `DESIGN.md` before the next milestone starts.
 

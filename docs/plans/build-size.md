@@ -228,6 +228,28 @@ Check: every `cargo (test|check|clippy|build|run)` line in `CLAUDE.md`, `README.
 each kind of build from "Steady state" run twice with an edit between: the second run
 compiles no dependency.
 
+Done 2026-11-09, with two changes from the above, found while doing it:
+- `cargo run` selects only the binary's package, whatever the folder (`cargo run --bin
+  devdeck-ctl` after a workspace build compiled `syn`, `quote`, `serde_derive`… again), so
+  `cargo run --release --bin devdeck` would still be a second release set next to
+  `install.sh`'s. `BUILDING.md` builds with `cargo build --release` (the same selection as
+  `install.sh`, checked with `cargo tree`: same features) and runs `target/release/devdeck`;
+  a debug run is always `cargo run --bin devdeck`, one set of its own.
+- `PLATFORMS.md`'s macOS cross-check keeps `-p devdeck-sys`: the rest of the workspace does
+  not build for macOS yet, and another target has its own folder.
+
+`scripts/test_changed.py` is removed: the whole suite after an app edit is 9.6 s, under the
+old loop's 10.4 s. Each kind of build (tests, one area's tests, check, clippy, `cargo
+build`, `cargo run`) run again after an app edit compiled no dependency.
+
+A review of the result (2026-11-09, one fresh subagent; two more were not allowed to run)
+found nothing broken and three doc points, taken into this step: the loop ran `cargo
+check` then the tests, but check and clippy keep separate results for our crates and a
+test build reports every error, so the loop is the area's tests, or clippy; `install.sh`
+used `-p` (the same features as the workspace, but against the rule as written): it names
+its binaries without `-p`; a debug run is `cargo build` then `target/debug/devdeck`,
+`cargo build`'s set, rather than `cargo run`'s own.
+
 ### Step 4: `target/` is a cache (`docs/BUILDING.md`, `WORKFLOW.md`)
 
 In `BUILDING.md`: what `target/` holds, the sets of "Steady state" and their measured

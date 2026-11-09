@@ -16,4 +16,7 @@ Rules that are easy to break:
 - Nothing machine-specific in code; it belongs in config (R1.5).
 - Files are view only; notes are the one thing devdeck edits (R12).
 - OS-specific code only in `devdeck-sys`, a backend or "unsupported" per OS (R11.6).
-- `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` pass before every commit.
+- `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` pass before every commit.
+- Cargo runs from the root with `--workspace`, tests chosen by name, never `-p` or from a
+  crate's folder: another selection is another full build. A new test file is a module of
+  `tests/<crate>/main.rs`, never a new file in `tests/` (`docs/WORKFLOW.md`).

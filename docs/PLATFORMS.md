@@ -173,12 +173,14 @@ ctrl elsewhere), with per-OS keymaps where a key differs, as Zed ships
   or `std::os::linux` appears in a source file outside `devdeck-sys`: literals and paths
   that no dependency rule catches.
 - **CI** (none exists yet; it comes before the first macOS backend):
-  - Linux: `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`.
+  - Linux: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`.
   - Linux: `cargo check -p devdeck-sys --target aarch64-apple-darwin`, a fast check
     that the macOS backend compiles. Also usable locally once the target is added
-    with `rustup target add`.
+    with `rustup target add`. `-p` is right here, unlike elsewhere (`docs/WORKFLOW.md`):
+    the rest of the workspace does not build for macOS yet, and another target has its
+    own folder in `target/`.
   - macOS (`macos-15`, pinned; `macos-latest` moved to macOS 26): `cargo clippy
-    --workspace -- -D warnings` and `cargo test -p devdeck-sys`.
+    --workspace --all-targets -- -D warnings` and `cargo test -p devdeck-sys`.
 - **Build scripts**: `devdeck-sys` has no build script, and no dependency of it needs
   Apple's SDK to build, so the Linux cross-check keeps working. The whole workspace
   can't be cross-checked from Linux: GPUI embeds a Metal shader library compiled by
