@@ -100,6 +100,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("sidebar.layouts", "layouts", "Sidebar", DECK, ["ctrl-4"], ShowLayouts),
         spec!("sidebar.terminals", "terminals", "Sidebar", DECK, ["ctrl-5"], ShowTerminals),
         spec!("sidebar.toggle", "sidebar", "Sidebar", DECK, ["ctrl-b"], ToggleSidebar),
+        spec!("layout.new", "new layout…", "Layouts", DECK, [], NewLayout),
         spec!("layout.save_as", "save layout as…", "Layouts", DECK, [], SaveLayoutAs),
         spec!("sidebar.next", "down", "Sidebar", SIDEBAR, ["down"], sb::SelectNext),
         spec!("sidebar.prev", "up", "Sidebar", SIDEBAR, ["up"], sb::SelectPrev),

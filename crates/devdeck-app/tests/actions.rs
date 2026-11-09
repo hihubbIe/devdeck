@@ -251,4 +251,20 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "ctrl-\\");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len()), panes + 1);
+    // New layout from the palette: an empty one, current; triage keeps its tabs.
+    let triage = cx.read(|cx| deck.read(cx).layout().clone());
+    cx.simulate_keystrokes(main, "ctrl-k");
+    cx.simulate_input(main, "new layout");
+    cx.simulate_keystrokes(main, "enter");
+    cx.run_until_parked();
+    assert_eq!(overlay(&shell, cx).1, 1, "the name modal");
+    cx.simulate_input(main, "blank");
+    cx.simulate_keystrokes(main, "enter");
+    cx.run_until_parked();
+    assert_eq!(overlay(&shell, cx).1, 0);
+    assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "blank");
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().clone()), devdeck_core::layout::Layout::new(), "one empty pane");
+    let id = cx.read(|cx| deck.read(cx).book.id_named("triage").unwrap());
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(&id, cx))).unwrap();
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().clone()), triage, "triage is as it was left");
 }

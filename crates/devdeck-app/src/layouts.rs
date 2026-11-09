@@ -1,5 +1,6 @@
 //! Named layouts in the UI (R3.10): the `layout ▾` menu, and the name prompt that
-//! saves the current arrangement under a name or renames one (refusals show in it).
+//! makes an empty layout, saves the current arrangement under a name or renames one
+//! (refusals show in it).
 
 use crate::deck::Deck;
 use crate::name_prompt::{self, Submit};
@@ -8,7 +9,7 @@ use devdeck_ui::MenuItem;
 use gpui::{App, Entity, Window};
 use std::rc::Rc;
 
-/// The `layout ▾` menu: every layout (current checked), then save as.
+/// The `layout ▾` menu: every layout (current checked), then new and save as.
 pub fn menu(deck: &Entity<Deck>, cx: &App) -> Vec<MenuItem> {
     let book = &deck.read(cx).book;
     let mut items: Vec<MenuItem> = book
@@ -27,8 +28,16 @@ pub fn menu(deck: &Entity<Deck>, cx: &App) -> Vec<MenuItem> {
         .collect();
     items.push(MenuItem::separator());
     let d = deck.clone();
+    items.push(MenuItem::new("New layout…", move |window, cx| open_new(d.clone(), window, cx)));
+    let d = deck.clone();
     items.push(MenuItem::new("Save layout as…", move |window, cx| open_save_as(d.clone(), window, cx)));
     items
+}
+
+/// Makes an empty layout and shows it.
+pub fn open_new(deck: Entity<Deck>, window: &mut Window, cx: &mut App) {
+    let submit: Submit = Rc::new(move |name, cx| deck.update(cx, |d, cx| d.new_layout(name, cx).map(drop).map_err(|e| e.to_string())));
+    name_prompt::open("New layout", "", "layout-name", submit, window, cx);
 }
 
 pub fn open_save_as(deck: Entity<Deck>, window: &mut Window, cx: &mut App) {

@@ -440,6 +440,20 @@ impl Deck {
         }
         let live = self.layout.clone();
         let target = self.book.switch(id, &live)?;
+        self.show_layout(target, cx);
+        Ok(())
+    }
+
+    /// Adds an empty layout under `name` and shows it; the one left keeps its tabs.
+    pub fn new_layout(&mut self, name: &str, cx: &mut Context<Self>) -> Result<LayoutId, BookError> {
+        let live = self.layout.clone();
+        let (id, target) = self.book.new_layout(name, &live)?;
+        self.show_layout(target, cx);
+        Ok(id)
+    }
+
+    /// Puts `target` on screen in place of the live layout and writes it with the book.
+    fn show_layout(&mut self, target: Layout, cx: &mut Context<Self>) {
         self.send = None;
         // Ids repeat across stored layouts: drop every detached OS window so the
         // target's open fresh instead of reusing one with the same id.
@@ -463,7 +477,6 @@ impl Deck {
             }
             self.save_book(cx);
         }
-        Ok(())
     }
 
     pub fn rename_layout(&mut self, id: &str, to: &str, cx: &mut Context<Self>) -> Result<(), BookError> {

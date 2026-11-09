@@ -52,6 +52,7 @@ actions!(
         ContextMenu,
         ShowLayouts,
         ShowTerminals,
+        NewLayout,
         SaveLayoutAs,
     ]
 );

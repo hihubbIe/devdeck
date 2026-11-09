@@ -143,13 +143,25 @@ impl LayoutBook {
 
     /// Saves the live layout under a new name and makes it current.
     pub fn save_as(&mut self, name: &str, live: &Layout) -> Result<LayoutId, BookError> {
+        self.add(name, live, live.clone())
+    }
+
+    /// Adds an empty layout (one empty pane) under a new name and makes it current; the
+    /// live layout is stored under the current one. Returns its id and the layout to show.
+    pub fn new_layout(&mut self, name: &str, live: &Layout) -> Result<(LayoutId, Layout), BookError> {
+        let empty = Layout::new();
+        let id = self.add(name, live, empty.clone())?;
+        Ok((id, empty))
+    }
+
+    fn add(&mut self, name: &str, live: &Layout, layout: Layout) -> Result<LayoutId, BookError> {
         let name = clean_name(name)?;
         if let Some(existing) = self.id_named(&name) {
             return Err(BookError::NameTaken(self.layouts[&existing].name.clone()));
         }
         self.store_live(live);
         let id = new_id();
-        self.layouts.insert(id.clone(), Named { name, layout: Some(live.clone()) });
+        self.layouts.insert(id.clone(), Named { name, layout: Some(layout) });
         self.current = id.clone();
         Ok(id)
     }
@@ -232,6 +244,21 @@ mod tests {
         assert_eq!(book.layouts[&triage].layout, Some(changed.clone()), "the live layout is stored under the current id");
         let back = book.switch(&triage, &shown).unwrap();
         assert_eq!(back, changed);
+    }
+
+    #[test]
+    fn a_new_layout_starts_empty() {
+        let mut book = LayoutBook::default();
+        let live = layout(&["a", "b"]);
+        let (id, shown) = book.new_layout("Blank", &live).unwrap();
+        assert_eq!(shown, Layout::new(), "one empty pane");
+        assert_eq!(book.current, id);
+        assert_eq!(book.current_name(), "Blank");
+        assert_eq!(book.layouts[DEFAULT_ID].layout, Some(live.clone()), "the one left is stored as it was");
+        assert_eq!(book.switch(DEFAULT_ID, &shown).unwrap(), live);
+        assert_eq!(book.new_layout(" ", &live), Err(BookError::EmptyName));
+        assert_eq!(book.new_layout("blank", &live), Err(BookError::NameTaken("Blank".into())));
+        assert_eq!(book.current, DEFAULT_ID, "a refusal changes nothing");
     }
 
     #[test]
