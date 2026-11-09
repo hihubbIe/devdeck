@@ -369,3 +369,35 @@ files views show.
   watcher picks it up at its next look at the watched folders (any rescan).
 
 Review: by the lead.
+
+## Step 5, as built (2026-11-09)
+
+API level 4. OS code (R11.6): the connection's hang-up check uses POSIX `recv` with
+`MSG_PEEK | MSG_DONTWAIT` through `libc` in `api/transport.rs` (std's `peek` isn't
+stable): Linux and macOS both; to list in `docs/PLATFORMS.md`'s inventory until
+`devdeck-sys` exists. `file.read`'s existing `/proc/self/fd` check moved to a background
+thread, unchanged.
+
+- Answers that come later: a handler gives a task (`dispatch::Answer::Later`); the UI
+  thread holds the reply, one per connection (`ApiState::later`), dropped when the
+  client hangs up (the connection's thread looks every 250 ms while it waits), when the
+  connection closes, or when devdeck quits (the call answers `unavailable`). The caller's
+  shell ending ends it with `expired` (looked at every 100 ms, on the connection's side:
+  `api::answer`). The audit records the outcome when it's known.
+- `run.wait{until: exit | {output: PATTERN}}`, `terminal.wait{until: idle | exit |
+  {output}}` (the caller's own terminal only), class read: they look every 100 ms while
+  someone waits, nothing otherwise; 30 s by default, 50 at most. Lines are looked at
+  once: a job resumes after the last line looked at. A restart, a resize or a
+  full-screen program goes on from what shows. Time up: `done: false`, the state, the
+  output since it began, and a job.
+- Jobs: resumable waits, not background work. `job.get` (looks now), `job.wait`,
+  `job.cancel`, `job.list` (oldest first: an exception to R4.1); a caller's own (its
+  shell instance), kept 10 minutes after they began, 16 a caller.
+- Caps: 4 waits at once a caller (`busy`); 8 connections a caller (refused with `busy`,
+  audited once a minute).
+- `file.read` reads in the background; a note larger than 2 MB isn't read (shown as
+  unreadable, for the UI too).
+- MCP: a wait goes on a connection of its own, waits for its time and 10 s more, and is
+  never made again; the instructions say how to wait.
+
+Review: by the lead.

@@ -776,6 +776,97 @@ pub struct Settings {
     pub theme: String,
 }
 
+// ---- Waits and jobs (R13.10) ----
+
+/// What a wait waits for.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Until {
+    /// The run's process ended (or wasn't running).
+    Exit,
+    /// A line written after the wait began matches this regular expression.
+    Output(String),
+    /// The terminal's shell is back at its prompt: no program in the foreground.
+    Idle,
+}
+
+/// Waits for a run: `until` exit or output, at most `timeout` seconds (30; 50 at most).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunWaitParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub app: String,
+    pub cmd: String,
+    pub until: Until,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,
+}
+
+/// Waits for terminal `n` (the caller's own): `until` idle or output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalWaitParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub n: u32,
+    pub until: Until,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,
+}
+
+/// How a wait ended: what it waited for happened, or the time was up (then `job` waits
+/// on); the state now and what was written since it began.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Waited {
+    pub done: bool,
+    /// Not done: wait on with `job.wait`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    pub state: RunState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// What was written since the wait began (its first lines; `truncated` says more
+    /// came: read on with `next`).
+    pub output: Output,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobParams {
+    pub job: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobWaitParams {
+    pub job: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,
+}
+
+/// A job of the caller's: a wait not over yet, or over not long ago.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Job {
+    pub id: String,
+    /// What it waits for, as people read it: `run eventservice dev until exit`.
+    pub what: Untrusted,
+    pub done: bool,
+    /// Seconds since it began.
+    pub age: u64,
+}
+
+/// The caller's jobs, oldest first (time order, not alphabetical).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Jobs {
+    pub jobs: Vec<Job>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Cancelled {
+    pub job: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

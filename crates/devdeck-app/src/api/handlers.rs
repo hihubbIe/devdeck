@@ -133,7 +133,7 @@ pub fn view(a: ViewAddr) -> View {
     }
 }
 
-fn run_state(s: devdeck_core::runs::RunState) -> (RunState, Option<i32>, Option<i32>) {
+pub(super) fn run_state(s: devdeck_core::runs::RunState) -> (RunState, Option<i32>, Option<i32>) {
     use devdeck_core::runs::RunState as S;
     match s {
         S::Running => (RunState::Running, None, None),
@@ -578,7 +578,7 @@ const DEFAULT_TAIL: usize = 100;
 const MAX_CONTEXT: usize = 5;
 const DEFAULT_MATCHES: usize = 50;
 const MAX_MATCHES: usize = 200;
-/// Files larger than this aren't read through the API (it reads on the UI thread).
+/// Files larger than this aren't read through the API.
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 const DEFAULT_FILE_LINES: usize = 400;
 
@@ -629,11 +629,11 @@ impl Epoch {
     }
 }
 
-fn expired() -> ApiError {
+pub(super) fn expired() -> ApiError {
     ApiError::new(devdeck_api::ErrorKind::Expired, "it restarted, its terminal was resized, or devdeck restarted since: read the last lines again")
 }
 
-fn output_of(cx: &CallCx, target: &str, t: &CoreTerminal, starts: u32, tail: Option<u32>, since: Option<&str>) -> Result<Output, ApiError> {
+pub(super) fn output_of(cx: &CallCx, target: &str, t: &CoreTerminal, starts: u32, tail: Option<u32>, since: Option<&str>) -> Result<Output, ApiError> {
     let epoch = Epoch::of(cx, target, t, starts);
     let alt = t.modes().alt_screen;
     let from = match since {
@@ -677,7 +677,7 @@ fn search_in(t: &CoreTerminal, pattern: &str, context: Option<u32>, max: Option<
 }
 
 /// A run's terminal (a command, never a shell), its start count, and what names it.
-fn with_run<T>(cx: &CallCx, ws: Option<&str>, app: &str, cmd: &str, a: &App, f: impl FnOnce(&CoreTerminal, u32, &str) -> Result<T, ApiError>) -> Result<T, ApiError> {
+pub(super) fn with_run<T>(cx: &CallCx, ws: Option<&str>, app: &str, cmd: &str, a: &App, f: impl FnOnce(&CoreTerminal, u32, &str) -> Result<T, ApiError>) -> Result<T, ApiError> {
     let w = workspace(cx, ws, a)?;
     let key = RunKey::new(app, cmd);
     let runner = w.services.read(a).runner.read(a);
@@ -687,7 +687,7 @@ fn with_run<T>(cx: &CallCx, ws: Option<&str>, app: &str, cmd: &str, a: &App, f: 
 
 /// Terminal `n`'s terminal, its shell's start count and its uid: the caller's own
 /// terminal only (the user's shells hold what the user typed and printed).
-fn with_terminal<T>(cx: &CallCx, ws: Option<&str>, n: u32, a: &App, f: impl FnOnce(&CoreTerminal, u32, &str) -> Result<T, ApiError>) -> Result<T, ApiError> {
+pub(super) fn with_terminal<T>(cx: &CallCx, ws: Option<&str>, n: u32, a: &App, f: impl FnOnce(&CoreTerminal, u32, &str) -> Result<T, ApiError>) -> Result<T, ApiError> {
     let w = workspace(cx, ws, a)?;
     let key = RunKey::terminal(n);
     let runner = w.services.read(a).runner.read(a);
@@ -802,13 +802,20 @@ fn readable(path: &std::path::Path, roots: &[std::path::PathBuf], own: &[std::pa
     }
 }
 
-pub fn file_read(cx: &CallCx, p: FileParams, app: &mut App) -> Result<FileLines, ApiError> {
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
+/// The scope is the UI thread's; the file is read in the background (a hung network
+/// mount can't stall devdeck).
+pub fn file_read(cx: &CallCx, p: FileParams, app: &mut App) -> Result<gpui::Task<Result<FileLines, ApiError>>, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let roots = file_roots(w.services.read(app));
     let own = devdecks_own();
+    Ok(app.background_executor().spawn(async move { read_file(&p, &roots, &own) }))
+}
+
+fn read_file(p: &FileParams, roots: &[std::path::PathBuf], own: &[std::path::PathBuf]) -> Result<FileLines, ApiError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let (roots, own) = (roots.to_vec(), own.to_vec());
     let asked = std::path::Path::new(&p.path);
     if !asked.is_absolute() {
         return Err(ApiError::invalid("path: absolute"));

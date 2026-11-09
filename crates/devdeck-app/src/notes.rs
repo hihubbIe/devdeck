@@ -19,6 +19,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// A note's file larger than this isn't read (shown as unreadable).
+pub const MAX_NOTE: u64 = 2 * 1024 * 1024;
+
 /// Typing pauses this long before a note is written.
 pub const SAVE_AFTER: Duration = Duration::from_millis(500);
 
@@ -98,6 +101,13 @@ impl Notes {
             return t.clone();
         }
         if self.unreadable.contains_key(id) {
+            return String::new();
+        }
+        // Read on the UI thread: a file another program made huge isn't.
+        if let Some(len) = self.store.as_ref().and_then(|s| std::fs::metadata(s.file(id)).ok()).map(|m| m.len())
+            && len > MAX_NOTE
+        {
+            self.unreadable.insert(id.to_string(), format!("{len} bytes, more than a note holds ({MAX_NOTE})"));
             return String::new();
         }
         match self.store.as_ref().map(|s| s.read(id)).unwrap_or(Ok(String::new())) {

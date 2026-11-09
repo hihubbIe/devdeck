@@ -32,9 +32,10 @@ pub struct Opened {
 
 /// Where requests go. Calls block the connection's thread until answered.
 pub trait Sink: Send + Sync + 'static {
-    /// A new connection; None refuses it.
+    /// A new connection; None refuses it (too many of its caller's).
     fn open(&self, peer: Peer) -> Option<Opened>;
-    fn call(&self, conn: u64, method: String, params: Value) -> Result<Value, ApiError>;
+    /// A call; `hung_up` says whether its client went meanwhile (its answer can stop).
+    fn call(&self, conn: u64, method: String, params: Value, hung_up: &dyn Fn() -> bool) -> Result<Value, ApiError>;
     /// A message without an id: never answered. Told once per connection, its name cut
     /// to [`MAX_NAME`].
     fn notification(&self, conn: u64, method: String);
@@ -89,12 +90,18 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
     let (all, outside) = counts;
     if all.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
         all.fetch_sub(1, Ordering::SeqCst);
-        busy(stream, "too many connections");
+        busy(Some(stream), "too many connections");
         sink.refused("too many connections".into());
         return;
     }
     let opened = match peer(&stream) {
-        Ok(p) => sink.open(p),
+        Ok(p) => {
+            let opened = sink.open(p);
+            if opened.is_none() {
+                busy(stream.try_clone().ok(), "too many connections from this caller");
+            }
+            opened
+        }
         Err(why) => {
             sink.refused(why);
             None
@@ -106,7 +113,7 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
         if within {
             serve_connection(stream, sink, o.id);
         } else {
-            busy(stream, "too many outside connections");
+            busy(Some(stream), "too many outside connections");
             sink.refused("too many outside connections".into());
         }
         sink.close(o.id);
@@ -118,7 +125,8 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
 }
 
 /// Tells a connection refused why (it isn't served), so it doesn't read as devdeck gone.
-fn busy(mut stream: UnixStream, why: &str) {
+fn busy(stream: Option<UnixStream>, why: &str) {
+    let Some(mut stream) = stream else { return };
     if let Ok(mut line) = serde_json::to_vec(&Response::err(Value::Null, ApiError::new(ErrorKind::Busy, why).to_rpc())) {
         line.push(b'\n');
         let _ = stream.write_all(&line);
@@ -127,6 +135,8 @@ fn busy(mut stream: UnixStream, why: &str) {
 
 fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
     let Ok(read) = stream.try_clone() else { return };
+    let Ok(probe) = stream.try_clone() else { return };
+    let hung_up = move || hung_up(&probe);
     let mut reader = BufReader::new(read);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -135,7 +145,7 @@ fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
         let (answer, close) = match read_message(&mut reader, &mut buf) {
             Ok(false) | Err(_) if buf.is_empty() => return,
             Err(e) => (Some(Response::err(Value::Null, ApiError::invalid(e.to_string()).to_rpc_with(rpc::INVALID_REQUEST))), true),
-            Ok(_) => answer(&buf, sink, conn, &mut told),
+            Ok(_) => answer(&buf, sink, conn, &mut told, &hung_up),
         };
         if let Some(a) = answer {
             let Ok(mut line) = serde_json::to_vec(&a) else { return };
@@ -156,9 +166,27 @@ fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
     }
 }
 
+/// Whether the client closed its end: a read would end (one call is in flight, so it
+/// has nothing more to send). Looked at without blocking or taking anything (POSIX
+/// `recv` with `MSG_PEEK | MSG_DONTWAIT`, Linux and macOS: std's `peek` isn't stable).
+fn hung_up(stream: &UnixStream) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let mut byte = 0u8;
+    // SAFETY: a valid descriptor, one byte of our own buffer.
+    let n = unsafe { libc::recv(stream.as_raw_fd(), (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+    match n {
+        0 => true,
+        n if n > 0 => false,
+        _ => {
+            let e = std::io::Error::last_os_error().kind();
+            e != std::io::ErrorKind::WouldBlock && e != std::io::ErrorKind::Interrupted
+        }
+    }
+}
+
 /// The answer to one message (None for a notification), and whether to close after it.
 /// `told`: a notification of this connection was told to the sink already.
-fn answer(msg: &[u8], sink: &dyn Sink, conn: u64, told: &mut bool) -> (Option<Response>, bool) {
+fn answer(msg: &[u8], sink: &dyn Sink, conn: u64, told: &mut bool, hung_up: &dyn Fn() -> bool) -> (Option<Response>, bool) {
     let fail = |id: Value, code: i64, kind: ErrorKind, m: &str| (Some(Response::err(id, ApiError::new(kind, m).to_rpc_with(code))), false);
     let value: Value = match serde_json::from_slice(msg) {
         Ok(v) => v,
@@ -188,7 +216,7 @@ fn answer(msg: &[u8], sink: &dyn Sink, conn: u64, told: &mut bool) -> (Option<Re
         Some(p @ Value::Object(_)) => p,
         Some(_) => return fail(id, rpc::INVALID_PARAMS, ErrorKind::Invalid, "params must be an object"),
     };
-    match sink.call(conn, req.method, params) {
+    match sink.call(conn, req.method, params, hung_up) {
         Ok(v) => (Some(Response::ok(id, v)), false),
         // The caller's shell is gone: this connection is no longer it.
         Err(e) => {
@@ -220,10 +248,18 @@ mod tests {
             self.log.lock().unwrap().push(format!("open {}", peer.pid.is_some()));
             Some(Opened { id: 1, outside: self.outside })
         }
-        fn call(&self, _: u64, method: String, params: Value) -> Result<Value, ApiError> {
+        fn call(&self, _: u64, method: String, params: Value, hung_up: &dyn Fn() -> bool) -> Result<Value, ApiError> {
             match method.as_str() {
                 "session.whoami" => Err(ApiError::new(ErrorKind::Expired, "the shell ended")),
                 "devdeck.problems" => Ok(json!({ "problems": ["x".repeat(devdeck_api::MAX_MESSAGE)] })),
+                // A wait: answered only once its client hangs up.
+                "run.wait" => {
+                    while !hung_up() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    self.log.lock().unwrap().push("hung up".into());
+                    Err(ApiError::new(ErrorKind::Expired, "the client hung up"))
+                }
                 _ => Ok(json!({ "method": method, "params": params })),
             }
         }
@@ -374,5 +410,20 @@ mod tests {
             BufReader::new(s).read_line(&mut line).ok().filter(|n| *n > 0)
         });
         assert!(served.is_none());
+    }
+
+    #[test]
+    fn a_client_hanging_up_mid_call_is_seen() {
+        let (_dir, path, stub, _stop) = start(Stub::default());
+        let mut c = UnixStream::connect(&path).unwrap();
+        c.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"run.wait\",\"params\":{}}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!stub.log.lock().unwrap().contains(&"hung up".to_string()), "still there");
+        drop(c);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !stub.log.lock().unwrap().contains(&"hung up".to_string()) {
+            assert!(std::time::Instant::now() < deadline, "the hang-up wasn't seen");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }

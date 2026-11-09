@@ -23,6 +23,18 @@ use std::time::Duration;
 
 /// How long a call waits for devdeck's answer.
 const ANSWER_WITHIN: Duration = Duration::from_secs(60);
+/// A wait's answer comes within its own time (devdeck's default and most, in seconds)
+/// and this much more.
+const WAIT_DEFAULT: u64 = 30;
+const WAIT_MOST: u64 = 50;
+const WAIT_SLACK: Duration = Duration::from_secs(10);
+
+/// Whether `method` waits (`run.wait`, `job.wait`…): it gets a connection of its own, so
+/// other calls don't queue behind it, and is never made again (it may have seen its
+/// event already).
+pub fn waits(method: &str) -> bool {
+    method.ends_with(".wait")
+}
 
 /// What Claude is told about devdeck: generic (never what a workspace holds; the list
 /// methods tell that), and when the user means devdeck.
@@ -35,6 +47,7 @@ When the user asks to start, stop, restart or check an app, a server or a comman
 they mean devdeck: use these tools rather than a shell.
 - Apps: app.list; an app's commands: app.get; what runs: run.list, run.get.
 - Output: run.output, terminal.output (the last lines, or what's new since the `next` you got), run.search, terminal.search; notes: note.read; the workspace's files: file.read.
+- To wait until a server is ready or a command ends: run.wait (until \"exit\", or {\"output\": PATTERN}), 50 s at most; if its time is up, job.wait with the job it gives.
 - Where you are: session.whoami. A method's parameters: api.describe with {\"method\": NAME}.
 - You may stop or restart only runs you started (run.get says `yours`); a start uses the arguments the user set.
 - Each tool takes a `method` and its `params`. An action whose tool isn't listed, or that devdeck refuses, isn't allowed for you: say so instead of working around it.
@@ -165,6 +178,14 @@ impl Bridge {
         }
     }
 
+    /// A wait, on a connection of its own for its time and a little more.
+    fn call_waiting(&self, method: &str, params: Value) -> Result<Value, ClientError> {
+        let secs = params.get("timeout").and_then(Value::as_u64).unwrap_or(WAIT_DEFAULT).min(WAIT_MOST);
+        let mut c = self.connect()?;
+        c.set_timeout(Some(Duration::from_secs(secs) + WAIT_SLACK))?;
+        c.call_raw(method, params)
+    }
+
     /// What the caller may call (devdeck's word, kept for the connection), else the
     /// catalog compiled in.
     pub fn methods(&self) -> Vec<MethodEntry> {
@@ -193,7 +214,8 @@ impl Bridge {
             Some(_) => {}
         }
         let again = matches!(class, Class::Observe | Class::Read);
-        match self.call_raw(method, params, again) {
+        let answer = if waits(method) { self.call_waiting(method, params) } else { self.call_raw(method, params, again) };
+        match answer {
             Ok(v) => {
                 let json = serde_json::to_string_pretty(&v).unwrap_or_default();
                 let text = if class == Class::Read { format!("{UNTRUSTED}\n{json}") } else { json };
@@ -208,6 +230,12 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waits_are_told_apart() {
+        assert!(waits("run.wait") && waits("terminal.wait") && waits("job.wait"));
+        assert!(!waits("job.get") && !waits("run.output"));
+    }
 
     #[test]
     fn one_tool_per_allowed_class() {

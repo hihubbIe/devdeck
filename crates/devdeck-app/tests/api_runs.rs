@@ -145,7 +145,7 @@ fn an_agents_run_isnt_saved_as_running_and_the_user_is_told(cx: &mut TestAppCont
     assert!(toasts.iter().any(|t| t == "work · terminal 3 stopped eventservice · run"), "{toasts:?}");
     // Every call that acts is audited once, with what came of it.
     let peer = Peer { pid: Some(77), chain: vec![], program: "x".into() };
-    let opened = cx.update(|cx| api::open(&api, &peer, cx));
+    let opened = cx.update(|cx| api::open(&api, &peer, cx)).expect("opened");
     let _ = cx.update(|cx| api::call(&api, opened.id, "run.start", run(APP, CMD), cx));
     let e = cx.read(|cx| api.read(cx).audit.front().cloned().unwrap());
     assert_eq!((e.event.label(), e.method.as_deref(), e.pid), ("called", Some("run.start"), Some(77)));

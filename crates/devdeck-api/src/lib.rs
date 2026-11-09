@@ -20,7 +20,7 @@ pub use types::{Caller, Class, Policy, Untrusted, View};
 /// The protocol's level; a method says from which level it exists. 2: run.start,
 /// run.stop, run.restart; a run says who started it. 3: reading output, the screen,
 /// notes and files.
-pub const API_LEVEL: u32 = 3;
+pub const API_LEVEL: u32 = 4;
 
 /// Set in a devdeck shell: the socket of the devdeck that started it.
 pub const SOCKET_ENV: &str = "DEVDECK_SOCKET";

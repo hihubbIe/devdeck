@@ -118,6 +118,18 @@ methods! {
         "A note's text (Markdown).", since 3;
     FileRead = "file.read", Read, FileParams => FileLines,
         "Lines of a text file in one of the workspace's folders.", since 3;
+    RunWait = "run.wait", Read, RunWaitParams => Waited,
+        "Waits until a run exits or writes a matching line, 50 s at most; then its state and what it wrote meanwhile, or a job to wait on.", since 4;
+    TerminalWait = "terminal.wait", Read, TerminalWaitParams => Waited,
+        "Waits until the caller's terminal is idle or writes a matching line, 50 s at most; then its state and what it wrote, or a job.", since 4;
+    JobGet = "job.get", Read, JobParams => Waited,
+        "A job's wait, looked at now without waiting.", since 4;
+    JobWait = "job.wait", Read, JobWaitParams => Waited,
+        "Waits on a job again, 50 s at most.", since 4;
+    JobCancel = "job.cancel", Read, JobParams => Cancelled,
+        "Forgets a job.", since 4;
+    JobList = "job.list", Read, NoParams => Jobs,
+        "The caller's jobs, oldest first.", since 4;
 }
 
 /// A method as the catalog lists it.
@@ -197,6 +209,7 @@ mod tests {
             assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read) && m.escalates_to.is_empty(), "{}", m.name);
             let since = match m.class {
                 Class::Run => 2,
+                Class::Read if m.name.ends_with(".wait") || m.name.starts_with("job.") => 4,
                 Class::Read => 3,
                 _ => 1,
             };

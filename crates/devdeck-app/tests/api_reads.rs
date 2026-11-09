@@ -32,7 +32,12 @@ fn agent() -> Who {
 
 fn call<T: serde::de::DeserializeOwned>(method: &str, params: Value, cx: &mut TestAppContext) -> Result<T, devdeck_api::ApiError> {
     let who = agent();
-    let v = cx.update(|cx| dispatch::call(&CallCx { who: &who, instance: "i", state: "demo" }, method, params, cx))?;
+    let answer = cx.update(|cx| dispatch::answer(&CallCx { who: &who, instance: "i", state: "demo" }, method, params, cx));
+    let v = match answer {
+        dispatch::Answer::Now(r) => r?,
+        // A file is read in the background.
+        dispatch::Answer::Later(task) => cx.foreground_executor().block_test(task)?,
+    };
     Ok(serde_json::from_value(v).unwrap())
 }
 

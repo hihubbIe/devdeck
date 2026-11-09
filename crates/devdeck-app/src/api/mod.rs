@@ -14,6 +14,7 @@ pub mod identity;
 pub mod policy;
 pub mod socket;
 pub mod transport;
+pub mod waits;
 
 use devdeck_api::{ApiError, Caller, ErrorKind};
 use gpui::{App, AppContext, Context, Entity, Global};
@@ -34,6 +35,8 @@ const NOTICE_EVERY: Duration = Duration::from_secs(2);
 const AUDIT_ARGS: usize = 200;
 /// A caller connecting again within this is audited once.
 const CONNECT_AUDIT_EVERY: Duration = Duration::from_secs(60);
+/// Connections one caller may hold at once (one can't lock the others out).
+pub const CONNECTIONS_PER_CALLER: usize = 8;
 
 /// A caller, as devdeck found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +112,9 @@ pub struct ApiState {
     pub connections: BTreeMap<u64, Connection>,
     /// Newest first.
     pub audit: VecDeque<audit::Entry>,
+    /// Answers coming later, by connection (one call in flight on each): dropped, the
+    /// call stops (its client hung up, devdeck quits).
+    later: HashMap<u64, gpui::Task<()>>,
     /// Where the whole audit goes (none: kept in memory only).
     pub audit_path: Option<PathBuf>,
     writer: Option<audit::Writer>,
@@ -142,8 +148,13 @@ enum ToUi {
     Call { conn: u64, method: String, params: Value, reply: SyncSender<Result<Value, ApiError>> },
     Notification { conn: u64, method: String },
     Close(u64),
+    /// The client hung up while its call was answered later.
+    Cancel(u64),
     Refused(String),
 }
+
+/// While a call waits for its answer, how often its client is checked for having hung up.
+const HANG_UP_CHECK: Duration = Duration::from_millis(250);
 
 /// Weak: the channel closes when [`ApiState`] goes (on the UI thread), never from a
 /// socket thread.
@@ -162,11 +173,21 @@ impl Sink for ChannelSink {
         rx.recv().ok().flatten()
     }
 
-    fn call(&self, conn: u64, method: String, params: Value) -> Result<Value, ApiError> {
+    fn call(&self, conn: u64, method: String, params: Value, hung_up: &dyn Fn() -> bool) -> Result<Value, ApiError> {
         let (reply, rx) = sync_channel(1);
         let gone = || ApiError::unavailable("devdeck is quitting");
         self.send(ToUi::Call { conn, method, params, reply }).ok_or_else(gone)?;
-        rx.recv().map_err(|_| gone())?
+        loop {
+            match rx.recv_timeout(HANG_UP_CHECK) {
+                Ok(r) => return r,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(gone()),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if hung_up() => {
+                    self.send(ToUi::Cancel(conn));
+                    return Err(ApiError::new(ErrorKind::Expired, "the client hung up"));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
     }
 
     fn notification(&self, conn: u64, method: String) {
@@ -219,6 +240,7 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         state: kind,
         connections: BTreeMap::new(),
         audit: VecDeque::new(),
+        later: HashMap::new(),
         audit_path,
         writer,
         connects: HashMap::new(),
@@ -250,16 +272,28 @@ fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
     let Some(state) = state.upgrade() else { return };
     match msg {
         ToUi::Open(peer, reply) => {
-            let _ = reply.send(Some(open(&state, &peer, cx)));
+            let _ = reply.send(open(&state, &peer, cx));
         }
-        ToUi::Call { conn, method, params, reply } => {
-            let _ = reply.send(call(&state, conn, &method, params, cx));
-        }
+        ToUi::Call { conn, method, params, reply } => match answer(&state, conn, &method, params, cx) {
+            dispatch::Answer::Now(r) => {
+                let _ = reply.send(r);
+            }
+            dispatch::Answer::Later(task) => {
+                let t = cx.spawn(async move |_| {
+                    let _ = reply.send(task.await);
+                });
+                state.update(cx, |s, _| s.later.insert(conn, t));
+            }
+        },
+        ToUi::Cancel(conn) => state.update(cx, |s, _| {
+            s.later.remove(&conn);
+        }),
         ToUi::Notification { conn, method } => state.update(cx, |s, cx| {
             let caller = s.connections.get(&conn).map_or_else(|| "?".into(), |c| c.who.label());
             s.record(audit::Entry::new(caller, audit::Event::Notification, Some(method), None), cx);
         }),
         ToUi::Close(conn) => state.update(cx, |s, cx| {
+            s.later.remove(&conn);
             if s.connections.remove(&conn).is_some() {
                 cx.notify();
             }
@@ -273,8 +307,9 @@ fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
     }
 }
 
-/// A new connection from `peer`: who it is, recorded.
-pub fn open(state: &Entity<ApiState>, peer: &Peer, cx: &mut App) -> Opened {
+/// A new connection from `peer`: who it is, recorded; None past
+/// [`CONNECTIONS_PER_CALLER`].
+pub fn open(state: &Entity<ApiState>, peer: &Peer, cx: &mut App) -> Option<Opened> {
     let who = identify(peer, cx);
     state.update(cx, |s, cx| s.open(who, peer.pid, cx))
 }
@@ -294,40 +329,74 @@ pub fn notice(who: &Who, text: String, cx: &mut App) {
     }
 }
 
-/// A call on a connection: its caller must still be there, then the method runs.
+/// [`answer`] for a method that answers now (tests).
 pub fn call(state: &Entity<ApiState>, conn: u64, method: &str, params: Value, cx: &mut App) -> Result<Value, ApiError> {
+    match answer(state, conn, method, params, cx) {
+        dispatch::Answer::Now(r) => r,
+        dispatch::Answer::Later(_) => Err(ApiError::invalid(format!("{method} answers later"))),
+    }
+}
+
+/// A call on a connection: its caller must still be there, then the method runs. Its
+/// outcome is audited when it's known (a wait's, once it ends).
+pub fn answer(state: &Entity<ApiState>, conn: u64, method: &str, params: Value, cx: &mut App) -> dispatch::Answer {
     let (who, pid, instance, kind) = {
         let s = state.read(cx);
-        let c = s.connections.get(&conn).ok_or_else(|| ApiError::new(ErrorKind::Expired, "connection closed"))?;
+        let Some(c) = s.connections.get(&conn) else { return dispatch::Answer::Now(Err(ApiError::new(ErrorKind::Expired, "connection closed"))) };
         (c.who.clone(), c.pid, s.instance.clone(), s.state)
     };
     if !alive(&who, cx) {
         state.update(cx, |s, cx| s.record(audit::Entry::new(who.label(), audit::Event::Expired, Some(method.into()), None), cx));
-        return Err(ApiError::new(ErrorKind::Expired, "the caller's shell ended; connect again"));
+        return dispatch::Answer::Now(Err(ApiError::new(ErrorKind::Expired, "the caller's shell ended; connect again")));
     }
     let cx_call = dispatch::CallCx { who: &who, instance: &instance, state: kind };
     let args: String = params.to_string().chars().take(AUDIT_ARGS).collect();
-    let result = dispatch::call(&cx_call, method, params, cx);
+    match dispatch::answer(&cx_call, method, params, cx) {
+        dispatch::Answer::Now(result) => {
+            audited(state, conn, &who, pid, method, &args, &result, cx);
+            dispatch::Answer::Now(result)
+        }
+        dispatch::Answer::Later(task) => {
+            let (state, method) = (state.clone(), method.to_string());
+            dispatch::Answer::Later(cx.spawn(async move |cx| {
+                // The caller's shell ending ends the call (looked at as often as a wait).
+                let gone = async {
+                    loop {
+                        cx.background_executor().timer(waits::TICK).await;
+                        if !cx.update(|cx| alive(&who, cx)) {
+                            return Err(ApiError::new(ErrorKind::Expired, "the caller's shell ended"));
+                        }
+                    }
+                };
+                let result = futures_lite::future::or(task, gone).await;
+                cx.update(|cx| audited(&state, conn, &who, pid, &method, &args, &result, cx));
+                result
+            }))
+        }
+    }
+}
+
+/// Records a call's outcome: one entry per call that acts, a look only when refused.
+#[allow(clippy::too_many_arguments)]
+fn audited(state: &Entity<ApiState>, conn: u64, who: &Who, pid: Option<u32>, method: &str, args: &str, result: &Result<Value, ApiError>, cx: &mut App) {
     let acts = dispatch::info(method).is_some_and(|m| m.class != devdeck_api::Class::Observe);
     state.update(cx, |s, cx| {
         if let Some(c) = s.connections.get_mut(&conn) {
             c.calls += 1;
         }
-        // One entry per call that acts, with its outcome; a look only when refused.
-        let outcome = match &result {
+        let outcome = match result {
             Ok(_) => "done".to_string(),
             Err(e) => e.kind.as_str().to_string(),
         };
         if acts {
             s.record(audit::Entry::new(who.label(), audit::Event::Called, Some(method.into()), Some(format!("{args} → {outcome}"))).with_pid(pid), cx);
-        } else if let Err(e) = &result
+        } else if let Err(e) = result
             && e.kind == ErrorKind::PermissionDenied
         {
             s.record(audit::Entry::new(who.label(), audit::Event::Denied, Some(method.into()), None).with_pid(pid), cx);
         }
         cx.notify();
     });
-    result
 }
 
 /// The caller of a connection: the closest of its ancestors that is a shell devdeck
@@ -360,7 +429,13 @@ pub fn alive(who: &Who, cx: &App) -> bool {
 }
 
 impl ApiState {
-    fn open(&mut self, who: Who, pid: Option<u32>, cx: &mut Context<Self>) -> Opened {
+    fn open(&mut self, who: Who, pid: Option<u32>, cx: &mut Context<Self>) -> Option<Opened> {
+        if self.connections.values().filter(|c| c.who == who).count() >= CONNECTIONS_PER_CALLER {
+            if self.first_in_a_while(format!("too many: {}", who.label())) {
+                self.record(audit::Entry::new(who.label(), audit::Event::Refused, None, Some(format!("more than {CONNECTIONS_PER_CALLER} connections"))), cx);
+            }
+            return None;
+        }
         let id = self.next;
         self.next += 1;
         let outside = who.is_outside();
@@ -370,11 +445,13 @@ impl ApiState {
         }
         self.connections.insert(id, Connection { who, pid, since: SystemTime::now(), calls: 0 });
         cx.notify();
-        Opened { id, outside }
+        Some(Opened { id, outside })
     }
 
     /// Stops serving and removes the socket (devdeck quitting).
     fn close(&mut self) {
+        // Waits answer `unavailable` (their reply goes with them) before the socket goes.
+        self.later.clear();
         if let Some((bound, mut stop)) = self._serving.take() {
             stop.stop();
             bound.remove();
