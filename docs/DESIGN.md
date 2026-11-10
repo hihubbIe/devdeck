@@ -500,6 +500,20 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   sidebar's list header (which keeps its activity name: it has no tab). Pane headers keep
   their own view-action icons (part of the layout engine).
 
+## Notifications (user, 2026-11-10)
+
+- Every toast is a notification: it lands in the notification center (the one bell, in
+  the title bar next to settings); the center keeps them, so toasts stay short-lived.
+- The bell's badge: nothing unread, the bell alone; something unread, a small blue dot;
+  unread errors or failures, a larger red dot with their count (red wins over blue).
+- What a view can notify about is chosen in one shared **notify** dropdown (a crossed bell
+  when nothing is ticked, the bell in the accent when anything is): a checkbox per
+  option, no "all" or "none".
+- **Standing rule:** a notification option's label is colored with the severity of the
+  toast it produces (info blue, success green, warning amber, error red). Its words carry
+  the meaning, so no icon is needed: a named exception to R9.1's color-with-an-icon.
+- OS (desktop) notifications are postponed (the plan of M3 step 7, kept, marked so).
+
 ## Settings and scaling
 
 - Settings open as a full-window view from a title-bar button, not as a tab.

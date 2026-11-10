@@ -1899,3 +1899,142 @@ No path writes without edit mode, the protected env's name or the image confirme
 5. Tests. **Fixed**: two redeploys get two stamps; an old `deploys.json` reads.
 6. Docs. **Fixed**: DESIGN, ROADMAP, this outcome.
 7. Demo pod names after a deploy change in snapshots: **accepted** (cosmetic).
+
+## Step 7 · Notifications (plan, 2026-11-10) — OS notifications postponed
+
+Postponed by the user on 2026-11-10: notifications are toasts and a notification center
+first (`docs/plans/notifications.md`); desktop notifications come back later. Kept as a
+record.
+
+Requirements: the 2026-11-10 decisions (per service and env, events picked on the service
+view, the desktop's own notification always, off at every start), R11.6 (OS-specific code
+in `devdeck-sys`), R11.3 (a pinned dependency), R5.1, R5.4, R5.5.
+
+### Decisions (user, 2026-11-10; the three open points take the defaults proposed)
+
+- A **bell** on the service view opens a dropdown with a checkbox per event, for that
+  service on the view's env; also a registered action (`svc.notify`, a key free in
+  `ServiceView`). The bell shows in the accent while any event is ticked.
+- Events: a new branch deployed (by anyone, with who); the same branch redeployed; the
+  rollout finished; the rollout failed or got stuck (with its reason); pods crashing
+  outside a deploy (a pod entering a crash loop or failing to pull while no rollout of the
+  service is under way).
+- Default (1): subscriptions outlive the service view until devdeck quits; the Cluster
+  list row of a service with notifications on shows a small bell (its hover lists the
+  events; its row menu turns them off).
+- Default (2): `notify-rust` 4.18.2 (pinned; 4.19.0 is two days old), D-Bus through `zbus`
+  on Linux; on macOS its default backend works from a plain binary without a bundle
+  (checked in its README, 2026-11-10).
+- Default (3): clicking a notification brings devdeck forward with that service's view
+  open, where the desktop supports actions; nothing where it doesn't.
+
+### The OS layer (`devdeck-sys`, `notify` module)
+
+- `notify(&Note { title, body, action: Option<label> }) -> Result<NoteHandle, SysError>`
+  and a way to hear the action's click (a channel); Linux backend through `notify-rust`
+  (XDG, zbus), macOS backend through `notify-rust`'s default macOS backend; other targets
+  `SysError::Unsupported` with its reason. A conformance test per backend that can run
+  headless (Linux: skipped when no session bus, said so).
+- `docs/PLATFORMS.md` lists the capability.
+
+### The app
+
+- `Notifications` (one per workspace, in its services): the subscriptions by (env,
+  service) with their events; empty at start, never saved.
+- It listens to the cluster's deploy follow-up (`cluster_deploys.rs`): a deploy spotted
+  (new branch, redeploy, by whom), a rollout's end (done, failing, stuck) — each state
+  change once per rollout; and to the service's pods for crashes outside a rollout (a pod
+  whose container enters CrashLoopBackOff, or ErrImagePull/ImagePullBackOff, with no
+  unfinished rollout of the service), once per pod and container run.
+- While a subscription lives it holds the service's pods (a `PodsInterest`) and wants its
+  env.
+- Grouping: events within 3 s for one service are one notification ("graphservice on
+  dev33: feature-oidc deployed by devdeck, rollout finished").
+- Text: title "<service> on <env>", body the event in words; a protected env's name
+  marked in the body ("hades (protected)").
+- A click: the main window to the front (GPUI's activation), the service view opened in
+  the focused pane.
+- When notifications can't be sent (no session bus, unsupported), the bell is disabled
+  with the reason (R5.5).
+
+### Files
+
+- `devdeck-sys`: `notify/{mod.rs, linux.rs, macos.rs, unsupported.rs}`, `Cargo.toml`
+  (`notify-rust`), tests.
+- `devdeck-app`: `notifications.rs` (new), `services.rs`, `cluster_deploys.rs` (events
+  out), `views/service_view.rs` (bell, dropdown, action), `sidebar.rs` (the row's bell),
+  `registry.rs`, `bin/snapshot.rs`.
+- Root `Cargo.toml` (the pinned dependency).
+- Docs: `DESIGN.md`, `PLATFORMS.md`, `REQUIREMENTS.md`, `ROADMAP.md`.
+
+### States to check
+
+The bell off, on (some events), disabled (no notifications on this system); the dropdown;
+the Cluster row's bell and its hover; a notification for each event (a fake sender
+records them in tests); grouping; a click opening the service.
+
+### Tests
+
+- devdeck-sys: the module's API on a fake (the app uses a sender trait so tests record
+  notes); the Linux backend's conformance test skipped without a session bus.
+- App, on the scripted deploy driver: each event notifies once when ticked and not when
+  not; nothing at start; a deploy by Slack says who; a failing rollout says why; a crash
+  outside a rollout notifies once per pod run, not during a rollout; grouping within 3 s;
+  the subscription outlives the view and is turned off from the row's menu; the bell's
+  reason when sending is unsupported; a click opens the service view.
+- Snapshots: the bell's dropdown; the Cluster row with a bell.
+
+### Out of scope
+
+Saving subscriptions across restarts; notifications for other things than the cluster;
+sounds; Windows.
+
+### Review of the step 7 plan (subagent, 2026-11-10) and assessment
+
+Every point accepted; defaults (2) and (3) change with points 1–3, for the user to see.
+1. `notify-rust` on macOS builds Objective-C (`mac-notification-sys`'s `build.rs`), which
+   breaks the Mac check from Linux (PLATFORMS §4); without a bundle it notifies as
+   Finder; a click needs the main run loop. **Accepted**: no `notify-rust`; macOS is
+   `unsupported` ("needs an app bundle: comes with packaging"), the bell disabled with
+   that reason there.
+2. On Linux, plain `zbus` fits better (`notify-rust` opens a connection per send, a
+   blocked thread per click waiter, and unwraps D-Bus calls). **Accepted**: `zbus` 5.19.0
+   is already in `Cargo.lock` through GPUI; pinned (`default-features = false, features =
+   ["async-io"]`) in `devdeck-sys`'s Linux backend, a row in PLATFORMS' "Build or buy":
+   one connection, `Notify` with `replaces_id` per (env, service), one stream of
+   `ActionInvoked` / `NotificationClosed` read on the background executor into a channel.
+   No new crate in the build.
+3. A click won't raise the window on Wayland (GPUI's `activate()` needs a recent press;
+   the server's `ActivationToken` can't be handed to GPUI). **Accepted**: a click opens
+   the service view; on Wayland the window may only ask for attention. A manual check,
+   not a promise.
+4. Deduping on "each state change" floods (ready counts and failing reasons change on
+   every pod update; a crash loop swings failing ↔ rolling). **Accepted**: one
+   notification per (env, service, rollout, kind); the rollout is its record's start and
+   revision or stamp; failing and stuck are one kind; replaced isn't an event.
+5. "Outside a rollout" notified a failure twice (a failing rollout turning stuck, then its
+   pods). **Accepted**: pods of a template whose rollout notified failing are skipped; at
+   most one crash notification per (service, template) until a pod of it is ready again;
+   `pod_failure`'s threshold (2 restarts) decides.
+6. Never block the UI thread. **Accepted**: probing (`GetServerInformation`) and sending
+   run on the background executor; the bell's reason comes from the capability's runtime
+   answer; a send failing later gives one toast and disables the bell until restart.
+7. The conformance test would pop real notifications. **Accepted**: tested against an
+   in-process fake `org.freedesktop.Notifications` on a peer-to-peer connection (Notify,
+   `replaces_id`, ActionInvoked), headless, no skips.
+8. Subscriptions on another env than the list's can't be seen. **Accepted**: an action
+   "notifications" listing every subscription (palette), each turned off from it, and
+   "turn all off".
+9. A click across workspaces. **Accepted**: it switches to the workspace first; a gone
+   workspace or cluster does nothing (logged); a minimized window is restored. Tested for
+   a background workspace.
+10. Keys and the toolbar. **Accepted**: `svc.notify` on `b` (free in `ServiceView`); the
+    row menu's "turn off" an action too; `Icon::Bell` added; the bell built as a
+    `ToolAction` so the service view's later move onto the toolbar costs nothing; a
+    disabled reason in its tooltip.
+11. Holding the pods. **Accepted**, with the reason written: deploys made elsewhere are
+    followed from deployment counts only, so without the pods a crash-looping one wouldn't
+    read as failing before stuck.
+12. Smaller ones. **Accepted**: deploys during a reconnect's new baseline are missed (said
+    in DESIGN); two workspaces on one env notify twice (accepted, said); the module is
+    `desktop_note`; the 3 s grouping on a timer the tests advance.
