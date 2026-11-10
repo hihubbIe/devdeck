@@ -98,7 +98,7 @@ metrics, protected envs. Plan:
    — done 2026-11-08.
 4. Logs — done 2026-11-10.
 5. Change the deployed branch — done 2026-11-10.
-6. Redeploy the same branch.
+6. Redeploy the same branch — done 2026-11-10.
 7. Notifications.
 8. Close.
 

@@ -134,6 +134,21 @@ pub struct Container {
     pub resources: Resources,
     /// Config maps it reads its environment from.
     pub config_maps: Vec<String>,
+    /// `imagePullPolicy` as the spec says it; `None` when unset (see
+    /// [`Container::pull_policy`]).
+    pub pull_policy: Option<String>,
+}
+
+impl Container {
+    /// The pull policy that applies: the spec's, else the API server's default (`Always`
+    /// for a `latest` tag or none, else `IfNotPresent`).
+    pub fn pull_policy(&self) -> &str {
+        match self.pull_policy.as_deref() {
+            Some(p) if !p.is_empty() => p,
+            _ if self.image.tag.as_deref() == Some("latest") => "Always",
+            _ => "IfNotPresent",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -274,6 +289,12 @@ pub struct Deployment {
     pub failure: Option<String>,
     /// Who changed its spec last (`managedFields`: `devdeck`, `kubectl-set`, `helm`…).
     pub manager: Option<String>,
+    /// Whether its pod template has annotations (a redeploy adds one to them, or adds
+    /// them whole).
+    pub template_annotated: bool,
+    /// The pod template's `kubectl.kubernetes.io/restartedAt`: when it was last
+    /// redeployed (`kubectl rollout restart`, devdeck's redeploy).
+    pub restarted_at: Option<String>,
 }
 
 /// Where a deployment's rollout stands, as the cluster says.
@@ -334,8 +355,9 @@ impl Deployment {
     }
 }
 
-/// One deploy in devdeck's history (R7.2): what it saw, whoever made it.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// One deploy in devdeck's history (R7.2): what it saw, whoever made it. `from` equal to
+/// `to` is a redeploy.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeployRecord {
     /// When it started (epoch seconds).
     pub at_s: u64,
@@ -347,6 +369,19 @@ pub struct DeployRecord {
     /// How it ended (`done`, `failed: …`, `stuck: …`, `replaced by main`); empty while it
     /// runs.
     pub outcome: String,
+    /// The deployment's revision and pod template `restartedAt` it came with: a redeploy
+    /// left open when devdeck closed is followed again only if they still match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restarted_at: Option<String>,
+}
+
+impl DeployRecord {
+    /// The same branch again (`kubectl rollout restart`, devdeck's redeploy).
+    pub fn redeploy(&self) -> bool {
+        self.from == self.to
+    }
 }
 
 /// Deploys kept per service (the immediate history is what matters; user, 2026-11-10).
@@ -363,6 +398,44 @@ pub fn remember(history: &mut Vec<DeployRecord>, r: DeployRecord) {
 pub fn set_image_command(namespace: &str, d: &Deployment, tag: &str) -> String {
     let c = d.main();
     format!("kubectl -n {namespace} set image deployment/{} {}={}:{tag}", d.name, c.name, c.image.repo)
+}
+
+/// The command a redeploy is the equivalent of (R7.3 states it before confirming).
+pub fn restart_command(namespace: &str, d: &Deployment) -> String {
+    format!("kubectl -n {namespace} rollout restart deployment/{}", d.name)
+}
+
+/// A redeploy's `restartedAt` at `nanos` since the epoch: RFC 3339 in UTC with nanoseconds
+/// (`2026-11-10T09:12:44.512345678Z`), finer than kubectl's whole seconds so devdeck's own
+/// redeploy is told from another one made the same second.
+pub fn restart_stamp(nanos: u128) -> String {
+    let secs = (nanos / 1_000_000_000) as i64;
+    let frac = (nanos % 1_000_000_000) as u32;
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days to a civil date (Howard Hinnant's `civil_from_days`).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{frac:09}Z", rest / 3600, rest % 3600 / 60, rest % 60)
+}
+
+/// What a redeploy of `c` (the main container) may not do, said before confirming: an
+/// image pinned to a digest restarts the same build; a pull policy other than `Always`
+/// keeps the build nodes already have.
+pub fn redeploy_warning(c: &Container) -> Option<String> {
+    if c.image.digest.is_some() {
+        return Some("pinned to a digest: the same build restarts".into());
+    }
+    match c.pull_policy() {
+        "Always" => None,
+        p => Some(format!("{}'s imagePullPolicy is {p}: pods on nodes that already have this tag keep the build they have", c.name)),
+    }
 }
 
 /// Whether a write may go ahead on `env`.
@@ -412,6 +485,11 @@ pub struct Rollout {
 }
 
 impl Rollout {
+    /// The same branch again (`kubectl rollout restart`, devdeck's redeploy).
+    pub fn redeploy(&self) -> bool {
+        self.from == self.to
+    }
+
     pub fn finished(&self) -> bool {
         matches!(self.state, RolloutState::Done | RolloutState::Stuck { .. } | RolloutState::Replaced { .. })
     }
@@ -430,6 +508,7 @@ impl Rollout {
     /// What lists say about it: `rolling out 1/2`, `failing: image … not found`.
     pub fn label(&self) -> Option<String> {
         match &self.state {
+            RolloutState::Rolling { ready, of } if self.redeploy() => Some(format!("redeploying {} {ready}/{of}", self.to)),
             RolloutState::Rolling { ready, of } => Some(format!("rolling out {ready}/{of}")),
             RolloutState::Failing { reason, .. } => Some(format!("failing: {reason}")),
             RolloutState::Stuck { reason } => Some(format!("stuck: {reason}")),
@@ -478,7 +557,9 @@ pub fn pod_failure(pod: &Pod, image: &str) -> Option<String> {
 
 /// Where `r` stands on `d` and its pods: nothing counts until the controller has seen its
 /// generation; stuck past the deadline; done once settled with every new pod ready;
-/// failing while a new pod is in trouble or pods can't be created; else rolling.
+/// failing while a new pod is in trouble or pods can't be created; else rolling. Without
+/// pods, or for a redeploy without the newest template (its old pods run the same tag),
+/// the deployment's own counts decide.
 pub fn assess(r: &Rollout, d: &Deployment, pods: &[Pod]) -> RolloutState {
     let of = d.replicas;
     if d.observed < r.generation {
@@ -488,8 +569,9 @@ pub fn assess(r: &Rollout, d: &Deployment, pods: &[Pod]) -> RolloutState {
         let reason = d.failure.clone().unwrap_or_else(|| "it went past its progress deadline".into());
         return RolloutState::Stuck { reason };
     }
-    if pods.is_empty() {
-        // Nobody watches its pods: the deployment's own counts, as `kubectl rollout status`.
+    if pods.is_empty() || (d.template.is_none() && r.redeploy()) {
+        // Nobody watches its pods, or they can't tell old from new: the deployment's own
+        // counts, as `kubectl rollout status`.
         if d.progress == Progress::Settled && d.updated >= of && d.ready >= of {
             return RolloutState::Done;
         }
@@ -526,7 +608,7 @@ mod tests {
     use super::*;
 
     fn container(name: &str, image: &str) -> Container {
-        Container { name: name.into(), image: Image::parse(image), ports: vec![5800], resources: Resources::default(), config_maps: Vec::new() }
+        Container { name: name.into(), image: Image::parse(image), ports: vec![5800], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None }
     }
 
     fn dep() -> Deployment {
@@ -665,7 +747,7 @@ mod tests {
     fn the_history_keeps_the_last_ten() {
         let mut h = Vec::new();
         for i in 0..12 {
-            remember(&mut h, DeployRecord { at_s: i, from: "a".into(), to: "b".into(), by: "seen".into(), outcome: "done".into() });
+            remember(&mut h, DeployRecord { at_s: i, from: "a".into(), to: "b".into(), by: "seen".into(), outcome: "done".into(), ..Default::default() });
         }
         assert_eq!(h.len(), HISTORY_KEPT);
         assert_eq!((h[0].at_s, h[9].at_s), (2, 11), "the newest kept");
@@ -679,6 +761,56 @@ mod tests {
         assert!(check_write(&Env { name: "dev35".into(), protected: false }, false).is_ok());
         assert!(unlock_matches(&hades, " hades "));
         assert!(!unlock_matches(&hades, "Hades"));
+    }
+
+    #[test]
+    fn restart_stamps_are_rfc3339_with_nanoseconds() {
+        assert_eq!(restart_stamp(0), "1970-01-01T00:00:00.000000000Z");
+        assert_eq!(restart_stamp(1_762_766_764_512_345_678), "2025-11-10T09:26:04.512345678Z");
+        assert_eq!(restart_stamp(951_782_400_000_000_001), "2000-02-29T00:00:00.000000001Z", "a leap day");
+    }
+
+    #[test]
+    fn the_restart_command() {
+        assert_eq!(restart_command("dev35", &dep()), "kubectl -n dev35 rollout restart deployment/entityservice");
+    }
+
+    #[test]
+    fn the_pull_policy_that_applies_and_the_redeploy_warning() {
+        let mut c = container("app", "registry/app:main");
+        assert_eq!(c.pull_policy(), "IfNotPresent", "unset, a tag other than latest");
+        assert_eq!(redeploy_warning(&c), Some("app's imagePullPolicy is IfNotPresent: pods on nodes that already have this tag keep the build they have".into()));
+        for image in ["registry/app:latest", "registry/app"] {
+            assert_eq!(container("app", image).pull_policy(), "Always", "{image}: the API server's default");
+            assert_eq!(redeploy_warning(&container("app", image)), None);
+        }
+        c.pull_policy = Some("Always".into());
+        assert_eq!((c.pull_policy(), redeploy_warning(&c)), ("Always", None));
+        c.pull_policy = Some("Never".into());
+        assert!(redeploy_warning(&c).is_some_and(|w| w.contains("imagePullPolicy is Never")), "Never warns too");
+        let mut pinned = container("app", "registry/app:main@sha256:abc");
+        pinned.pull_policy = Some("Always".into());
+        assert_eq!(redeploy_warning(&pinned), Some("pinned to a digest: the same build restarts".into()));
+    }
+
+    #[test]
+    fn a_redeploy_without_the_newest_template_goes_by_the_deployments_counts() {
+        let mut d = dep();
+        d.progress = Progress::Rolling;
+        d.updated = 1;
+        d.ready = 2;
+        let mut redeploy = rollout("1.84.2", 0);
+        redeploy.image = "registry/entityservice:1.84.2".into();
+        let old = [new_pod("old", true, "running", 0, None), new_pod("old", true, "running", 0, None)];
+        let mut old = old.to_vec();
+        for p in &mut old {
+            p.tag = "1.84.2".into();
+        }
+        assert_eq!(assess(&redeploy, &d, &old), RolloutState::Rolling { ready: 1, of: 2 }, "old pods on the same tag aren't new");
+        assert_eq!(redeploy.label().as_deref(), Some("redeploying 1.84.2 0/2"));
+        d.progress = Progress::Settled;
+        d.updated = 2;
+        assert_eq!(assess(&redeploy, &d, &old), RolloutState::Done);
     }
 
     #[test]

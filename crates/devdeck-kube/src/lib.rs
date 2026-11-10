@@ -10,7 +10,7 @@ pub mod errors;
 pub mod kubeconfigs;
 pub mod logs;
 
-pub use deploy::{DeployError, FIELD_MANAGER, ImageChange, can, set_image};
+pub use deploy::{DeployError, FIELD_MANAGER, ImageChange, Restart, can, restart, set_image};
 pub use driver::{EnvUpdate, MetricsError, PodUpdate, WatchHandle, metrics, watch, watch_pods};
 pub use kubeconfigs::{Kubeconfigs, Target};
 pub use logs::{LogFrom, LogLine, LogRefusal, LogUpdate, logs, read_logs};

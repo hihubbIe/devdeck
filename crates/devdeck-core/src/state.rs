@@ -332,12 +332,23 @@ mod tests {
     fn deploys_round_trip_and_broken() {
         let s = store("deploys");
         assert_eq!(s.load_deploys("work"), Loaded::Missing);
-        let r = crate::cluster::DeployRecord { at_s: 5, from: "main".into(), to: "lan-1".into(), by: "devdeck".into(), outcome: "done".into() };
+        let r = crate::cluster::DeployRecord { at_s: 5, from: "main".into(), to: "lan-1".into(), by: "devdeck".into(), outcome: "done".into(), ..Default::default() };
         let d = Deploys { version: 1, envs: BTreeMap::from([("dev33".to_string(), BTreeMap::from([("graphservice".to_string(), vec![r])]))]) };
         s.save_deploys("work", &d).unwrap();
         assert_eq!(s.load_deploys("work"), Loaded::Ok(d));
         std::fs::write(s.dir.join("workspaces/work/deploys.json"), "{").unwrap();
         assert!(matches!(s.load_deploys("work"), Loaded::Broken(_)));
+    }
+
+    #[test]
+    fn an_old_deploys_file_still_reads() {
+        let s = store("deploys-old");
+        let old = r#"{"version":1,"envs":{"dev33":{"api":[{"at_s":5,"from":"a","to":"b","by":"seen","outcome":"done"}]}}}"#;
+        std::fs::create_dir_all(s.dir.join("workspaces/work")).unwrap();
+        std::fs::write(s.dir.join("workspaces/work/deploys.json"), old).unwrap();
+        let Loaded::Ok(d) = s.load_deploys("work") else { panic!("read") };
+        let r = &d.envs["dev33"]["api"][0];
+        assert_eq!((r.revision, r.restarted_at.as_deref()), (None, None), "fields added later default");
     }
 
     #[test]

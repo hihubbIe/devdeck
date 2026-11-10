@@ -1,16 +1,22 @@
-//! Cluster writes (R7.3): a deployment's image changed, and whether the account may, on
-//! the watches' runtime and shared clients.
+//! Cluster writes (R7.3): a deployment's image changed, a deployment redeployed (what
+//! `kubectl rollout restart` does), and whether the account may, on the watches' runtime
+//! and shared clients.
 //!
 //! - The image is changed by a JSON Patch that first tests the container at that index is
 //!   still the one confirmed (its name and image), so what runs is what the user saw; the
 //!   API server answers a failed test with a 422 whose message is the generic "the server
 //!   rejected our request due to an error in our request" (apiserver's patch handler drops
 //!   json-patch's own words), read as [`DeployError::Changed`].
+//! - A redeploy sets the pod template's `kubectl.kubernetes.io/restartedAt` by a JSON Patch
+//!   that tests the main container is still the one confirmed. kube's `Api::restart` isn't
+//!   used: it sends a merge patch of `kube.kubernetes.io/restartedAt` (not kubectl's key),
+//!   with no field manager and nothing tested.
 //! - A 403 is the account's only when it is an RBAC refusal (`… is forbidden: User "…"
 //!   cannot patch …`); an admission webhook answers 403 too, in its own words.
 //! - Each call is bounded in time: a connection that died without a word answers too.
 
 use crate::Target;
+use crate::convert::RESTARTED_AT;
 use crate::driver::{client, runtime, until_closed};
 use crate::errors::describe;
 use k8s_openapi::api::apps::v1 as apps;
@@ -43,6 +49,20 @@ pub struct ImageChange {
     pub container: String,
     pub from: String,
     pub to: String,
+}
+
+/// One redeploy, as confirmed: the main container (its index and name) and the image it
+/// runs, the `restartedAt` stamp to set (RFC 3339 with fractional seconds: devdeck knows
+/// its own redeploy by it), the generation seen and whether the pod template has
+/// annotations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Restart {
+    pub index: usize,
+    pub container: String,
+    pub image: String,
+    pub at: String,
+    pub generation: u64,
+    pub annotated: bool,
 }
 
 /// Why an image change was refused.
@@ -85,14 +105,52 @@ pub fn set_image(target: &Target, deployment: &str, change: &ImageChange) -> asy
                 Err(e) => Err(DeployError::Other(describe(&e, &target, DOING))),
             }
         };
-        let _ = tx.try_send(within_write(&target, write).await);
+        let _ = tx.try_send(within_write(&target, "the image change", write).await);
     });
     rx
 }
 
-/// `write`, or "didn't answer" after [`WRITE_TIMEOUT`].
-async fn within_write(target: &Target, write: impl Future<Output = Result<u64, DeployError>>) -> Result<u64, DeployError> {
-    tokio::time::timeout(WRITE_TIMEOUT, write).await.unwrap_or_else(|_| Err(DeployError::Other(format!("{} ({}) didn't answer the image change: it may have gone through, the rollout will say", target.cluster, target.env))))
+/// Redeploys: a JSON Patch that tests the container at `index` is named `container` and
+/// runs `image`, then adds `restartedAt` = `at` to the pod template's annotations, or, when
+/// it has none, adds the annotations whole (which replaces them, so it also tests
+/// `/metadata/generation` is still the one seen: annotations added meanwhile came with a
+/// newer generation). Sent with field manager `devdeck`; answers once with the generation
+/// the cluster gave the changed spec. Same errors and timeout as [`set_image`].
+pub fn restart(target: &Target, deployment: &str, restart: &Restart) -> async_channel::Receiver<Result<u64, DeployError>> {
+    let (tx, rx) = async_channel::bounded(1);
+    let (target, deployment, restart) = (target.clone(), deployment.to_owned(), restart.clone());
+    runtime().spawn(async move {
+        let write = async {
+            match client(&target).await {
+                Ok((client, _user)) => patch(client, &target, &deployment, restart_patch(&restart)).await,
+                Err(e) => Err(DeployError::Other(describe(&e, &target, DOING))),
+            }
+        };
+        let _ = tx.try_send(within_write(&target, "the redeploy", write).await);
+    });
+    rx
+}
+
+/// `write`, or "didn't answer <what>" after [`WRITE_TIMEOUT`].
+async fn within_write(target: &Target, what: &str, write: impl Future<Output = Result<u64, DeployError>>) -> Result<u64, DeployError> {
+    tokio::time::timeout(WRITE_TIMEOUT, write).await.unwrap_or_else(|_| Err(DeployError::Other(format!("{} ({}) didn't answer {what}: it may have gone through, the rollout will say", target.cluster, target.env))))
+}
+
+/// The JSON Patch of `r`. In a JSON Pointer `/` is written `~1` (RFC 6901).
+fn restart_patch(r: &Restart) -> serde_json::Value {
+    let container = format!("/spec/template/spec/containers/{}", r.index);
+    let mut ops = vec![
+        json!({"op": "test", "path": format!("{container}/name"), "value": r.container}),
+        json!({"op": "test", "path": format!("{container}/image"), "value": r.image}),
+    ];
+    if r.annotated {
+        let key = RESTARTED_AT.replace('~', "~0").replace('/', "~1");
+        ops.push(json!({"op": "add", "path": format!("/spec/template/metadata/annotations/{key}"), "value": r.at}));
+    } else {
+        ops.push(json!({"op": "test", "path": "/metadata/generation", "value": r.generation}));
+        ops.push(json!({"op": "add", "path": "/spec/template/metadata/annotations", "value": {RESTARTED_AT: r.at}}));
+    }
+    serde_json::Value::Array(ops)
 }
 
 /// The JSON Patch of `change`.
@@ -107,8 +165,14 @@ fn image_patch(change: &ImageChange) -> serde_json::Value {
 
 /// Sends `change` to `deployment` of `target` through `client`.
 async fn patch_image(client: Client, target: &Target, deployment: &str, change: &ImageChange) -> Result<u64, DeployError> {
+    patch(client, target, deployment, image_patch(change)).await
+}
+
+/// Sends the JSON Patch `operations` to `deployment` of `target` through `client`, with
+/// field manager `devdeck`; the generation of the changed spec.
+async fn patch(client: Client, target: &Target, deployment: &str, operations: serde_json::Value) -> Result<u64, DeployError> {
     // kube's `Patch::Json` holds a `json_patch::Patch`, read from the JSON it is.
-    let operations = serde_json::from_value(image_patch(change)).map_err(|e| DeployError::Other(e.to_string()))?;
+    let operations = serde_json::from_value(operations).map_err(|e| DeployError::Other(e.to_string()))?;
     let params = PatchParams { field_manager: Some(FIELD_MANAGER.into()), ..Default::default() };
     let api: Api<apps::Deployment> = Api::namespaced(client, &target.namespace);
     match api.patch(deployment, &params, &Patch::Json::<()>(operations)).await {

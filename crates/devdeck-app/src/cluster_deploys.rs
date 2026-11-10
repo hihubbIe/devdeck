@@ -1,14 +1,16 @@
-//! Deploys (R7.3, R7.4, R7.6): changing a deployment's branch, following every deploy to
-//! its end, and devdeck's history of them.
+//! Deploys (R7.3, R7.4, R7.5, R7.6): changing a deployment's branch, redeploying the same
+//! one, following every deploy to its end, and devdeck's history of them.
 //!
 //! - A deploy changes the main container's image only, pinned to the image confirmed
-//!   (the driver's write fails if the cluster changed meanwhile). Guards, below the UI:
-//!   edit mode and the driver ([`Cluster::writes`]), the account (the access review's
-//!   answer, when known), a protected env unlocked, no write of the same service in flight,
-//!   not paused, a container that is clearly the main one, another image.
+//!   (the driver's write fails if the cluster changed meanwhile); a redeploy sets the pod
+//!   template's `restartedAt`, pinned the same way. Guards, below the UI
+//!   ([`Cluster::write_blocked`], both): edit mode and the driver ([`Cluster::writes`]), the
+//!   account (the access review's answer, when known), a protected env unlocked, no write of
+//!   the same service in flight, not paused, a container that is clearly the main one; a
+//!   branch change also needs another image.
 //! - Deploys are spotted on the deployment watch: a revision that grows (or an image that
-//!   changes) is one, whoever made it: devdeck's own when it matches the write in flight,
-//!   else the tool that changed the spec (`managedFields`), else "seen". The first list of
+//!   changes) is one, whoever made it: devdeck's own when it matches the write in flight
+//!   (its image; a redeploy's `restartedAt`, which has fractional seconds), else the tool that changed the spec (`managedFields`), else "seen". The first list of
 //!   an env is the baseline: nothing before it is a deploy.
 //! - Each deploy is followed ([`assess`]) on every update of its deployment and pods until
 //!   done, stuck or replaced; failing keeps following. devdeck's own hold their service's
@@ -21,9 +23,9 @@
 //!   and log generation, when a service view opens.
 
 use crate::cluster::{Cluster, PodScope, PodsInterest};
-use devdeck_core::cluster::{DeployRecord, Deployment, HISTORY_KEPT, Progress, Rollout, RolloutState, assess, check_write, remember};
+use devdeck_core::cluster::{DeployRecord, Deployment, HISTORY_KEPT, Progress, Rollout, RolloutState, assess, check_write, remember, restart_stamp};
 use devdeck_core::state::{Deploys, Loaded, StateStore};
-use devdeck_kube::ImageChange;
+use devdeck_kube::{ImageChange, Restart};
 use gpui::{Context, Task};
 use std::collections::BTreeMap;
 
@@ -53,6 +55,9 @@ struct Pending {
     to_image: String,
     /// The generation the cluster gave it, once answered.
     generation: Option<u64>,
+    /// A redeploy: the `restartedAt` it sets (devdeck's own is known by it, not by the
+    /// image, which any redeploy keeps), and the generation seen when it was sent.
+    redeploy: Option<(String, u64)>,
 }
 
 #[derive(Default)]
@@ -77,6 +82,8 @@ pub(crate) struct DeployState {
     saving: Option<Task<()>>,
     /// The history changed while a save ran: saved again after it.
     save_again: bool,
+    /// Redeploys stamped on a fixed clock, so two never share a `restartedAt`.
+    stamps: u64,
 }
 
 /// The image `d` would run with `tag`: its main container's repository and the tag.
@@ -167,8 +174,24 @@ impl Cluster {
         cx.notify();
     }
 
-    /// Why `to` can't be deployed on `name` in `env` now, if it can't.
+    /// Why `to` can't be deployed on `name` in `env` now, if it can't: every guard of a
+    /// write, then another image.
     pub fn deploy_blocked(&self, env: &str, name: &str, to: &str, unlocked: bool, cx: &gpui::App) -> Option<String> {
+        if let Some(why) = self.write_blocked(env, name, unlocked, cx) {
+            return Some(why);
+        }
+        let d = self.deployment(env, name)?;
+        let (_, c) = d.deploy_target().ok()?;
+        if image_with(d, to).as_deref() == Some(c.image.raw.as_str()) {
+            return Some(format!("{name} already runs {to}"));
+        }
+        None
+    }
+
+    /// Why `name` in `env` can't be written now (a branch change or a redeploy), if it
+    /// can't, in this order: edit mode and the driver, the account, a protected env
+    /// unlocked, a write of it in flight, rollouts paused, a container clearly the main one.
+    pub fn write_blocked(&self, env: &str, name: &str, unlocked: bool, cx: &gpui::App) -> Option<String> {
         if let Err(why) = self.writes(cx) {
             return Some(why);
         }
@@ -183,18 +206,15 @@ impl Cluster {
         if self.dep.writes.get(&key) == Some(&WriteState::Sending) {
             return Some(format!("a deploy of {name} is being sent"));
         }
+        // Answered but not seen on the watch yet: a second write would race the first.
+        if self.dep.pending.contains_key(&key) {
+            return Some(format!("a deploy of {name} is still being picked up"));
+        }
         let Some(d) = self.deployment(env, name) else { return Some(format!("{name} isn't deployed in {env}")) };
         if d.progress == Progress::Paused {
             return Some(format!("rollouts of {name} are paused"));
         }
-        let (_, c) = match d.deploy_target() {
-            Ok(t) => t,
-            Err(why) => return Some(why),
-        };
-        if image_with(d, to).as_deref() == Some(c.image.raw.as_str()) {
-            return Some(format!("{name} already runs {to}"));
-        }
-        None
+        d.deploy_target().err()
     }
 
     /// Deploys `to` on `name` in `env`, pinned to `from` (the image confirmed). The
@@ -206,20 +226,56 @@ impl Cluster {
         let d = self.deployment(env, name).ok_or_else(|| format!("{name} isn't deployed in {env}"))?;
         let (index, c) = d.deploy_target()?;
         let change = ImageChange { index, container: c.name.clone(), from: from.to_string(), to: format!("{}:{to}", c.image.repo) };
+        let pending = Pending { to_image: change.to.clone(), generation: None, redeploy: None };
+        let driver = self.driver.clone();
+        self.send(env, name, pending, move |cx| driver.set_image(env, name, change, cx), cx);
+        Ok(())
+    }
+
+    /// Redeploys `name` in `env` (what `kubectl rollout restart` does), pinned to `image`
+    /// (the one confirmed): its pod template's `restartedAt` set to now. The answer comes
+    /// through [`Cluster::write_done`]; the rollout is followed from the watch.
+    pub fn redeploy(&mut self, env: &str, name: &str, image: &str, unlocked: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        if let Some(why) = self.write_blocked(env, name, unlocked, cx) {
+            return Err(why);
+        }
+        let d = self.deployment(env, name).ok_or_else(|| format!("{name} isn't deployed in {env}"))?;
+        let (index, c) = d.deploy_target()?;
+        let (container, generation, annotated) = (c.name.clone(), d.generation, d.template_annotated);
+        let at = self.stamp();
+        let restart = Restart { index, container, image: image.to_string(), at: at.clone(), generation, annotated };
+        let pending = Pending { to_image: image.to_string(), generation: None, redeploy: Some((at, generation)) };
+        let driver = self.driver.clone();
+        self.send(env, name, pending, move |cx| driver.restart(env, name, restart, cx), cx);
+        Ok(())
+    }
+
+    /// Registers devdeck's write of `name` before sending it (the watch may see it before
+    /// the answer), holds its pods, and sends it with `write`.
+    fn send(&mut self, env: &str, name: &str, pending: Pending, write: impl FnOnce(&mut Context<Self>) -> Option<Task<()>>, cx: &mut Context<Self>) {
         let key = (env.to_string(), name.to_string());
-        self.dep.pending.insert(key.clone(), Pending { to_image: change.to.clone(), generation: None });
+        self.dep.pending.insert(key.clone(), pending);
         self.dep.writes.insert(key.clone(), WriteState::Sending);
         let interest = self.pods_interest(env, PodScope::Service(name.to_string()), cx);
         self.dep.following.insert(key.clone(), interest);
-        let driver = self.driver.clone();
-        match driver.set_image(env, name, change, cx) {
+        match write(cx) {
             Some(task) => {
                 self.dep.sending.insert(key, task);
             }
             None => self.write_done(env, name, Err("this cluster can't deploy".into()), cx),
         }
         cx.notify();
-        Ok(())
+    }
+
+    /// A redeploy's `restartedAt`: now, to the nanosecond; on a fixed clock its seconds and
+    /// a count, so each differs.
+    fn stamp(&mut self) -> String {
+        self.dep.stamps += 1;
+        let nanos = match self.clock() {
+            Some(s) => u128::from(s) * 1_000_000_000 + u128::from(self.dep.stamps),
+            None => std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()),
+        };
+        restart_stamp(nanos)
     }
 
     /// The cluster's answer to devdeck's write: the generation it gave the new spec, or why
@@ -228,6 +284,10 @@ impl Cluster {
         let key = (env.to_string(), name.to_string());
         // The driver's task stays until the next write of the service (the fake's goes on
         // rolling after it answered).
+        // A redeploy the cluster took without a new generation changed nothing (the same
+        // `restartedAt`): nothing will come to follow.
+        let unchanged = matches!((&result, self.dep.pending.get(&key)), (Ok(g), Some(Pending { redeploy: Some((_, seen)), .. })) if g <= seen);
+        let result = if unchanged { Err(format!("nothing changed: the cluster left {name} as it was")) } else { result };
         match result {
             Ok(generation) => {
                 if let Some(p) = self.dep.pending.get_mut(&key) {
@@ -248,7 +308,7 @@ impl Cluster {
                 self.reassess(env, cx);
             }
             Err(why) => {
-                self.dep.pending.remove(&key);
+                let redeploy = self.dep.pending.remove(&key).is_some_and(|p| p.redeploy.is_some());
                 // Seen already on the watch: it's followed as anyone's deploy would be.
                 if !self.dep.rollouts.get(&key).is_some_and(|r| r.by == "devdeck" && !r.finished()) {
                     self.dep.following.remove(&key);
@@ -257,7 +317,7 @@ impl Cluster {
                     self.dep.writes.insert(key, WriteState::Failed(why));
                 } else {
                     self.dep.writes.remove(&key);
-                    devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Err, format!("{env} › {name}: not deployed: {why}"), vec![], cx));
+                    devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Err, format!("{env} › {name}: not {}: {why}", if redeploy { "redeployed" } else { "deployed" }), vec![], cx));
                 }
             }
         }
@@ -280,7 +340,9 @@ impl Cluster {
                 continue;
             };
             let by_revision = d.revision > 0 && before.0 > 0;
-            let deployed = if by_revision { d.revision > before.0 } else { image != before.1 };
+            // Without a revision, devdeck's own redeploy is known by its stamp.
+            let our_stamp = self.dep.pending.get(&key).and_then(|p| p.redeploy.as_ref()).is_some_and(|(at, _)| d.restarted_at.as_deref() == Some(at.as_str()));
+            let deployed = if by_revision { d.revision > before.0 } else { image != before.1 || our_stamp };
             // A new image under the same revision: the controller hasn't moved it yet.
             if deployed || !by_revision {
                 self.dep.versions.insert(key.clone(), (d.revision, image.clone()));
@@ -289,7 +351,11 @@ impl Cluster {
                 continue;
             }
             let from = devdeck_core::cluster::Image::parse(&before.1).label();
-            let ours = self.dep.pending.get(&key).is_some_and(|p| p.to_image == image);
+            let ours = self.dep.pending.get(&key).is_some_and(|p| match &p.redeploy {
+                // Any redeploy keeps the image: devdeck's is the one with its stamp.
+                Some((at, _)) => p.to_image == image && d.restarted_at.as_deref() == Some(at.as_str()),
+                None => p.to_image == image,
+            });
             let by = if ours { "devdeck".to_string() } else { d.manager.clone().unwrap_or_else(|| "seen".into()) };
             let generation = if ours { self.dep.pending.get(&key).and_then(|p| p.generation).unwrap_or(d.generation) } else { d.generation };
             if ours {
@@ -301,7 +367,9 @@ impl Cluster {
             if let Some(old) = self.dep.rollouts.get_mut(&key)
                 && !old.finished()
             {
-                old.state = RolloutState::Replaced { by: tag.clone() };
+                // The same image again: a redeploy, whoever made it.
+                let by = if old.image == image { "a redeploy".to_string() } else { tag.clone() };
+                old.state = RolloutState::Replaced { by };
                 let outcome = old.outcome();
                 self.end_record(&key, &outcome);
             }
@@ -310,7 +378,8 @@ impl Cluster {
             }
             let r = Rollout { from: from.clone(), to: tag.clone(), image, by: by.clone(), generation, at_s: now, state: RolloutState::Rolling { ready: 0, of: d.replicas } };
             self.dep.rollouts.insert(key.clone(), r);
-            remember(self.dep.history.entry(key).or_default(), DeployRecord { at_s: now, from, to: tag, by, outcome: String::new() });
+            let record = DeployRecord { at_s: now, from, to: tag, by, outcome: String::new(), revision: Some(d.revision), restarted_at: d.restarted_at.clone() };
+            remember(self.dep.history.entry(key).or_default(), record);
             changed = true;
         }
         changed |= self.reassess_quiet(env);
@@ -321,14 +390,20 @@ impl Cluster {
     }
 
     /// At the first list of an env, a deploy whose record has no end: followed again if the
-    /// deployment still runs its image, else ended as unknown.
+    /// deployment still runs its image (a redeploy: still its revision and `restartedAt`,
+    /// when known), else ended as unknown.
     fn reopen(&mut self, key: &Key, d: &Deployment, now: u64) -> bool {
         if self.dep.rollouts.get(key).is_some_and(|r| !r.finished()) {
             return false;
         }
         let open = |r: &&DeployRecord| r.outcome.is_empty() || r.outcome.starts_with("failing");
         let Some(last) = self.dep.history.get(key).and_then(|h| h.last()).filter(open).cloned() else { return false };
-        if d.tag() == last.to {
+        let same = if last.redeploy() {
+            d.tag() == last.to && last.revision.is_none_or(|r| r == d.revision) && (last.restarted_at.is_none() || last.restarted_at == d.restarted_at)
+        } else {
+            d.tag() == last.to
+        };
+        if same {
             let r = Rollout { from: last.from, to: last.to, image: d.main().image.raw.clone(), by: last.by, generation: 0, at_s: last.at_s.min(now), state: RolloutState::Rolling { ready: 0, of: d.replicas } };
             self.dep.rollouts.insert(key.clone(), r);
         } else {

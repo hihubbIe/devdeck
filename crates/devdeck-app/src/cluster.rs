@@ -11,8 +11,8 @@
 //! Pods and metrics: [`crate::cluster_pods`]; deploys, their follow-up and history:
 //! [`crate::cluster_deploys`].
 
-use devdeck_core::cluster::{Deployment, Env, Remote, set_image_command};
-pub use devdeck_kube::ImageChange;
+use devdeck_core::cluster::{Deployment, Env, Remote, restart_command, set_image_command};
+pub use devdeck_kube::{ImageChange, Restart};
 pub use crate::cluster_deploys::{Access, WriteState};
 pub use crate::cluster_pods::{MetricsRead, PodScope, PodUpdate, PodsInterest, Sampling};
 pub use devdeck_kube::{EnvUpdate, LogFrom, LogLine, LogRefusal, LogUpdate};
@@ -65,6 +65,11 @@ pub trait ClusterDriver {
     /// Sets a deployment's main image (R7.3); the answer goes to [`Cluster::write_done`].
     /// `None`: this driver can't deploy.
     fn set_image(&self, _env: &str, _name: &str, _change: ImageChange, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
+    /// Redeploys a deployment (`kubectl rollout restart`, R7.3, R7.5); the answer goes to
+    /// [`Cluster::write_done`]. `None`: this driver can't deploy.
+    fn restart(&self, _env: &str, _name: &str, _restart: Restart, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
         None
     }
     /// Asks whether deployments may be changed in `env`; the answer goes to
@@ -324,6 +329,11 @@ impl Cluster {
         names.into_iter().collect()
     }
 
+    /// The fixed clock, when there is one (the demo's, tests').
+    pub(crate) fn clock(&self) -> Option<u64> {
+        self.clock
+    }
+
     /// Now, in epoch seconds (ages are computed against it).
     pub fn now_s(&self) -> u64 {
         self.clock.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()))
@@ -380,6 +390,11 @@ impl Cluster {
     /// The command a tag change would run.
     pub fn command_for(&self, env: &str, name: &str, tag: &str) -> Option<String> {
         self.deployment(env, name).map(|d| set_image_command(&self.driver.namespace(env), d, tag))
+    }
+
+    /// The command a redeploy is the equivalent of.
+    pub fn restart_command_for(&self, env: &str, name: &str) -> Option<String> {
+        self.deployment(env, name).map(|d| restart_command(&self.driver.namespace(env), d))
     }
 }
 

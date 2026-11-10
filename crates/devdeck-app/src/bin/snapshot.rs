@@ -558,6 +558,33 @@ fn svc_confirm_refused(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &
     cx.run_until_parked();
 }
 
+/// dev35's first service whose main container doesn't pull `Always` (the demo's
+/// `IfNotPresent`).
+fn if_not_present() -> String {
+    let services = devdeck_core::demo::catalog("work").cluster.expect("cluster").services;
+    services.into_iter().find(|s| devdeck_core::demo::deployment("dev35", s).is_some_and(|d| d.main().pull_policy() != "Always")).expect("a service pulling IfNotPresent")
+}
+
+/// The redeploy confirmation, with the pull policy's warning.
+fn svc_redeploy_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    let v = service(cx, shell, "dev35", &if_not_present(), true);
+    let _ = cx.update_window(w, |_, window, _| window.refresh());
+    cx.run_until_parked();
+    cx.update(|cx| v.update(cx, |v, cx| v.redeploy(cx)));
+}
+
+/// A redeploy rolling: one new pod of two on the same tag.
+fn svc_redeploying(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    service(cx, shell, "dev35", "boardservice", true);
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    let image = cx.update(|cx| c.read(cx).deployment("dev35", "boardservice").map(|d| d.main().image.raw.clone())).expect("deployed");
+    cx.update(|cx| c.update(cx, |c, cx| c.redeploy("dev35", "boardservice", &image, true, cx))).expect("redeploys");
+    cx.advance_clock(Duration::from_millis(1000));
+    cx.run_until_parked();
+}
+
 fn svc_suggestions(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     deploy(cx, shell, "dev35", "entityservice", "lan-160", 3500);
     let v = service(cx, shell, "dev35", "entityservice", true);
@@ -850,7 +877,7 @@ impl ClusterDriver for LogsLike {
         }
         Ok(LogStream { updates, keep: Box::new(tx) })
     }
-    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _cx: &mut gpui::Context<Cluster>) -> Result<LogStream, String> {
+    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _tail: Option<u32>, _cx: &mut gpui::Context<Cluster>) -> Result<LogStream, String> {
         let (tx, updates) = async_channel::unbounded();
         if !self.hang {
             let base = logs_like_base(pod);
@@ -1307,10 +1334,12 @@ fn states() -> Vec<State> {
         w("79-run-args-typing", "work", 1.0, Some(run_args_typing)),
         w("80-svc-ready", "work", 1.0, Some(svc_ready)),
         w("81-svc-rolling", "work", 1.0, Some(svc_rolling)),
+        w("81-svc-redeploying", "work", 1.0, Some(svc_redeploying)),
         w("82-svc-failing", "work", 1.0, Some(svc_failed)),
         w("83-svc-protected-locked", "work", 1.0, Some(svc_protected)),
         w("84-svc-confirm", "work", 1.0, Some(svc_confirm)),
         w("84-svc-confirm-refused", "work", 1.0, Some(svc_confirm_refused)),
+        w("84-svc-redeploy-confirm", "work", 1.0, Some(svc_redeploy_confirm)),
         w("85-svc-suggestions", "work", 1.0, Some(svc_suggestions)),
         w("86-svc-loading", "work", 1.0, Some(svc_loading)),
         w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),

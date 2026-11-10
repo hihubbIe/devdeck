@@ -32,9 +32,14 @@ pub fn deployment(d: &apps::Deployment) -> Option<Deployment> {
         template: newest_template(d, &name),
         failure: condition(d, "ReplicaFailure").filter(|c| c.status == "True").and_then(|c| words(&c.message).or(words(&c.reason))),
         manager: manager(d),
+        template_annotated: spec.template.metadata.as_ref().and_then(|m| m.annotations.as_ref()).is_some_and(|a| !a.is_empty()),
+        restarted_at: spec.template.metadata.as_ref().and_then(|m| m.annotations.as_ref()).and_then(|a| a.get(RESTARTED_AT)).cloned(),
         name,
     })
 }
+
+/// The pod template annotation `kubectl rollout restart` sets, and devdeck's redeploy.
+pub const RESTARTED_AT: &str = "kubectl.kubernetes.io/restartedAt";
 
 fn condition<'a>(d: &'a apps::Deployment, type_: &str) -> Option<&'a apps::DeploymentCondition> {
     d.status.as_ref()?.conditions.as_ref()?.iter().find(|c| c.type_ == type_)
@@ -84,7 +89,14 @@ fn container(c: &core::Container) -> Container {
             config_maps.push(name.clone());
         }
     }
-    Container { name: c.name.clone(), image: Image::parse(c.image.as_deref().unwrap_or_default()), ports, resources: resources(c.resources.as_ref()), config_maps }
+    Container {
+        name: c.name.clone(),
+        image: Image::parse(c.image.as_deref().unwrap_or_default()),
+        ports,
+        resources: resources(c.resources.as_ref()),
+        config_maps,
+        pull_policy: c.image_pull_policy.clone().filter(|p| !p.is_empty()),
+    }
 }
 
 fn resources(r: Option<&core::ResourceRequirements>) -> Resources {
@@ -315,6 +327,25 @@ mod tests {
         assert_eq!((d.generation, d.revision, d.template.as_deref()), (14, 42, Some("7d9c8b6f5")), "has successfully progressed");
         let d = deployment(&fixture("no-conditions")).unwrap();
         assert_eq!((d.revision, d.template), (1, None), "no Progressing condition");
+    }
+
+    #[test]
+    fn the_pull_policy_and_the_templates_annotations() {
+        let mut k = fixture("rolling");
+        let d = deployment(&k).unwrap();
+        assert_eq!((d.main().pull_policy.as_deref(), d.template_annotated, d.restarted_at.as_deref()), (Some("Always"), false, None));
+        let template = &mut k.spec.as_mut().unwrap().template;
+        template.spec.as_mut().unwrap().containers[0].image_pull_policy = Some("IfNotPresent".into());
+        let meta = template.metadata.get_or_insert_with(Default::default);
+        meta.annotations = Some(BTreeMap::new());
+        let d = deployment(&k).unwrap();
+        assert_eq!((d.main().pull_policy.as_deref(), d.template_annotated), (Some("IfNotPresent"), false), "an empty map is no annotations");
+        k.spec.as_mut().unwrap().template.spec.as_mut().unwrap().containers[0].image_pull_policy = None;
+        assert_eq!(deployment(&k).unwrap().main().pull_policy, None, "unset: the API server's default applies");
+        let annotations = k.spec.as_mut().unwrap().template.metadata.as_mut().unwrap().annotations.as_mut().unwrap();
+        annotations.insert(RESTARTED_AT.into(), "2026-11-10T09:12:44.512Z".into());
+        let d = deployment(&k).unwrap();
+        assert_eq!((d.template_annotated, d.restarted_at.as_deref()), (true, Some("2026-11-10T09:12:44.512Z")));
     }
 
     #[test]

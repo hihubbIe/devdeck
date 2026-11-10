@@ -45,7 +45,8 @@ pub struct MenuItem {
     pub label: SharedString,
     pub hint: Option<SharedString>,
     pub checked: bool,
-    /// Why the item can't be used; shown inline when selected (R5.5).
+    /// Why the item can't be used. Never drawn: a disabled row is only dimmed, so selecting
+    /// it doesn't widen the menu (R5.5, R9.10).
     pub disabled: Option<SharedString>,
     pub separator: bool,
     /// Shown before the label (a protected env's lock…).
@@ -89,7 +90,7 @@ impl MenuItem {
 }
 
 /// The next selectable index from `from` in `dir` (±1), wrapping. Disabled items are
-/// selectable (so their reason can be read) but don't run.
+/// selectable but don't run.
 pub fn step_selection(items: &[MenuItem], from: Option<usize>, dir: isize) -> Option<usize> {
     let n = items.len() as isize;
     if n == 0 || !items.iter().any(MenuItem::selectable) {
@@ -325,7 +326,6 @@ impl Render for Menu {
                 continue;
             }
             let selected = self.selected == Some(i);
-            let reason = item.disabled.clone().filter(|_| selected);
             let rows = self.rows.clone();
             let row = div()
                 .id(("menu-item", i))
@@ -343,7 +343,6 @@ impl Render for Menu {
                 .child(div().size(t.icon).flex_none().when(item.checked, |d| d.child(icon(Icon::Check, if item.disabled.is_some() { t.dim } else { t.accent }, &t))))
                 .when_some(item.icon, |d, (i, c)| d.child(icon(i, if item.disabled.is_some() { t.dim } else { c }, &t)))
                 .child(label(item.label.clone()).flex_1())
-                .when_some(reason, |d, r| d.child(label(r).text_color(t.warn).max_w(t.size(200.))))
                 .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h)))
                 .when(!item.submenu.is_empty(), |d| d.child(icon(Icon::Submenu, t.mute, &t)))
                 .child(gpui::canvas(move |b, _, _| rows.borrow_mut().insert(i, b), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
@@ -770,7 +769,7 @@ mod tests {
     fn menu_selection_skips_separators_and_wraps() {
         let items = vec![item("a"), MenuItem::separator(), item("b").disabled("no"), item("c")];
         assert_eq!(step_selection(&items, None, 1), Some(0));
-        assert_eq!(step_selection(&items, Some(0), 1), Some(2), "disabled stays selectable to show why");
+        assert_eq!(step_selection(&items, Some(0), 1), Some(2), "disabled stays selectable");
         assert_eq!(step_selection(&items, Some(3), 1), Some(0), "wraps");
         assert_eq!(step_selection(&items, Some(0), -1), Some(3));
         assert_eq!(step_selection(&items, None, -1), Some(3));

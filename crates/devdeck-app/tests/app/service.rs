@@ -266,3 +266,83 @@ fn esc_in_a_modal_input_closes_the_modal_and_esc_in_a_view_without_focus_goes_to
     vcx.run_until_parked();
     assert_eq!(vcx.read(|cx| deck.read(cx).layout().panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap().len()), panes + 1, "pane keys work");
 }
+
+#[gpui::test]
+fn r_redeploys_the_same_branch_and_the_fake_rolls_new_pods(cx: &mut TestAppContext) {
+    let shell = start(cx, "redeploy");
+    let main = main_window(&shell, cx);
+    let c = cluster(&shell, cx);
+    let _view = open_service(&shell, cx, "dev35", "entityservice");
+    let before = cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().clone());
+    let old_pods: Vec<String> = cx.read(|cx| c.read(cx).pods("dev35", "entityservice").iter().map(|p| p.name.clone()).collect());
+    assert!(!old_pods.is_empty());
+    cx.simulate_keystrokes(main, "r");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 1, "a confirmation, not a redeploy");
+    assert!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").is_none()));
+    cx.simulate_keystrokes(main, "enter");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 0, "closed once the cluster took it");
+    let r = cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").cloned()).expect("followed");
+    assert!(r.redeploy() && r.by == "devdeck" && matches!(r.state, RolloutState::Rolling { .. }), "{r:?}");
+    advance(cx, ROLLOUT_STEP * before.replicas);
+    let after = cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().clone());
+    assert_eq!((after.tag(), after.revision), (before.tag(), before.revision + 1), "the same tag, a new revision");
+    assert!(after.restarted_at.is_some());
+    assert_eq!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").map(|r| r.state.clone())), Some(RolloutState::Done));
+    let pods = cx.read(|cx| c.read(cx).pods("dev35", "entityservice").to_vec());
+    assert!(pods.iter().all(|p| !old_pods.contains(&p.name)), "every pod replaced");
+    let history = cx.read(|cx| c.read(cx).history("dev35", "entityservice").to_vec());
+    assert_eq!((history.len(), history[0].redeploy(), history[0].by.as_str(), history[0].outcome.as_str()), (1, true, "devdeck", "done"));
+}
+
+#[gpui::test]
+fn a_redeploy_confirmed_after_someone_deployed_is_refused_in_its_confirmation(cx: &mut TestAppContext) {
+    let shell = start(cx, "redeploy-changed");
+    let main = main_window(&shell, cx);
+    let c = cluster(&shell, cx);
+    let _view = open_service(&shell, cx, "dev35", "entityservice");
+    cx.simulate_keystrokes(main, "r");
+    cx.run_until_parked();
+    // Someone deploys meanwhile.
+    cx.update(|cx| {
+        c.update(cx, |c, cx| {
+            let mut list: Vec<_> = c.peek("dev35").ready().map(|m| m.values().cloned().collect()).unwrap_or_default();
+            if let Some(d) = list.iter_mut().find(|d| d.name == "entityservice") {
+                d.main_mut().image = devdeck_core::cluster::Image::parse("registry/entityservice:hotfix");
+                d.revision += 1;
+            }
+            c.apply("dev35", devdeck_app::cluster::EnvUpdate::Deployments(list), cx);
+        })
+    });
+    cx.simulate_keystrokes(main, "enter");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 1, "the confirmation stays, saying why");
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    assert!(vcx.debug_bounds("deploy-error").is_some(), "the refusal is shown in it");
+}
+
+#[gpui::test]
+fn the_redeploy_button_says_why_not_and_a_protected_env_asks_its_name_first(cx: &mut TestAppContext) {
+    let shell = start(cx, "redeploy-guards");
+    let main = main_window(&shell, cx);
+    assert_eq!(devdeck_app::registry::by_id("svc.redeploy").and_then(|s| s.key_text()).as_deref(), Some("r"), "registered, on r");
+    let view = open_service(&shell, cx, "hades", "proxyapi");
+    cx.update(|cx| devdeck_app::edit_mode::set(false, cx));
+    assert_eq!(cx.read(|cx| view.read(cx).redeploy_blocked(cx)), Some(devdeck_app::edit_mode::OFF.into()), "edit mode first");
+    cx.simulate_keystrokes(main, "r");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 0, "refused, never the env's name to then refuse");
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    assert_eq!(cx.read(|cx| view.read(cx).redeploy_blocked(cx)), Some("hades is protected: unlock it first".into()));
+    cx.simulate_keystrokes(main, "r");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 1, "unlock asked first");
+    cx.simulate_input(main, "hades");
+    cx.simulate_keystrokes(main, "enter");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| view.read(cx).redeploy_blocked(cx)), None);
+    cx.simulate_keystrokes(main, "r");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 1, "now the confirmation");
+}

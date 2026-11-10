@@ -86,7 +86,20 @@ fn changed() -> Reply {
 /// mock answering `reply`.
 async fn set(reply: Reply) -> (Result<u64, DeployError>, Vec<Request>) {
     let (client, requests) = mock(reply);
-    let result = within_write(&target(), patch_image(client, &target(), "api", &change())).await;
+    let result = within_write(&target(), "the image change", patch_image(client, &target(), "api", &change())).await;
+    let requests = requests.lock().unwrap().clone();
+    (result, requests)
+}
+
+fn restart_of(annotated: bool) -> Restart {
+    Restart { index: 1, container: "api".into(), image: "registry/api:main".into(), at: "2026-11-10T09:12:44.512345678Z".into(), generation: 7, annotated }
+}
+
+/// The redeploy `r` of `api` on dev35, as [`restart`] runs it, against a mock answering
+/// `reply`.
+async fn redeploy(r: Restart, reply: Reply) -> (Result<u64, DeployError>, Vec<Request>) {
+    let (client, requests) = mock(reply);
+    let result = within_write(&target(), "the redeploy", patch(client, &target(), "api", restart_patch(&r))).await;
     let requests = requests.lock().unwrap().clone();
     (result, requests)
 }
@@ -205,4 +218,48 @@ async fn an_access_review_that_fails_says_why() {
     assert_eq!(result, Err("km011gcp (dev35) gave no answer to the access review".into()));
     let (result, _) = may(Reply::Never).await;
     assert_eq!(result, Err("km011gcp (dev35) didn't answer the access review".into()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_redeploy_tests_the_container_then_adds_restarted_at_to_the_annotations() {
+    let (result, requests) = redeploy(restart_of(true), changed()).await;
+    assert_eq!(result, Ok(8), "the generation of the changed spec");
+    let [request] = requests.as_slice() else { panic!("one request: {requests:?}") };
+    assert_eq!((request.method.as_str(), request.path.as_str()), ("PATCH", "/apis/apps/v1/namespaces/dev35/deployments/api"));
+    let query: Vec<&str> = request.query.split('&').filter(|p| !p.is_empty()).collect();
+    assert_eq!(query, ["fieldManager=devdeck"]);
+    assert_eq!(request.content_type, "application/json-patch+json");
+    let body = json!([
+        {"op": "test", "path": "/spec/template/spec/containers/1/name", "value": "api"},
+        {"op": "test", "path": "/spec/template/spec/containers/1/image", "value": "registry/api:main"},
+        {"op": "add", "path": "/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt", "value": "2026-11-10T09:12:44.512345678Z"},
+    ]);
+    assert_eq!(request.body, body, "the key's `/` escaped as `~1`");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_template_without_annotations_gets_them_whole_if_the_generation_is_still_the_one_seen() {
+    let (result, requests) = redeploy(restart_of(false), changed()).await;
+    assert_eq!(result, Ok(8));
+    let body = json!([
+        {"op": "test", "path": "/spec/template/spec/containers/1/name", "value": "api"},
+        {"op": "test", "path": "/spec/template/spec/containers/1/image", "value": "registry/api:main"},
+        {"op": "test", "path": "/metadata/generation", "value": 7},
+        {"op": "add", "path": "/spec/template/metadata/annotations", "value": {"kubectl.kubernetes.io/restartedAt": "2026-11-10T09:12:44.512345678Z"}},
+    ]);
+    assert_eq!(requests[0].body, body, "adding the map replaces it: annotations added meanwhile came with a newer generation");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_redeploy_is_refused_as_an_image_change_is() {
+    let (result, _) = redeploy(restart_of(false), status(422, "Invalid", "the server rejected our request due to an error in our request")).await;
+    assert_eq!(result, Err(DeployError::Changed("api changed since you confirmed".into())), "the generation or the image moved");
+    let message = "deployments.apps \"api\" is forbidden: User \"jane@example.com\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"dev35\"";
+    let (result, _) = redeploy(restart_of(true), status(403, "Forbidden", message)).await;
+    assert_eq!(result, Err(DeployError::Forbidden("your account can't change deployments in dev35".into())));
+    let (result, _) = redeploy(restart_of(true), status(404, "NotFound", "deployments.apps \"api\" not found")).await;
+    assert_eq!(result, Err(DeployError::Gone("the deployment api is gone from dev35".into())));
+    let (result, requests) = redeploy(restart_of(true), Reply::Never).await;
+    assert_eq!(result, Err(DeployError::Other("km011gcp (dev35) didn't answer the redeploy: it may have gone through, the rollout will say".into())));
+    assert_eq!(requests.len(), 1);
 }

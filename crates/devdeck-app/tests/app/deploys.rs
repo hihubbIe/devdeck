@@ -1,11 +1,14 @@
-//! M3 step 5: changing the deployed branch (R7.3, R7.4, R7.6, R5.6). Deploys over a scripted
+//! M3 steps 5 and 6: changing the deployed branch and redeploying it (R7.3, R7.4, R7.5,
+//! R7.6, R5.6). Deploys over a scripted
 //! driver whose watch and answers the test plays: guards in order, the write pinned to
 //! what was confirmed, a rollout followed to done, failing with its reason and recovering,
 //! stuck, replaced, deploys seen from elsewhere, the history kept and read back, the
-//! access review. Nothing here reaches a cluster.
+//! access review; redeploys: their guards, the write pinned to the image shown, known as
+//! devdeck's by their `restartedAt`, one that changes nothing, one left open. Nothing here
+//! reaches a cluster.
 
-use devdeck_app::cluster::{Access, Cluster, ClusterDriver, EnvUpdate, ImageChange, PodScope, PodUpdate, WriteState, new_cluster};
-use devdeck_core::cluster::{Container, ContainerStatus, Deployment, Env, HISTORY_KEPT, Image, Pod, Progress, Resources, RolloutState};
+use devdeck_app::cluster::{Access, Cluster, ClusterDriver, EnvUpdate, ImageChange, PodScope, PodUpdate, Restart, WriteState, new_cluster};
+use devdeck_core::cluster::{Container, ContainerStatus, Deployment, Env, HISTORY_KEPT, Image, Pod, Progress, Resources, RolloutState, restart_stamp};
 use devdeck_core::state::StateStore;
 use gpui::{Context, Entity, Task, TestAppContext};
 use std::cell::RefCell;
@@ -18,6 +21,7 @@ const SVC: &str = "graphservice";
 #[derive(Default)]
 struct Scripted {
     writes: RefCell<Vec<(String, ImageChange)>>,
+    restarts: RefCell<Vec<(String, Restart)>>,
     reviews: RefCell<usize>,
 }
 
@@ -38,6 +42,10 @@ impl ClusterDriver for Scripted {
         self.writes.borrow_mut().push((name.into(), change));
         Some(Task::ready(()))
     }
+    fn restart(&self, _env: &str, name: &str, restart: Restart, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        self.restarts.borrow_mut().push((name.into(), restart));
+        Some(Task::ready(()))
+    }
     fn can_deploy(&self, _env: &str, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
         *self.reviews.borrow_mut() += 1;
         Some(Task::ready(()))
@@ -45,7 +53,7 @@ impl ClusterDriver for Scripted {
 }
 
 fn dep(tag: &str, revision: u64, generation: u64, observed: u64, progress: Progress) -> Deployment {
-    let c = Container { name: SVC.into(), image: Image::parse(&format!("registry/{SVC}:{tag}")), ports: vec![], resources: Resources::default(), config_maps: Vec::new() };
+    let c = Container { name: SVC.into(), image: Image::parse(&format!("registry/{SVC}:{tag}")), ports: vec![], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None };
     Deployment { name: SVC.into(), containers: vec![c], replicas: 2, ready: 2, updated: 2, progress, selector: format!("app={SVC}"), revision, generation, observed, template: Some(format!("t-{tag}")), ..Default::default() }
 }
 
@@ -116,7 +124,7 @@ fn guards_come_in_order_below_the_ui(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, "feature", true, cx)), Some(format!("rollouts of {SVC} are paused")));
     let mut two = dep("main", 3, 5, 5, Progress::Settled);
     two.containers[0].name = "app".into();
-    two.containers.push(Container { name: "envoy".into(), image: Image::parse("registry/envoy:v1"), ports: vec![], resources: Resources::default(), config_maps: Vec::new() });
+    two.containers.push(Container { name: "envoy".into(), image: Image::parse("registry/envoy:v1"), ports: vec![], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None });
     watch(&t, cx, two);
     assert_eq!(cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, "feature", true, cx)), Some(format!("{SVC} has several containers and none is named {SVC}")), "never a sidecar");
 }
@@ -325,4 +333,186 @@ fn a_new_target_is_a_new_baseline(cx: &mut TestAppContext) {
     cx.run_until_parked();
     watch(&t, cx, dep("other-namespace", 40, 50, 50, Progress::Settled));
     assert!(history(&t, cx).is_empty(), "another context's revision isn't a deploy");
+}
+
+// ------------------------------------------------------------------ redeploys (step 6)
+
+/// The image the setup's deployment runs.
+const MAIN: &str = "registry/graphservice:main";
+
+fn redeploy(t: &T, cx: &mut TestAppContext) -> Result<(), String> {
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, false, cx)))
+}
+
+/// `main` redeployed: revision `revision`, generation `generation` observed, its template
+/// `t-main-<revision>` stamped `at`.
+fn redeployed(revision: u64, generation: u64, progress: Progress, at: &str) -> Deployment {
+    let mut d = dep("main", revision, generation, generation, progress);
+    d.template = Some(format!("t-main-{revision}"));
+    d.restarted_at = Some(at.into());
+    d.template_annotated = true;
+    d
+}
+
+/// A pod of `main`'s template `template`.
+fn pod_of(template: &str, id: &str, ready: bool) -> Pod {
+    let mut p = pod("main", id, ready, if ready { "running" } else { "waiting: ContainerCreating" }, 0, None);
+    p.template = template.into();
+    p
+}
+
+/// The first redeploy's stamp on the tests' clock (1 000 s).
+fn first_stamp() -> String {
+    restart_stamp(1_000 * 1_000_000_000 + 1)
+}
+
+#[gpui::test]
+fn a_redeploy_has_every_guard_of_a_write_but_already_runs(cx: &mut TestAppContext) {
+    let t = setup(cx, true);
+    let blocked = |cx: &mut TestAppContext, unlocked: bool| cx.read(|cx| t.cluster.read(cx).write_blocked(ENV, SVC, unlocked, cx));
+    cx.update(|cx| devdeck_app::edit_mode::set(false, cx));
+    assert_eq!(blocked(cx, true), Some(devdeck_app::edit_mode::OFF.into()), "edit mode first (R5.6)");
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.check_access(ENV, cx)));
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.access_known(ENV, Ok(false), cx)));
+    assert_eq!(blocked(cx, true), Some(format!("your account can't change deployments in {ENV}")));
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.access_known(ENV, Ok(true), cx)));
+    assert_eq!(blocked(cx, false), Some(format!("{ENV} is protected: unlock it first")), "the protected env (R7.6)");
+    assert_eq!(blocked(cx, true), None, "the same image is what a redeploy asks for");
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, "main", true, cx)), Some(format!("{SVC} already runs main")), "a branch change still refuses it");
+    assert_eq!(redeploy(&t, cx), Err(format!("{ENV} is protected: unlock it first")), "below the UI");
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, true, cx))).unwrap();
+    assert_eq!(blocked(cx, true), Some(format!("a deploy of {SVC} is being sent")), "one write in flight");
+    answer(&t, cx, Err("nope".into()));
+    watch(&t, cx, dep("main", 3, 5, 5, Progress::Paused));
+    assert_eq!(blocked(cx, true), Some(format!("rollouts of {SVC} are paused")));
+    let mut two = dep("main", 3, 5, 5, Progress::Settled);
+    two.containers[0].name = "app".into();
+    two.containers.push(Container { name: "envoy".into(), image: Image::parse("registry/envoy:v1"), ports: vec![], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None });
+    watch(&t, cx, two);
+    assert_eq!(blocked(cx, true), Some(format!("{SVC} has several containers and none is named {SVC}")), "never a sidecar");
+}
+
+#[gpui::test]
+fn a_redeploy_is_pinned_to_the_image_shown_and_followed_to_done(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    redeploy(&t, cx).unwrap();
+    let (name, restart) = t.driver.restarts.borrow()[0].clone();
+    assert_eq!(name, SVC);
+    assert_eq!(restart, Restart { index: 0, container: SVC.into(), image: MAIN.into(), at: first_stamp(), generation: 5, annotated: false });
+    assert_eq!(first_stamp(), "1970-01-01T00:16:40.000000001Z", "RFC 3339 with fractional seconds");
+    assert!(t.driver.writes.borrow().is_empty(), "no image change");
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).following()), 1, "its pods are held while followed");
+    // The spec first (the stamp, the same image), the revision after.
+    let mut spec = redeployed(3, 6, Progress::Rolling, &first_stamp());
+    spec.observed = 5;
+    watch(&t, cx, spec);
+    assert!(history(&t, cx).is_empty(), "not a deploy until the revision moves");
+    answer(&t, cx, Ok(6));
+    watch(&t, cx, redeployed(4, 6, Progress::Rolling, &first_stamp()));
+    let r = cx.read(|cx| t.cluster.read(cx).rollout(ENV, SVC).cloned()).unwrap();
+    assert_eq!((r.from.as_str(), r.to.as_str(), r.by.as_str(), r.redeploy()), ("main", "main", "devdeck", true));
+    pods(&t, cx, vec![pod_of("t-main-4", "a", true), pod_of("t-main", "b", true)]);
+    assert_eq!(state(&t, cx), Some(RolloutState::Rolling { ready: 1, of: 2 }), "the old pods run the same tag, but not the new template");
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).rollout(ENV, SVC).and_then(|r| r.label())), Some("redeploying main 1/2".into()));
+    watch(&t, cx, redeployed(4, 6, Progress::Settled, &first_stamp()));
+    pods(&t, cx, vec![pod_of("t-main-4", "a", true), pod_of("t-main-4", "c", true)]);
+    assert_eq!(state(&t, cx), Some(RolloutState::Done));
+    let record = cx.read(|cx| t.cluster.read(cx).history(ENV, SVC)[0].clone());
+    assert_eq!((record.from.as_str(), record.to.as_str(), record.by.as_str(), record.outcome.as_str(), record.redeploy()), ("main", "main", "devdeck", "done", true));
+    assert_eq!((record.revision, record.restarted_at), (Some(4), Some(first_stamp())));
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).following()), 0, "done: its pods go");
+}
+
+#[gpui::test]
+fn a_redeploy_seen_while_devdecks_is_sending_isnt_devdecks(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    redeploy(&t, cx).unwrap();
+    // A colleague's `kubectl rollout restart` lands first: the same image, another stamp.
+    let mut theirs = redeployed(4, 6, Progress::Rolling, "1970-01-01T00:16:40Z");
+    theirs.manager = Some("kubectl-rollout".into());
+    watch(&t, cx, theirs);
+    assert_eq!(history(&t, cx), [("main".to_string(), "kubectl-rollout".to_string(), String::new())]);
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).write_state(ENV, SVC).cloned()), Some(WriteState::Sending), "devdeck's still waits for its answer");
+    // Then devdeck's, with its own stamp.
+    answer(&t, cx, Ok(7));
+    watch(&t, cx, redeployed(5, 7, Progress::Rolling, &first_stamp()));
+    assert_eq!(
+        history(&t, cx),
+        [("main".to_string(), "kubectl-rollout".to_string(), "replaced by a redeploy".to_string()), ("main".to_string(), "devdeck".to_string(), String::new())]
+    );
+}
+
+#[gpui::test]
+fn a_redeploy_that_changes_nothing_says_so_and_leaves_nothing_pending(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    cx.update(|cx| t.cluster.update(cx, |c, _| c.watch_write(ENV, SVC, true)));
+    redeploy(&t, cx).unwrap();
+    answer(&t, cx, Ok(5));
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).write_state(ENV, SVC).cloned()), Some(WriteState::Failed(format!("nothing changed: the cluster left {SVC} as it was"))));
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).following()), 0);
+    // A later redeploy carrying devdeck's old stamp isn't devdeck's: nothing is pending.
+    let mut later = redeployed(4, 6, Progress::Rolling, &first_stamp());
+    later.manager = Some("kubectl-rollout".into());
+    watch(&t, cx, later);
+    assert_eq!(history(&t, cx), [("main".to_string(), "kubectl-rollout".to_string(), String::new())]);
+}
+
+#[gpui::test]
+fn a_redeploy_left_open_is_followed_again_only_on_its_revision(cx: &mut TestAppContext) {
+    let dir = cx.update(|cx| devdeck_app::test_dir("redeploy-reopen", cx));
+    let t = setup(cx, false);
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.keep_history(StateStore::new(dir.clone()), "work", cx)));
+    watch(&t, cx, redeployed(4, 6, Progress::Rolling, "2026-11-10T09:00:00.1Z"));
+    cx.run_until_parked();
+    let reopen = |cx: &mut TestAppContext, d: Deployment| {
+        let c = cx.update(|cx| new_cluster(vec![Env { name: ENV.into(), protected: false }], Rc::new(Scripted::default()), Some(1_000), cx));
+        cx.update(|cx| c.update(cx, |c, cx| c.keep_history(StateStore::new(dir.clone()), "work", cx)));
+        cx.update(|cx| c.update(cx, |c, cx| c.want(ENV, cx)));
+        cx.update(|cx| c.update(cx, |c, cx| c.apply(ENV, EnvUpdate::Deployments(vec![d]), cx)));
+        cx.run_until_parked();
+        c
+    };
+    let same = reopen(cx, redeployed(4, 6, Progress::Rolling, "2026-11-10T09:00:00.1Z"));
+    assert!(matches!(cx.read(|cx| same.read(cx).rollout(ENV, SVC).map(|r| r.state.clone())), Some(RolloutState::Rolling { .. })), "still its revision: followed again");
+    drop(same);
+    cx.run_until_parked();
+    let again = reopen(cx, redeployed(5, 7, Progress::Settled, "2026-11-10T09:30:00.2Z"));
+    assert_eq!(cx.read(|cx| again.read(cx).history(ENV, SVC).last().map(|r| r.outcome.clone())), Some("unknown: devdeck was closed".into()), "the same tag, redeployed again since");
+}
+
+#[gpui::test]
+fn a_second_write_waits_until_the_first_is_picked_up(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    redeploy(&t, cx).unwrap();
+    answer(&t, cx, Ok(6));
+    assert_eq!(redeploy(&t, cx), Err(format!("a deploy of {SVC} is still being picked up")), "answered, not seen yet");
+    watch(&t, cx, redeployed(4, 6, Progress::Rolling, &first_stamp()));
+    let next = cx.read(|cx| t.cluster.read(cx).write_blocked(ENV, SVC, false, cx));
+    assert_eq!(next, None, "seen: the next write may go");
+}
+
+#[gpui::test]
+fn a_redeploy_without_a_revision_is_known_by_its_stamp(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    watch(&t, cx, dep("main", 0, 5, 5, Progress::Settled));
+    redeploy(&t, cx).unwrap();
+    answer(&t, cx, Ok(6));
+    let mut d = redeployed(0, 6, Progress::Rolling, &first_stamp());
+    d.revision = 0;
+    watch(&t, cx, d);
+    assert_eq!(history(&t, cx).last().map(|r| r.1.clone()), Some("devdeck".into()), "recorded, nothing left pending");
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).write_blocked(ENV, SVC, false, cx)), None);
+}
+
+#[gpui::test]
+fn two_redeploys_never_share_a_stamp(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    redeploy(&t, cx).unwrap();
+    answer(&t, cx, Ok(6));
+    watch(&t, cx, redeployed(4, 6, Progress::Settled, &first_stamp()));
+    redeploy(&t, cx).unwrap();
+    let stamps: Vec<String> = t.driver.restarts.borrow().iter().map(|(_, r)| r.at.clone()).collect();
+    assert_eq!(stamps.len(), 2);
+    assert_ne!(stamps[0], stamps[1], "the same clock second, two stamps");
 }

@@ -37,7 +37,7 @@ fn env(name: &str) -> Env {
 
 fn dep(name: &str, tag: &str) -> Deployment {
     let image = Image::parse(&format!("registry/{name}:{tag}"));
-    let c = Container { name: name.into(), image, ports: vec![80], resources: Resources::default(), config_maps: Vec::new() };
+    let c = Container { name: name.into(), image, ports: vec![80], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None };
     Deployment { name: name.into(), containers: vec![c], replicas: 1, ready: 1, updated: 1, progress: Progress::Settled, selector: format!("app={name}"), since: Some(100), ..Default::default() }
 }
 

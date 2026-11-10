@@ -163,11 +163,12 @@ pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
         ports: vec![80],
         resources,
         config_maps: vec![format!("{name}-config")],
+        pull_policy: Some(if h.is_multiple_of(6) { "IfNotPresent" } else { "Always" }.into()),
     }];
     // Some run a proxy next to them, as on the real cluster.
     if h.is_multiple_of(4) {
         let image = Image::parse("europe-west1-docker.pkg.dev/registry/envoy:v1.39.1");
-        containers.push(Container { name: "envoy".into(), image, ports: vec![9901], resources: Resources::default(), config_maps: Vec::new() });
+        containers.push(Container { name: "envoy".into(), image, ports: vec![9901], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None });
     }
     Some(Deployment {
         name: name.into(),
@@ -190,8 +191,11 @@ pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
 pub const NOW_S: u64 = 1_762_500_000;
 
 /// The pods of a deployment: one per replica; the last one waits when not all are ready.
+/// Their template (and so their names) is seeded with the revision after the first, so a
+/// redeploy of the same tag makes new pods.
 pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
-    let template = format!("{:x}", hash(&format!("{}/{}", d.name, d.tag())) % 0xffff);
+    let seed = if d.revision > 1 { format!("{}/{}/{}", d.name, d.tag(), d.revision) } else { format!("{}/{}", d.name, d.tag()) };
+    let template = format!("{:x}", hash(&seed) % 0xffff);
     (0..d.replicas)
         .map(|i| {
             let h = hash(&format!("{env}/{}/{i}", d.name));
@@ -248,5 +252,14 @@ mod tests {
         assert_eq!(p.len(), 2);
         assert!(p[0].ready && !p[1].ready);
         assert!(p[1].last_termination.is_some());
+    }
+
+    #[test]
+    fn a_new_revision_of_the_same_tag_has_new_pods() {
+        let d = deployment("dev35", "entityservice").unwrap();
+        let again = Deployment { revision: 2, ..d.clone() };
+        let (before, after) = (pods("dev35", &d), pods("dev35", &again));
+        assert_ne!(before[0].template, after[0].template);
+        assert!(before.iter().all(|p| after.iter().all(|q| q.name != p.name)), "a redeploy replaces every pod");
     }
 }

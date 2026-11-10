@@ -50,6 +50,11 @@ The interactive HTML prototype that was approved is the visual reference
 - Envs use a distinct violet chip so the target env is always visible in labels:
   `start:dev @dev35`.
 - Text truncates, never wraps (R4.4). Middle truncation for paths and image names.
+- Nothing changes size or moves with a state (R9.10): hover, selection, focus, a press, a
+  drag over, a toggle. Their marks are colors, or lines drawn over the element (an
+  absolute child, like the pane header's focus line; a `drag_over` style, which GPUI
+  draws without laying it out), never a border, a child or empty room added for them. A
+  menu's disabled item is only dimmed (R5.5).
 - Scroll containers are `devdeck_ui::Scrolls` (`scroll_x`, `scroll_y`, `scroll_xy`) and
   lists `devdeck_ui::scroll_list`: a trackpad gesture keeps the axis it starts on (GPUI's
   `restrict_scroll_to_axis`, precise deltas only, so Wayland), nothing drifts diagonally
@@ -262,6 +267,12 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   `SelfSubjectAccessReview` asked when a service view opens, per env and log
   generation), a protected env isn't unlocked, a write of the service is in flight, or
   its rollouts are paused. A failing rollout never blocks the next deploy.
+- Redeploy (`devdeck_kube::restart`, what `kubectl rollout restart` does, not kube's
+  `Api::restart`): stamps the pod template's `kubectl.kubernetes.io/restartedAt` with a
+  fractional-second time, pinned to the image shown (and to the generation when the whole
+  annotations map is added); devdeck's own is known by that stamp; the confirmation
+  warns when the main container's effective pull policy won't fetch a newer build (or the
+  image is pinned to a digest). One write per service until the watch has seen it.
 - Every deploy is spotted on the deployment watch (a growing revision, or a changed
   image), whoever made it (devdeck's write in flight, else the last manager of the pod
   template in `managedFields`, else "seen"), and followed (`cluster::assess`): nothing

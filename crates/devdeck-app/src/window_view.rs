@@ -1077,12 +1077,15 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
             div()
                 .id(("activity", a as u64))
                 .debug_selector(move || format!("activity-{}", a.id()))
+                .relative()
                 .w(t.activity_w)
                 .h(t.activity_w)
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(on, |d| d.border_l_2().border_color(t.accent))
+                // The current one: a line drawn over its left edge, not a border, so its icon
+                // doesn't move (R9.10).
+                .when(on, |d| d.child(div().absolute().top_0().left_0().h_full().w(t.hairline * 2.).bg(t.accent)))
                 .hover(move |s| s.bg(hover))
                 .cursor_pointer()
                 .tooltip(tip(a.title()))
@@ -1593,6 +1596,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             tabs = tabs.child(
                 tab_handlers(div().id(eid("tab", pane.0, i)), f, pane, i, title)
                     .debug_selector(move || format!("tab-{}-{i}", pane.0))
+                    .relative()
                     .flex()
                     .flex_shrink(1.)
                     .min_w(t.tab_min_w)
@@ -1605,7 +1609,6 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     .border_color(t.line)
                     .when(active, |d| d.bg(t.bg).text_color(t.fg))
                     .when(!active, |d| d.text_color(t.mute))
-                    .when(active && focused, |d| d.border_t_2().border_color(t.accent))
                     .hover(move |s| s.bg(hover))
                     .cursor_pointer()
                     .tooltip(tip(full))
@@ -1619,6 +1622,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                             window.refresh();
                         }
                     })
+                    // Drawn only (GPUI lays an element out without its drag-over style), so
+                    // nothing moves (R9.10).
                     .drag_over::<DraggedTab>(move |s, _, _, _| match showing.get() {
                         Some((p, at)) if p == pane && at == i => s.border_l_2().border_color(accent),
                         Some((p, at)) if p == pane && at == i + 1 => s.border_r_2().border_color(accent),
@@ -1645,7 +1650,12 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                                 apply_on(&d_close, cx, |l| l.close_tab(pane, i).map(|_| ()));
                             })
                             .child(icon(Icon::Close, t.dim, t).size(t.size(12.)).group_hover("tab-close", move |s| s.text_color(fg))),
-                    ),
+                    )
+                    // Focus: a line drawn over its top, not a border, so its label doesn't move
+                    // (R9.10).
+                    .when(active && focused, |d| {
+                        d.child(div().debug_selector(move || format!("tab-focus-{}", pane.0)).absolute().top_0().left_0().w_full().h(t.hairline * 2.).bg(t.accent))
+                    }),
             );
         }
         strip = strip.child(tabs);

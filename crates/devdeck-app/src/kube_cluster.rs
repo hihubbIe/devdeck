@@ -6,10 +6,10 @@
 //! rotated token) reconnect.
 //!
 //! Deployments, pods (for whoever wants them) and metrics are read, logs streamed (and
-//! read back once), the main image set (deploys), and whether the account may is asked
+//! read back once), the main image set (deploys) or the deployment redeployed, and whether the account may is asked
 //! first.
 
-use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, ImageChange, LogFrom, LogStream, MetricsRead, PodScope};
+use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, ImageChange, LogFrom, LogStream, MetricsRead, PodScope, Restart};
 use devdeck_core::config::ClusterConfig;
 use devdeck_kube::{Kubeconfigs, Target};
 use gpui::{Context, Task};
@@ -100,20 +100,13 @@ impl ClusterDriver for KubeCluster {
     }
 
     fn set_image(&self, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Option<Task<()>> {
-        let (env, name) = (env.to_string(), name.to_string());
-        let target = self.target(&env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()));
-        let answer = target.map(|t| devdeck_kube::set_image(&t, &name, &change));
-        Some(cx.spawn(async move |this, cx| {
-            let result = match answer {
-                Ok(rx) => match rx.recv().await {
-                    Ok(Ok(generation)) => Ok(generation),
-                    Ok(Err(devdeck_kube::DeployError::Forbidden(why) | devdeck_kube::DeployError::Gone(why) | devdeck_kube::DeployError::Changed(why) | devdeck_kube::DeployError::Other(why))) => Err(why),
-                    Err(_) => Err("the write stopped".into()),
-                },
-                Err(why) => Err(why),
-            };
-            let _ = this.update(cx, |c, cx| c.write_done(&env, &name, result, cx));
-        }))
+        let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()));
+        Some(answer(env, name, target.map(|t| devdeck_kube::set_image(&t, name, &change)), cx))
+    }
+
+    fn restart(&self, env: &str, name: &str, restart: Restart, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()));
+        Some(answer(env, name, target.map(|t| devdeck_kube::restart(&t, name, &restart)), cx))
     }
 
     fn can_deploy(&self, env: &str, cx: &mut Context<Cluster>) -> Option<Task<()>> {
@@ -170,4 +163,20 @@ impl ClusterDriver for KubeCluster {
             let _ = this.update(cx, |c, cx| c.apply_metrics(&env, result, cx));
         }))
     }
+}
+
+/// Waits for a write's answer and gives it to [`Cluster::write_done`].
+fn answer(env: &str, name: &str, write: Result<async_channel::Receiver<Result<u64, devdeck_kube::DeployError>>, String>, cx: &mut Context<Cluster>) -> Task<()> {
+    let (env, name) = (env.to_string(), name.to_string());
+    cx.spawn(async move |this, cx| {
+        let result = match write {
+            Ok(rx) => match rx.recv().await {
+                Ok(Ok(generation)) => Ok(generation),
+                Ok(Err(devdeck_kube::DeployError::Forbidden(why) | devdeck_kube::DeployError::Gone(why) | devdeck_kube::DeployError::Changed(why) | devdeck_kube::DeployError::Other(why))) => Err(why),
+                Err(_) => Err("the write stopped".into()),
+            },
+            Err(why) => Err(why),
+        };
+        let _ = this.update(cx, |c, cx| c.write_done(&env, &name, result, cx));
+    })
 }

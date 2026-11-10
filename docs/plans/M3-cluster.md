@@ -1871,3 +1871,30 @@ and clippy, snapshots `90-logs-earlier-loading`, `90-logs-earlier-start`).
   line shown; a read cut short for room says "full". Tests: the collector never holds more
   than the room (lines and bytes), every read asks a bounded tail, the mock API's
   `tailLines`.
+
+### Step 6 outcome (2026-11-10)
+
+Built by a builder from the plan as assessed, checked by the lead (suite, clippy, the
+confirmation's snapshot `84-svc-redeploy-confirm`, the rolling `81-svc-redeploying`).
+- The stamp is decided when the write is sent (a retry never reuses one); on a fixed
+  clock, the second plus a counter. "Nothing changed" applies to redeploys only. The
+  warning names the container ("<container>'s imagePullPolicy is IfNotPresent: …").
+- `DeployRecord` keeps the revision and the stamp (old files read: they default).
+- The demo gives about one service in six `IfNotPresent`; its pods are seeded with the
+  revision, so pod names after a demo deploy change in snapshots.
+- Found outside the step: the snapshot tool didn't build after `e62ac6d` (its fake
+  `read_logs` lacked the tail); fixed.
+
+### Review of the step 6 diff (subagent, 2026-11-10) and assessment
+
+No path writes without edit mode, the protected env's name or the image confirmed.
+1. The pin from confirmation to the cluster had no end-to-end test. **Fixed**: a test
+   where someone deploys between `r` and Enter; the confirmation stays with the refusal.
+2. A second write could race the first once answered but not yet seen. **Fixed**: one
+   write per service until the watch has seen it ("still being picked up"). Test.
+3. Without a revision annotation a redeploy was never seen and stayed pending. **Fixed**:
+   devdeck's own is known by its stamp then. Test.
+4. Wording. **Fixed**: an open redeploy reads "redeploying main" in the history.
+5. Tests. **Fixed**: two redeploys get two stamps; an old `deploys.json` reads.
+6. Docs. **Fixed**: DESIGN, ROADMAP, this outcome.
+7. Demo pod names after a deploy change in snapshots: **accepted** (cosmetic).

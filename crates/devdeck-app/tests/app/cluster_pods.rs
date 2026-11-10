@@ -54,7 +54,7 @@ impl ClusterDriver for Pods {
 
 fn dep(name: &str) -> Deployment {
     let image = Image::parse(&format!("registry/{name}:main"));
-    let c = Container { name: name.into(), image, ports: vec![], resources: Resources::default(), config_maps: Vec::new() };
+    let c = Container { name: name.into(), image, ports: vec![], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None };
     Deployment { name: name.into(), containers: vec![c], replicas: 2, ready: 2, updated: 2, progress: Progress::Settled, selector: format!("app={name}"), since: Some(1), ..Default::default() }
 }
 
