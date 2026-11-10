@@ -19,6 +19,8 @@ fn start(cx: &mut TestAppContext, tag: &str) -> (Entity<Shell>, Entity<Deck>) {
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+    // As `api::start` does: which workspace each toast showed in.
+    cx.update(devdeck_app::api::present::follow_toasts);
     cx.run_until_parked();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     (shell, deck)

@@ -180,6 +180,36 @@ methods! {
         "Shows the user a one-line toast, labelled with the caller.", since 4;
     UiToasts = "ui.toasts", Read, NoParams => Toasts,
         "The toasts shown lately, oldest first.", since 4;
+    TerminalOpen = "terminal.open", Run, TerminalOpenParams => Terminal,
+        "Opens a shell for the caller in one of the workspace's folders, its tab in the background unless placed.", since 4;
+    TerminalStop = "terminal.stop", Run, TerminalStopParams => Terminal,
+        "Stops a shell the caller opened, idle (the user's, or one running a program, need the user's approval).", since 4;
+    EnvSetCurrent = "env.set_current", Run, EnvParams => Workspace,
+        "Makes an env the workspace's current one (a protected one needs the user's approval).", since 4;
+    NoteCreate = "note.create", Organize, NoteCreateParams => NoteRevision,
+        "Makes a note, about an app or the workspace.", since 4;
+    NoteWrite = "note.write", Organize, NoteWriteParams => NoteRevision,
+        "Writes a note's text over the revision read (a note the user is typing in needs their approval).", since 4;
+    NoteAppend = "note.append", Organize, NoteAppendParams => NoteRevision,
+        "Adds text at a note's end.", since 4;
+    NoteRename = "note.rename", Organize, NoteRenameParams => NoteRevision,
+        "Renames a note.", since 4;
+    LayoutSaveAs = "layout.save_as", Organize, NameParams => Layouts,
+        "Saves the live layout under a new name (it becomes the current one).", since 4;
+    LayoutRename = "layout.rename", Organize, RenameParams => Layouts,
+        "Renames a saved layout.", since 4;
+    SidebarPin = "sidebar.pin", Organize, PinParams => Done,
+        "Pins or unpins an item of a sidebar list.", since 4;
+    GroupCreate = "group.create", Organize, GroupCreateParams => GroupPath,
+        "Makes a group in a sidebar list.", since 4;
+    GroupRename = "group.rename", Organize, GroupRenameParams => GroupPath,
+        "Renames a group.", since 4;
+    GroupMove = "group.move", Organize, GroupMoveParams => GroupPath,
+        "Moves a group into another, or to the top.", since 4;
+    GroupPut = "group.put", Organize, GroupPutParams => Done,
+        "Puts an item or a folder in a group, or at the top.", since 4;
+    GroupDelete = "group.delete", Organize, GroupParams => Done,
+        "Deletes a group; what it holds moves to its parent.", since 4;
 }
 
 /// A method as the catalog lists it.
@@ -256,9 +286,11 @@ mod tests {
     #[test]
     fn methods_look_or_run_and_levels_say_when() {
         for m in catalog() {
-            assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read | Class::Present) && m.escalates_to.is_empty(), "{}", m.name);
+            assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read | Class::Present | Class::Organize) && m.escalates_to.is_empty(), "{}", m.name);
             let since = match m.class {
+                Class::Run if ["terminal.", "env."].iter().any(|d| m.name.starts_with(d)) => 4,
                 Class::Run => 2,
+                Class::Organize => 4,
                 Class::Read if m.name.ends_with(".wait") || m.name.starts_with("job.") || m.name == "ui.toasts" => 4,
                 Class::Read => 3,
                 _ if ["events.", "git.", "port."].iter().any(|d| m.name.starts_with(d)) => 4,

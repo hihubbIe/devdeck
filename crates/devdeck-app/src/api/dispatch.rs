@@ -128,6 +128,21 @@ handlers! {
     WorkspaceRescan => typed super::present::workspace_rescan,
     UiNotify => typed super::present::ui_notify,
     UiToasts => typed super::present::ui_toasts,
+    TerminalOpen => typed super::organize::terminal_open,
+    TerminalStop => typed super::organize::terminal_stop,
+    EnvSetCurrent => typed super::organize::env_set_current,
+    NoteCreate => typed super::organize::note_create,
+    NoteWrite => typed super::organize::note_write,
+    NoteAppend => typed super::organize::note_append,
+    NoteRename => typed super::organize::note_rename,
+    LayoutSaveAs => typed super::organize::layout_save_as,
+    LayoutRename => typed super::organize::layout_rename,
+    SidebarPin => typed super::organize::sidebar_pin,
+    GroupCreate => typed super::organize::group_create,
+    GroupRename => typed super::organize::group_rename,
+    GroupMove => typed super::organize::group_move,
+    GroupPut => typed super::organize::group_put,
+    GroupDelete => typed super::organize::group_delete,
 }
 
 static HANDLERS: LazyLock<BTreeMap<&'static str, Handler>> = LazyLock::new(table);

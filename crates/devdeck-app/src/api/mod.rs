@@ -11,6 +11,7 @@ pub mod audit;
 pub mod dispatch;
 pub mod events;
 pub mod gitports;
+pub mod organize;
 pub mod present;
 pub mod handlers;
 pub mod identity;
@@ -67,12 +68,15 @@ impl Who {
     }
 
     /// As people read it: `work · terminal 3`, `devdeck-ctl (pid 4242)`.
+    /// Clean wherever it shows (toasts, the audit): a program names itself, and control
+    /// or direction-changing characters in its name could pass for another caller.
     pub fn label(&self) -> String {
-        match self {
+        let label = match self {
             Who::Terminal { workspace, n, .. } => format!("{workspace} · terminal {n}"),
             Who::Outside { pid: Some(p), program } => format!("{program} (pid {p})"),
             Who::Outside { pid: None, program } => format!("{program} (unpinned)"),
-        }
+        };
+        present::one_line(&label, 80)
     }
 
     pub fn is_outside(&self) -> bool {
@@ -268,6 +272,7 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         _inbox: tx,
     });
     cx.set_global(ApiHandle(state.clone()));
+    present::follow_toasts(cx);
     let quitting = state.downgrade();
     cx.on_app_quit(move |cx| {
         if let Some(s) = quitting.upgrade() {

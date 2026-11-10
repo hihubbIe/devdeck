@@ -5,10 +5,11 @@ R13.10, R13.11). API level 4 for the whole phase.
 
 ## Where we are (paused 2026-11-09)
 
-- Done: steps 1–7 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, `5a49513`, step
-  7's commit); each has an "as built" section at the end of this file.
-- Next: step 8 (methods), then 9 (clients), then the phase's close (diff review, perf,
-  docs, the user's manual test).
+- Done: steps 1–8 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, `5a49513`,
+  `7c3675a`, 8a `90ecb21`, 8b's commit); each has an "as built" section at the end of
+  this file.
+- Next: step 9 (clients: `devdeck_present`, `devdeck_organize` in MCP, `devdeck-ctl
+  watch`), then the phase's close (diff review, perf, docs, the user's manual test).
 - Open points carried forward:
   - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
     keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
@@ -733,3 +734,32 @@ No new OS code (R11.6). API level 4, class present (`ui.toasts`: read).
 Diff review: the subagent was refused by Claude Code's permission classifier; reviewed by
 the lead, the user's choice (2026-11-10). Found: `view.open` of a file always showed it
 (ignoring `activate`) — fixed.
+
+## Step 8b, as built (2026-11-10)
+
+No new OS code (R11.6). API level 4, classes run (`terminal.*`, `env.set_current`) and
+organize.
+
+- `api/organize.rs`: `terminal.open{dir?, layout?, pane?, edge?}` (a shell for the caller
+  in one of the workspace's apps' folders or folders, the runner told first, its tab in
+  the background; 4 shells a caller, waiting ones counted (`Runner::shells_of`); a
+  protected current env asks; a shell that couldn't start is refused, with no tab; a tab
+  that can't be placed gives the shell up, `Runner::drop_shell`), `terminal.stop{n, uid}`
+  (its own and idle; the user's, another caller's or one running a program asks),
+  `env.set_current` (through the sidebar, as the UI; a protected env asks), `note.create`,
+  `note.write{base_revision}`, `note.append`, `note.rename` (the user typed within 10 s:
+  asks; another revision: `conflict`; 64 KB a call, `MAX_NOTE` in all; names of 100
+  characters; 500 notes a workspace; the app must be the workspace's), `layout.save_as`
+  (50 layouts), `layout.rename`, `sidebar.pin` (200 a list), `group.create/rename/move/
+  put/delete` (100 groups a list; groups named must exist).
+- Own terminals are the caller's shell or one it opened (`with_terminal`): output,
+  search, screen and waits follow.
+- After 8a's automated security review (2026-11-10): a caller's label is cleaned where
+  it's made (control and direction-changing characters, 80 characters), and
+  `ui.toasts` gives only the toasts shown while the caller's workspace was
+  (`present::follow_toasts` records it).
+- Found in testing: the shells' cap didn't count shells waiting for the tools; a shell
+  that couldn't start was forgotten before its tab, answering `not_found` — both fixed.
+- Not checked: a group or pin's node exists (the caps bound what's saved).
+
+Diff review: by the lead (the review subagent was refused for 8a; the user's choice).

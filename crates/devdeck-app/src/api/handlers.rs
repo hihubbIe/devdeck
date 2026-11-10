@@ -346,7 +346,7 @@ use crate::runner::{RunKey, RunRefusal, Starter};
 
 /// The caller as a starter of runs (a terminal's shell instance); outside callers never
 /// get this far (their policy denies the class).
-fn starter(who: &Who) -> Option<Starter> {
+pub(super) fn starter(who: &Who) -> Option<Starter> {
     match who {
         Who::Terminal { workspace, n, uid, starts, .. } => Some(Starter::Caller { workspace: workspace.clone(), n: *n, uid: uid.clone(), starts: *starts }),
         Who::Outside { .. } => None,
@@ -693,7 +693,8 @@ pub(super) fn with_terminal<T>(cx: &CallCx, ws: Option<&str>, n: u32, a: &App, f
     let key = RunKey::terminal(n);
     let runner = w.services.read(a).runner.read(a);
     let r = runner.run(&key).ok_or_else(|| ApiError::not_found(format!("no terminal {n}")))?;
-    let mine = matches!(cx.who, Who::Terminal { workspace, n: own, .. } if *workspace == w.id && *own == n);
+    // The caller's own shell, or one it opened (`terminal.open`).
+    let mine = matches!(cx.who, Who::Terminal { workspace, n: own, .. } if *workspace == w.id && *own == n) || starter(cx.who).is_some_and(|me| r.starter == me);
     if !mine {
         return Err(later(format!("terminal {n} is the user's")));
     }

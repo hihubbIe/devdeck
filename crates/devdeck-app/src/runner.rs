@@ -261,6 +261,21 @@ impl Runner {
         key
     }
 
+    /// Gives up a shell opened a moment ago: no longer waiting for the tools, stopped if
+    /// it started.
+    pub fn drop_shell(&mut self, key: &RunKey, cx: &mut Context<Self>) {
+        self.waiting_shells.remove(key);
+        if self.run(key).is_some() {
+            self.stop(key, cx);
+        }
+    }
+
+    /// Shells `starter` has: running, or waiting for the tools to start.
+    pub fn shells_of(&self, starter: &Starter) -> usize {
+        let running = self.runs.iter().filter(|(k, r)| k.is_terminal() && &r.starter == starter && r.state.is_running()).count();
+        running + self.waiting_shells.values().filter(|(_, s)| s == starter).count()
+    }
+
     fn start_waiting_shells(&mut self, cx: &mut Context<Self>) {
         if self.tools().pending {
             return;

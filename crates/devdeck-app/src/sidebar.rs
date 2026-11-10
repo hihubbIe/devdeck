@@ -78,12 +78,12 @@ impl Activity {
         }
     }
 
-    fn from_id(id: &str) -> Option<Self> {
+    pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|a| a.id() == id)
     }
 
     /// The pin set it uses. Deployment pins are shared by every env.
-    fn list_id(self) -> &'static str {
+    pub fn list_id(self) -> &'static str {
         match self {
             Activity::Apps => "apps",
             Activity::Cluster => "deployments",

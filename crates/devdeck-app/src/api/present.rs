@@ -423,7 +423,7 @@ pub fn workspace_rescan(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Do
 }
 
 /// One line without control or direction-changing characters, cut to `max` characters.
-fn one_line(text: &str, max: usize) -> String {
+pub(super) fn one_line(text: &str, max: usize) -> String {
     let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{061c}');
     let line: String = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
     let clean: String = line.chars().filter(|c| !c.is_control() && !bidi(*c)).collect();
@@ -453,8 +453,44 @@ pub fn ui_notify(cx: &CallCx, p: NotifyParams, app: &mut App) -> Result<Notified
     Ok(Notified { id })
 }
 
-pub fn ui_toasts(_: &CallCx, _: NoParams, app: &mut App) -> Result<Toasts, ApiError> {
-    let toasts = devdeck_ui::toasts(app).read(app).queue.history.iter().map(|t| ToastItem { id: t.id, kind: format!("{:?}", t.kind).to_lowercase(), text: t.text.as_ref().into() }).collect();
+/// The workspace shown when each toast came (toasts are the app's, shown to whichever
+/// workspace is on screen): a caller reads only those its own workspace showed (R2.1).
+#[derive(Default)]
+struct ToastPlaces {
+    shown: std::collections::BTreeMap<u64, String>,
+    _watch: Option<gpui::Subscription>,
+}
+
+impl Global for ToastPlaces {}
+
+/// Records, from now on, which workspace each new toast showed in.
+pub fn follow_toasts(app: &mut App) {
+    let toasts = devdeck_ui::toasts(app);
+    let watch = app.observe(&toasts, |t, app| {
+        let shown = crate::shell::try_shell(app).and_then(|s| s.read(app).workspaces.get(s.read(app).active).map(|w| w.id.clone()));
+        let ids: Vec<u64> = t.read(app).queue.history.iter().map(|x| x.id).collect();
+        let places = app.default_global::<ToastPlaces>();
+        if let Some(ws) = shown {
+            for id in &ids {
+                places.shown.entry(*id).or_insert_with(|| ws.clone());
+            }
+        }
+        places.shown.retain(|id, _| ids.contains(id));
+    });
+    app.default_global::<ToastPlaces>()._watch = Some(watch);
+}
+
+pub fn ui_toasts(cx: &CallCx, _: NoParams, app: &mut App) -> Result<Toasts, ApiError> {
+    let w = workspace(cx, None, app)?;
+    let shown = app.try_global::<ToastPlaces>().map(|p| p.shown.clone()).unwrap_or_default();
+    let toasts = devdeck_ui::toasts(app)
+        .read(app)
+        .queue
+        .history
+        .iter()
+        .filter(|t| shown.get(&t.id) == Some(&w.id))
+        .map(|t| ToastItem { id: t.id, kind: format!("{:?}", t.kind).to_lowercase(), text: t.text.as_ref().into() })
+        .collect();
     Ok(Toasts { toasts })
 }
 
