@@ -106,8 +106,13 @@ icons! {
     /// Long lines wrap at the pane's width.
     Wrap => "text-wrap",
     Pause => "pause",
-    /// Keep the newest line in view.
-    Follow => "arrow-down-to-line",
+    /// Keep the newest line in view. From gpui-kit-assets' Lucide set.
+    Follow => "chevrons-down",
+    // Toolbars.
+    /// A toolbar's "more" menu (never the settings cog). From gpui-kit-assets' Lucide set.
+    More => "ellipsis",
+    /// A toolbar's field shown as a button at its narrowest. From gpui-kit-assets' Lucide set.
+    Search => "search",
     // Window controls.
     WindowMinimize => "minus",
     WindowMaximize => "square",

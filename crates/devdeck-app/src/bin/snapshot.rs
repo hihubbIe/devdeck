@@ -860,6 +860,47 @@ fn logs_kube_like(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, forbid: bo
     cx.run_until_parked();
 }
 
+/// Splits the focused pane `times`, the logs staying in the left part: a narrower pane each
+/// time (the toolbar's compact and narrow forms).
+fn narrow_logs(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, times: usize) {
+    maximize_focused(cx, shell);
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    for n in 0..times {
+        cx.update(|cx| {
+            deck.update(cx, |d, cx| {
+                d.apply(cx, |l| {
+                    let p = l.main().focused;
+                    l.open(ViewRef::new(format!("demo/n{n}")), p)?;
+                    let i = l.pane(p)?.tabs.len() - 1;
+                    l.move_tab(p, i, Drop::Edge(p, Edge::Right)).map(|_| ())
+                })
+            })
+        });
+        cx.run_until_parked();
+        let logs = ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() }.to_ref();
+        cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.find_view(&logs).map(|(p, i)| l.activate(p, i)).unwrap_or(Ok(())))));
+    }
+    cx.run_until_parked();
+}
+
+/// The logs filtered to warn+ and paused, in a pane half as wide: compact (icons only, the
+/// level keeping its value).
+fn logs_medium(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    logs_kube_like(cx, shell, false);
+    narrow_logs(cx, shell, 1);
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let addr = ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() };
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<devdeck_app::views::logs_view::ServiceLogsView>().unwrap());
+    cx.update(|cx| v.update(cx, |v, cx| v.set_min_level(devdeck_app::views::logs_view::MinLevel::Warn, cx)));
+    cx.run_until_parked();
+}
+
+/// The logs in a narrow pane: follow, wrap and pause folded into "more".
+fn logs_narrow(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    logs_kube_like(cx, shell, false);
+    narrow_logs(cx, shell, 3);
+}
+
 fn logs_json(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     logs_kube_like(cx, shell, false);
 }
@@ -1236,6 +1277,8 @@ fn states() -> Vec<State> {
         w("89-svc-ready-150", "work", 1.5, Some(svc_ready)),
         w("90-logs-filter-find", "work", 1.0, Some(logs_find)),
         w("90-logs-json", "work", 1.0, Some(logs_json)),
+        w("90-logs-medium", "work", 1.0, Some(logs_medium)),
+        w("90-logs-narrow", "work", 1.0, Some(logs_narrow)),
         w("90-logs-refused", "work", 1.0, Some(logs_refused)),
         w("91-pod-crashloop", "work", 1.0, Some(pod)),
         w("92-matrix-highlight", "work", 1.0, Some(matrix)),

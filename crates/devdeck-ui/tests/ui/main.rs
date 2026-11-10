@@ -9,3 +9,4 @@ mod host;
 mod input;
 mod overlay;
 mod scroll;
+mod toolbar;

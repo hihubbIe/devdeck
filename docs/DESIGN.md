@@ -452,6 +452,39 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 - Caps everywhere a caller could grow something: waits, connections, shells, notes,
   layouts, pins, groups, toasts, a rate for changes.
 
+## Toolbars (R9.9)
+
+- One component, `devdeck_ui::Toolbar`, a custom element: it picks its form in prepaint
+  from its real width (no lag, no first wrong frame), lays its row out and paints it. A
+  view never lays a toolbar out by hand. Theme toolbar height, a hairline under it, one
+  line, never wraps; every item `button_h` tall, one toggle look (fill and frame on),
+  gaps at least 4 px scaled; its right end inset from the pane header's icons.
+- Items, in the view's order: a **field** (grows, at least its minimum, a count at its
+  right end, accessories attached), **actions** and **toggles** (an icon, a label when
+  wide; `label_required` ones never go icon-only, `primary` ones keep their label and
+  never fold), **menu buttons** (an icon and their value, the value kept in compact; a
+  value may carry a color and its icon), **statuses** (an icon, a short word when wide,
+  details in a menu on click), **text** (flexible, truncates, full text on hover), a
+  **spacer** (what follows is right-aligned), then **more** (`ellipsis`, never the
+  settings cog) when it holds anything.
+- Each item runs a registered action (the app's `tool(id, icon)` takes its label from the
+  registry): mouse, folded item and key run one path. Tooltips name the item or say why it
+  can't run (R5.5); no key is ever shown (R5.4). Right-click on the toolbar lists every
+  item, shown or folded (R5.2).
+- Forms: **wide** when everything fits; **compact** (labels dropped but required ones,
+  status words dropped, values kept); **narrow**: items fold into "more" by `Fold::Order`
+  (1 first; equal numbers together; folded items keep the toolbar's order there), never
+  `Never`, primary, safety values, statuses, or an item in a state other than its default;
+  **floor**: the field truncates, then becomes a button. Counts reserve a width (capped
+  "999+"), so the form depends on the width alone; a folded item's count goes into its
+  menu text and "more" shows a dot in its color. Labels are shaped by the text system;
+  paddings come from the component's own constants.
+- No icon means two things in the app.
+- Toolbars, moved onto it one at a time: logs (first), the run view's, the service view's
+  actions row and tag editor, the git panel's header, the branch matrix's header, the
+  sidebar's list header (which keeps its activity name: it has no tab). Pane headers keep
+  their own view-action icons (part of the layout engine).
+
 ## Settings and scaling
 
 - Settings open as a full-window view from a title-bar button, not as a tab.

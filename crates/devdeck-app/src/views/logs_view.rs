@@ -13,11 +13,11 @@ use super::logs_feed::{LogsFeed, short};
 use crate::cluster::{Cluster, PodScope, PodsInterest};
 use devdeck_core::cluster::{Pod, Remote};
 use devdeck_core::runs::Level;
-use devdeck_ui::{Icon, InputEvent, MenuItem, TextInput, button, button_icon, icon, icon_action, icon_toggle, label, open_menu, theme, tip, toasts};
+use devdeck_ui::{Count, Fold, Icon, InputEvent, MenuItem, MenuValue, TextInput, ToolAction, ToolItem, Toolbar, ToolbarState, label, open_menu, theme, toasts};
 use devdeck_ui::{Scrolls, ToastKind, scroll_list};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
-    ParentElement, Pixels, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle,
+    ParentElement, Pixels, Render, ScrollStrategy, SharedString, Styled, Subscription, UniformListScrollHandle,
     Window, actions, canvas, div, prelude::*,
 };
 use std::cell::Cell;
@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 pub use crate::fake_cluster::LOGS_TICK;
 
-actions!(logs_view, [Find, NextMatch, PrevMatch, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options]);
+actions!(logs_view, [Find, NextMatch, PrevMatch, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options, LevelMenu, ToggleTime, TogglePodColumn]);
 
 /// Lowest level shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -71,8 +71,10 @@ pub struct ServiceLogsView {
     /// The line (absolute index) of the current match.
     pub current: Option<u64>,
     scroll: UniformListScrollHandle,
-    /// Where the view is in its window (menus opened by key go under its toolbar).
+    /// Where the view is in its window.
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The toolbar's last form and its items' places (menus opened by key go under them).
+    bar: Rc<ToolbarState>,
     seen: Seen,
     _pods: PodsInterest,
     _subs: Vec<Subscription>,
@@ -119,6 +121,7 @@ impl ServiceLogsView {
             current: None,
             scroll: UniformListScrollHandle::new(),
             bounds: Rc::default(),
+            bar: ToolbarState::new(),
             seen: (None, (0, 0), false),
             _pods: pods,
             _subs: subs,
@@ -359,8 +362,6 @@ impl ServiceLogsView {
         items.push(MenuItem::separator());
         items.push(MenuItem::new("show the time", toggle(|v| v.show_time = !v.show_time)).checked(v.show_time));
         items.push(MenuItem::new("show the pod", toggle(|v| v.show_pod = !v.show_pod)).checked(v.show_pod));
-        let me = this.clone();
-        items.push(MenuItem::new("wrap long lines", move |_, cx| me.update(cx, |v, cx| v.toggle_wrap(cx))).checked(v.wrap));
         items
     }
 
@@ -382,11 +383,110 @@ impl ServiceLogsView {
         self.wrapped.as_ref().map_or(0, |(_, _, rows)| rows.len())
     }
 
+    /// The toolbar (R9.9): find, what's wrong, the level, wrap, pause, follow, and "more"
+    /// with the pod, the container, a previous run and the columns.
+    fn toolbar(&self, cx: &mut Context<Self>) -> Toolbar {
+        let t = theme(cx).clone();
+        let me = cx.entity();
+        // A toolbar shows short words; the palette keeps the registry's full names.
+        let label = |id: &str, fallback: &'static str| crate::registry::by_id(id).map_or(fallback, |s| s.label);
+        let run = |f: fn(&mut Self, &mut Context<Self>)| {
+            let me = me.clone();
+            move |_: &mut Window, cx: &mut App| me.update(cx, f)
+        };
+        let matches = self.matches();
+        let count = (matches > 0).then(|| {
+            let text = match self.current.and_then(|c| self.feed.buffer.hits().binary_search(&c).ok()) {
+                Some(p) => format!("{}/{matches}", p + 1),
+                None => format!("{matches}"),
+            };
+            Count::new(text, 9, t.mute)
+        });
+        let level = match self.min_level {
+            MinLevel::Error => "errors",
+            MinLevel::Warn => "warn+",
+            MinLevel::Info => "info+",
+            MinLevel::All => "all",
+        };
+        let held = self.feed.held();
+        let paused = self.feed.paused;
+        let mut bar = Toolbar::new("logs-toolbar", self.bar.clone()).item(ToolItem::Field {
+            id: "logs.find".into(),
+            label: label("logs.find", "find").into(),
+            input: self.find.clone().into(),
+            focus: self.find.read(cx).focus_handle(cx),
+            min_chars: 12,
+            count,
+            accessories: Vec::new(),
+        });
+        // What's wrong, in one status: pods waiting, streams' problems.
+        let mut wrong: Vec<String> = self.feed.waiting().iter().map(|(why, n)| format!("{n} waiting: {why}")).collect();
+        wrong.extend(self.feed.problems().iter().map(|(pod, why)| format!("{}: {why}", short(pod))));
+        if !wrong.is_empty() {
+            let word = if wrong.len() == 1 { "1 problem".to_string() } else { format!("{} problems", wrong.len()) };
+            let lines = wrong.clone();
+            bar = bar.item(ToolItem::Status {
+                id: "logs.wrong".into(),
+                icon: Icon::Warning,
+                color: t.warn,
+                word: Some(word.into()),
+                tip: wrong.join("\n").into(),
+                details: Rc::new(move |_| lines.iter().map(|l| MenuItem::new(l.clone(), |_, _| {}).disabled("")).collect()),
+            });
+        }
+        let me_level = me.clone();
+        bar = bar
+            .item(ToolItem::Menu {
+                action: ToolAction::new("logs.level", "level", run(|v, cx| v.cycle_level(cx))).icon(Icon::Filter).fold(Fold::Order(3)).state_shown(self.min_level != MinLevel::All),
+                value: Some(MenuValue::new(level)),
+                max_chars: 6,
+                items: Rc::new(move |cx| Self::level_menu(&me_level, cx)),
+            })
+            .item(ToolItem::Action(ToolAction::new("logs.wrap", "wrap", run(|v, cx| v.toggle_wrap(cx))).icon(Icon::Wrap).toggle(self.wrap).fold(Fold::Order(2))))
+            .item(ToolItem::Action(
+                ToolAction::new("logs.pause", if paused { "resume" } else { "pause" }, run(|v, cx| v.toggle_pause(cx)))
+                    .icon(if paused { Icon::Run } else { Icon::Pause })
+                    .toggle(paused)
+                    .state_shown(paused)
+                    .count((paused && held > 0).then(|| Count::new(format!("{} new", if held > 999 { "999+".to_string() } else { held.to_string() }), 8, t.warn)))
+                    .fold(Fold::Order(1)),
+            ))
+            .item(ToolItem::Action(
+                ToolAction::new("pane.follow", "follow", run(|v, cx| v.toggle_follow(cx))).icon(Icon::Follow).toggle(self.follow).state_shown(!self.follow).fold(Fold::Order(4)),
+            ));
+        let c = self.cluster.read(cx);
+        let pods = c.pods(&self.env, &self.name).len();
+        let mut figures = format!("{pods} pods · {} lines", self.feed.buffer.row_count());
+        let dropped = self.feed.buffer.dropped();
+        if dropped > 0 {
+            figures.push_str(&format!(" · {dropped} older dropped"));
+        }
+        if let Some(pod) = self.feed.buffer.pod() {
+            figures.push_str(&format!(" · pod {}", short(pod)));
+        }
+        if let Some(container) = &self.feed.container {
+            figures.push_str(&format!(" · container {container}"));
+        }
+        let me_more = me.clone();
+        bar.more(Rc::new(move |cx| Self::options_menu(&me_more, cx)), Some(figures.into()))
+    }
+
+    /// The level after this one (the level button, run when it can't open its menu).
+    fn cycle_level(&mut self, cx: &mut Context<Self>) {
+        let next = match self.min_level {
+            MinLevel::All => MinLevel::Info,
+            MinLevel::Info => MinLevel::Warn,
+            MinLevel::Warn => MinLevel::Error,
+            MinLevel::Error => MinLevel::All,
+        };
+        self.set_min_level(next, cx);
+    }
+
     /// Opens a picker's menu under the toolbar (by key) or at the click.
     fn open_picker(&mut self, which: fn(&Entity<Self>, &App) -> Vec<MenuItem>, at: Option<gpui::Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
-        let t = theme(cx);
         let b = self.bounds.get();
-        let at = at.unwrap_or_else(|| gpui::point(b.origin.x + t.size(120.), b.origin.y + t.toolbar_h));
+        // By key: under the toolbar's "more", where these live.
+        let at = at.or_else(|| self.bar.bounds(devdeck_ui::toolbar::MORE).map(|m| m.bottom_left())).unwrap_or(b.origin);
         let me = cx.entity();
         window.defer(cx, move |window, cx| {
             let items = which(&me, cx);
@@ -462,65 +562,8 @@ impl Render for ServiceLogsView {
             Remote::Loading => Remote::Loading,
             Remote::Error(e) => Remote::Error(e),
         };
-        let pods = match &pods_state {
-            Remote::Ready(n) => *n,
-            _ => 0,
-        };
         let count = self.feed.buffer.row_count();
-        let matches = self.matches();
-        let level = match self.min_level {
-            MinLevel::Error => "errors",
-            MinLevel::Warn => "warn+",
-            MinLevel::Info => "info+",
-            MinLevel::All => "all",
-        };
-        // What's wrong, in one icon: pods waiting, streams' problems.
-        let mut wrong: Vec<String> = self.feed.waiting().iter().map(|(why, n)| format!("{n} waiting: {why}")).collect();
-        wrong.extend(self.feed.problems().iter().map(|(pod, why)| format!("{}: {why}", short(pod))));
-        let dropped = self.feed.buffer.dropped();
-        let mut about = format!("{pods} pods · {count} lines");
-        if dropped > 0 {
-            about.push_str(&format!(" · {dropped} older lines dropped"));
-        }
-        if let Some(pod) = self.feed.buffer.pod() {
-            about.push_str(&format!(" · pod {}", short(pod)));
-        }
-        if let Some(container) = &self.feed.container {
-            about.push_str(&format!(" · container {container}"));
-        }
-        let held = self.feed.held();
-        let toolbar = div()
-            .flex_none()
-            .h(t.toolbar_h)
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .border_b_1()
-            .border_color(t.line_soft)
-            // Find takes what's left, never less than a few words.
-            .child(div().flex_1().min_w(t.size(120.)).debug_selector(|| "logs-find".into()).child(self.find.clone()))
-            .child(div().flex_none().text_color(t.mute).child(match (self.current, matches) {
-                (_, 0) => String::new(),
-                (Some(cur), n) => format!("{}/{n}", self.feed.buffer.hits().binary_search(&cur).map_or(0, |p| p + 1)),
-                (None, n) => format!("{n} found"),
-            }))
-            .when(!wrong.is_empty(), |d| d.child(div().id("logs-wrong").flex_none().child(icon(Icon::Warning, t.warn, &t)).tooltip(tip(wrong.join("\n")))))
-            .child(
-                button("logs-level", level, &t)
-                    .flex_none()
-                    .child(button_icon(Icon::Filter, &t))
-                    .tooltip(tip("the lowest level shown"))
-                    .on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| this.open_picker(Self::level_menu, Some(e.position()), window, cx))),
-            )
-            .child(icon_toggle("logs-wrap", Icon::Wrap, "wrap long lines", self.wrap, &t).on_click(cx.listener(|this, _, _, cx| this.toggle_wrap(cx))))
-            .child(icon_toggle("pause", Icon::Pause, if self.feed.paused { "resume" } else { "pause" }, self.feed.paused, &t).on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))))
-            .when(self.feed.paused && held > 0, |d| d.child(div().flex_none().text_color(t.warn).child(format!("{held} new"))))
-            .child(icon_toggle("follow", Icon::Follow, "follow the newest line", self.follow, &t).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))))
-            .child(icon_action("logs-options", Icon::Settings, about, true, &t).on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
-                this.open_picker(Self::options_menu, Some(e.position()), window, cx)
-            })));
-
+        let toolbar = self.toolbar(cx);
         let empty = |text: String| div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label(text)).into_any_element();
         let body = if let Some(why) = self.feed.refused() {
             empty(format!("logs: {why}"))
@@ -621,7 +664,18 @@ impl Render for ServiceLogsView {
             .on_action(cx.listener(|this, _: &Everything, _, cx| this.set_min_level(MinLevel::All, cx)))
             .on_action(cx.listener(|this, _: &PickContainer, window, cx| this.open_picker(Self::container_menu, None, window, cx)))
             .on_action(cx.listener(|this, _: &PickPod, window, cx| this.open_picker(Self::pod_menu, None, window, cx)))
-            .on_action(cx.listener(|this, _: &Options, window, cx| this.open_picker(Self::options_menu, None, window, cx)))
+            .on_action(cx.listener(|this, _: &Options, window, cx| this.toolbar(cx).open_more(window, cx)))
+            .on_action(cx.listener(|this, _: &LevelMenu, window, cx| this.toolbar(cx).open_menu_of("logs.level", window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTime, _, cx| {
+                this.show_time = !this.show_time;
+                this.wrapped = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &TogglePodColumn, _, cx| {
+                this.show_pod = !this.show_pod;
+                this.wrapped = None;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &PreviousRun, _, cx| this.previous_run(cx)))
             .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().size_full())
             .child(toolbar)
