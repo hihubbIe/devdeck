@@ -47,6 +47,8 @@ When the user asks to start, stop, restart or check an app, a server or a comman
 they mean devdeck: use these tools rather than a shell.
 - Apps: app.list; an app's commands: app.get; what runs: run.list, run.get.
 - Output: run.output, terminal.output (the last lines, or what's new since the `next` you got), run.search, terminal.search; notes: note.read; the workspace's files: file.read.
+- To show the user something: view.open (an app, a run, a file, a note; in the background unless `activate`), file.open with a line; ui.notify for a one-line toast.
+- Notes: note.read, then note.write with the revision you read (or note.append); a shell of your own: terminal.open.
 - To wait until a server is ready or a command ends: run.wait (until \"exit\", or {\"output\": PATTERN}), 50 s at most; if its time is up, job.wait with the job it gives.
 - Where you are: session.whoami. A method's parameters: api.describe with {\"method\": NAME}.
 - You may stop or restart only runs you started (run.get says `yours`); a start uses the arguments the user set.
@@ -67,9 +69,9 @@ fn purpose(class: Class) -> &'static str {
     match class {
         Class::Observe => "Look at devdeck's state (read only)",
         Class::Read => "Read content from devdeck: output, logs, notes, files",
-        Class::Present => "Change what devdeck shows: tabs, panes, layouts",
-        Class::Organize => "Change devdeck's own data: notes, layouts, pins",
-        Class::Run => "Start an app's main commands in devdeck, and stop or restart the runs you started",
+        Class::Present => "Change what devdeck shows (tabs, panes, windows, layouts, settings), never the user's keyboard; what would move it needs the user's approval",
+        Class::Organize => "Change devdeck's own data: notes, saved layouts, sidebar pins and groups",
+        Class::Run => "Start an app's main commands, open shells of your own, set the current env; stop or restart what you started",
         Class::Type => "Type into a devdeck terminal or process",
         Class::Remote => "Git writes through devdeck",
         Class::Destructive => "Destructive actions through devdeck (the user approves each in devdeck)",
@@ -250,6 +252,23 @@ mod tests {
         // Nothing allowed: no tool.
         methods.iter_mut().for_each(|m| m.allowed = false);
         assert!(super::tools(&methods).is_empty());
+    }
+
+    #[test]
+    fn present_and_organize_appear_when_allowed_and_change_things() {
+        let mut methods = fallback();
+        for m in methods.iter_mut().filter(|m| matches!(m.class, Class::Present | Class::Organize)) {
+            m.allowed = true;
+        }
+        let tools = tools(&methods);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert_eq!(names, ["devdeck_observe", "devdeck_present", "devdeck_organize"]);
+        for t in &tools[1..] {
+            let a = t.annotations.as_ref().unwrap();
+            assert_eq!((a.read_only_hint, a.destructive_hint), (Some(false), Some(false)), "{}", t.name);
+        }
+        assert!(tools[1].description.as_ref().unwrap().contains("- view.open: "));
+        assert!(tools[2].description.as_ref().unwrap().contains("- note.write: "));
     }
 
     #[test]

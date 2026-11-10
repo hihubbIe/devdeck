@@ -5,7 +5,12 @@
 //! devdeck-ctl [--socket PATH] [--json] whoami
 //! devdeck-ctl [--socket PATH] [--json] describe [METHOD]
 //! devdeck-ctl [--socket PATH] call METHOD [PARAMS-JSON]
+//! devdeck-ctl [--socket PATH] [--json] watch TOPIC...
 //! ```
+//!
+//! `watch` follows topics (`runs`, `output`, `notes`, `layout`…: `api.describe
+//! events.subscribe`) and prints each event as it comes, one per line, until devdeck goes
+//! or it's interrupted.
 //!
 //! The socket: `--socket`, else `DEVDECK_SOCKET` (set in devdeck's shells), else the main
 //! devdeck's. Exit codes: 0 done, 1 devdeck refused (its kind printed), 2 no connection,
@@ -18,13 +23,14 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: devdeck-ctl [--socket PATH] [--json] (whoami | describe [METHOD] | call METHOD [PARAMS-JSON])";
+const USAGE: &str = "usage: devdeck-ctl [--socket PATH] [--json] (whoami | describe [METHOD] | call METHOD [PARAMS-JSON] | watch TOPIC...)";
 
 #[derive(Debug, PartialEq)]
 enum Command {
     Whoami,
     Describe(Option<String>),
     Call(String, Value),
+    Watch(Vec<String>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -46,6 +52,13 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "-h" | "--help" => return Err(String::new()),
             _ => rest.push(a),
         }
+    }
+    if rest.first().map(String::as_str) == Some("watch") {
+        let topics: Vec<String> = rest.into_iter().skip(1).collect();
+        if topics.is_empty() {
+            return Err("watch needs a topic".into());
+        }
+        return Ok(Args { socket, json, command: Command::Watch(topics) });
     }
     let mut rest = rest.into_iter();
     let command = match (rest.next().as_deref(), rest.next(), rest.next()) {
@@ -107,7 +120,36 @@ fn plain(command: &Command, v: &Value) -> String {
             }
             Err(_) => pretty(v),
         },
-        Command::Call(..) => pretty(v),
+        Command::Call(..) | Command::Watch(_) => pretty(v),
+    }
+}
+
+/// A notification as one line: `12 runs {"app":…}`, or that some were missed.
+fn event_line(n: &Value, json: bool) -> String {
+    if json {
+        return serde_json::to_string(n).unwrap_or_default();
+    }
+    let p = &n["params"];
+    match n["method"].as_str() {
+        Some("events.lagged") => format!("lagged: events from {} were missed (read the state again)", p["seq"]),
+        _ => format!("{} {} {}", p["seq"], p["topic"].as_str().unwrap_or("?"), p["data"]),
+    }
+}
+
+/// Follows `topics` and prints their events until the connection ends.
+fn watch(client: &mut Client, topics: &[String], json: bool) -> ExitCode {
+    if let Err(e) = client.call_raw("events.subscribe", serde_json::json!({ "topics": topics })) {
+        eprintln!("devdeck-ctl: {e}");
+        return ExitCode::from(if matches!(e, ClientError::Api(_)) { 1 } else { 2 });
+    }
+    loop {
+        match client.next_notification() {
+            Ok(n) => println!("{}", event_line(&n, json)),
+            Err(e) => {
+                eprintln!("devdeck-ctl: {e}");
+                return ExitCode::from(2);
+            }
+        }
     }
 }
 
@@ -137,10 +179,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Command::Watch(topics) = &args.command {
+        return watch(&mut client, topics, args.json);
+    }
     let (method, params) = match &args.command {
         Command::Whoami => ("session.whoami".to_string(), Value::Object(Default::default())),
         Command::Describe(m) => ("api.describe".to_string(), m.as_ref().map_or_else(|| serde_json::json!({}), |m| serde_json::json!({ "method": m }))),
         Command::Call(m, p) => (m.clone(), p.clone()),
+        Command::Watch(_) => unreachable!("watched above"),
     };
     match client.call_raw(&method, params) {
         Ok(v) => {
@@ -179,5 +225,16 @@ mod tests {
         assert!(p(&["call", "x", "[1]"]).unwrap_err().starts_with("params"), "an object only");
         assert!(p(&["whoami", "extra"]).is_err());
         assert!(p(&["--socket"]).is_err());
+        assert_eq!(p(&["watch", "runs", "notes"]).unwrap().command, Command::Watch(vec!["runs".into(), "notes".into()]));
+        assert!(p(&["watch"]).is_err());
+    }
+
+    #[test]
+    fn events_read_as_one_line_each() {
+        let e = serde_json::json!({"jsonrpc": "2.0", "method": "event", "params": {"seq": 3, "topic": "runs", "data": {"app": "web", "state": "running"}}});
+        assert_eq!(event_line(&e, false), r#"3 runs {"app":"web","state":"running"}"#);
+        let l = serde_json::json!({"method": "events.lagged", "params": {"seq": 9}});
+        assert!(event_line(&l, false).starts_with("lagged: events from 9"));
+        assert!(event_line(&e, true).starts_with('{'));
     }
 }

@@ -5,11 +5,12 @@ R13.10, R13.11). API level 4 for the whole phase.
 
 ## Where we are (paused 2026-11-09)
 
-- Done: steps 1–8 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, `5a49513`,
-  `7c3675a`, 8a `90ecb21`, 8b's commit); each has an "as built" section at the end of
-  this file.
-- Next: step 9 (clients: `devdeck_present`, `devdeck_organize` in MCP, `devdeck-ctl
-  watch`), then the phase's close (diff review, perf, docs, the user's manual test).
+- Done: steps 1–9 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, `5a49513`,
+  `7c3675a`, `90ecb21`, `90d913e`, step 9's commit); each has an "as built" section at
+  the end of this file.
+- Next: the phase's close: an independent diff review of the phase, perf (idle CPU with
+  no subscriber and no wait), docs (R13 checkboxes, ROADMAP, DESIGN), and the user's
+  manual test.
 - Open points carried forward:
   - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
     keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
@@ -763,3 +764,16 @@ organize.
 - Not checked: a group or pin's node exists (the caps bound what's saved).
 
 Diff review: by the lead (the review subagent was refused for 8a; the user's choice).
+
+## Step 9, as built (2026-11-10)
+
+- MCP: `devdeck_present` and `devdeck_organize` appear for callers that may use them (one
+  tool per class, as before); the class descriptions say what each changes, and that
+  the user's keyboard is never taken. The instructions add how to show something
+  (`view.open`, `file.open`, `ui.notify`), write notes (with the revision read) and open
+  a shell (`terminal.open`).
+- `devdeck-ctl watch TOPIC...`: subscribes and prints each event on a line (`seq topic
+  data`, or JSON with `--json`), `events.lagged` said as such, until devdeck goes.
+- Tests: the new tools' names and hints; `watch`'s arguments and lines.
+
+Review: by the lead (small change; the user's choice for this phase).
