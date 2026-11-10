@@ -57,8 +57,8 @@ Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), deci
    who started what, the `devdeck_run` tool — done 2026-11-08.
 2. Bounded reads: output, screen, search, notes, files — done 2026-11-08.
 3. Operations layer, events, jobs, waits; present, run, organize
-   ([plans/control-api-p3.md](plans/control-api-p3.md)) — done 2026-11-10, waiting for
-   the user's manual test.
+   ([plans/control-api-p3.md](plans/control-api-p3.md)) — done 2026-11-10, manual test
+   passed 2026-11-10.
 4. Approvals and its proofs, the approval card; type, remote and destructive methods;
    and what phase 3 left asking: `window.detach`, `workspace.activate`, `app.open_url`,
    `leftovers.list`, the `git` topic.

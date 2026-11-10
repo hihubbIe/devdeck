@@ -3,12 +3,12 @@
 Drafted 2026-11-09. Phase 3 of [control-api.md](control-api.md) (R13.1, R13.5–R13.8,
 R13.10, R13.11). API level 4 for the whole phase.
 
-## Where we are (done 2026-11-10, waiting for the user's manual test)
+## Where we are (done 2026-11-10, manual test passed 2026-11-10)
 
 - Done: steps 1–9 and the phase's close (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`,
   `6d26748`, `5a49513`, `7c3675a`, `90ecb21`, `90d913e`, `c600fa9`, the close's commit);
   each step has an "as built" section, the close its own, at the end of this file.
-- Next: the user's manual test ("Manual test" at the end), then phase 4.
+- Next: phase 4, when the user starts it.
 - Open points carried forward:
   - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
     keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
