@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::{host, the_theme};
-use devdeck_ui::{Icon, TREE_INDENT, button, icon_button, icon_toggle, label, logical, section, tip, toggle_button, tree_row};
+use devdeck_ui::{Icon, TREE_INDENT, button, icon_action_ready, icon_button, icon_toggle, label, logical, notify_button, section, tip, toggle_button, tree_row, under};
 use gpui::{
     InteractiveElement, IntoElement, Modifiers, MouseButton, ParentElement, StatefulInteractiveElement, Styled, TestAppContext,
     VisualTestContext, div, point,
@@ -179,4 +179,36 @@ fn a_tree_chevron_toggles_without_reaching_the_row(cx: &mut TestAppContext) {
     assert_eq!((open.get(), row_downs.get()), (false, 1), "the rest of the row is the row's");
     let blank = vcx.debug_bounds("leaf-chevron").expect("drawn");
     vcx.simulate_click(blank.center(), Modifiers::none());
+}
+
+/// The rocket and the notify button: both take a click whether ready or not (a dim action
+/// says why on its click), keep their size in either state (R9.10), and the notify button
+/// knows where it was drawn, so a key opens its menu under it.
+#[gpui::test]
+fn ready_actions_and_notify_buttons_click_in_any_state_and_keep_their_size(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let state = Rc::new(Cell::new(false));
+    let at: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>> = Rc::default();
+    let (c, st, a) = (clicks.clone(), state.clone(), at.clone());
+    let window = host(cx, move |_, cx| {
+        let t = devdeck_ui::theme(cx).clone();
+        let (c1, c2) = (c.clone(), c.clone());
+        div()
+            .p(logical(20.))
+            .flex()
+            .child(icon_action_ready("deploy", Icon::Deploy, "the tag is unchanged", st.get(), &t).debug_selector(|| "deploy".into()).on_click(move |_, _, _| c1.set(c1.get() + 1)))
+            .child(notify_button("notify", st.get(), a.clone(), &t).debug_selector(|| "notify".into()).on_click(move |_, _, _| c2.set(c2.get() + 1)))
+            .into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let (deploy, notify) = (vcx.debug_bounds("deploy").expect("drawn"), vcx.debug_bounds("notify").expect("drawn"));
+    assert_eq!(at.get(), Some(notify), "it recorded where it was drawn");
+    assert_eq!(under(at.get()), notify.bottom_left(), "a menu opens under it");
+    vcx.simulate_click(deploy.center(), Modifiers::none());
+    vcx.simulate_click(notify.center(), Modifiers::none());
+    assert_eq!(clicks.get(), 2, "dim, crossed bell: still clickable");
+    state.set(true);
+    vcx.update(|window, _| window.refresh());
+    vcx.run_until_parked();
+    assert_eq!((vcx.debug_bounds("deploy"), vcx.debug_bounds("notify")), (Some(deploy), Some(notify)), "ready, ticked: nothing moved or resized");
 }

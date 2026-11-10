@@ -57,6 +57,9 @@ pub struct MenuItem {
     pub separator: bool,
     /// Shown before the label (a protected env's lock…).
     pub icon: Option<(Icon, Hsla)>,
+    /// Its label's color (a notify option's severity, `docs/DESIGN.md` "Notifications");
+    /// dimmed like the rest of the row when disabled.
+    pub color: Option<Hsla>,
     pub run: Option<MenuAction>,
     /// Shown beside it on rest or →: other ways to do it (other places).
     pub submenu: Vec<MenuItem>,
@@ -64,10 +67,10 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<SharedString>, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), hint: None, checked: false, toggle: false, disabled: None, separator: false, icon: None, run: Some(Rc::new(run)), submenu: Vec::new() }
+        Self { label: label.into(), hint: None, checked: false, toggle: false, disabled: None, separator: false, icon: None, color: None, run: Some(Rc::new(run)), submenu: Vec::new() }
     }
     pub fn separator() -> Self {
-        Self { label: "".into(), hint: None, checked: false, toggle: false, disabled: None, separator: true, icon: None, run: None, submenu: Vec::new() }
+        Self { label: "".into(), hint: None, checked: false, toggle: false, disabled: None, separator: true, icon: None, color: None, run: None, submenu: Vec::new() }
     }
     /// Other ways to do it, in a submenu; clicking the item itself still does its own.
     pub fn submenu(mut self, items: Vec<MenuItem>) -> Self {
@@ -81,6 +84,19 @@ impl MenuItem {
     pub fn hint(mut self, hint: impl Into<SharedString>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+    /// Its label in `color`.
+    pub fn color(mut self, color: Hsla) -> Self {
+        self.color = Some(color);
+        self
+    }
+    /// The color its label is drawn in: dim when disabled, else its own, else the text's.
+    pub fn label_color(&self, t: &Theme) -> Hsla {
+        match (&self.disabled, self.color) {
+            (Some(_), _) => t.dim,
+            (None, Some(c)) => c,
+            (None, None) => t.fg,
+        }
     }
     /// The one picked of several: using it closes the menu.
     pub fn checked(mut self, on: bool) -> Self {
@@ -374,7 +390,7 @@ impl Render for Menu {
                 .on_click(cx.listener(move |this, _, window, cx| this.run(i, window, cx)))
                 .child(div().size(t.icon).flex_none().when(item.checked, |d| d.child(icon(Icon::Check, if item.disabled.is_some() { t.dim } else { t.accent }, &t))))
                 .when_some(item.icon, |d, (i, c)| d.child(icon(i, if item.disabled.is_some() { t.dim } else { c }, &t)))
-                .child(label(item.label.clone()).flex_1())
+                .child(label(item.label.clone()).flex_1().text_color(item.label_color(&t)))
                 .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h)))
                 .when(!item.submenu.is_empty(), |d| d.child(icon(Icon::Submenu, t.mute, &t)))
                 .child(gpui::canvas(move |b, _, _| rows.borrow_mut().insert(i, b), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
@@ -419,7 +435,7 @@ impl Render for Menu {
                         .on_click(cx.listener(move |this, _, window, cx| this.run_sub(j, window, cx)))
                         .child(div().size(t.icon).flex_none().when(item.checked, |d| d.child(icon(Icon::Check, if item.disabled.is_some() { t.dim } else { t.accent }, &t))))
                         .when_some(item.icon, |d, (i, c)| d.child(icon(i, if item.disabled.is_some() { t.dim } else { c }, &t)))
-                        .child(label(item.label.clone()).flex_1())
+                        .child(label(item.label.clone()).flex_1().text_color(item.label_color(&t)))
                         .when_some(item.hint.clone(), |d, h| d.child(div().flex_none().text_color(t.mute).text_size(t.text_small).child(h))),
                 );
             }

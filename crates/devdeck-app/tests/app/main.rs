@@ -33,6 +33,7 @@ mod pty_driver;
 mod reveal;
 mod runs;
 mod service;
+mod service_notes;
 mod settings;
 mod sidebar;
 mod sidebar_groups;

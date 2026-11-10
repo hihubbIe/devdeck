@@ -4,9 +4,11 @@
 use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
-    AnyView, App, AppContext, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
+    AnyView, App, AppContext, Bounds, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Point, Render, SharedString,
     Stateful, StatefulInteractiveElement, Styled, Svg, Window, div, prelude::*,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// The hover group of [`button`] and [`icon_button`]: their icons brighten with them.
 const BUTTON: &str = "button";
@@ -127,8 +129,38 @@ pub fn button_icon(i: Icon, t: &Theme) -> Svg {
 /// why it can't run (R5.5), and its icon is dimmed then (still clickable: a click says
 /// why).
 pub fn icon_action(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedString>, enabled: bool, t: &Theme) -> Stateful<gpui::Div> {
-    let hover = t.hover;
     let child = if enabled { button_icon(i, t) } else { icon(i, t.dim, t) };
+    icon_frame(id, t).tooltip(tip(tooltip)).child(child)
+}
+
+/// [`icon_action`] whose icon is in the accent when it can run: the one thing to do now
+/// (the tag row's deploy once another tag is typed); dim with its reason when not.
+pub fn icon_action_ready(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedString>, ready: bool, t: &Theme) -> Stateful<gpui::Div> {
+    let child = icon(i, if ready { t.accent } else { t.dim }, t);
+    icon_frame(id, t).tooltip(tip(tooltip)).child(child)
+}
+
+/// A notify dropdown's button (`docs/DESIGN.md` "Notifications"): the crossed bell when
+/// nothing is ticked, the bell in the accent when anything is. No tooltip: its menu says
+/// it all. It records where it was drawn in `at`, so a key opens the menu under it
+/// ([`under`]). The caller adds the click.
+pub fn notify_button(id: impl Into<ElementId>, ticked: bool, at: Rc<Cell<Option<Bounds<Pixels>>>>, t: &Theme) -> Stateful<gpui::Div> {
+    let mark = if ticked { icon(Icon::Bell, t.accent, t) } else { button_icon(Icon::BellOff, t) };
+    icon_frame(id, t)
+        .relative()
+        .child(mark)
+        .child(gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+}
+
+/// Where a menu opened from a button drawn at `at` goes: under it (the window's corner
+/// when it wasn't drawn yet).
+pub fn under(at: Option<Bounds<Pixels>>) -> Point<Pixels> {
+    at.map_or_else(Point::default, |b| b.bottom_left())
+}
+
+/// The square frame of an icon button, its icon brightening with it.
+fn icon_frame(id: impl Into<ElementId>, t: &Theme) -> Stateful<gpui::Div> {
+    let hover = t.hover;
     div()
         .id(id)
         .group(BUTTON)
@@ -141,8 +173,6 @@ pub fn icon_action(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedS
         .rounded(t.radius_s)
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .tooltip(tip(tooltip))
-        .child(child)
 }
 
 /// [`icon_action`] for something on or off (wrap, follow, pause): framed in the accent

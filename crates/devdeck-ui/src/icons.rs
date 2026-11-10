@@ -122,6 +122,11 @@ icons! {
     Clear => "trash",
     /// Only the unread notifications.
     Unread => "mail",
+    /// A notify dropdown with nothing ticked.
+    BellOff => "bell-off",
+    // Deploys.
+    /// Deploy the tag typed (the service view's tag row).
+    Deploy => "rocket",
     // Window controls.
     WindowMinimize => "minus",
     WindowMaximize => "square",

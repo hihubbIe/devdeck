@@ -7,6 +7,7 @@ pub mod app_settings;
 pub mod cheat_sheet;
 pub mod cluster;
 pub mod cluster_deploys;
+pub mod cluster_notes;
 pub mod cluster_pods;
 pub mod context_menu;
 pub mod deck;

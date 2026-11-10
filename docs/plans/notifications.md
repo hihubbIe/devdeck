@@ -181,3 +181,24 @@ workspace is gone" (now a `NotRevealed` result); "view gone" wasn't built; stale
 the snapshot states. Found while fixing: a resolver pushing a toast from the toast's own
 click updated `Toasts` inside its own update; the resolver now runs deferred, and a toast
 closes only when its action ran.
+
+## Step C outcome (2026-11-10)
+
+Built by a builder, checked by the lead (whole suite 1048, clippy, snapshots 84-*, 85-*).
+- The tag row: tag field, the rocket (`devdeck_ui::icon_action_ready`, `svc.save` labelled
+  "deploy"), the notify dropdown (`devdeck_ui::notify_button` opening the menu overlay with
+  colored toggles; the row isn't on `Toolbar` yet), "unsaved" last. `b` opens it; space
+  ticks in every menu; `app.service_notifications` lists subscriptions, "turn all off".
+- `cluster_notes.rs`: subscriptions per (env, service) on each workspace's cluster; one
+  notification per (rollout, kind); no "deployed"/"redeployed" for devdeck's own, whose
+  outcome always toasts; a crash told once per template, again only after every pod stayed
+  ready with no restart for 10 min; a resumed rollout doesn't repeat the outcome it ended on.
+- Open for an own deploy replaced by someone else: nothing is told (as planned); for the
+  user to decide.
+
+### Review of the step C diff (subagent, 2026-11-10) and assessment
+
+All fixed, each with a test: crash flapping on one replica; marks kept all session; a
+failure followed by a crash toast for its pods; a failing deploy re-toasted at launch;
+hand-built buttons moved to `devdeck-ui`; `84-svc-confirm-refused` wrong since 38944de
+(only the tag changed, the fake compares the image), now refused in its confirmation.

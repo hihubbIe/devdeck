@@ -9,7 +9,11 @@
 //! - A notification's actions are data ([`NoteAction`]): the app reads their payload at
 //!   the click ([`resolve`]). A toast's closures stay on the toast.
 //! - A notification's source is a workspace's id (`None`: the app's), named here.
+//! - A notify dropdown (step C) is a menu of toggles under `devdeck_ui::notify_button`:
+//!   [`notify_items`]; every service subscription is listed by [`subscriptions_menu`].
 
+use crate::cluster::Cluster;
+use crate::cluster_notes::Notify;
 use crate::deck::NotRevealed;
 use crate::shell;
 use devdeck_core::layout::ViewRef;
@@ -26,7 +30,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
-actions!(notifications, [ToggleNotifications, CloseNotifications, NextNote, PrevNote, NextAction, PrevAction, RunNote, DeleteNote, ToggleUnread, WorkspaceMenu, MarkAllRead, ClearNotes]);
+actions!(notifications, [ToggleNotifications, ServiceNotifications, CloseNotifications, NextNote, PrevNote, NextAction, PrevAction, RunNote, DeleteNote, ToggleUnread, WorkspaceMenu, MarkAllRead, ClearNotes]);
 
 // ------------------------------------------------------------------ actions as data
 
@@ -199,6 +203,78 @@ pub fn bell(b: Badge, t: &Theme) -> gpui::Stateful<gpui::Div> {
         .tooltip(tip(badge_words(b)))
         .child(devdeck_ui::button_icon(Icon::Bell, t))
         .children(mark)
+}
+
+// ------------------------------------------------------------------ notify dropdowns
+
+/// A service's notify options as toggles, each label in the color of the toast it makes
+/// (`docs/DESIGN.md` "Notifications"); ticking keeps the menu open.
+pub fn notify_items(cluster: &Entity<Cluster>, env: &str, name: &str, cx: &App) -> Vec<MenuItem> {
+    let on = cluster.read(cx).notify_options(env, name);
+    let t = theme(cx);
+    Notify::ALL
+        .iter()
+        .map(|&what| {
+            let (cluster, env, name) = (cluster.clone(), env.to_string(), name.to_string());
+            MenuItem::new(what.label(), move |_, cx| {
+                cluster.update(cx, |c, cx| {
+                    let ticked = c.notify_options(&env, &name).contains(&what);
+                    c.set_notify(&env, &name, what, !ticked, cx);
+                })
+            })
+            .toggle(on.contains(&what))
+            .color(kind_look(what.kind(), t).1)
+        })
+        .collect()
+}
+
+/// Every service subscription of every workspace, alphabetical: each a row whose submenu
+/// is its dropdown, then "turn all off".
+pub fn subscriptions_menu(cx: &App) -> Vec<MenuItem> {
+    let Some(s) = shell::try_shell(cx) else { return Vec::new() };
+    let mut rows: Vec<(String, String, String, Entity<Cluster>)> = Vec::new();
+    let mut clusters = Vec::new();
+    for w in &s.read(cx).workspaces {
+        let Some(c) = w.services.read(cx).cluster.clone() else { continue };
+        for (env, name, _) in c.read(cx).subscriptions() {
+            rows.push((name, env, w.name.clone(), c.clone()));
+        }
+        clusters.push(c);
+    }
+    if rows.is_empty() {
+        return vec![MenuItem::new("no service notifications", |_, _| {}).disabled("tick an option in a service's notify menu")];
+    }
+    rows.sort_by_key(|r| (r.0.to_lowercase(), r.1.to_lowercase(), r.2.to_lowercase()));
+    let several = s.read(cx).workspaces.len() > 1;
+    let mut items: Vec<MenuItem> = rows
+        .into_iter()
+        .map(|(name, env, workspace, c)| {
+            let sub = notify_items(&c, &env, &name, cx);
+            let (open, ws, view) = (s.clone(), s.read(cx).workspaces.iter().find(|w| w.name == workspace).map(|w| w.id.clone()), ViewAddr::Svc { env: env.clone(), name: name.clone() }.to_ref());
+            let item = MenuItem::new(format!("{name} on {env}"), move |_, cx| {
+                if let Some(ws) = &ws {
+                    let _ = open.update(cx, |s, cx| s.reveal(ws, &view, cx));
+                }
+            })
+            .submenu(sub);
+            if several { item.hint(workspace) } else { item }
+        })
+        .collect();
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("turn all off", move |_, cx| {
+        for c in &clusters {
+            c.update(cx, |c, cx| c.notify_none(cx));
+        }
+    }));
+    items
+}
+
+/// Opens [`subscriptions_menu`] near the top of the window (the palette's action).
+pub fn open_subscriptions(window: &mut Window, cx: &mut App) {
+    let t = theme(cx).clone();
+    let items = subscriptions_menu(cx);
+    let at = gpui::point((window.viewport_size().width / 2. - t.size(160.)).max(t.size(8.)), t.title_h + t.size(40.));
+    devdeck_ui::open_menu(at, items, window, cx);
 }
 
 // ------------------------------------------------------------------ the center

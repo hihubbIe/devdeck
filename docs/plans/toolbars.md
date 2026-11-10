@@ -178,7 +178,8 @@ status words dropped); **narrow** (fold `Order` items, 1 first, groups together,
 On paper: logs (field + count, status, level menu, wrap, pause/resume + count, follow,
 more); run view (state status with its word, `Text` command line, arguments menu with its
 value, actions); service view (verbs `label_required`, spacer, lock; tag editor: field
-with the suggestions accessory, "unsaved" status, `primary` save, `Text` repo); git panel
+with the suggestions accessory, "unsaved" status, `primary` save, `Text` repo; since
+notifications step C: deploy as an icon, the notify menu, no repo, see below); git panel
 (icon actions, status words); matrix (title kept as `Text` until its own pass decides);
 sidebar header (its activity name, an exception; filter field; running toggle; env menu
 with color, lock and on).
@@ -210,3 +211,13 @@ and the current line keeps its accent bar. `n` / `shift+n` step through every ma
 every line; the count counts matches; a match on a wrapped line scrolls to its piece.
 Case is ignored per character (`logs_feed::match_ranges`, byte ranges on character
 boundaries, tested with non-ASCII text).
+
+## The tag row's deploy is an icon (user, notifications step C, 2026-11-10)
+
+A named departure from the `primary` labelled save above: the service view's tag row is the
+tag field (with its suggestions), a **deploy** icon (Lucide `rocket`; the action keeps the id
+`svc.save`, its label is "deploy"; dim with its reason in its tooltip when it can't deploy,
+in the accent when another tag is typed; ctrl+s still opens the confirmation, a refusal
+said in a toast), then the notify dropdown (`plans/notifications.md`), then the "unsaved"
+status. The image's repository path left the row (the full image stays in the Container
+section). The row is still drawn by hand: its move onto `Toolbar` keeps this shape.

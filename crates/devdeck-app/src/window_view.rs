@@ -10,7 +10,7 @@ use crate::deck::{Deck, FLASH, Flash, Held, Keys, SendSource};
 use crate::places::{self, Place};
 use crate::stats;
 use crate::app_settings::{self, Cover};
-use crate::notifications::{self, Badge, CloseNotifications, NotificationsView, ToggleNotifications};
+use crate::notifications::{self, Badge, CloseNotifications, NotificationsView, ServiceNotifications, ToggleNotifications};
 use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
@@ -1134,6 +1134,7 @@ impl Render for WindowView {
                 }))
             })
             .on_action(cx.listener(|this, _: &ToggleNotifications, w, cx| this.toggle_notifications(w, cx)))
+            .on_action(|_: &ServiceNotifications, w, cx| notifications::open_subscriptions(w, cx))
             .when(!is_main, |d| d.on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx))))
             .when(is_main && !covered, |d| {
                 d.on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))

@@ -322,6 +322,38 @@ fn a_redeploy_confirmed_after_someone_deployed_is_refused_in_its_confirmation(cx
     assert!(vcx.debug_bounds("deploy-error").is_some(), "the refusal is shown in it");
 }
 
+/// The fake refuses a write pinned to an image that changed meanwhile (its whole image,
+/// as written): the confirmation stays and says why, and nothing is deployed.
+#[gpui::test]
+fn a_deploy_confirmed_after_someone_deployed_is_refused_in_its_confirmation(cx: &mut TestAppContext) {
+    let shell = start(cx, "deploy-changed");
+    let main = main_window(&shell, cx);
+    let c = cluster(&shell, cx);
+    let _view = open_service(&shell, cx, "dev35", "entityservice");
+    type_tag(main, cx, "lan-160");
+    cx.simulate_keystrokes(main, "ctrl-s");
+    cx.run_until_parked();
+    assert_eq!(modals(main, cx), 1);
+    let hotfix = cx.update(|cx| {
+        c.update(cx, |c, cx| {
+            let mut list: Vec<_> = c.peek("dev35").ready().map(|m| m.values().cloned().collect()).unwrap_or_default();
+            let d = list.iter_mut().find(|d| d.name == "entityservice").unwrap();
+            let image = format!("{}:hotfix-from-slack", d.main().image.repo);
+            d.main_mut().image = devdeck_core::cluster::Image::parse(&image);
+            d.revision += 1;
+            c.apply("dev35", devdeck_app::cluster::EnvUpdate::Deployments(list), cx);
+            image
+        })
+    });
+    cx.simulate_keystrokes(main, "enter");
+    advance(cx, ROLLOUT_STEP * 3);
+    assert_eq!(modals(main, cx), 1, "the confirmation stays, saying why");
+    let modal = cx.update(|cx| devdeck_ui::overlay::layer(main, cx).read(cx).modals.last().cloned()).unwrap();
+    let confirm = modal.downcast::<devdeck_app::views::service_view::ConfirmDeploy>().unwrap();
+    assert_eq!(cx.read(|cx| confirm.read(cx).error().map(String::from)), Some("entityservice changed since you confirmed".into()));
+    assert_eq!(cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().main().image.raw.clone()), hotfix, "nothing deployed over it");
+}
+
 #[gpui::test]
 fn the_redeploy_button_says_why_not_and_a_protected_env_asks_its_name_first(cx: &mut TestAppContext) {
     let shell = start(cx, "redeploy-guards");

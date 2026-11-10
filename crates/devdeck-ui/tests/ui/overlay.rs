@@ -221,6 +221,45 @@ fn a_toggle_keeps_the_menu_open_and_flips_its_check(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_label_takes_its_color_and_dims_when_disabled(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    assert_eq!(item("plain", &log).label_color(&t), t.fg);
+    assert_eq!(item("error", &log).color(t.err).label_color(&t), t.err, "a notify option in its toast's color");
+    assert_eq!(item("error", &log).color(t.err).disabled("not now").label_color(&t), t.dim, "dimmed like the rest of the row");
+}
+
+/// A notify dropdown: colored toggles, ticked by click, Enter or the app's space (all
+/// `MenuConfirm`), the menu open meanwhile and nothing moving; Esc closes it.
+#[gpui::test]
+fn colored_toggles_keep_the_menu_open_and_still(cx: &mut TestAppContext) {
+    let (mut vcx, window, under) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    let items = vec![item("deployed", &log).toggle(false).color(t.accent), item("finished", &log).toggle(false).color(t.ok), item("failed", &log).toggle(true).color(t.err)];
+    open(&mut vcx, at, items);
+    let rows = |vcx: &mut VisualTestContext| ["menu-item-0", "menu-item-1", "menu-item-2"].map(|s| vcx.debug_bounds(s).expect("drawn"));
+    let before = rows(&mut vcx);
+    vcx.simulate_click(row_at(at, 0, 0, &t), Modifiers::none());
+    vcx.dispatch_action(MenuDown);
+    vcx.dispatch_action(MenuDown);
+    vcx.dispatch_action(MenuConfirm);
+    vcx.run_until_parked();
+    assert!(menu_open(&mut vcx, window), "ticking keeps it open");
+    assert_eq!(checks(&mut vcx, window), [true, false, false]);
+    assert_eq!(ran(&log), ["deployed", "failed"]);
+    assert_eq!(rows(&mut vcx), before, "nothing moved or resized (R9.10)");
+    let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(window, cx).read(cx).menu.clone()).expect("a menu");
+    assert_eq!(vcx.read(|cx| menu.read(cx).items().iter().map(|i| i.label_color(&t)).collect::<Vec<_>>()), [t.accent, t.ok, t.err], "each keeps its color, ticked or not");
+    vcx.dispatch_action(MenuClose);
+    vcx.run_until_parked();
+    assert!(!menu_open(&mut vcx, window));
+    assert!(focused(&mut vcx, &under.focus));
+}
+
+#[gpui::test]
 fn keyboard_selection_skips_separators_and_wraps(cx: &mut TestAppContext) {
     let (mut vcx, _, _) = setup(cx);
     let t = the_theme(&mut vcx);

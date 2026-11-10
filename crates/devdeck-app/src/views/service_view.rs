@@ -1,13 +1,14 @@
 //! Service inspector (`svc/<env>/<name>`, R7.2–R7.6, R7.8): header, actions (redeploy the
-//! same branch among them), the image tag editor (suggestions, unsaved marker, ctrl+s →
-//! confirmation stating the exact command, waiting for the cluster's answer), the deploy
-//! followed to its end,
+//! same branch among them), the tag row (the tag editor with its suggestions, the deploy
+//! rocket or ctrl+s → confirmation stating the exact command, waiting for the cluster's
+//! answer; the notify dropdown; the unsaved marker), the deploy followed to its end,
 //! protected-env unlock, then metrics, pods, container and the deploy history. Opening it
 //! asks the cluster whether the account may change deployments there.
 //!
 //! Metrics are sampled only while the view is visible (it holds a [`Sampling`] handle).
-//! Keys (`ServiceView`): ctrl+s save, l logs, t edit tag, r redeploy; Esc in the tag editor
-//! reverts it (the pane then gives the keys back to the view).
+//! Keys (`ServiceView`): ctrl+s deploy, l logs, t edit tag, r redeploy, b notify; Esc in the
+//! tag editor reverts it (the pane then gives the keys back to the view). What the notify
+//! dropdown ticks is the cluster's ([`crate::cluster_notes`]): it outlives the view.
 
 use super::{ViewCx, fmt_age};
 use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling, WriteState};
@@ -17,15 +18,17 @@ use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
-    Icon, InputEvent, MenuItem, ModalFocus, TextInput, Theme, ToastKind, button, dot, icon, icon_button, icon_text, label, modal_frame, open_menu,
-    pop_modal, push_modal, section, theme, tip, toasts,
+    Icon, InputEvent, MenuItem, ModalFocus, TextInput, Theme, ToastKind, button, dot, icon, icon_action_ready, icon_button, icon_text, label, modal_frame,
+    notify_button, open_menu, pop_modal, push_modal, section, theme, tip, toasts, under,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
+    AnyWindowHandle, App, AppContext, Bounds, Pixels, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*, relative,
 };
 
-actions!(service_view, [SaveTag, OpenLogs, EditTag, Redeploy, ConfirmModal]);
+actions!(service_view, [SaveTag, OpenLogs, EditTag, Redeploy, NotifyMenu, ConfirmModal]);
 
 pub struct ServiceView {
     pub env: String,
@@ -49,6 +52,8 @@ pub struct ServiceView {
     looking: Option<Looking>,
     /// The window it last drew in: modals open there.
     window: Option<AnyWindowHandle>,
+    /// Where the notify dropdown's button was drawn: `b` opens its menu under it.
+    notify_at: Rc<Cell<Option<Bounds<Pixels>>>>,
     _subs: Vec<Subscription>,
 }
 
@@ -87,6 +92,7 @@ impl ServiceView {
             visible: false,
             looking: None,
             window: None,
+            notify_at: Rc::default(),
             _subs: subs,
         };
         this.cluster_changed(cx);
@@ -172,7 +178,7 @@ impl ServiceView {
         self.cluster.read(cx).env(&self.env).is_some_and(|e| e.protected)
     }
 
-    /// Why Save can't go ahead now, if it can't.
+    /// Why the deploy (the rocket, ctrl+s) can't go ahead now, if it can't.
     pub fn save_blocked(&self, cx: &App) -> Option<String> {
         // Edit mode first: it's what the user can do something about.
         if let Err(why) = self.cluster.read(cx).writes(cx) {
@@ -185,7 +191,8 @@ impl ServiceView {
         self.cluster.read(cx).deploy_blocked(&self.env, &self.name, &to, self.unlocked, cx)
     }
 
-    /// ctrl+s: on a locked protected env asks to unlock first; otherwise confirms.
+    /// The rocket or ctrl+s: on a locked protected env asks to unlock first; otherwise
+    /// confirms.
     pub fn save(&mut self, cx: &mut Context<Self>) {
         // Edit mode before the protected env's name: never ask the name to then refuse.
         // Everything else before the protected env's name: never ask it to then refuse.
@@ -196,7 +203,7 @@ impl ServiceView {
             return;
         }
         if let Some(why) = self.save_blocked(cx) {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Not saved: {why}."), vec![], cx));
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Not deployed: {why}."), vec![], cx));
             return;
         }
         let to = self.tag.read(cx).text().trim().to_string();
@@ -280,6 +287,19 @@ impl ServiceView {
         cx.defer(move |cx| {
             let _ = handle.update(cx, |_, window, cx| f(window, cx));
         });
+    }
+
+    /// The notify dropdown's options (snapshots and tests read them).
+    pub fn notify_items(&self, cx: &App) -> Vec<MenuItem> {
+        crate::notifications::notify_items(&self.cluster, &self.env, &self.name, cx)
+    }
+
+    /// Opens the notify dropdown under its button (a click, or `b`).
+    pub fn open_notify(&self, window: &mut Window, cx: &mut App) {
+        let at = under(self.notify_at.get());
+        let items = self.notify_items(cx);
+        // Opened from a click or a key handler: after it, so the menu keeps the focus.
+        window.defer(cx, move |window, cx| open_menu(at, items, window, cx));
     }
 
     fn open_logs(&mut self, cx: &mut Context<Self>) {
@@ -384,6 +404,7 @@ impl Render for ServiceView {
             .on_action(cx.listener(|this, _: &SaveTag, _, cx| this.save(cx)))
             .on_action(cx.listener(|this, _: &OpenLogs, _, cx| this.open_logs(cx)))
             .on_action(cx.listener(|this, _: &Redeploy, _, cx| this.redeploy(cx)))
+            .on_action(cx.listener(|this, _: &NotifyMenu, window, cx| this.open_notify(window, cx)))
             .on_action(cx.listener(|this, _: &EditTag, window, cx| {
                 this.tag.read(cx).focus_handle(cx).focus(window, cx);
             }));
@@ -498,16 +519,21 @@ impl Render for ServiceView {
                     open_menu(e.position(), items, window, cx);
                 })
             })
-            // Kept in place when clean (hidden), so the row doesn't shift.
-            .child(div().flex_none().flex().items_center().gap_1().text_color(t.warn).when(!dirty, |d| d.invisible()).child(dot(t.warn, true, &t)).child("unsaved"))
+            // The rocket: ready (in the accent) when another tag is typed, dim with its reason
+            // otherwise (a click says it too).
             .child(
-                button("save", "save", &t)
-                    .debug_selector(|| "tag-save".into())
-                    .when(blocked.is_some(), |b| b.text_color(t.dim))
-                    .tooltip(tip(blocked.clone().unwrap_or_else(|| "confirm and deploy".into())))
+                icon_action_ready("deploy", Icon::Deploy, blocked.clone().unwrap_or_else(|| "deploy".into()), blocked.is_none(), &t)
+                    .debug_selector(|| "tag-deploy".into())
                     .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
             )
-            .child(label(d.main().image.repo.clone()).text_color(t.dim).flex_1());
+            .child({
+                let ticked = !c.notify_options(&self.env, &self.name).is_empty();
+                notify_button("notify", ticked, self.notify_at.clone(), &t)
+                    .debug_selector(|| "tag-notify".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_notify(window, cx)))
+            })
+            // Kept in place when clean (hidden), so nothing shifts.
+            .child(div().flex_none().flex().items_center().gap_1().text_color(t.warn).when(!dirty, |d| d.invisible()).child(dot(t.warn, true, &t)).child("unsaved"));
         // A list kept over a lost connection: what's wrong, above it.
         let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pb_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
         // Its app's repository: the branch checked out, and the running tag's branch on the
@@ -789,6 +815,11 @@ impl ConfirmDeploy {
             }
         });
         Self { service, env, name, kind, command, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore, sent: false, error: None, _cluster: Some(sub) }
+    }
+
+    /// Why the cluster refused the write, when it did (shown in it).
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     /// Sends the write; the modal waits for the answer.

@@ -9,7 +9,7 @@
 //! with the problem next to it.
 //!
 //! Pods and metrics: [`crate::cluster_pods`]; deploys, their follow-up and history:
-//! [`crate::cluster_deploys`].
+//! [`crate::cluster_deploys`]; a service's notifications: [`crate::cluster_notes`].
 
 use devdeck_core::cluster::{Deployment, Env, Remote, restart_command, set_image_command};
 pub use devdeck_kube::{ImageChange, Restart};
@@ -123,6 +123,7 @@ pub struct Cluster {
     pub problems: Vec<String>,
     pub(crate) pod: crate::cluster_pods::PodState,
     pub(crate) dep: crate::cluster_deploys::DeployState,
+    pub(crate) notes: crate::cluster_notes::NoteState,
     /// Metrics reads started (tests check sampling stops).
     pub metric_ticks: usize,
     /// A fixed clock (epoch seconds) that rollouts advance: the demo's, so snapshots
@@ -150,6 +151,7 @@ impl Cluster {
             problems: Vec::new(),
             pod: Default::default(),
             dep: Default::default(),
+            notes: Default::default(),
             metric_ticks: 0,
             clock,
             log_gens: (0, BTreeMap::new()),

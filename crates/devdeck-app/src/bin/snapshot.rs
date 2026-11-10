@@ -11,6 +11,7 @@ use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
 use devdeck_app::views::app_view::AppView;
 use devdeck_app::views::run_view::RunView;
+use devdeck_app::cluster_notes::Notify;
 use devdeck_app::views::service_view::ServiceView;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
@@ -641,7 +642,9 @@ fn svc_confirm_refused(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &
         c.update(cx, |c, cx| {
             let mut list: Vec<_> = c.peek("dev35").ready().map(|m| m.values().cloned().collect()).unwrap_or_default();
             if let Some(d) = list.iter_mut().find(|d| d.name == "entityservice") {
-                d.main_mut().image.tag = Some("hotfix-from-slack".into());
+                // The whole image: the fake's guard compares it as written.
+                let repo = d.main().image.repo.clone();
+                d.main_mut().image = devdeck_core::cluster::Image::parse(&format!("{repo}:hotfix-from-slack"));
                 d.revision += 1;
             }
             c.apply("dev35", EnvUpdate::Deployments(list), cx);
@@ -683,6 +686,29 @@ fn svc_suggestions(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Enti
     let v = service(cx, shell, "dev35", "entityservice", true);
     let items = cx.update(|cx| ServiceView::suggestions_for(&v, cx));
     let _ = cx.update_window(w, |_, window, cx| open_menu(point(logical(720.), logical(140.)), items, window, cx));
+}
+
+/// Another tag typed: the rocket ready (in the accent), "unsaved" at the row's end.
+fn svc_tag_ready(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    let v = service(cx, shell, "dev35", "entityservice", true);
+    cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-160", cx))));
+}
+
+/// The notify dropdown open, two options ticked: the bell in the accent.
+fn svc_notify(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let v = service(cx, shell, "dev35", "entityservice", true);
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| {
+        c.update(cx, |c, cx| {
+            c.set_notify("dev35", "entityservice", Notify::Finished, true, cx);
+            c.set_notify("dev35", "entityservice", Notify::Failed, true, cx);
+        })
+    });
+    let _ = cx.update_window(w, |_, window, _| window.refresh());
+    cx.run_until_parked();
+    let _ = cx.update_window(w, |_, window, cx| v.update(cx, |v, cx| v.open_notify(window, cx)));
+    cx.run_until_parked();
 }
 
 fn svc_loading(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -1434,6 +1460,8 @@ fn states() -> Vec<State> {
         w("84-svc-confirm-refused", "work", 1.0, Some(svc_confirm_refused)),
         w("84-svc-redeploy-confirm", "work", 1.0, Some(svc_redeploy_confirm)),
         w("85-svc-suggestions", "work", 1.0, Some(svc_suggestions)),
+        w("85-svc-tag-ready", "work", 1.0, Some(svc_tag_ready)),
+        w("85-svc-notify", "work", 1.0, Some(svc_notify)),
         w("86-svc-loading", "work", 1.0, Some(svc_loading)),
         w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),
         w("88-svc-forbidden-narrow", "work", 1.0, Some(svc_forbidden_narrow)),

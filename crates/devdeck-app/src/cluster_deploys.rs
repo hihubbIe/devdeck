@@ -19,6 +19,8 @@
 //! - The history keeps [`HISTORY_KEPT`] deploys per service in the state folder; one left
 //!   without an end (devdeck closed mid-rollout) is followed again if the deployment still
 //!   runs its image, else ends as "unknown: devdeck was closed".
+//! - What a followed deploy does (began, finished, failing or stuck) may be told:
+//!   [`crate::cluster_notes`].
 //! - The access review (may this account patch deployments here?) is asked once per env
 //!   and log generation, when a service view opens.
 
@@ -380,11 +382,14 @@ impl Cluster {
             }
             let r = Rollout { from: from.clone(), to: tag.clone(), image, by: by.clone(), generation, at_s: now, state: RolloutState::Rolling { ready: 0, of: d.replicas } };
             self.dep.rollouts.insert(key.clone(), r);
+            self.rollout_began(&key, None);
             let record = DeployRecord { at_s: now, from, to: tag, by, outcome: String::new(), revision: Some(d.revision), restarted_at: d.restarted_at.clone() };
             remember(self.dep.history.entry(key).or_default(), record);
             changed = true;
         }
         changed |= self.reassess_quiet(env);
+        self.watch_crashes(env, cx.background_executor().now());
+        self.tell(cx);
         if changed {
             self.save_history(cx);
             cx.notify();
@@ -408,6 +413,7 @@ impl Cluster {
         if same {
             let r = Rollout { from: last.from, to: last.to, image: d.main().image.raw.clone(), by: last.by, generation: 0, at_s: last.at_s.min(now), state: RolloutState::Rolling { ready: 0, of: d.replicas } };
             self.dep.rollouts.insert(key.clone(), r);
+            self.rollout_began(key, Some(&last.outcome));
         } else {
             self.end_record(key, "unknown: devdeck was closed");
         }
@@ -416,7 +422,10 @@ impl Cluster {
 
     /// Follows `env`'s deploys again (pods or deployments changed).
     pub(crate) fn reassess(&mut self, env: &str, cx: &mut Context<Self>) {
-        if self.reassess_quiet(env) {
+        let changed = self.reassess_quiet(env);
+        self.watch_crashes(env, cx.background_executor().now());
+        self.tell(cx);
+        if changed {
             self.save_history(cx);
             cx.notify();
         }
@@ -446,6 +455,7 @@ impl Cluster {
             r.state = state;
             changed = true;
             let (outcome, finished) = (r.outcome(), r.finished());
+            self.rollout_moved(&key);
             if self.history(&key.0, &key.1).last().is_some_and(|l| l.outcome != outcome) {
                 self.end_record(&key, &outcome);
             }
