@@ -11,8 +11,10 @@
 //!   can be changed in a row (R5.8); a pick (one of several) and an action close it.
 //! - Each overlay has its own focus and key context (`Menu`, `Modal`), so pane keys never
 //!   act behind it, and focus goes back where it was when it closes.
-//! - Toasts expire on a single timer that stops when the stack is empty, so idle CPU
-//!   stays at zero.
+//! - Toasts expire on a single timer that stops when nothing shown runs, so idle CPU
+//!   stays at zero. Three show at once, the others wait their turn ("+N more"); the
+//!   pointer resting on one pauses it. Every toast is also kept as a [`Note`] in the
+//!   notification center's [`NoteStore`], beside the control API's history.
 
 use crate::scroll::Scrolls;
 use crate::components::label;
@@ -608,26 +610,92 @@ pub enum ToastKind {
     Err,
 }
 
+/// An action kept as data, so the notification center can offer it long after the toast
+/// left: a label and a payload only the app reads, resolved to what it does at the click
+/// ([`Toasts::set_hooks`]). Nothing is captured, so nothing is kept alive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteAction {
+    pub label: SharedString,
+    pub payload: SharedString,
+}
+
+impl NoteAction {
+    pub fn new(label: impl Into<SharedString>, payload: impl Into<SharedString>) -> Self {
+        Self { label: label.into(), payload: payload.into() }
+    }
+}
+
 #[derive(Clone)]
 pub struct Toast {
     pub id: u64,
     pub kind: ToastKind,
+    /// One line above the text.
+    pub title: Option<SharedString>,
     pub text: SharedString,
+    /// Actions as closures: on the toast only, never in the center.
     pub actions: Vec<(SharedString, MenuAction)>,
-    pub deadline: Instant,
+    /// Actions as data: on the toast and in the center.
+    pub notes: Vec<NoteAction>,
+    pub lifetime: Duration,
+    /// When it leaves; `None` while it waits for a place ([`ToastQueue::SHOWN`]): its
+    /// lifetime starts when it shows.
+    pub deadline: Option<Instant>,
+    /// The time it had left when the pointer came to rest on it: its timer is paused.
+    pub paused: Option<Duration>,
 }
 
+/// How long a toast stays once shown: errors longer.
 pub fn toast_lifetime(kind: ToastKind) -> Duration {
-    if kind == ToastKind::Err { Duration::from_secs(10) } else { Duration::from_secs(6) }
+    if kind == ToastKind::Err { Duration::from_secs(12) } else { Duration::from_secs(8) }
 }
 
-/// Pure part of the stack: expire by time, keep at most `max`.
+/// What a toast says, before it has an id: [`Toasts::push_new`].
+#[derive(Clone)]
+pub struct NewToast {
+    pub kind: ToastKind,
+    pub title: Option<SharedString>,
+    pub text: SharedString,
+    /// Whose it is, for the center (the app passes a workspace's id); `None`: the app's.
+    pub source: Option<SharedString>,
+    pub actions: Vec<(SharedString, MenuAction)>,
+    pub notes: Vec<NoteAction>,
+}
+
+impl NewToast {
+    pub fn new(kind: ToastKind, text: impl Into<SharedString>) -> Self {
+        Self { kind, title: None, text: text.into(), source: None, actions: Vec::new(), notes: Vec::new() }
+    }
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+    pub fn source(mut self, source: Option<SharedString>) -> Self {
+        self.source = source;
+        self
+    }
+    /// Actions as closures (on the toast only).
+    pub fn actions(mut self, actions: Vec<(SharedString, MenuAction)>) -> Self {
+        self.actions = actions;
+        self
+    }
+    /// An action as data (on the toast and in the center).
+    pub fn note(mut self, action: NoteAction) -> Self {
+        self.notes.push(action);
+        self
+    }
+}
+
+/// Pure part of the stack: the live toasts (the first [`ToastQueue::SHOWN`] shown, the
+/// others waiting their turn), expiry by time, and the history.
 #[derive(Default)]
 pub struct ToastQueue {
     pub items: Vec<Toast>,
     /// The last toasts shown, expired or not, oldest first (time order, not alphabetical:
     /// what was said and when, for the control API's `ui.toasts`).
     pub history: std::collections::VecDeque<Told>,
+    /// The titles of the toasts in `history`, by id (`Told` is the API's and stays as it
+    /// is; a title reaches the API from here).
+    pub titles: BTreeMap<u64, SharedString>,
     next_id: u64,
 }
 
@@ -640,38 +708,212 @@ pub struct Told {
 }
 
 impl ToastQueue {
-    pub const MAX: usize = 4;
+    /// Toasts shown at once; the others wait ("+N more").
+    pub const SHOWN: usize = 3;
+    /// Live toasts kept, shown or waiting: past it the oldest waiting one goes (it stays
+    /// in the center).
+    pub const LIVE: usize = 100;
     /// Toasts kept in the history.
     pub const HISTORY: usize = 50;
 
     /// Shows a toast; returns its id.
     pub fn push(&mut self, kind: ToastKind, text: SharedString, actions: Vec<(SharedString, MenuAction)>, now: Instant) -> u64 {
+        self.push_new(NewToast::new(kind, text).actions(actions), now)
+    }
+
+    /// Shows a toast (or queues it behind the shown ones); returns its id.
+    pub fn push_new(&mut self, t: NewToast, now: Instant) -> u64 {
         self.next_id += 1;
-        if self.history.len() == Self::HISTORY {
-            self.history.pop_front();
+        let id = self.next_id;
+        if self.history.len() == Self::HISTORY
+            && let Some(gone) = self.history.pop_front()
+        {
+            self.titles.remove(&gone.id);
         }
-        self.history.push_back(Told { id: self.next_id, kind, text: text.clone() });
-        self.items.push(Toast { id: self.next_id, kind, text, actions, deadline: now + toast_lifetime(kind) });
-        if self.items.len() > Self::MAX {
-            self.items.remove(0);
+        self.history.push_back(Told { id, kind: t.kind, text: t.text.clone() });
+        if let Some(title) = &t.title {
+            self.titles.insert(id, title.clone());
         }
-        self.next_id
+        self.items.push(Toast {
+            id,
+            kind: t.kind,
+            title: t.title,
+            text: t.text,
+            actions: t.actions,
+            notes: t.notes,
+            lifetime: toast_lifetime(t.kind),
+            deadline: None,
+            paused: None,
+        });
+        if self.items.len() > Self::LIVE {
+            self.items.remove(Self::SHOWN);
+        }
+        self.promote(now);
+        id
+    }
+
+    /// The toasts on screen.
+    pub fn shown(&self) -> &[Toast] {
+        &self.items[..self.items.len().min(Self::SHOWN)]
+    }
+
+    /// How many wait behind them.
+    pub fn waiting(&self) -> usize {
+        self.items.len().saturating_sub(Self::SHOWN)
     }
 
     pub fn dismiss(&mut self, id: u64) {
         self.items.retain(|t| t.id != id);
     }
 
-    /// Drops expired toasts; returns the next deadline, if any.
+    /// The pointer rests on toast `id`: its timer stops with the time it has left.
+    pub fn pause(&mut self, id: u64, now: Instant) {
+        if let Some(t) = self.items.iter_mut().find(|t| t.id == id && t.paused.is_none())
+            && let Some(d) = t.deadline
+        {
+            t.paused = Some(d.saturating_duration_since(now));
+        }
+    }
+
+    /// The pointer left toast `id`: its timer goes on with the time it had left.
+    pub fn resume(&mut self, id: u64, now: Instant) {
+        if let Some(t) = self.items.iter_mut().find(|t| t.id == id)
+            && let Some(left) = t.paused.take()
+        {
+            t.deadline = Some(now + left);
+        }
+    }
+
+    /// Toasts that get a place start their lifetime.
+    fn promote(&mut self, now: Instant) {
+        for t in self.items.iter_mut().take(Self::SHOWN) {
+            if t.deadline.is_none() {
+                t.deadline = Some(now + t.lifetime);
+            }
+        }
+    }
+
+    /// Drops expired toasts, gives their places to waiting ones; returns the next
+    /// deadline, if any (paused toasts have none).
     pub fn expire(&mut self, now: Instant) -> Option<Instant> {
-        self.items.retain(|t| t.deadline > now);
-        self.items.iter().map(|t| t.deadline).min()
+        self.items.retain(|t| t.paused.is_some() || t.deadline.is_none_or(|d| d > now));
+        self.promote(now);
+        self.items.iter().filter(|t| t.paused.is_none()).filter_map(|t| t.deadline).min()
     }
 }
 
+/// A toast kept in the notification center.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Note {
+    /// The toast's id (the same in `history`).
+    pub id: u64,
+    pub kind: ToastKind,
+    pub title: Option<SharedString>,
+    pub text: SharedString,
+    /// When it came (the app's clock).
+    pub at: Instant,
+    /// Whose it is: opaque here (the app passes a workspace's id); `None`: the app's.
+    pub source: Option<SharedString>,
+    /// Its actions as data; a toast's closures aren't kept.
+    pub actions: Vec<NoteAction>,
+    pub read: bool,
+}
+
+/// The notification center's store: every toast, newest first, the last
+/// [`NoteStore::MAX`]. Beside the history, which it never touches: clearing it leaves
+/// the control API's `ui.toasts` as it was.
+#[derive(Default)]
+pub struct NoteStore {
+    notes: std::collections::VecDeque<Note>,
+}
+
+impl NoteStore {
+    pub const MAX: usize = 500;
+
+    pub fn add(&mut self, note: Note) {
+        self.notes.push_front(note);
+        self.notes.truncate(Self::MAX);
+    }
+
+    /// Newest first.
+    pub fn notes(&self) -> &std::collections::VecDeque<Note> {
+        &self.notes
+    }
+
+    pub fn get(&self, id: u64) -> Option<&Note> {
+        self.notes.iter().find(|n| n.id == id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.notes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.notes.is_empty()
+    }
+
+    /// Whether it changed.
+    pub fn mark_read(&mut self, id: u64) -> bool {
+        match self.notes.iter_mut().find(|n| n.id == id && !n.read) {
+            Some(n) => {
+                n.read = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Marks read every note `which` picks; how many changed.
+    pub fn mark_read_where(&mut self, which: impl Fn(&Note) -> bool) -> usize {
+        let mut n = 0;
+        for note in self.notes.iter_mut().filter(|x| !x.read && which(x)) {
+            note.read = true;
+            n += 1;
+        }
+        n
+    }
+
+    /// Whether it was there.
+    pub fn delete(&mut self, id: u64) -> bool {
+        let before = self.notes.len();
+        self.notes.retain(|n| n.id != id);
+        self.notes.len() != before
+    }
+
+    /// Removes every note `which` picks.
+    pub fn delete_where(&mut self, which: impl Fn(&Note) -> bool) {
+        self.notes.retain(|n| !which(n));
+    }
+
+    pub fn clear(&mut self) {
+        self.notes.clear();
+    }
+
+    pub fn unread(&self) -> usize {
+        self.notes.iter().filter(|n| !n.read).count()
+    }
+
+    /// Unread errors (warnings never count: they are mostly the user's own action
+    /// refused).
+    pub fn unread_errors(&self) -> usize {
+        self.notes.iter().filter(|n| !n.read && n.kind == ToastKind::Err).count()
+    }
+}
+
+/// Opens the notification center, on a notification or not (the app's).
+pub type OpenCenter = Rc<dyn Fn(Option<u64>, &mut Window, &mut App)>;
+/// Does what a [`NoteAction`] says (the app's).
+pub type ResolveNote = Rc<dyn Fn(&NoteAction, &mut Window, &mut App)>;
+
 pub struct Toasts {
     pub queue: ToastQueue,
+    /// The notification center's store.
+    pub notes: NoteStore,
     timer: Option<Task<()>>,
+    /// The toast under the pointer (its timer paused).
+    hovered: Option<u64>,
+    open_center: Option<OpenCenter>,
+    resolve: Option<ResolveNote>,
 }
 
 struct ToastsHandle(Entity<Toasts>);
@@ -681,32 +923,94 @@ pub fn toasts(cx: &mut App) -> Entity<Toasts> {
     if let Some(h) = cx.try_global::<ToastsHandle>() {
         return h.0.clone();
     }
-    let e = cx.new(|_| Toasts { queue: ToastQueue::default(), timer: None });
+    let e = cx.new(|_| Toasts { queue: ToastQueue::default(), notes: NoteStore::default(), timer: None, hovered: None, open_center: None, resolve: None });
     cx.set_global(ToastsHandle(e.clone()));
     e
 }
 
 impl Toasts {
-    /// Shows a toast; returns its id.
+    /// Shows a toast, the app's (no source); returns its id.
     pub fn push(&mut self, kind: ToastKind, text: impl Into<SharedString>, actions: Vec<(SharedString, MenuAction)>, cx: &mut Context<Self>) -> u64 {
+        self.push_new(NewToast::new(kind, text).actions(actions), cx)
+    }
+
+    /// Shows a toast of `source` (a background workspace's: the screen's may be another).
+    pub fn push_in(
+        &mut self,
+        source: Option<SharedString>,
+        kind: ToastKind,
+        text: impl Into<SharedString>,
+        actions: Vec<(SharedString, MenuAction)>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.push_new(NewToast::new(kind, text).source(source).actions(actions), cx)
+    }
+
+    /// Shows a toast and keeps it in the center; returns its id.
+    pub fn push_new(&mut self, t: NewToast, cx: &mut Context<Self>) -> u64 {
         let now = cx.background_executor().now();
-        let id = self.queue.push(kind, text.into(), actions, now);
+        let note = Note { id: 0, kind: t.kind, title: t.title.clone(), text: t.text.clone(), at: now, source: t.source.clone(), actions: t.notes.clone(), read: false };
+        let id = self.queue.push_new(t, now);
+        self.notes.add(Note { id, ..note });
         self.arm(cx);
         cx.notify();
         id
     }
 
+    /// Takes the toast off the screen (it stays in the center as it was).
     pub fn dismiss(&mut self, id: u64, cx: &mut Context<Self>) {
         self.queue.dismiss(id);
+        if self.hovered == Some(id) {
+            self.hovered = None;
+        }
         self.arm(cx);
         cx.notify();
+    }
+
+    /// The user closed it: off the screen, and read.
+    pub fn close(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.notes.mark_read(id);
+        self.dismiss(id, cx);
+    }
+
+    pub fn mark_read(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.notes.mark_read(id) {
+            cx.notify();
+        }
+    }
+
+    /// How the app opens its center and does what a [`NoteAction`] says.
+    pub fn set_hooks(&mut self, open_center: OpenCenter, resolve: ResolveNote) {
+        self.open_center = Some(open_center);
+        self.resolve = Some(resolve);
+    }
+
+    /// Does what `action` says (the app's hook); nothing without one.
+    pub fn resolver(&self) -> Option<ResolveNote> {
+        self.resolve.clone()
     }
 
     pub fn timer_running(&self) -> bool {
         self.timer.is_some()
     }
 
-    /// One timer, sleeping until the earliest deadline; none when the stack is empty.
+    /// The pointer came to rest on toast `id`, or left it.
+    fn hover(&mut self, id: u64, on: bool, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        if on {
+            if let Some(old) = self.hovered.replace(id).filter(|old| *old != id) {
+                self.queue.resume(old, now);
+            }
+            self.queue.pause(id, now);
+        } else if self.hovered == Some(id) {
+            self.hovered = None;
+            self.queue.resume(id, now);
+        }
+        self.arm(cx);
+        cx.notify();
+    }
+
+    /// One timer, sleeping until the earliest deadline; none when nothing shown runs.
     fn arm(&mut self, cx: &mut Context<Self>) {
         let now = cx.background_executor().now();
         let Some(next) = self.queue.expire(now) else {
@@ -723,7 +1027,31 @@ impl Toasts {
             });
         }));
     }
+
+    /// Opens the center (on `id`), through the app's hook.
+    fn open(&mut self, id: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = id {
+            self.dismiss(id, cx);
+        }
+        if let Some(open) = self.open_center.clone() {
+            open(id, window, cx);
+        }
+    }
 }
+
+/// A toast's icon and color, and its border.
+pub fn kind_look(kind: ToastKind, t: &Theme) -> (Icon, Hsla, Hsla) {
+    match kind {
+        ToastKind::Info => (Icon::Info, t.accent, t.line),
+        ToastKind::Ok => (Icon::Ok, t.ok, t.line),
+        ToastKind::Warn => (Icon::Warning, t.warn, t.warn),
+        ToastKind::Err => (Icon::Error, t.err, t.err),
+    }
+}
+
+/// Lines of a toast's text before it is cut (the rest is in the center): text wraps
+/// there, an opt-in of R4.4.
+pub const TOAST_LINES: usize = 3;
 
 impl Render for Toasts {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -732,50 +1060,106 @@ impl Render for Toasts {
             return div().into_any_element();
         }
         let viewport = window.viewport_size();
+        let margin = t.size(16.);
+        let width = t.size(400.).min(viewport.width - margin * 2.);
         let mut stack = div().flex().flex_col().items_end().gap_2().font_family(t.font.clone()).text_size(t.text);
-        for toast in self.queue.items.clone() {
-            let (kind, color, border) = match toast.kind {
-                ToastKind::Info => (Icon::Info, t.accent, t.line),
-                ToastKind::Ok => (Icon::Ok, t.ok, t.line),
-                ToastKind::Warn => (Icon::Warning, t.warn, t.warn),
-                ToastKind::Err => (Icon::Error, t.err, t.err),
-            };
+        for toast in self.queue.shown().to_vec() {
+            let (kind, color, border) = kind_look(toast.kind, &t);
             let id = toast.id;
-            let mut row = div()
+            let mut buttons = div().flex().flex_wrap().gap_1();
+            let n = toast.actions.len();
+            for (i, (name, run)) in toast.actions.iter().enumerate() {
+                let run = run.clone();
+                buttons = buttons.child(
+                    crate::components::button(("toast-action", (id as usize) * 16 + i), name.clone(), &t)
+                        .border_1()
+                        .border_color(t.line)
+                        .debug_selector(move || format!("toast-action-{id}-{i}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close(id, cx);
+                            run(window, cx);
+                        })),
+                );
+            }
+            for (j, action) in toast.notes.iter().enumerate() {
+                let i = n + j;
+                let action = action.clone();
+                buttons = buttons.child(
+                    crate::components::button(("toast-action", (id as usize) * 16 + i), action.label.clone(), &t)
+                        .border_1()
+                        .border_color(t.line)
+                        .debug_selector(move || format!("toast-action-{id}-{i}"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close(id, cx);
+                            if let Some(resolve) = this.resolve.clone() {
+                                resolve(&action, window, cx);
+                            }
+                        })),
+                );
+            }
+            let has_buttons = !toast.actions.is_empty() || !toast.notes.is_empty();
+            let row = div()
                 .id(("toast", id as usize))
+                .debug_selector(move || format!("toast-{id}"))
                 .flex()
-                .items_center()
-                .gap_3()
-                .max_w(t.size(640.))
-                .px_3()
+                .items_start()
+                .gap_2()
+                .w(width)
+                .pl_3()
+                .pr_1()
                 .py_1()
                 .bg(t.raised)
                 .border_1()
                 .border_color(border)
                 .rounded(t.radius_m)
                 .occlude()
-                .child(icon(kind, color, &t))
-                .child(label(toast.text.clone()).text_color(t.fg));
-            for (i, (name, run)) in toast.actions.iter().enumerate() {
-                let run = run.clone();
-                row = row.child(
-                    crate::components::button(("toast-action", (id as usize) * 16 + i), name.clone(), &t).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.dismiss(id, cx);
-                            run(window, cx);
-                        },
-                    )),
+                .on_hover(cx.listener(move |this, on: &bool, _, cx| this.hover(id, *on, cx)))
+                // The icon on the first line of text.
+                .child(div().flex_none().h(t.line_height).flex().items_center().mt(t.size(2.)).child(icon(kind, color, &t)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .py(t.size(2.))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .when_some(toast.title.clone(), |d, title| d.child(label(title).text_color(t.hi)))
+                        .child(
+                            // A click on the text opens the center on it: the whole text is there.
+                            div()
+                                .id(("toast-text", id as usize))
+                                .debug_selector(move || format!("toast-text-{id}"))
+                                .text_color(t.fg)
+                                .whitespace_normal()
+                                .line_clamp(TOAST_LINES)
+                                .text_ellipsis()
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, window, cx| this.open(Some(id), window, cx)))
+                                .child(toast.text.clone()),
+                        )
+                        .when(has_buttons, |d| d.child(buttons)),
+                )
+                .child(
+                    crate::components::icon_button(("toast-close", id as usize), Icon::Close, "dismiss", &t)
+                        .debug_selector(move || format!("toast-close-{id}"))
+                        .on_click(cx.listener(move |this, _, _, cx| this.close(id, cx))),
                 );
-            }
-            row = row.child(
-                // As tall as an action's button: every toast row has the same height.
-                crate::components::icon_button(("toast-close", id as usize), Icon::Close, "dismiss", &t)
-                    .h(t.button_h)
-                    .on_click(cx.listener(move |this, _, _, cx| this.dismiss(id, cx))),
-            );
             stack = stack.child(row);
         }
-        let margin = t.size(16.);
+        let waiting = self.queue.waiting();
+        if waiting > 0 {
+            stack = stack.child(
+                crate::components::button("toasts-more", format!("+{waiting} more"), &t)
+                    .debug_selector(|| "toasts-more".into())
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.line)
+                    .occlude()
+                    .tooltip(crate::components::tip("notifications"))
+                    .on_click(cx.listener(|this, _, window, cx| this.open(None, window, cx))),
+            );
+        }
         deferred(
             anchored()
                 .anchor(Anchor::BottomRight)
@@ -807,24 +1191,89 @@ mod tests {
         assert_eq!(step_selection(&[], None, 1), None);
     }
 
+    /// Lifetimes 8 s and 12 s for errors (were 6 and 10), and the queue keeps what it
+    /// can't show instead of dropping it (it dropped past 4): changed on purpose with the
+    /// notification center (plan "notifications", step A).
     #[test]
-    fn toast_queue_expiry_and_cap() {
+    fn toast_queue_expiry_shown_and_waiting() {
         let t0 = Instant::now();
         let mut q = ToastQueue::default();
         q.push(ToastKind::Info, "a".into(), vec![], t0);
         q.push(ToastKind::Err, "b".into(), vec![], t0);
-        assert_eq!(q.expire(t0), Some(t0 + Duration::from_secs(6)));
-        assert_eq!(q.expire(t0 + Duration::from_secs(7)), Some(t0 + Duration::from_secs(10)));
+        assert_eq!(q.expire(t0), Some(t0 + Duration::from_secs(8)));
+        assert_eq!(q.expire(t0 + Duration::from_secs(9)), Some(t0 + Duration::from_secs(12)));
         assert_eq!(q.items.len(), 1, "info expired, error stays longer");
-        assert_eq!(q.expire(t0 + Duration::from_secs(11)), None);
+        assert_eq!(q.expire(t0 + Duration::from_secs(13)), None);
         for i in 0..6 {
             q.push(ToastKind::Info, format!("{i}").into(), vec![], t0);
         }
-        assert_eq!(q.items.len(), ToastQueue::MAX);
-        assert_eq!(q.items[0].text.as_ref(), "2", "oldest dropped first");
+        assert_eq!(q.items.len(), 6, "nothing dropped");
+        assert_eq!(q.shown().iter().map(|t| t.text.as_ref()).collect::<Vec<_>>(), ["0", "1", "2"]);
+        assert_eq!(q.waiting(), 3);
+        assert!(q.items[3..].iter().all(|t| t.deadline.is_none()), "waiting ones haven't started their lifetime");
+        let t1 = t0 + Duration::from_secs(9);
+        assert_eq!(q.expire(t1), Some(t1 + Duration::from_secs(8)), "the shown ones left, the waiting ones start now");
+        assert_eq!(q.shown().iter().map(|t| t.text.as_ref()).collect::<Vec<_>>(), ["3", "4", "5"]);
+        assert_eq!(q.waiting(), 0);
         let id = q.items[1].id;
         q.dismiss(id);
-        assert_eq!(q.items.len(), ToastQueue::MAX - 1);
+        assert_eq!(q.items.len(), 2);
+    }
+
+    #[test]
+    fn the_live_queue_is_bounded_by_dropping_the_oldest_waiting() {
+        let t0 = Instant::now();
+        let mut q = ToastQueue::default();
+        for i in 0..ToastQueue::LIVE + 2 {
+            q.push(ToastKind::Info, format!("{i}").into(), vec![], t0);
+        }
+        assert_eq!(q.items.len(), ToastQueue::LIVE);
+        assert_eq!(q.shown().iter().map(|t| t.text.as_ref()).collect::<Vec<_>>(), ["0", "1", "2"], "the shown ones stay");
+        assert_eq!(q.items[ToastQueue::SHOWN].text.as_ref(), "5", "the oldest waiting went");
+    }
+
+    #[test]
+    fn a_paused_toast_keeps_the_time_it_had_left() {
+        let t0 = Instant::now();
+        let mut q = ToastQueue::default();
+        let a = q.push(ToastKind::Info, "a".into(), vec![], t0);
+        q.pause(a, t0 + Duration::from_secs(5));
+        assert_eq!(q.expire(t0 + Duration::from_secs(60)), None, "paused: no deadline, not expired");
+        assert_eq!(q.items.len(), 1);
+        let back = t0 + Duration::from_secs(60);
+        q.resume(a, back);
+        assert_eq!(q.expire(back), Some(back + Duration::from_secs(3)), "3 s were left");
+        assert_eq!(q.expire(back + Duration::from_secs(4)), None);
+        assert!(q.items.is_empty());
+    }
+
+    fn note(id: u64, kind: ToastKind) -> Note {
+        Note { id, kind, title: None, text: format!("{id}").into(), at: Instant::now(), source: None, actions: vec![], read: false }
+    }
+
+    #[test]
+    fn the_store_keeps_the_newest_500_and_counts_unread() {
+        let mut s = NoteStore::default();
+        for i in 0..(NoteStore::MAX as u64 + 5) {
+            s.add(note(i, if i % 3 == 0 { ToastKind::Err } else if i % 3 == 1 { ToastKind::Warn } else { ToastKind::Info }));
+        }
+        assert_eq!(s.len(), NoteStore::MAX);
+        assert_eq!(s.notes().front().map(|n| n.id), Some(NoteStore::MAX as u64 + 4), "newest first");
+        assert_eq!(s.notes().back().map(|n| n.id), Some(5), "the oldest went");
+        assert_eq!(s.unread(), NoteStore::MAX);
+        let errs = s.notes().iter().filter(|n| n.kind == ToastKind::Err).count();
+        assert_eq!(s.unread_errors(), errs, "warnings never count as errors");
+        assert!(s.mark_read(6));
+        assert!(!s.mark_read(6), "already read");
+        assert_eq!(s.unread_errors(), errs - 1);
+        assert_eq!(s.mark_read_where(|n| n.kind == ToastKind::Warn), s.notes().iter().filter(|n| n.kind == ToastKind::Warn).count());
+        assert!(s.delete(7));
+        assert!(!s.delete(7));
+        assert_eq!(s.len(), NoteStore::MAX - 1);
+        s.delete_where(|n| n.kind == ToastKind::Err);
+        assert_eq!(s.unread_errors(), 0);
+        s.clear();
+        assert!(s.is_empty());
     }
 
     #[test]
@@ -841,5 +1290,18 @@ mod tests {
         assert_eq!(q.history.len(), ToastQueue::HISTORY);
         assert_eq!(q.history.front().map(|t| t.text.as_ref()), Some("0"), "the oldest went");
         assert_eq!(q.history.back().map(|t| t.id), Some(first + ToastQueue::HISTORY as u64));
+    }
+
+    #[test]
+    fn titles_follow_the_history_beside_it() {
+        let t0 = Instant::now();
+        let mut q = ToastQueue::default();
+        let first = q.push_new(NewToast::new(ToastKind::Ok, "rolled out").title("svc on dev"), t0);
+        assert_eq!(q.history.front(), Some(&Told { id: first, kind: ToastKind::Ok, text: "rolled out".into() }), "the history as it was");
+        assert_eq!(q.titles.get(&first).map(|t| t.as_ref()), Some("svc on dev"));
+        for i in 0..ToastQueue::HISTORY {
+            q.push(ToastKind::Info, format!("{i}").into(), vec![], t0);
+        }
+        assert!(q.titles.is_empty(), "a title goes with its toast's history entry");
     }
 }

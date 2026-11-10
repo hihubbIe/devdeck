@@ -153,17 +153,16 @@ fn a_crash_in_a_hidden_workspace_names_it_and_leads_there(cx: &mut TestAppContex
     advance(cx, LINE_GAP * 4);
     advance(cx, CRASH_AFTER);
     assert_eq!(state(&shell, cx, "work", "boardservice", "go:run"), Some(RunState::Exited(2)));
-    let action = cx.update(|cx| {
-        toasts(cx)
-            .read(cx)
-            .queue
-            .items
-            .iter()
-            .find(|t| t.text.as_ref() == "work · boardservice · run exited 2")
-            .and_then(|t| t.actions.first().map(|(_, a)| a.clone()))
+    let (action, id) = cx.update(|cx| {
+        let t = toasts(cx).read(cx).queue.items.iter().find(|t| t.text.as_ref() == "work · boardservice · run exited 2").cloned();
+        (t.as_ref().and_then(|t| t.notes.first().cloned()), t.map(|t| t.id))
     });
     let action = action.expect("toast with View output");
-    cx.update_window(main, |_, window, cx| action(window, cx)).unwrap();
+    assert_eq!(action.label.as_ref(), "View output");
+    let note = cx.update(|cx| devdeck_ui::toasts(cx).read(cx).notes.get(id.unwrap()).cloned()).expect("kept in the center");
+    assert_eq!(note.source.as_deref(), Some("work"), "the notification is the hidden workspace's, not the one shown");
+    assert_eq!(note.actions, vec![action.clone()], "its action is kept as data");
+    cx.update_window(main, |_, window, cx| devdeck_app::notifications::resolve(&action, window, cx)).unwrap();
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| shell.read(cx).active), work, "View output shows the workspace");
     let deck = cx.read(|cx| shell.read(cx).active_deck());

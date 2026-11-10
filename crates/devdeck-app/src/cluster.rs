@@ -131,6 +131,9 @@ pub struct Cluster {
     /// Log streams' generations: the whole cluster's (a new driver, a reload) and each
     /// env's (its target changed).
     log_gens: (u64, BTreeMap<String, u64>),
+    /// The workspace it is the cluster of (its id): its notifications are that
+    /// workspace's, whichever shows.
+    pub workspace: Option<String>,
 }
 
 impl Cluster {
@@ -150,6 +153,7 @@ impl Cluster {
             metric_ticks: 0,
             clock,
             log_gens: (0, BTreeMap::new()),
+            workspace: None,
         }
     }
 
@@ -294,7 +298,8 @@ impl Cluster {
             more => Some(format!("{} problems reading the kubeconfigs: see Problems", more.len())),
         };
         if let Some(text) = text {
-            devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Warn, text, vec![], cx));
+            let source = self.workspace.clone().map(Into::into);
+            devdeck_ui::toasts(cx).update(cx, |t, cx| t.push_in(source, devdeck_ui::ToastKind::Warn, text, vec![], cx));
         }
         self.problems = problems;
         cx.notify();

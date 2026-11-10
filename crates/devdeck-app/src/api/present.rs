@@ -498,13 +498,17 @@ pub fn follow_toasts(app: &mut App) {
 pub fn ui_toasts(cx: &CallCx, _: NoParams, app: &mut App) -> Result<Toasts, ApiError> {
     let w = workspace(cx, None, app)?;
     let shown = app.try_global::<ToastPlaces>().map(|p| p.shown.clone()).unwrap_or_default();
-    let toasts = devdeck_ui::toasts(app)
-        .read(app)
-        .queue
+    let queue = &devdeck_ui::toasts(app).read(app).queue;
+    let toasts = queue
         .history
         .iter()
         .filter(|t| shown.get(&t.id) == Some(&w.id))
-        .map(|t| ToastItem { id: t.id, kind: format!("{:?}", t.kind).to_lowercase(), text: t.text.as_ref().into() })
+        .map(|t| ToastItem {
+            id: t.id,
+            kind: format!("{:?}", t.kind).to_lowercase(),
+            text: t.text.as_ref().into(),
+            title: queue.titles.get(&t.id).map(|x| x.as_ref().into()),
+        })
         .collect();
     Ok(Toasts { toasts })
 }

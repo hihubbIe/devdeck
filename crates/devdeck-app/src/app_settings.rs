@@ -1,5 +1,6 @@
 //! App-wide settings state: the stored settings (R9.4, R10.1), the available themes,
-//! and whether the full-window Settings view is open. The theme and the UI scale are
+//! and which full-window view covers the main window's panes (Settings or the
+//! notification center, one at a time). The theme and the UI scale are
 //! global. Changing either rebuilds the theme and re-renders every window at once.
 
 use devdeck_core::settings::{DEFAULT_THEME, SettingsStore, scale_down, scale_up};
@@ -8,9 +9,18 @@ use devdeck_ui::Theme;
 use gpui::{App, AppContext, Entity, Global};
 use std::path::{Path, PathBuf};
 
+/// What covers the main window's panes: one full-window view at most.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cover {
+    #[default]
+    None,
+    Settings,
+    Notifications,
+}
+
 pub struct AppSettings {
     pub store: SettingsStore,
-    pub open: bool,
+    pub cover: Cover,
     /// Built-in theme first, then the user's, alphabetical.
     pub themes: Vec<ThemeColors>,
     /// Problems found reading theme files, or with the chosen theme.
@@ -36,7 +46,7 @@ pub fn init(dir: &Path, cx: &mut App) {
     if !themes.iter().any(|t| t.name == store.settings.theme) {
         theme_problems.push(format!("Theme `{}` not found, using {DEFAULT_THEME}.", store.settings.theme));
     }
-    let settings = AppSettings { store, open: false, themes, theme_problems, themes_dir };
+    let settings = AppSettings { store, cover: Cover::None, themes, theme_problems, themes_dir };
     cx.set_global(Theme::from_colors(settings.current_colors(), settings.store.settings.scale()));
     devdeck_ui::code::sync_theme(cx);
     let entity = cx.new(|_| settings);
@@ -94,13 +104,35 @@ pub fn reset(cx: &mut App) {
     set_scale(devdeck_core::settings::DEFAULT_SCALE, cx);
 }
 
+/// Whether Settings covers the panes.
 pub fn is_open(cx: &App) -> bool {
-    settings(cx).read(cx).open
+    cover(cx) == Cover::Settings
 }
 
+/// Opens Settings (in place of whatever covers the panes) or closes it.
 pub fn set_open(open: bool, cx: &mut App) {
+    match (open, cover(cx)) {
+        (true, _) => set_cover(Cover::Settings, cx),
+        (false, Cover::Settings) => set_cover(Cover::None, cx),
+        (false, _) => {}
+    }
+}
+
+/// What covers the panes.
+pub fn cover(cx: &App) -> Cover {
+    settings(cx).read(cx).cover
+}
+
+/// Whether anything covers the panes.
+pub fn is_covered(cx: &App) -> bool {
+    cover(cx) != Cover::None
+}
+
+pub fn set_cover(cover: Cover, cx: &mut App) {
     settings(cx).update(cx, |s, cx| {
-        s.open = open;
-        cx.notify();
+        if s.cover != cover {
+            s.cover = cover;
+            cx.notify();
+        }
     });
 }

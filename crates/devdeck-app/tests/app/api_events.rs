@@ -93,10 +93,12 @@ fn notes_and_toasts_say_which_changed(cx: &mut TestAppContext) {
     let id = cx.update(|cx| notes.update(cx, |n, cx| n.create("eventservice", "todo", cx))).unwrap();
     cx.update(|cx| notes.update(cx, |n, cx| n.write(&id, "x".into(), cx))).unwrap();
     let toast = cx.update(|cx| devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Info, "hello", vec![], cx)));
+    let titled = cx.update(|cx| devdeck_ui::toasts(cx).update(cx, |t, cx| t.push_new(devdeck_ui::NewToast::new(devdeck_ui::ToastKind::Ok, "done").title("svc on dev"), cx)));
     tick(cx);
     let got = events(&rx);
     assert!(got.contains(&("notes".into(), json!({"id": id, "revision": 1}))), "{got:?}");
     assert!(got.contains(&("toasts".into(), json!({"id": toast, "kind": "info"}))), "{got:?}");
+    assert!(got.contains(&("toasts".into(), json!({"id": titled, "kind": "ok", "title": "svc on dev"}))), "a title comes as a new field: {got:?}");
     assert!(call(&me, conn, "events.subscribe", json!({"topics": ["what"]}), cx).is_err(), "an unknown topic");
 }
 

@@ -9,6 +9,7 @@
 
 use crate::actions::*;
 use crate::shell::ConfirmQuit;
+use crate::notifications as nt;
 use crate::sidebar as sb;
 use crate::views::{app_view as av, git_view as gv, logs_view as lv, matrix_view as mv, run_view as rv, service_view as sv};
 use devdeck_ui::overlay as ov;
@@ -77,6 +78,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("app.edit_mode", "edit mode (allow destructive actions)", "App", DECK, [], ToggleEditMode),
         spec!("edit_mode.confirm", "confirm", "App", Some("Modal && EditModeModal"), ["enter"], crate::edit_mode::ConfirmEditMode),
         spec!("app.close_settings", "close settings", "App", Some("Settings"), ["escape"], CloseSettings),
+        spec!("app.notifications", "notifications", "App", DECK, ["ctrl-shift-n"], nt::ToggleNotifications),
+        spec!("app.close_notifications", "close notifications", "App", Some("Notifications"), ["escape"], nt::CloseNotifications),
         spec!("app.scale_up", "bigger", "App", DECK, ["ctrl-=", "ctrl-+"], IncreaseScale),
         spec!("app.scale_down", "smaller", "App", DECK, ["ctrl--"], DecreaseScale),
         spec!("app.scale_reset", "reset size", "App", DECK, ["ctrl-0"], ResetScale),
@@ -186,6 +189,17 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("git.confirm", "confirm", "Git", Some("Modal && GitModal"), ["enter"], gv::ConfirmGit),
         spec!("lifecycle.kill_leftovers", "pick", "App", Some("Modal && Leftovers"), ["enter"], crate::lifecycle::KillLeftovers),
         spec!("ports.confirm_stop", "stop", "Ports", Some("Modal && StopHolder"), ["enter"], crate::port_scan::ConfirmStopHolder),
+        // Notifications
+        spec!("notes.next", "down", "Notifications", Some("Notifications"), ["down"], nt::NextNote),
+        spec!("notes.prev", "up", "Notifications", Some("Notifications"), ["up"], nt::PrevNote),
+        spec!("notes.next_action", "next action", "Notifications", Some("Notifications"), ["right"], nt::NextAction),
+        spec!("notes.prev_action", "previous action", "Notifications", Some("Notifications"), ["left"], nt::PrevAction),
+        spec!("notes.run", "run the action", "Notifications", Some("Notifications"), ["enter"], nt::RunNote),
+        spec!("notes.delete", "remove", "Notifications", Some("Notifications"), ["delete"], nt::DeleteNote),
+        spec!("notes.unread", "unread only", "Notifications", Some("Notifications"), ["u"], nt::ToggleUnread),
+        spec!("notes.workspace", "workspace", "Notifications", Some("Notifications"), ["w"], nt::WorkspaceMenu),
+        spec!("notes.read_all", "mark all read", "Notifications", Some("Notifications"), ["r"], nt::MarkAllRead),
+        spec!("notes.clear", "clear", "Notifications", Some("Notifications"), ["shift-delete"], nt::ClearNotes),
         // Logs
         spec!("logs.find", "filter", "Logs", Some("LogsView && !TextInput"), ["/"], lv::Find),
         spec!("logs.pause", "pause", "Logs", Some("LogsView && !TextInput"), ["p"], lv::TogglePause),

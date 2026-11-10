@@ -897,7 +897,8 @@ pub enum Topic {
     Settings,
     /// Edit mode turned on or off: `{on}`.
     EditMode,
-    /// A toast was shown: `{id, kind}` (`ui.toasts` gives its text).
+    /// A toast was shown: `{id, kind}`, and `title` when it has one (`ui.toasts` gives
+    /// its text).
     Toasts,
     /// A port scan of the workspace found something else: `{}` (`port.list` says what).
     Ports,
@@ -1250,6 +1251,9 @@ pub struct ToastItem {
     /// `info`, `warn`, `err`.
     pub kind: String,
     pub text: Untrusted,
+    /// The line above the text, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<Untrusted>,
 }
 
 /// The toasts shown lately, expired or not, oldest first (time order).

@@ -120,7 +120,8 @@ fn toast_timer_stops_when_the_stack_empties(cx: &mut TestAppContext) {
     let t = cx.update(toasts);
     cx.update(|cx| t.update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Info, "hello", vec![], cx)));
     assert!(cx.read(|cx| t.read(cx).timer_running()));
-    cx.executor().advance_clock(Duration::from_secs(7));
+    // Past its lifetime (8 s since the notification center; it was 6 s).
+    cx.executor().advance_clock(devdeck_ui::overlay::toast_lifetime(devdeck_ui::ToastKind::Info) + Duration::from_secs(1));
     cx.run_until_parked();
     assert!(cx.read(|cx| t.read(cx).queue.items.is_empty()));
     assert!(!cx.read(|cx| t.read(cx).timer_running()), "no timer left running when idle");

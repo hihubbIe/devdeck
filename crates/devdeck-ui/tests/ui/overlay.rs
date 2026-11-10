@@ -11,9 +11,9 @@ use devdeck_ui::overlay::{
     MenuAction, MenuClose, MenuCloseSub, MenuConfirm, MenuDown, MenuOpenSub, MenuUp, ModalClose, ModalNext, ModalPrev, SUBMENU_DELAY,
     layer_state, toast_lifetime,
 };
-use devdeck_ui::{MenuItem, ModalFocus, Theme, ToastKind, logical, modal_frame, open_menu, pop_modal, push_modal, theme, toasts};
+use devdeck_ui::{MenuItem, ModalFocus, NewToast, NoteAction, Theme, ToastKind, logical, modal_frame, open_menu, pop_modal, push_modal, theme, toasts};
 use gpui::{
-    AnyWindowHandle, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers, MouseButton,
+    AnyWindowHandle, AppContext, Bounds, Context, Entity, FocusHandle, InteractiveElement, IntoElement, Modifiers, MouseButton,
     ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, SharedString, StatefulInteractiveElement, Styled,
     TestAppContext, VisualTestContext, WeakFocusHandle, Window, div, point, prelude::FluentBuilder, size,
 };
@@ -741,18 +741,35 @@ fn stacked_modals_close_from_the_top(cx: &mut TestAppContext) {
 
 // ------------------------------------------------------------------ toasts
 
-fn push_toast(vcx: &mut VisualTestContext, kind: ToastKind, text: &str, actions: Vec<(SharedString, MenuAction)>) {
+fn push_toast(vcx: &mut VisualTestContext, kind: ToastKind, text: &str, actions: Vec<(SharedString, MenuAction)>) -> u64 {
     let text = text.to_string();
-    vcx.update(|_, cx| toasts(cx).update(cx, |s, cx| s.push(kind, text, actions, cx)));
+    let id = vcx.update(|_, cx| toasts(cx).update(cx, |s, cx| s.push(kind, text, actions, cx)));
     vcx.run_until_parked();
+    id
 }
 
-fn shown(vcx: &mut VisualTestContext) -> Vec<String> {
+fn push_new(vcx: &mut VisualTestContext, t: NewToast) -> u64 {
+    let id = vcx.update(|_, cx| toasts(cx).update(cx, |s, cx| s.push_new(t, cx)));
+    vcx.run_until_parked();
+    id
+}
+
+/// Every live toast, shown or waiting.
+fn live(vcx: &mut VisualTestContext) -> Vec<String> {
     vcx.update(|_, cx| toasts(cx).read(cx).queue.items.iter().map(|t| t.text.to_string()).collect())
+}
+
+/// The toasts on screen.
+fn shown(vcx: &mut VisualTestContext) -> Vec<String> {
+    vcx.update(|_, cx| toasts(cx).read(cx).queue.shown().iter().map(|t| t.text.to_string()).collect())
 }
 
 fn timer_running(vcx: &mut VisualTestContext) -> bool {
     vcx.update(|_, cx| toasts(cx).read(cx).timer_running())
+}
+
+fn read(vcx: &mut VisualTestContext, id: u64) -> Option<bool> {
+    vcx.update(|_, cx| toasts(cx).read(cx).notes.get(id).map(|n| n.read))
 }
 
 fn advance(vcx: &mut VisualTestContext, by: Duration) {
@@ -760,29 +777,30 @@ fn advance(vcx: &mut VisualTestContext, by: Duration) {
     vcx.run_until_parked();
 }
 
-/// A toast row's height: its padding and border around a button.
-fn toast_h(t: &Theme) -> Pixels {
-    t.button_h + t.size(10.)
+fn bounds(vcx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
+    vcx.debug_bounds(Box::leak(selector.into_boxed_str()))
 }
 
-/// Right edge of the close button of the toast `from_bottom` rows above the newest, and
-/// the vertical middle of that row.
-fn close_button(from_bottom: usize, t: &Theme) -> (Pixels, Pixels) {
-    let bottom = logical(H) - t.size(16.) - (toast_h(t) + t.size(8.)) * from_bottom as f32;
-    (logical(W) - t.size(16.) - t.size(13.), bottom - toast_h(t) / 2.)
+fn click(vcx: &mut VisualTestContext, selector: String) {
+    let b = bounds(vcx, selector.clone()).unwrap_or_else(|| panic!("{selector} drawn"));
+    vcx.simulate_click(b.center(), Modifiers::none());
+    vcx.run_until_parked();
 }
 
-fn click_close(vcx: &mut VisualTestContext, from_bottom: usize, t: &Theme) {
-    let (right, y) = close_button(from_bottom, t);
-    vcx.simulate_click(point(right - t.size(3.), y), Modifiers::none());
+/// What the app's hooks were asked: the center opened (on which toast), actions resolved.
+#[derive(Clone, Default)]
+struct Hooks {
+    opened: Rc<RefCell<Vec<Option<u64>>>>,
+    resolved: Rc<RefCell<Vec<NoteAction>>>,
 }
 
-/// Clicks the action button just left of the close button of the newest toast.
-fn click_action(vcx: &mut VisualTestContext, t: &Theme) {
-    let close_w = t.icon_button;
-    let (right, y) = close_button(0, t);
-    let action_right = right - close_w - t.size(12.);
-    vcx.simulate_click(point(action_right - t.size(3.), y), Modifiers::none());
+fn hooks(vcx: &mut VisualTestContext) -> Hooks {
+    let h = Hooks::default();
+    let (o, r) = (h.opened.clone(), h.resolved.clone());
+    vcx.update(|_, cx| {
+        toasts(cx).update(cx, |t, _| t.set_hooks(Rc::new(move |on, _, _| o.borrow_mut().push(on)), Rc::new(move |a, _, _| r.borrow_mut().push(a.clone()))))
+    });
+    h
 }
 
 #[gpui::test]
@@ -793,6 +811,7 @@ fn a_toast_shows_until_its_lifetime_ends_and_the_timer_stops(cx: &mut TestAppCon
     assert_eq!(shown(&mut vcx), ["hello"]);
     assert!(timer_running(&mut vcx));
     let life = toast_lifetime(ToastKind::Info);
+    assert_eq!(life, Duration::from_secs(8));
     advance(&mut vcx, life - Duration::from_millis(100));
     assert_eq!(shown(&mut vcx), ["hello"], "still there just before its lifetime");
     advance(&mut vcx, Duration::from_millis(200));
@@ -803,15 +822,15 @@ fn a_toast_shows_until_its_lifetime_ends_and_the_timer_stops(cx: &mut TestAppCon
 #[gpui::test]
 fn each_kind_lives_its_own_lifetime(cx: &mut TestAppContext) {
     let (mut vcx, _, _) = setup(cx);
-    for (kind, text) in [(ToastKind::Info, "info"), (ToastKind::Ok, "ok"), (ToastKind::Warn, "warn"), (ToastKind::Err, "err")] {
+    for (kind, text) in [(ToastKind::Info, "info"), (ToastKind::Warn, "warn"), (ToastKind::Err, "err")] {
         push_toast(&mut vcx, kind, text, vec![]);
     }
-    assert_eq!(shown(&mut vcx), ["info", "ok", "warn", "err"]);
+    assert_eq!(shown(&mut vcx), ["info", "warn", "err"]);
     let short = toast_lifetime(ToastKind::Info);
     assert_eq!(short, toast_lifetime(ToastKind::Ok));
     assert_eq!(short, toast_lifetime(ToastKind::Warn));
     let long = toast_lifetime(ToastKind::Err);
-    assert!(long > short, "errors stay longer");
+    assert_eq!(long, Duration::from_secs(12), "errors stay longer");
     advance(&mut vcx, short + Duration::from_millis(100));
     assert_eq!(shown(&mut vcx), ["err"]);
     assert!(timer_running(&mut vcx), "the timer rearmed for the error");
@@ -821,15 +840,16 @@ fn each_kind_lives_its_own_lifetime(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_close_button_dismisses_its_toast(cx: &mut TestAppContext) {
+fn the_close_button_dismisses_its_toast_and_reads_it(cx: &mut TestAppContext) {
     let (mut vcx, _, under) = setup(cx);
-    let t = the_theme(&mut vcx);
-    push_toast(&mut vcx, ToastKind::Info, "older", vec![]);
-    push_toast(&mut vcx, ToastKind::Warn, "newer", vec![]);
-    click_close(&mut vcx, 1, &t);
-    assert_eq!(shown(&mut vcx), ["newer"], "the upper toast's close button dismissed the older one");
+    let older = push_toast(&mut vcx, ToastKind::Info, "older", vec![]);
+    let newer = push_toast(&mut vcx, ToastKind::Warn, "newer", vec![]);
+    click(&mut vcx, format!("toast-close-{older}"));
+    assert_eq!(shown(&mut vcx), ["newer"]);
+    assert_eq!(read(&mut vcx, older), Some(true), "closed: read");
+    assert_eq!(read(&mut vcx, newer), Some(false));
     assert!(timer_running(&mut vcx));
-    click_close(&mut vcx, 0, &t);
+    click(&mut vcx, format!("toast-close-{newer}"));
     assert!(shown(&mut vcx).is_empty());
     assert!(!timer_running(&mut vcx), "dismissing the last toast stops the timer");
     assert_eq!(under.reached(), (0, 0));
@@ -838,40 +858,156 @@ fn the_close_button_dismisses_its_toast(cx: &mut TestAppContext) {
 #[gpui::test]
 fn an_action_button_runs_and_dismisses_its_toast(cx: &mut TestAppContext) {
     let (mut vcx, _, under) = setup(cx);
-    let t = the_theme(&mut vcx);
     let runs = Rc::new(Cell::new(0));
     let r = runs.clone();
     let retry: MenuAction = Rc::new(move |_, _| r.set(r.get() + 1));
-    push_toast(&mut vcx, ToastKind::Err, "start failed", vec![("Retry".into(), retry)]);
-    click_action(&mut vcx, &t);
+    let id = push_toast(&mut vcx, ToastKind::Err, "start failed", vec![("Retry".into(), retry)]);
+    click(&mut vcx, format!("toast-action-{id}-0"));
     assert_eq!(runs.get(), 1);
     assert!(shown(&mut vcx).is_empty());
+    assert_eq!(read(&mut vcx, id), Some(true), "an action used: read");
     assert!(!timer_running(&mut vcx));
+    assert_eq!(under.reached(), (0, 0));
+    let kept = vcx.update(|_, cx| toasts(cx).read(cx).notes.get(id).map(|n| n.actions.len()));
+    assert_eq!(kept, Some(0), "a closure isn't kept in the center");
+}
+
+#[gpui::test]
+fn an_action_as_data_is_resolved_by_the_app(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let h = hooks(&mut vcx);
+    let open = NoteAction::new("Open", "open:svc");
+    let id = push_new(&mut vcx, NewToast::new(ToastKind::Ok, "rolled out").note(open.clone()));
+    click(&mut vcx, format!("toast-action-{id}-0"));
+    assert_eq!(*h.resolved.borrow(), std::slice::from_ref(&open));
+    assert_eq!(read(&mut vcx, id), Some(true));
+    let kept = vcx.update(|_, cx| toasts(cx).read(cx).notes.get(id).map(|n| n.actions.clone()));
+    assert_eq!(kept, Some(vec![open]), "kept in the center as data");
+}
+
+#[gpui::test]
+fn three_show_and_the_others_wait_behind_more(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let h = hooks(&mut vcx);
+    let ids: Vec<u64> = (0..6).map(|i| push_toast(&mut vcx, ToastKind::Info, &format!("t{i}"), vec![])).collect();
+    assert_eq!(shown(&mut vcx), ["t0", "t1", "t2"]);
+    assert_eq!(live(&mut vcx).len(), 6, "the others are kept, not dropped");
+    assert!(bounds(&mut vcx, format!("toast-{}", ids[3])).is_none(), "a waiting toast isn't drawn");
+    let more = vcx.debug_bounds("toasts-more").expect("+N more drawn");
+    let first = bounds(&mut vcx, format!("toast-{}", ids[0])).expect("drawn");
+    assert!(more.top() >= first.bottom(), "under the stack");
+    advance(&mut vcx, Duration::from_secs(2));
+    click(&mut vcx, format!("toast-close-{}", ids[1]));
+    // Away: the toast taking the closed one's place under the pointer would pause.
+    vcx.simulate_mouse_move(point(logical(10.), logical(10.)), None, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(shown(&mut vcx), ["t0", "t2", "t3"], "a waiting one takes the place");
+    // Its lifetime starts when it shows, 2 s after the others'.
+    advance(&mut vcx, toast_lifetime(ToastKind::Info) - Duration::from_secs(2) + Duration::from_millis(100));
+    assert_eq!(shown(&mut vcx), ["t3", "t4", "t5"], "the first ones left; t3 showed later and leaves later");
+    advance(&mut vcx, Duration::from_secs(2));
+    assert_eq!(shown(&mut vcx), ["t4", "t5"]);
+    assert!(vcx.debug_bounds("toasts-more").is_none(), "nothing waits");
+    push_toast(&mut vcx, ToastKind::Info, "t6", vec![]);
+    push_toast(&mut vcx, ToastKind::Info, "t7", vec![]);
+    click(&mut vcx, "toasts-more".into());
+    assert_eq!(*h.opened.borrow(), [None], "+1 more opens the center");
+}
+
+#[gpui::test]
+fn a_long_text_wraps_to_three_lines_then_is_cut(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let short = push_toast(&mut vcx, ToastKind::Info, "short", vec![]);
+    let long = push_toast(&mut vcx, ToastKind::Err, &"a word that goes on ".repeat(40), vec![]);
+    let s = bounds(&mut vcx, format!("toast-text-{short}")).expect("drawn");
+    let l = bounds(&mut vcx, format!("toast-text-{long}")).expect("drawn");
+    // A short text is one line: its height is the line's.
+    let line = s.size.height;
+    assert!(l.size.height > line * 2.5, "a long text wraps: {:?}", l.size.height);
+    assert!(l.size.height <= line * 3. + logical(1.), "three lines at most: {:?}", l.size.height);
+    assert_eq!(s.size.width, l.size.width, "every toast is as wide");
+}
+
+#[gpui::test]
+fn a_click_on_the_text_opens_the_center_on_it(cx: &mut TestAppContext) {
+    let (mut vcx, _, under) = setup(cx);
+    let h = hooks(&mut vcx);
+    let id = push_toast(&mut vcx, ToastKind::Err, &"cut short ".repeat(60), vec![]);
+    click(&mut vcx, format!("toast-text-{id}"));
+    assert_eq!(*h.opened.borrow(), [Some(id)]);
+    assert!(shown(&mut vcx).is_empty(), "the toast leaves for the center");
     assert_eq!(under.reached(), (0, 0));
 }
 
 #[gpui::test]
-fn several_toasts_stack_up_to_the_cap(cx: &mut TestAppContext) {
+fn a_title_shows_above_the_text(cx: &mut TestAppContext) {
     let (mut vcx, _, _) = setup(cx);
-    let t = the_theme(&mut vcx);
-    for i in 0..6 {
+    let plain = push_toast(&mut vcx, ToastKind::Ok, "rolled out", vec![]);
+    let titled = push_new(&mut vcx, NewToast::new(ToastKind::Ok, "rolled out").title("graphservice on dev35"));
+    let (p, pt) = (bounds(&mut vcx, format!("toast-{plain}")).unwrap(), bounds(&mut vcx, format!("toast-text-{plain}")).unwrap());
+    let (t, tt) = (bounds(&mut vcx, format!("toast-{titled}")).unwrap(), bounds(&mut vcx, format!("toast-text-{titled}")).unwrap());
+    assert!(tt.top() - t.top() > pt.top() - p.top(), "the text is lower: the title is above it");
+    assert_eq!(vcx.update(|_, cx| toasts(cx).read(cx).notes.get(titled).and_then(|n| n.title.clone())), Some("graphservice on dev35".into()));
+}
+
+#[gpui::test]
+fn hovering_a_toast_pauses_its_timer(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let id = push_toast(&mut vcx, ToastKind::Info, "hold on", vec![]);
+    let life = toast_lifetime(ToastKind::Info);
+    advance(&mut vcx, Duration::from_secs(5));
+    let b = bounds(&mut vcx, format!("toast-{id}")).expect("drawn");
+    vcx.simulate_mouse_move(b.center(), None, Modifiers::none());
+    vcx.run_until_parked();
+    assert!(!timer_running(&mut vcx), "paused: no timer");
+    advance(&mut vcx, life * 3);
+    assert_eq!(shown(&mut vcx), ["hold on"], "still there while the pointer rests on it");
+    vcx.simulate_mouse_move(point(logical(10.), logical(10.)), None, Modifiers::none());
+    vcx.run_until_parked();
+    assert!(timer_running(&mut vcx));
+    advance(&mut vcx, life - Duration::from_secs(5) - Duration::from_millis(100));
+    assert_eq!(shown(&mut vcx), ["hold on"], "the time it had left goes on");
+    advance(&mut vcx, Duration::from_millis(200));
+    assert!(shown(&mut vcx).is_empty());
+}
+
+#[gpui::test]
+fn every_toast_is_kept_as_a_notification(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let kinds = [ToastKind::Info, ToastKind::Ok, ToastKind::Warn, ToastKind::Err];
+    let ids: Vec<u64> = kinds.iter().map(|k| push_toast(&mut vcx, *k, &format!("{k:?}"), vec![])).collect();
+    let app = push_new(&mut vcx, NewToast::new(ToastKind::Info, "elsewhere").source(Some("personal".into())));
+    advance(&mut vcx, Duration::from_secs(60));
+    assert!(live(&mut vcx).is_empty(), "the toasts left");
+    let notes: Vec<(u64, ToastKind, bool)> = vcx.update(|_, cx| toasts(cx).read(cx).notes.notes().iter().map(|n| (n.id, n.kind, n.read)).collect());
+    let mut expected: Vec<(u64, ToastKind, bool)> = ids.iter().zip(kinds).map(|(i, k)| (*i, k, false)).collect();
+    expected.push((app, ToastKind::Info, false));
+    expected.reverse();
+    assert_eq!(notes, expected, "newest first, each with its kind, unread: leaving by time doesn't read them");
+    let (unread, errors) = vcx.update(|_, cx| (toasts(cx).read(cx).notes.unread(), toasts(cx).read(cx).notes.unread_errors()));
+    assert_eq!((unread, errors), (5, 1), "a warning isn't an error");
+    assert_eq!(vcx.update(|_, cx| toasts(cx).read(cx).notes.get(app).and_then(|n| n.source.clone())), Some("personal".into()));
+    assert_eq!(vcx.update(|_, cx| toasts(cx).read(cx).notes.get(ids[0]).and_then(|n| n.source.clone())), None, "push: the app's");
+}
+
+#[gpui::test]
+fn clearing_the_center_leaves_the_history(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    for i in 0..3 {
         push_toast(&mut vcx, ToastKind::Info, &format!("t{i}"), vec![]);
     }
-    assert_eq!(shown(&mut vcx), ["t2", "t3", "t4", "t5"], "the oldest are dropped past the cap");
-    click_close(&mut vcx, 3, &t);
-    assert_eq!(shown(&mut vcx), ["t3", "t4", "t5"], "the top of the stack is where the layout puts it");
-    let id = vcx.update(|_, cx| toasts(cx).read(cx).queue.items[1].id);
-    vcx.update(|_, cx| toasts(cx).update(cx, |s, cx| s.dismiss(id, cx)));
-    assert_eq!(shown(&mut vcx), ["t3", "t5"]);
+    let before = vcx.update(|_, cx| toasts(cx).read(cx).queue.history.clone());
+    vcx.update(|_, cx| toasts(cx).update(cx, |t, _| t.notes.clear()));
+    assert_eq!(vcx.update(|_, cx| toasts(cx).read(cx).queue.history.clone()), before);
+    assert_eq!(before.len(), 3);
 }
 
 #[gpui::test]
 fn toasts_stay_clickable_above_a_modal(cx: &mut TestAppContext) {
     let (mut vcx, window, _) = setup(cx);
-    let t = the_theme(&mut vcx);
     push(&mut vcx, 1, false, "ok");
-    push_toast(&mut vcx, ToastKind::Ok, "saved", vec![]);
-    click_close(&mut vcx, 0, &t);
+    let id = push_toast(&mut vcx, ToastKind::Ok, "saved", vec![]);
+    click(&mut vcx, format!("toast-close-{id}"));
     assert!(shown(&mut vcx).is_empty());
     assert_eq!(modals(&mut vcx, window), 1, "the click didn't reach the modal's backdrop");
 }

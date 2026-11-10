@@ -98,6 +98,9 @@ impl Services {
         let runner = fake_runner(workspace, catalog.clone(), env.clone(), cx);
         let clock = Some(devdeck_core::demo::NOW_S);
         let cluster = catalog.cluster.clone().map(|spec| new_cluster(catalog.envs.clone(), Rc::new(FakeCluster { spec }), clock, cx));
+        if let Some(c) = &cluster {
+            c.update(cx, |c, _| c.workspace = Some(workspace.to_string()));
+        }
         let ports = Ports::new(workspace, runner.clone(), None, cx);
         cx.new(|cx| {
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
@@ -138,6 +141,7 @@ impl Services {
         let kube = config.cluster.clone().map(|c| {
             let driver = Rc::new(KubeCluster::new(c));
             let cluster = new_cluster(config.envs.clone(), driver.clone(), None, cx);
+            cluster.update(cx, |c, _| c.workspace = Some(config.id.clone()));
             if let Some(store) = history.clone() {
                 cluster.update(cx, |c, cx| c.keep_history(store, &config.id, cx));
             }
@@ -220,6 +224,7 @@ impl Services {
             None => {
                 let driver = Rc::new(KubeCluster::new(k));
                 let c = new_cluster(config.envs.clone(), driver.clone(), None, cx);
+                c.update(cx, |c, _| c.workspace = Some(config.id.clone()));
                 if let Some(store) = self.history.clone() {
                     c.update(cx, |c, cx| c.keep_history(store, &config.id, cx));
                 }

@@ -15,7 +15,7 @@ use devdeck_app::views::service_view::ServiceView;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_app::{app_settings, gallery::Gallery, window_view::workspace_menu_items};
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
-use devdeck_ui::{ToastKind, logical, open_menu, toasts};
+use devdeck_ui::{NewToast, ToastKind, logical, open_menu, toasts};
 use gpui::{AnyWindowHandle, Entity, Focusable, HeadlessAppContext, point};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -472,6 +472,70 @@ fn run_crashed(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<
 
 fn run_not_started(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     open_view(cx, shell, ViewAddr::Run { app: "eventservice".into(), cmd: "go:test".into() });
+}
+
+/// Pushes a notification and lets `after` pass (toasts leave, the notification stays).
+fn notify(cx: &mut HeadlessAppContext, t: NewToast, after: Duration) -> u64 {
+    let id = cx.update(|cx| toasts(cx).update(cx, |s, cx| s.push_new(t, cx)));
+    cx.run_until_parked();
+    cx.advance_clock(after);
+    cx.run_until_parked();
+    id
+}
+
+fn note(kind: ToastKind, text: &str, source: Option<&str>) -> NewToast {
+    NewToast::new(kind, text.to_string()).source(source.map(|s| s.to_string().into()))
+}
+
+fn bell_unread(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, _shell: &Entity<Shell>) {
+    notify(cx, note(ToastKind::Info, "Layout: Geo work.", None), Duration::from_secs(60));
+    notify(cx, note(ToastKind::Warn, "Port 5800 is held by node (pid 7712).", Some("work")), Duration::from_secs(60));
+}
+
+fn bell_errors(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    bell_unread(cx, w, shell);
+    notify(cx, note(ToastKind::Err, "work · boardservice · go:run exited 2", Some("work")), Duration::from_secs(60));
+    notify(cx, note(ToastKind::Err, "dev35 › graphservice: not deployed: image not found", Some("work")), Duration::from_secs(60));
+    notify(cx, note(ToastKind::Err, "personal · blog · build exited 1", Some("personal")), Duration::from_secs(60));
+}
+
+/// Three toasts (one titled with an action, one long and cut at three lines) and two
+/// waiting behind "+2 more".
+fn toasts_long(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, _shell: &Entity<Shell>) {
+    let open = devdeck_app::notifications::open_action("View output", "work", &ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref());
+    notify(cx, note(ToastKind::Ok, "rollout finished: 3 of 3 pods ready on lan-160", Some("work")).title("graphservice on dev35").note(open), Duration::ZERO);
+    let long = "dev35 › entityservice: not deployed: the cluster refused the change because the image registry/entityservice:feature-a-very-long-branch-name-that-goes-on could not be pulled (manifest unknown), and the previous replica set is still serving every request while the new one waits";
+    notify(cx, note(ToastKind::Err, long, Some("work")), Duration::ZERO);
+    notify(cx, note(ToastKind::Info, "Layout: Geo work.", None), Duration::ZERO);
+    notify(cx, note(ToastKind::Warn, "Port 5800 is held by node (pid 7712).", Some("work")), Duration::ZERO);
+    notify(cx, note(ToastKind::Info, "personal · blog · build succeeded in 4 s", Some("personal")), Duration::ZERO);
+}
+
+/// The center: read rows (seen on an earlier visit) under fresh ones, of every kind,
+/// wrapped text, actions, sources.
+fn center_rows(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let main = cx.update(|cx| shell.read(cx).main_window().expect("main"));
+    notify(cx, note(ToastKind::Info, "Layout: Geo work.", None), Duration::from_secs(3 * 3600));
+    notify(cx, note(ToastKind::Ok, "personal · blog · build succeeded in 4 s", Some("personal")), Duration::from_secs(40 * 60));
+    let _ = cx.update(|cx| main.update(cx, |w, window, cx| w.open_notifications(None, window, cx)));
+    cx.run_until_parked();
+    let _ = cx.update(|cx| main.update(cx, |w, window, cx| w.uncover(window, cx)));
+    cx.run_until_parked();
+    let problems = devdeck_app::notifications::problems_action("View");
+    notify(cx, note(ToastKind::Warn, "2 problems reading the config or the projects", None).note(problems), Duration::from_secs(12 * 60));
+    let long = "dev35 › entityservice: not deployed: the cluster refused the change because the image registry/entityservice:feature-a-very-long-branch-name-that-goes-on could not be pulled (manifest unknown), and the previous replica set is still serving every request while the new one waits";
+    notify(cx, note(ToastKind::Err, long, Some("work")), Duration::from_secs(5 * 60));
+    let open = devdeck_app::notifications::open_action("View output", "work", &ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref());
+    notify(cx, note(ToastKind::Ok, "rollout finished: 3 of 3 pods ready on lan-160", Some("work")).title("graphservice on dev35").note(open), Duration::from_secs(2 * 60));
+    let _ = cx.update(|cx| main.update(cx, |w, window, cx| w.open_notifications(None, window, cx)));
+    cx.run_until_parked();
+    // The toasts of this visit gone: the center alone.
+    cx.update(|cx| {
+        toasts(cx).update(cx, |t, cx| {
+            t.queue.items.clear();
+            cx.notify();
+        })
+    });
 }
 
 fn work_cluster(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<devdeck_app::cluster::Cluster> {
@@ -1386,6 +1450,12 @@ fn states() -> Vec<State> {
         w("D1-note-rendered", "work", 1.0, Some(note_rendered)),
         w("D2-note-source", "work", 1.0, Some(note_source)),
         w("D3-note-delete", "work", 1.0, Some(note_delete)),
+        w("E0-bell-clear", "work", 1.0, None),
+        w("E1-bell-unread", "work", 1.0, Some(bell_unread)),
+        w("E2-bell-errors", "work", 1.0, Some(bell_errors)),
+        w("E3-toasts-long", "work", 1.0, Some(toasts_long)),
+        w("E4-center-rows", "work", 1.0, Some(center_rows)),
+        w("E5-center-rows-150", "work", 1.5, Some(center_rows)),
     ]
 }
 
@@ -1402,10 +1472,12 @@ fn main() -> Result<(), String> {
     for state in states().into_iter().filter(|s| filter.as_ref().is_none_or(|f| f.split(',').any(|part| s.name.contains(part)))) {
         cx.update(|cx| {
             app_settings::set_scale(state.scale, cx);
+            app_settings::set_cover(app_settings::Cover::None, cx);
             app_settings::set_open(state.settings_open, cx);
             devdeck_app::edit_mode::set(false, cx);
             toasts(cx).update(cx, |t, cx| {
                 t.queue.items.clear();
+                t.notes.clear();
                 cx.notify();
             });
         });

@@ -113,6 +113,15 @@ icons! {
     More => "ellipsis",
     /// A toolbar's field shown as a button at its narrowest. From gpui-kit-assets' Lucide set.
     Search => "search",
+    // Notifications. From gpui-kit-assets' Lucide set.
+    /// The notification center (the title bar's bell).
+    Bell => "bell",
+    /// Mark notifications read.
+    MarkRead => "check-check",
+    /// Remove notifications.
+    Clear => "trash",
+    /// Only the unread notifications.
+    Unread => "mail",
     // Window controls.
     WindowMinimize => "minus",
     WindowMaximize => "square",

@@ -250,13 +250,19 @@ impl ApiState {
     fn toasts_changed(&mut self, toasts: &Entity<devdeck_ui::overlay::Toasts>, cx: &mut Context<Self>) {
         let Some(hub) = self.hub.as_mut() else { return };
         let since = hub.toast;
-        let new: Vec<(u64, devdeck_ui::ToastKind)> = toasts.read(cx).queue.history.iter().filter(|t| t.id > since).map(|t| (t.id, t.kind)).collect();
-        if let Some((last, _)) = new.last() {
+        let queue = &toasts.read(cx).queue;
+        let new: Vec<(u64, devdeck_ui::ToastKind, Option<String>)> =
+            queue.history.iter().filter(|t| t.id > since).map(|t| (t.id, t.kind, queue.titles.get(&t.id).map(|x| x.to_string()))).collect();
+        if let Some((last, _, _)) = new.last() {
             hub.toast = *last;
         }
-        for (id, kind) in new {
+        for (id, kind, title) in new {
             let kind = format!("{kind:?}").to_lowercase();
-            self.change(Topic::Toasts, id.to_string(), Change { workspace: None, terminal: None, data: json!({ "id": id, "kind": kind }) }, cx);
+            let mut data = json!({ "id": id, "kind": kind });
+            if let Some(title) = title {
+                data["title"] = json!(title);
+            }
+            self.change(Topic::Toasts, id.to_string(), Change { workspace: None, terminal: None, data }, cx);
         }
     }
 }

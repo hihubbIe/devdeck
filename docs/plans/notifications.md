@@ -131,3 +131,26 @@ Accepted unless said; one point (7) needs the user.
     rollout, kind) whatever caused it, and no "branch deployed" for devdeck's own deploy.
 14. Existing tests. **Accepted**: the queue keeps hidden toasts for "+N more"; the tests of
     its cap and lifetimes are updated on purpose (said in the commit).
+
+## Step A outcome (2026-11-10)
+
+Built by a builder from the plan as assessed, checked by the lead (whole suite, clippy,
+snapshots E0–E5: the bell's states, toasts with a title and a long text cut at 3 lines with
+"+2 more", the center's rows).
+- The store sits in `devdeck-ui`'s `Toasts` beside the untouched history; ids shared; a
+  live queue capped at 100 (the oldest waiting toast leaves the screen, stays in the
+  center); data actions resolved by app hooks ("open", "problems").
+- The cover state (none, settings, notifications) generalises Settings; `app.notifications`
+  (ctrl+shift+n) and the center's keys (arrows, ← → among a row's actions, Enter, Delete,
+  u, w, r, shift+Delete); mark all read and clear act on what the filters show.
+- Sources: run results, deploy refusals and kubeconfig problems carry their workspace.
+- Limits: "2 min ago" refreshes on redraw only (R1.3); `ui.toasts` still attributes a
+  toast to the workspace on screen (R13.2, unchanged on purpose).
+
+### Review of the step A diff (subagent, 2026-11-10) and assessment
+
+All fixed, each with a test: a new notification or a Delete no longer scrolls the center
+to the top (the list is spliced, not reset); what an action opens takes the keys (incl. a
+background workspace); an action whose workspace is gone says so and keeps the center
+open; rows are read only once in view (not in the overdraw); row ids by note id;
+kubeconfig problems carry their workspace; every action of a row is reachable by keys.

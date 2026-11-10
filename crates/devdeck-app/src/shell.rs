@@ -186,8 +186,8 @@ impl Shell {
             })
             .collect();
         let decks: Vec<Entity<Deck>> = workspaces.iter().map(|w| w.deck.clone()).collect();
-        for (i, w) in workspaces.iter().enumerate() {
-            watch_results(i, w, cx);
+        for w in &workspaces {
+            watch_results(w, cx);
         }
         let shell = cx.new(|_| Shell {
             workspaces,
@@ -441,14 +441,9 @@ pub fn report_problems(shell: &Entity<Shell>, cx: &mut App) {
     if count == 0 {
         return;
     }
-    let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(|_, cx| {
-        if let Some(s) = try_shell(cx) {
-            let deck = s.read(cx).active_deck().downgrade();
-            crate::views::open_in(&deck, ViewAddr::Problems, cx);
-        }
-    });
     let text = if count == 1 { "1 problem reading the config or the projects".to_string() } else { format!("{count} problems reading the config or the projects") };
-    toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![("View".into(), view)], cx));
+    let toast = devdeck_ui::NewToast::new(ToastKind::Warn, text).note(crate::notifications::problems_action("View"));
+    toasts(cx).update(cx, |t, cx| t.push_new(toast, cx));
 }
 
 /// Layout pins saved before layouts had ids hold names: each moves to its layout's id.
@@ -461,12 +456,12 @@ fn pin_layouts_by_id(pins: &mut std::collections::BTreeSet<String>, book: &Layou
     }
 }
 
-/// A run ending on its own in any workspace becomes a toast naming the workspace: an
-/// error when it failed, a success with how long it took; "View output" shows that
-/// workspace and opens the run.
-fn watch_results(index: usize, w: &Workspace, cx: &mut App) {
+/// A run ending on its own in any workspace becomes a toast naming the workspace, kept
+/// as that workspace's notification: an error when it failed, a success with how long it
+/// took; "View output" shows that workspace and opens the run.
+fn watch_results(w: &Workspace, cx: &mut App) {
     let runner = w.services.read(cx).runner.clone();
-    let (name, deck) = (w.name.clone(), w.deck.downgrade());
+    let (name, id) = (w.name.clone(), w.id.clone());
     cx.subscribe(&runner, move |runner, event: &RunnerEvent, cx| {
         let (key, kind, outcome) = match event {
             RunnerEvent::Failed { key, code } => (key, ToastKind::Err, format!("exited {code}")),
@@ -474,13 +469,9 @@ fn watch_results(index: usize, w: &Workspace, cx: &mut App) {
             RunnerEvent::Output { .. } => return,
         };
         let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
-        let deck = deck.clone();
-        let view: devdeck_ui::overlay::MenuAction = std::rc::Rc::new(move |_, cx| {
-            switch(index, cx);
-            crate::views::open_in(&deck, addr.clone(), cx);
-        });
         let text = format!("{name} · {} {outcome}", runner.read(cx).title(key));
-        toasts(cx).update(cx, |t, cx| t.push(kind, text, vec![("View output".into(), view)], cx));
+        let toast = devdeck_ui::NewToast::new(kind, text).source(Some(id.clone().into())).note(crate::notifications::open_action("View output", &id, &addr.to_ref()));
+        toasts(cx).update(cx, |t, cx| t.push_new(toast, cx));
     })
     .detach();
 }

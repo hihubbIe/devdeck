@@ -513,6 +513,8 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   toast it produces (info blue, success green, warning amber, error red). Its words carry
   the meaning, so no icon is needed: a named exception to R9.1's color-with-an-icon.
 - OS (desktop) notifications are postponed (the plan of M3 step 7, kept, marked so).
+- Wrapping (R4.4's opt-in): a toast's text wraps to 3 lines, then is cut with an ellipsis
+  (a click on it opens the center on it); a center row shows its whole text wrapped.
 
 ## Settings and scaling
 

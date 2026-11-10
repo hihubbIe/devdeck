@@ -26,6 +26,7 @@ mod lifecycle;
 mod logs;
 mod notes;
 mod notes_sidebar;
+mod notifications;
 mod pane_header;
 mod ports;
 mod pty_driver;

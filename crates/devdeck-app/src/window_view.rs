@@ -9,7 +9,8 @@ use crate::actions::*;
 use crate::deck::{Deck, Held, Keys, SendSource};
 use crate::places::{self, Place};
 use crate::stats;
-use crate::app_settings;
+use crate::app_settings::{self, Cover};
+use crate::notifications::{self, Badge, CloseNotifications, NotificationsView, ToggleNotifications};
 use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
@@ -100,6 +101,10 @@ pub struct WindowView {
     /// Pane area focus: pane keys only work while it (or something in it) has focus.
     panes_focus: FocusHandle,
     settings: Option<Entity<SettingsView>>,
+    /// Main window: the notification center, made when first opened.
+    notifications: Option<Entity<NotificationsView>>,
+    /// The bell's badge last drawn.
+    badge: Badge,
     /// Main window: where focus was in each workspace, restored on switching back, and
     /// the pane that had the keys (kept for it by quiet changes).
     remembered: HashMap<EntityId, (WeakFocusHandle, Option<Held>)>,
@@ -108,8 +113,9 @@ pub struct WindowView {
     /// While a tab, a pane or a list item is dragged over the panes: the drop under the
     /// pointer and the rectangle it lands in (R3.13).
     drop_hint: Rc<Cell<Option<(Drop, Rect)>>>,
-    /// Where focus was when Settings opened, and the pane that had the keys.
-    before_settings: Option<(WeakFocusHandle, Option<Held>)>,
+    /// Where focus was when a cover (Settings, the notification center) opened, and the
+    /// pane that had the keys.
+    before_cover: Option<(WeakFocusHandle, Option<Held>)>,
     /// The deck, and its runner (for the run tabs' icon colours).
     deck_sub: Vec<Subscription>,
     /// The run tabs' icon colours last drawn.
@@ -136,7 +142,7 @@ pub fn keys(deck: &Entity<Deck>, cx: &mut App) -> Option<Keys> {
             out.extend(w.remembered.get(&deck.entity_id()).and_then(|(_, held)| held.clone()));
             continue;
         }
-        let held = h.update(cx, |w, window, cx| w.keys_view(window, cx).or_else(|| w.before_settings.as_ref().and_then(|(_, h)| h.clone()))).ok()?;
+        let held = h.update(cx, |w, window, cx| w.keys_view(window, cx).or_else(|| w.before_cover.as_ref().and_then(|(_, h)| h.clone()))).ok()?;
         out.extend(held);
     }
     Some(out)
@@ -224,9 +230,10 @@ impl WindowView {
         let edit_mode = crate::edit_mode::edit_mode(cx);
         let mut observe = vec![
             cx.observe(&edit_mode, |_, _, cx| cx.notify()),
-            // Settings cover the panes: their views are off screen meanwhile.
+            // Settings or the notification center cover the panes: their views are off
+            // screen meanwhile.
             cx.observe(&app_settings::settings(cx), |this, _, cx| {
-                let open = app_settings::is_open(cx);
+                let open = app_settings::is_covered(cx);
                 this.deck.update(cx, |d, cx| d.set_covered(open, cx));
                 cx.notify();
             }),
@@ -245,6 +252,7 @@ impl WindowView {
             false
         });
         window.set_window_title(&format!("{APP_NAME} · {}", shell.read(cx).active_name()));
+        notifications::install(cx);
         let sidebar = shell.read(cx).active_sidebar();
         let mut this = Self::build(MAIN_WINDOW, Some(shell.downgrade()), deck, observe, window, cx);
         this.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
@@ -280,6 +288,16 @@ impl WindowView {
     ) -> Self {
         // The frame is brighter while the window is active.
         observe.push(cx.observe_window_activation(window, |_, _, cx| cx.notify()));
+        // The bell redraws when its badge changes, not on every toast.
+        let store = devdeck_ui::toasts(cx);
+        observe.push(cx.observe(&store, |this: &mut Self, _, cx| {
+            let b = notifications::badge(cx);
+            if b != this.badge {
+                this.badge = b;
+                cx.notify();
+            }
+        }));
+        let badge = notifications::badge(cx);
         let deck_sub = Self::observe_deck(&deck, window, cx);
         let focus = cx.focus_handle();
         let panes_focus = cx.focus_handle();
@@ -291,10 +309,12 @@ impl WindowView {
             focus,
             panes_focus,
             settings: None,
+            notifications: None,
+            badge,
             remembered: HashMap::new(),
             tab_insert: Rc::default(),
             drop_hint: Rc::default(),
-            before_settings: None,
+            before_cover: None,
             deck_sub,
             run_tints: Vec::new(),
             sidebar: None,
@@ -380,21 +400,21 @@ impl WindowView {
     fn follow_shell(&mut self, shell: &Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) {
         let deck = shell.read(cx).active_deck();
         if deck != self.deck {
-            if !app_settings::is_open(cx)
+            if !app_settings::is_covered(cx)
                 && let Some(f) = window.focused(cx)
             {
                 let held = self.keys_view(window, cx);
                 self.remembered.insert(self.deck.entity_id(), (f.downgrade(), held));
             }
             self.deck_sub = Self::observe_deck(&deck, window, cx);
-            let open = app_settings::is_open(cx);
+            let open = app_settings::is_covered(cx);
             deck.update(cx, |d, cx| d.set_covered(open, cx));
             self.deck = deck;
             self.view_target = None;
             let sidebar = shell.read(cx).active_sidebar();
             self.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
             window.set_window_title(&format!("{APP_NAME} · {}", shell.read(cx).active_name()));
-            if !app_settings::is_open(cx) {
+            if !app_settings::is_covered(cx) {
                 match self.remembered.get(&self.deck.entity_id()).and_then(|(h, _)| h.upgrade()) {
                     Some(h) => h.focus(window, cx),
                     None => self.focus_panes(window, cx),
@@ -404,24 +424,83 @@ impl WindowView {
         cx.notify();
     }
 
-    /// Opens or closes the full-window Settings view (main window only), moving focus
-    /// into it, and back to where it was when it closes.
+    /// Opens or closes the full-window Settings view (main window only).
     fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_main() || open == app_settings::is_open(cx) {
+        match (open, app_settings::cover(cx)) {
+            (true, _) => self.set_cover(Cover::Settings, window, cx),
+            (false, Cover::Settings) => self.set_cover(Cover::None, window, cx),
+            (false, _) => {}
+        }
+    }
+
+    /// Shows `cover` over the panes (main window only), one at a time: focus moves into
+    /// it, and back to where it was when nothing covers them any more.
+    fn set_cover(&mut self, cover: Cover, window: &mut Window, cx: &mut Context<Self>) {
+        let was = app_settings::cover(cx);
+        if !self.is_main() || cover == was {
             return;
         }
-        app_settings::set_open(open, cx);
-        if open {
-            self.before_settings = window.focused(cx).map(|f| (f.downgrade(), self.keys_view(window, cx)));
-            let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
-            view.read(cx).focus_handle(cx).focus(window, cx);
-        } else {
-            match self.before_settings.take().and_then(|(h, _)| h.upgrade()) {
+        if was == Cover::None {
+            self.before_cover = window.focused(cx).map(|f| (f.downgrade(), self.keys_view(window, cx)));
+        }
+        app_settings::set_cover(cover, cx);
+        match cover {
+            Cover::None => match self.before_cover.take().and_then(|(h, _)| h.upgrade()) {
                 Some(h) => h.focus(window, cx),
                 None => self.focus_panes(window, cx),
+            },
+            Cover::Settings => {
+                let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
+                view.read(cx).focus_handle(cx).focus(window, cx);
+            }
+            Cover::Notifications => {
+                let view = self.notifications.get_or_insert_with(|| cx.new(NotificationsView::new)).clone();
+                view.update(cx, |v, cx| v.show(None, cx));
+                view.read(cx).focus_handle(cx).focus(window, cx);
             }
         }
         cx.notify();
+    }
+
+    /// Opens the notification center (on notification `on`): here in the main window,
+    /// else in the main window brought forward.
+    pub fn open_notifications(&mut self, on: Option<u64>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_main() {
+            notifications::open_center(on, cx);
+            return;
+        }
+        self.set_cover(Cover::Notifications, window, cx);
+        if let Some(view) = &self.notifications {
+            view.update(cx, |v, cx| v.show(on, cx));
+        }
+    }
+
+    /// The bell, or its key: the center opens, or closes when it's open here.
+    fn toggle_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_main() && app_settings::cover(cx) == Cover::Notifications {
+            self.set_cover(Cover::None, window, cx);
+        } else {
+            self.open_notifications(None, window, cx);
+        }
+    }
+
+    /// Nothing covers the panes any more (Settings or the center closes).
+    pub fn uncover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_cover(Cover::None, window, cx);
+    }
+
+    /// What covers the panes closes for something just opened there: the keys go to the
+    /// focused pane (showing it), not back to where they were before the cover.
+    pub fn uncover_to_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if app_settings::is_covered(cx) {
+            self.before_cover = None;
+            self.set_cover(Cover::None, window, cx);
+        }
+    }
+
+    /// The notification center (main window, once opened).
+    pub fn notifications_view(&self) -> Option<Entity<NotificationsView>> {
+        self.notifications.clone()
     }
 
     /// Starts "Send to…" for the focused pane's active tab, or the whole pane.
@@ -474,7 +553,7 @@ impl WindowView {
     /// ctrl+k: the palette opens in the main window (brought forward from a detached one).
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_main() {
-            if !app_settings::is_open(cx) {
+            if !app_settings::is_covered(cx) {
                 crate::palette::open(window, cx);
             }
             return;
@@ -502,7 +581,7 @@ impl WindowView {
     /// Shows an activity and focuses its list (ctrl+1/2/3, activity bar).
     fn show_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if app_settings::is_open(cx) {
+        if app_settings::is_covered(cx) {
             return;
         }
         if sidebar.update(cx, |s, cx| s.show(activity, cx)) {
@@ -513,7 +592,7 @@ impl WindowView {
     /// Shows or hides the sidebar; hiding it while it has focus sends focus to the panes.
     fn set_sidebar_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if app_settings::is_open(cx) {
+        if app_settings::is_covered(cx) {
             return;
         }
         let had_focus = Self::sidebar_has_focus(&sidebar, window, cx);
@@ -532,7 +611,7 @@ impl WindowView {
 
     fn open_env_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if sidebar.read(cx).envs(cx).is_empty() || app_settings::is_open(cx) {
+        if sidebar.read(cx).envs(cx).is_empty() || app_settings::is_covered(cx) {
             return;
         }
         let t = theme(cx);
@@ -667,9 +746,14 @@ impl Render for WindowView {
         // painted one (a run started in the background).
         devdeck_ui::terminal::sync_look(&t, devdeck_ui::terminal::cell_size(window, &t));
         let is_main = self.is_main();
-        let settings_open = is_main && app_settings::is_open(cx);
+        let cover = if is_main { app_settings::cover(cx) } else { Cover::None };
+        let settings_open = cover == Cover::Settings;
+        let covered = cover != Cover::None;
         if settings_open && self.settings.is_none() {
             self.settings = Some(cx.new(SettingsView::new));
+        }
+        if cover == Cover::Notifications && self.notifications.is_none() {
+            self.notifications = Some(cx.new(NotificationsView::new));
         }
         let (layout, views) = {
             let d = self.deck.read(cx);
@@ -833,6 +917,10 @@ impl Render for WindowView {
                         .on_click(|_, window, cx| crate::cheat_sheet::open(window, cx)),
                 )
             })
+            .child(
+                bar_control(notifications::bell(self.badge, &t))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_notifications(window, cx))),
+            )
             .when(is_main, |d| {
                 d.child(
                     bar_control(labeled_button("settings", Icon::Settings, "settings", &t))
@@ -958,8 +1046,9 @@ impl Render for WindowView {
                 let origin = self.panes_origin.clone();
                 canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {}).absolute().size_full()
             });
-        let body = match (&self.settings, settings_open) {
-            (Some(view), true) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
+        let body = match (cover, &self.settings, &self.notifications) {
+            (Cover::Settings, Some(view), _) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
+            (Cover::Notifications, _, Some(view)) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
             _ => match self.active_sidebar() {
                 Some(sidebar) => {
                     let visible = sidebar.read(cx).state.visible;
@@ -1019,9 +1108,15 @@ impl Render for WindowView {
                     this.set_settings_open(!open, w, cx);
                 }))
                 .on_action(cx.listener(|this, _: &CloseSettings, w, cx| this.set_settings_open(false, w, cx)))
+                .on_action(cx.listener(|this, _: &CloseNotifications, w, cx| {
+                    if app_settings::cover(cx) == Cover::Notifications {
+                        this.set_cover(Cover::None, w, cx);
+                    }
+                }))
             })
+            .on_action(cx.listener(|this, _: &ToggleNotifications, w, cx| this.toggle_notifications(w, cx)))
             .when(!is_main, |d| d.on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx))))
-            .when(is_main && !settings_open, |d| {
+            .when(is_main && !covered, |d| {
                 d.on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
@@ -1038,7 +1133,7 @@ impl Render for WindowView {
                     // Esc with an empty filter: back to the panes.
                     .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.focus_panes(w, cx)))
             })
-            .when(!settings_open, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
+            .when(!covered, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
             .child(title_bar)
             .child(body)
             .children(devdeck_ui::render_layer(window, cx))

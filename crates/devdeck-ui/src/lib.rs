@@ -17,7 +17,7 @@ pub use code::{Code, CodeEvent, MenuOpener, Rendered};
 pub use components::*;
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};
 pub use scroll::{Scrolls, scroll_list};
-pub use overlay::{MenuItem, ModalFocus, ToastKind, modal_frame, open_menu, pop_modal, push_modal, render_layer, toasts};
+pub use overlay::{MenuItem, ModalFocus, NewToast, Note, NoteAction, ToastKind, modal_frame, open_menu, pop_modal, push_modal, render_layer, toasts};
 pub use text_input::{InputEvent, TextInput};
 pub use toolbar::{Count, Fold, MenuValue, ToolAction, ToolItem, Toolbar, ToolbarState};
 

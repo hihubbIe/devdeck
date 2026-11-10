@@ -317,7 +317,9 @@ impl Cluster {
                     self.dep.writes.insert(key, WriteState::Failed(why));
                 } else {
                     self.dep.writes.remove(&key);
-                    devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Err, format!("{env} › {name}: not {}: {why}", if redeploy { "redeployed" } else { "deployed" }), vec![], cx));
+                    let text = format!("{env} › {name}: not {}: {why}", if redeploy { "redeployed" } else { "deployed" });
+                    let source = self.workspace.clone().map(Into::into);
+                    devdeck_ui::toasts(cx).update(cx, |t, cx| t.push_in(source, devdeck_ui::ToastKind::Err, text, vec![], cx));
                 }
             }
         }

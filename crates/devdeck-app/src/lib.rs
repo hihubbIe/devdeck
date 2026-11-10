@@ -22,6 +22,7 @@ pub mod lifecycle;
 pub mod logger;
 pub mod name_prompt;
 pub mod notes;
+pub mod notifications;
 pub mod open_file;
 pub mod palette;
 pub mod places;
