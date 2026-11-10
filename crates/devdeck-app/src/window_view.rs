@@ -836,7 +836,15 @@ impl Render for WindowView {
             .when(is_main, |d| {
                 d.child(
                     bar_control(labeled_button("settings", Icon::Settings, "settings", &t))
-                        .when(settings_open, |b| b.child(icon(Icon::Check, t.accent, &t)))
+                        .debug_selector(|| "settings-button".into())
+                        // The check's room is kept closed too, so opening never widens it (R9.10).
+                        .child(
+                            div()
+                                .debug_selector(|| "settings-check".into())
+                                .size(t.icon)
+                                .flex_none()
+                                .when(settings_open, |d| d.child(icon(Icon::Check, t.accent, &t))),
+                        )
                         .tooltip(tip("settings"))
                         .on_click(cx.listener(move |this, _, window, cx| this.set_settings_open(!settings_open, window, cx))),
                 )
@@ -1107,7 +1115,7 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                         open_menu(e.position, items, window, cx);
                     }
                 })
-                .child(icon(a.icon(), if on { t.hi } else { t.mute }, t).size(t.size(18.))),
+                .child(icon(a.icon(), if on { t.hi } else { t.mute }, t).size(t.size(18.)).debug_selector(move || format!("activity-icon-{}", a.id()))),
         );
     }
     bar
@@ -1358,7 +1366,7 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
         .filter_map(|a| {
             let spec = crate::registry::by_id(a.id)?;
             let (deck, id) = (deck.clone(), a.id);
-            Some(MenuItem::new(spec.label, move |window, cx| run_view_action(&deck, pane, Some(idx), id, window, cx)).checked(a.on))
+            Some(MenuItem::new(spec.label, move |window, cx| run_view_action(&deck, pane, Some(idx), id, window, cx)).toggle(a.on))
         })
         .collect();
     if !items.is_empty() {
@@ -1640,6 +1648,7 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     .child(
                         div()
                             .id(eid("tab-x", pane.0, i))
+                            .debug_selector(move || format!("tab-x-{}-{i}", pane.0))
                             .flex_none()
                             .px_1()
                             .rounded(t.radius_s)

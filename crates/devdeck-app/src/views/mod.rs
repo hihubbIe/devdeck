@@ -99,7 +99,8 @@ pub struct Built {
 
 /// An action a view offers right now (R5.1, R12.4): the registry's action `id`, drawn
 /// with `icon` in its pane's header (or strip, for the active tab) and listed in its
-/// tab's menu; `on` when it's a state that is on.
+/// tab's menu, where it's a toggle (the menu stays open, R5.8); `on` when it's a state
+/// that is on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewAction {
     pub id: &'static str,

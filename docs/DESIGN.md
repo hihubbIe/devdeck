@@ -53,8 +53,12 @@ The interactive HTML prototype that was approved is the visual reference
 - Nothing changes size or moves with a state (R9.10): hover, selection, focus, a press, a
   drag over, a toggle. Their marks are colors, or lines drawn over the element (an
   absolute child, like the pane header's focus line; a `drag_over` style, which GPUI
-  draws without laying it out), never a border, a child or empty room added for them. A
-  menu's disabled item is only dimmed (R5.5).
+  draws without laying it out), never a border, a child or empty room added for them;
+  but a toggle's check keeps its room on or off (a menu row's, the settings button's).
+  A menu's disabled item is only dimmed (R5.5).
+- A menu's toggle (`MenuItem::toggle`: on or off) keeps the menu open when used, by
+  click or Enter, its check flipped, so several can be changed in a row (R5.8); a pick
+  (`checked`: one of several) and an action close it.
 - Scroll containers are `devdeck_ui::Scrolls` (`scroll_x`, `scroll_y`, `scroll_xy`) and
   lists `devdeck_ui::scroll_list`: a trackpad gesture keeps the axis it starts on (GPUI's
   `restrict_scroll_to_axis`, precise deltas only, so Wayland), nothing drifts diagonally

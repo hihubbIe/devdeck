@@ -101,6 +101,26 @@ fn one_tab_shows_a_header_more_the_strip_and_the_body_never_moves(cx: &mut TestA
     assert_eq!(at(&mut vcx, "body", b).unwrap().origin.y, top);
 }
 
+/// A strip's focus is a line drawn over its active tab: nothing in the tab moves (R9.10).
+#[gpui::test]
+fn a_focused_tab_keeps_its_place_and_size(cx: &mut TestAppContext) {
+    let deck = setup(cx, devdeck_app::initial_layout);
+    let (a, b) = (pane_of(&deck, "demo/logs", cx), pane_of(&deck, "matrix", cx));
+    let active = cx.read(|cx| deck.read(cx).layout().pane(a).unwrap().active);
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    let (tab, x, focus) = (leak(format!("tab-{}-{active}", a.0)), leak(format!("tab-x-{}-{active}", a.0)), leak(format!("tab-focus-{}", a.0)));
+    apply(&deck, cx, |l| l.focus(b));
+    let mut vcx = window(cx, 0);
+    assert!(vcx.debug_bounds(focus).is_none(), "not focused: no line");
+    let (tab_was, x_was) = (vcx.debug_bounds(tab).expect("the tab"), vcx.debug_bounds(x).expect("its ×"));
+
+    apply(&deck, cx, |l| l.focus(a));
+    let mut vcx = window(cx, 0);
+    assert!(vcx.debug_bounds(focus).is_some(), "focused: the line");
+    assert_eq!(vcx.debug_bounds(tab), Some(tab_was), "the tab keeps its size");
+    assert_eq!(vcx.debug_bounds(x), Some(x_was), "what it holds stays");
+}
+
 #[gpui::test]
 fn the_headers_close_closes_the_tab_and_its_pane(cx: &mut TestAppContext) {
     let deck = setup(cx, devdeck_app::initial_layout);

@@ -7,6 +7,8 @@
 //! - A menu item can carry a submenu (where to do it): a click does the item's default,
 //!   resting the pointer on it for [`SUBMENU_DELAY`] (or →) opens the submenu beside it;
 //!   ↑↓ and Enter then work in it, ← or Esc close it.
+//! - A toggle (on or off) keeps the menu open when used, its check flipped, so several
+//!   can be changed in a row (R5.8); a pick (one of several) and an action close it.
 //! - Each overlay has its own focus and key context (`Menu`, `Modal`), so pane keys never
 //!   act behind it, and focus goes back where it was when it closes.
 //! - Toasts expire on a single timer that stops when the stack is empty, so idle CPU
@@ -45,6 +47,8 @@ pub struct MenuItem {
     pub label: SharedString,
     pub hint: Option<SharedString>,
     pub checked: bool,
+    /// Turns something on or off: using it keeps the menu open (R5.8).
+    pub toggle: bool,
     /// Why the item can't be used. Never drawn: a disabled row is only dimmed, so selecting
     /// it doesn't widen the menu (R5.5, R9.10).
     pub disabled: Option<SharedString>,
@@ -58,10 +62,10 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<SharedString>, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), hint: None, checked: false, disabled: None, separator: false, icon: None, run: Some(Rc::new(run)), submenu: Vec::new() }
+        Self { label: label.into(), hint: None, checked: false, toggle: false, disabled: None, separator: false, icon: None, run: Some(Rc::new(run)), submenu: Vec::new() }
     }
     pub fn separator() -> Self {
-        Self { label: "".into(), hint: None, checked: false, disabled: None, separator: true, icon: None, run: None, submenu: Vec::new() }
+        Self { label: "".into(), hint: None, checked: false, toggle: false, disabled: None, separator: true, icon: None, run: None, submenu: Vec::new() }
     }
     /// Other ways to do it, in a submenu; clicking the item itself still does its own.
     pub fn submenu(mut self, items: Vec<MenuItem>) -> Self {
@@ -76,8 +80,16 @@ impl MenuItem {
         self.hint = Some(hint.into());
         self
     }
+    /// The one picked of several: using it closes the menu.
     pub fn checked(mut self, on: bool) -> Self {
         self.checked = on;
+        self
+    }
+    /// A toggle, checked when on: using it flips its check and keeps the menu open, so
+    /// several can be changed in a row (R5.8).
+    pub fn toggle(mut self, on: bool) -> Self {
+        self.checked = on;
+        self.toggle = true;
         self
     }
     pub fn disabled(mut self, reason: impl Into<SharedString>) -> Self {
@@ -223,6 +235,15 @@ impl Menu {
             cx.notify();
             return;
         }
+        if item.toggle {
+            self.selected = Some(i);
+            self.items[i].checked = !item.checked;
+            cx.notify();
+            if let Some(run) = item.run {
+                run(window, cx);
+            }
+            return;
+        }
         self.close(true, window, cx);
         if let Some(run) = item.run {
             run(window, cx);
@@ -236,6 +257,15 @@ impl Menu {
         if item.disabled.is_some() || item.separator {
             self.sub = Some((parent, Some(j)));
             cx.notify();
+            return;
+        }
+        if item.toggle {
+            self.sub = Some((parent, Some(j)));
+            self.items[parent].submenu[j].checked = !item.checked;
+            cx.notify();
+            if let Some(run) = item.run {
+                run(window, cx);
+            }
             return;
         }
         self.close(true, window, cx);

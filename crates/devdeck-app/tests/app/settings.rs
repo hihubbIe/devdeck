@@ -65,6 +65,22 @@ fn settings_view_blocks_pane_keys_and_restores_focus(cx: &mut TestAppContext) {
     assert_eq!(panes(cx), 4, "focus is back in the panes after closing settings");
 }
 
+/// Its check's room is kept while closed: opening settings never widens the button
+/// (R9.10).
+#[gpui::test]
+fn the_settings_button_keeps_its_size(cx: &mut TestAppContext) {
+    let (_deck, _dir) = setup(cx, "button");
+    let main = cx.windows()[0];
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    let closed = vcx.debug_bounds("settings-button").expect("drawn");
+    cx.simulate_keystrokes(main, "ctrl-,");
+    assert!(cx.read(app_settings::is_open));
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    assert_eq!(vcx.debug_bounds("settings-button"), Some(closed));
+}
+
 #[gpui::test]
 fn settings_buttons_work_with_the_mouse(cx: &mut TestAppContext) {
     let (_deck, _dir) = setup(cx, "mouse");

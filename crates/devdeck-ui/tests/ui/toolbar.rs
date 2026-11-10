@@ -267,6 +267,7 @@ fn more_holds_the_folded_items_then_the_views(cx: &mut TestAppContext) {
     assert!(items[0].disabled.is_some() && items[0].run.is_none(), "the figures: a row that does nothing");
     assert_eq!(items[1].submenu.iter().map(|i| i.label.as_ref()).collect::<Vec<_>>(), ["errors", "all"], "a folded menu is a submenu");
     assert!(items[2].checked && !items[3].checked && items[4].checked, "toggles checked when on");
+    assert!(items[2].toggle && items[3].toggle && items[4].toggle && !items[1].toggle && !items[5].toggle, "toggles keep the menu open, a submenu and an action don't (R5.8)");
     assert_eq!(items[5].disabled.as_deref(), Some("no cluster"), "a disabled item with its reason");
     assert!(items[6].separator);
     assert!(items.iter().chain(items.iter().flat_map(|i| i.submenu.iter())).all(|i| i.hint.is_none()), "no key shown (R5.4)");

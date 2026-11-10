@@ -190,6 +190,21 @@ fn mouse_right_click_menu_and_drop_on_header(cx: &mut TestAppContext) {
     assert_eq!(pinned(&s, &vcx), ["boardservice", "graphservice"], "dropped on Pinned: pinned, alphabetical");
 }
 
+/// The current activity's mark is a line drawn over its edge: its icon stays where the
+/// others are (R9.10).
+#[gpui::test]
+fn the_current_activitys_icon_stays_in_line(cx: &mut TestAppContext) {
+    let shell = start(cx, None, "activity-line");
+    let main = main_window(&shell, cx);
+    let s = sidebar(&shell, cx);
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Apps);
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    let on = vcx.debug_bounds("activity-icon-apps").expect("drawn");
+    let off = vcx.debug_bounds("activity-icon-ports").expect("drawn");
+    assert_eq!(on.origin.x, off.origin.x, "the current one isn't pushed aside");
+    assert_eq!(on.size, off.size);
+}
+
 #[gpui::test]
 fn env_menu_changes_the_cluster_list(cx: &mut TestAppContext) {
     let shell = start(cx, None, "env");

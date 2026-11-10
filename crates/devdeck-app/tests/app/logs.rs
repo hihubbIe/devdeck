@@ -715,6 +715,39 @@ fn scrolling_up_stops_following_and_the_bottom_follows_again(cx: &mut TestAppCon
     assert_eq!(t.driver.reads_of(&name("aaaaa")), 1, "scrolling up at the top reads earlier lines");
 }
 
+/// "More"'s toggles change one after the other with the menu open (R5.8).
+#[gpui::test]
+fn mores_toggles_keep_it_open(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, VisualTestContext};
+    let t = start(cx, "logs-toggles");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    draw(cx);
+    let w = cx.read(|cx| cx.windows()[0]);
+    let mut vcx = VisualTestContext::from_window(w, cx);
+    vcx.run_until_parked();
+    let more = vcx.debug_bounds("tool-more").expect("more drawn");
+    vcx.simulate_click(more.center(), Modifiers::none());
+    vcx.run_until_parked();
+    let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(w, cx).read(cx).menu.clone()).expect("more opens");
+    let row = |vcx: &mut VisualTestContext, text: &str| {
+        let i = vcx.read(|cx| menu.read(cx).items().iter().position(|i| i.label.as_ref() == text)).expect("listed");
+        vcx.debug_bounds(Box::leak(format!("menu-item-{i}").into_boxed_str())).expect("drawn").center()
+    };
+    let shown = |cx: &TestAppContext| cx.read(|cx| (v.read(cx).show_time, v.read(cx).show_pod));
+    assert_eq!(shown(&vcx), (true, true));
+    let at = row(&mut vcx, "show the time");
+    vcx.simulate_click(at, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(shown(&vcx), (false, true));
+    assert!(vcx.update(|_, cx| devdeck_ui::overlay::layer(w, cx).read(cx).menu.is_some()), "still open");
+    let at = row(&mut vcx, "show the pod");
+    vcx.simulate_click(at, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(shown(&vcx), (false, false), "a second one, same opening");
+    assert!(vcx.update(|_, cx| devdeck_ui::overlay::layer(w, cx).read(cx).menu.is_some()));
+}
+
 #[gpui::test]
 fn earlier_lines_are_cut_at_the_oldest_shown_and_merged_by_time(cx: &mut TestAppContext) {
     let t = start(cx, "logs-earlier");

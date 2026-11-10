@@ -455,8 +455,8 @@ impl ServiceLogsView {
             Some(why) => start.disabled(why),
         });
         items.push(MenuItem::separator());
-        items.push(MenuItem::new("show the time", toggle(|v| v.show_time = !v.show_time)).checked(v.show_time));
-        items.push(MenuItem::new("show the pod", toggle(|v| v.show_pod = !v.show_pod)).checked(v.show_pod));
+        items.push(MenuItem::new("show the time", toggle(|v| v.show_time = !v.show_time)).toggle(v.show_time));
+        items.push(MenuItem::new("show the pod", toggle(|v| v.show_pod = !v.show_pod)).toggle(v.show_pod));
         items
     }
 

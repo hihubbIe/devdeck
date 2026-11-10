@@ -177,10 +177,15 @@ impl ToolAction {
         }
     }
 
-    /// Its row in a menu: a toggle checked, a disabled one with its reason.
+    /// Its row in a menu: a toggle checked when on (the menu stays open when it's used), a
+    /// disabled one with its reason.
     fn menu_item(&self, text: SharedString) -> MenuItem {
         let run = self.run.clone();
-        let mut item = MenuItem::new(text, move |w, cx| run(w, cx)).checked(self.on == Some(true));
+        let item = MenuItem::new(text, move |w, cx| run(w, cx));
+        let mut item = match self.on {
+            Some(on) => item.toggle(on),
+            None => item,
+        };
         item.disabled = self.why_not.clone();
         item
     }

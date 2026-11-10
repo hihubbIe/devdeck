@@ -11,6 +11,7 @@ Native Rust desktop cockpit to find, run and deploy apps. Read these before any 
 Rules that are easy to break:
 - Text never wraps unless a view opts in; truncate with an ellipsis instead (R4.4).
 - Every list is alphabetical, Pinned + All (R4.1, R4.2).
+- Hover, selection, focus, a drag or a toggle never change a size or move anything (R9.10).
 - Views use `devdeck-ui` components and theme tokens only (R9.3).
 - Every user operation is an action usable by mouse and keyboard (R5.1).
 - Nothing machine-specific in code; it belongs in config (R1.5).

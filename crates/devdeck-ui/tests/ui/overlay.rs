@@ -163,13 +163,61 @@ fn disabled_rows_are_selectable_but_dont_run(cx: &mut TestAppContext) {
     let at = point(t.size(100.), t.size(100.));
     open(&mut vcx, at, vec![item("a", &log), item("b", &log).disabled("not now")]);
     vcx.simulate_click(row_at(at, 1, 0, &t), Modifiers::none());
-    assert!(menu_open(&mut vcx, window), "a click on a disabled row keeps the menu open (it shows the reason)");
+    assert!(menu_open(&mut vcx, window), "a click on a disabled row keeps the menu open");
     vcx.dispatch_action(MenuConfirm);
     assert!(ran(&log).is_empty(), "the click selected it; confirming it doesn't run it either");
     assert!(menu_open(&mut vcx, window));
     vcx.dispatch_action(MenuUp);
     vcx.dispatch_action(MenuConfirm);
     assert_eq!(ran(&log), ["a"]);
+}
+
+#[gpui::test]
+fn selecting_a_disabled_row_never_resizes_the_menu(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    // A reason long enough to widen the menu, were it drawn (R5.5, R9.10).
+    let why = "a reason far longer than any of the menu's labels";
+    open(&mut vcx, at, vec![item("a", &log), item("b", &log).disabled(why)]);
+    let size = |vcx: &mut VisualTestContext| vcx.debug_bounds("menu-item-1").expect("drawn").size;
+    let before = size(&mut vcx);
+    hover(&mut vcx, row_at(at, 1, 0, &t));
+    vcx.run_until_parked();
+    assert_eq!(size(&mut vcx), before, "selected by the pointer");
+    vcx.dispatch_action(MenuUp);
+    vcx.dispatch_action(MenuDown);
+    vcx.run_until_parked();
+    assert_eq!(size(&mut vcx), before, "selected by the keys");
+}
+
+/// A menu's toggles, checked: whether each is on.
+fn checks(vcx: &mut VisualTestContext, window: AnyWindowHandle) -> Vec<bool> {
+    let menu = vcx.update(|_, cx| devdeck_ui::overlay::layer(window, cx).read(cx).menu.clone()).expect("a menu");
+    vcx.read(|cx| menu.read(cx).items().iter().map(|i| i.checked).collect())
+}
+
+#[gpui::test]
+fn a_toggle_keeps_the_menu_open_and_flips_its_check(cx: &mut TestAppContext) {
+    let (mut vcx, window, _) = setup(cx);
+    let t = the_theme(&mut vcx);
+    let log = Log::default();
+    let at = point(t.size(100.), t.size(100.));
+    open(&mut vcx, at, vec![item("time", &log).toggle(true), item("pod", &log).toggle(false), item("pick", &log).checked(true)]);
+    vcx.simulate_click(row_at(at, 0, 0, &t), Modifiers::none());
+    assert!(menu_open(&mut vcx, window), "a click on a toggle keeps the menu open (R5.8)");
+    assert_eq!(ran(&log), ["time"], "it ran once");
+    assert_eq!(checks(&mut vcx, window), [false, false, true], "its check flipped");
+    vcx.dispatch_action(MenuDown);
+    vcx.dispatch_action(MenuConfirm);
+    vcx.run_until_parked();
+    assert!(menu_open(&mut vcx, window), "Enter on a toggle too");
+    assert_eq!(ran(&log), ["time", "pod"]);
+    assert_eq!(checks(&mut vcx, window), [false, true, true]);
+    vcx.simulate_click(row_at(at, 2, 0, &t), Modifiers::none());
+    assert!(!menu_open(&mut vcx, window), "a pick closes it");
+    assert_eq!(ran(&log), ["time", "pod", "pick"]);
 }
 
 #[gpui::test]
