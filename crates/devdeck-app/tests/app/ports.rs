@@ -7,9 +7,10 @@ use devdeck_app::port_scan::{PortHolder, Ports, SCAN_EVERY, start_or_toast};
 use devdeck_app::runner::{Launch, RunControl, RunDriver, RunKey, RunRefusal, Runner, Started};
 use devdeck_core::apps::{App, Command, EnvApply, Tier, Tools};
 use devdeck_core::catalog::Catalog;
-use devdeck_core::ports::{PortMemory, holder};
+use devdeck_core::ports::PortMemory;
 use devdeck_core::runs::{Exit, RunState};
 use devdeck_core::terminal::TermSize;
+use devdeck_sys::ports::holder;
 use devdeck_ui::overlay::{layer, layer_state};
 use devdeck_ui::{Theme, render_layer, toasts};
 use gpui::{AnyWindowHandle, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div};
@@ -129,7 +130,7 @@ fn bind() -> (TcpListener, u16) {
 /// (close-on-exec): free within moments.
 fn wait_free(port: u16) {
     let deadline = Instant::now() + Duration::from_secs(2);
-    while holder(port).is_some() {
+    while holder(port).unwrap().is_some() {
         assert!(Instant::now() < deadline, "port {port} free again");
         std::thread::sleep(Duration::from_millis(1));
     }

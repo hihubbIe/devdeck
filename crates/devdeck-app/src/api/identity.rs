@@ -42,8 +42,8 @@ pub fn peer(stream: &UnixStream) -> Result<Peer, String> {
     }
     let Some(pidfd) = peer_pidfd(stream) else { return Ok(Peer::unpinned()) };
     let Some(pid) = pidfd_pid(&pidfd).filter(|p| *p == cred.pid.as_raw_nonzero().get() as u32) else { return Ok(Peer::unpinned()) };
-    let chain = chain(pid, devdeck_core::procfs::parent_and_start);
-    let program = devdeck_core::procfs::name(pid).unwrap_or_else(|| "?".into());
+    let chain = chain(pid, devdeck_sys::procs::parent_and_start);
+    let program = devdeck_sys::procs::name(pid).unwrap_or_else(|| "?".into());
     // Read while it lived: what was read is its own.
     if exited(&pidfd) || chain.is_empty() {
         return Ok(Peer::unpinned());

@@ -5,9 +5,9 @@
 //!   drained (with a timeout: a grandchild may keep the terminal open), with the code or
 //!   the signal number.
 //! - Stop: ^C (SIGINT) to the process group, then SIGTERM, then SIGKILL, each after its
-//!   [`StopKind`]'s wait; descendants that left the group (found through `procfs`) get
-//!   SIGTERM and SIGKILL too (a terminal's ^C never reaches them either). It ends once
-//!   nothing is left. Dropping a [`Process`] kills it at once.
+//!   [`StopKind`]'s wait; descendants that left the group (found through
+//!   `devdeck_sys::procs`) get SIGTERM and SIGKILL too (a terminal's ^C never reaches them
+//!   either). It ends once nothing is left. Dropping a [`Process`] kills it at once.
 //! - Where it can ([`scope`](crate::scope)), a run starts in a systemd scope of its own,
 //!   which keeps every descendant whatever it does: a stop empties it. A run that ends on
 //!   its own ends its group; what it left in the scope (a build's daemon) runs on until
@@ -25,10 +25,10 @@
 //! thread per run polls the terminal, the child's pidfd and a wake-up for input.
 
 use crate::apps::Command;
-use crate::procfs;
 use crate::runs::Exit;
 use crate::scope::Scope;
 use crate::terminal::TermSize;
+use devdeck_sys::procs::{self, alive};
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec};
 use rustix::fd::{AsFd, OwnedFd};
 use rustix::io::Errno;
@@ -176,7 +176,7 @@ impl Process {
         drop(cmd);
         drop(slave);
         let pid = child.id();
-        let start = stat(pid).map_or(0, |s| s.start);
+        let start = procs::get(pid).map_or(0, |s| s.start);
         let tree = Arc::new(Tree {
             pid,
             start,
@@ -246,7 +246,7 @@ impl Process {
     /// process itself.
     pub fn foreground_program(&self) -> Option<String> {
         let group = self.foreground()?;
-        std::fs::read_to_string(format!("/proc/{group}/comm")).ok().map(|n| n.trim_end().to_string())
+        procs::name(group)
     }
 
     /// Starts the stop sequence (returns at once; the exit arrives as an event).
@@ -475,7 +475,7 @@ impl Tree {
     /// Adds the live processes below the leader and below those seen before (an orphan's
     /// children are still below it), and forgets those that ended.
     fn collect(&self) {
-        let pairs = procfs::parents();
+        let pairs = procs::parents().unwrap_or_default();
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         seen.retain(|pid, start| alive(*pid, *start));
         let mut roots: Vec<u32> = seen.keys().copied().collect();
@@ -483,9 +483,9 @@ impl Tree {
             roots.push(self.pid);
         }
         for root in roots {
-            for pid in procfs::tree(root, &pairs) {
+            for pid in procs::tree(root, &pairs) {
                 if pid != self.pid && !seen.contains_key(&pid)
-                    && let Some(s) = stat(pid)
+                    && let Some(s) = procs::get(pid)
                     && (!self.session_only || s.session == self.pid)
                 {
                     seen.insert(pid, s.start);
@@ -498,7 +498,7 @@ impl Tree {
     /// a group of that id has members, so it can only belong to someone else once a new
     /// process holds the leader's pid: one with another start time.
     fn group_is_ours(&self) -> bool {
-        stat(self.pid).is_none_or(|s| s.start == self.start)
+        procs::get(self.pid).is_none_or(|s| s.start == self.start)
     }
 
     fn signal_group(&self, signal: Signal) {
@@ -550,43 +550,16 @@ fn signal_one(pid: u32, signal: Signal) {
     }
 }
 
-struct Stat {
-    state: char,
-    /// The session id.
-    session: u32,
-    start: u64,
-}
-
-/// The state and start time (in clock ticks since boot) of `pid`.
-fn stat(pid: u32) -> Option<Stat> {
-    parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
-}
-
-/// Fields are counted after the command name's last `)` (see `procfs::parse_ppid`):
-/// state is field 3, session field 6, start time field 22.
-fn parse_stat(text: &str) -> Option<Stat> {
-    let mut fields = text.rsplit_once(')')?.1.split_whitespace();
-    let state = fields.next()?.chars().next()?;
-    let session = fields.nth(2)?.parse().ok()?;
-    let start = fields.nth(15)?.parse().ok()?;
-    Some(Stat { state, session, start })
-}
-
 /// This devdeck: its pid and start time (`1234-5678`), so the scopes of a devdeck that's
 /// gone are told from those of one that runs.
 fn instance() -> String {
     let pid = std::process::id();
-    format!("{pid}-{}", stat(pid).map_or(0, |s| s.start))
+    format!("{pid}-{}", procs::get(pid).map_or(0, |s| s.start))
 }
 
 /// `instance` (as [`instance`] writes it) still runs.
 fn instance_alive(instance: &str) -> bool {
     instance.split_once('-').and_then(|(p, s)| Some((p.parse().ok()?, s.parse().ok()?))).is_some_and(|(pid, start)| alive(pid, start))
-}
-
-/// `pid` runs and is the process that started at `start` (zombies have ended).
-fn alive(pid: u32, start: u64) -> bool {
-    stat(pid).is_some_and(|s| s.start == start && !matches!(s.state, 'Z' | 'X'))
 }
 
 /// What devdeck started and may still run, in a file of the state folder: each run's
@@ -668,7 +641,7 @@ impl GroupLog {
             .collect();
         // A run's leader still running is in its scope's row already.
         let groups = entries.iter().filter_map(|entry| match entry {
-            Entry::Group { pid, start } if alive(*pid, *start) && procfs::parent_of(*pid) != Some(me) && !scopes.iter().any(|s| s.pids.contains(pid)) => {
+            Entry::Group { pid, start } if alive(*pid, *start) && procs::parent_of(*pid) != Some(me) && !scopes.iter().any(|s| s.pids.contains(pid)) => {
                 Some(Leftover { label: None, pids: vec![*pid], entry: entry.clone() })
             }
             _ => None,
@@ -751,12 +724,13 @@ pub fn terminate(pid: u32) -> Result<(), String> {
     rustix::process::kill_process(p, Signal::TERM).map_err(|e| format!("couldn't stop pid {pid}: {e}"))
 }
 
-/// Kills these process groups and their escaped descendants (SIGKILL), now. Reads `/proc`
-/// and allocates: call it from a thread (signal-hook's iterator), not a signal handler.
+/// Kills these process groups and their escaped descendants (SIGKILL), now. Reads the
+/// process table and allocates: call it from a thread (signal-hook's iterator), not a
+/// signal handler.
 pub fn kill_all(pids: &[u32]) {
     // Descendants first: once a leader is killed, its children move to another parent.
-    let pairs = procfs::parents();
-    let all: BTreeSet<u32> = pids.iter().filter(|p| ours(**p).is_some()).flat_map(|p| procfs::tree(*p, &pairs)).collect();
+    let pairs = procs::parents().unwrap_or_default();
+    let all: BTreeSet<u32> = pids.iter().filter(|p| ours(**p).is_some()).flat_map(|p| procs::tree(*p, &pairs)).collect();
     for pid in pids {
         signal_group(*pid, Signal::KILL);
     }
@@ -815,8 +789,7 @@ mod tests {
     }
 
     fn session_of(pid: u32) -> Option<u32> {
-        let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        text.rsplit_once(')')?.1.split_whitespace().nth(3)?.parse().ok()
+        procs::get(pid).map(|p| p.session)
     }
 
     fn wait_until(what: &str, f: impl Fn() -> bool) {
@@ -853,7 +826,7 @@ mod tests {
 
     /// A running process: its pid and start time.
     fn running(pid: u32) -> (u32, u64) {
-        (pid, stat(pid).expect("runs").start)
+        (pid, procs::get(pid).expect("runs").start)
     }
 
     #[test]
@@ -865,7 +838,7 @@ mod tests {
         read(&rx, &mut out, Some("ready"));
         let (daemon, bare) = (running(pid_after(&out, "daemon ")), running(pid_after(&out, "bare ")));
         let _reap = Reap(vec![daemon, bare]);
-        wait_until("the daemon to leave the tree", || !procfs::descendants(p.pid()).contains(&daemon.0));
+        wait_until("the daemon to leave the tree", || !procs::tree(p.pid(), &procs::parents().unwrap()).contains(&daemon.0));
         p.stop();
         assert!(read(&rx, &mut out, None).is_some(), "ends");
         wait_until("the daemon and the bare one to end", || !alive(daemon.0, daemon.1) && !alive(bare.0, bare.1));
@@ -1078,7 +1051,7 @@ mod tests {
         read(&rx, &mut out, Some("child "));
         read(&rx, &mut out, Some("\n"));
         let child = pid_after(&out, "child ");
-        let start = stat(child).expect("child runs").start;
+        let start = procs::get(child).expect("child runs").start;
         wait_until("setsid", || session_of(child) == Some(child));
         (p, rx, child, start)
     }
@@ -1108,7 +1081,7 @@ mod tests {
         read(&rx, &mut out, Some("child "));
         read(&rx, &mut out, Some("\n"));
         let child = pid_after(&out, "child ");
-        let start = stat(child).expect("child runs").start;
+        let start = procs::get(child).expect("child runs").start;
         let _reap = Reap(vec![(child, start)]);
         let at = Instant::now();
         assert_eq!(read(&rx, &mut out, None), Some(Exit::Code(0)));
@@ -1116,14 +1089,6 @@ mod tests {
         // Still in the group after its leader ended: dropping kills it.
         drop(p);
         wait_until("the grandchild to end", || !alive(child, start));
-    }
-
-    #[test]
-    fn stat_fields_survive_odd_command_names() {
-        let line = "42 (a) b) S 1 42 42 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 98765 0 0";
-        let s = parse_stat(line).expect("parses");
-        assert_eq!((s.state, s.start), ('S', 98765));
-        assert!(parse_stat("garbage").is_none());
     }
 
     #[test]
@@ -1135,7 +1100,7 @@ mod tests {
         let spawn = Spawn { line: "echo ready; read x".into(), dir: dir.parent().unwrap().into(), vars: vec![], size: SIZE, stop: StopKind::Quick, scope: false, label: String::new() };
         let (p, rx) = Process::spawn(spawn, Some(log.clone())).expect("spawns");
         read(&rx, &mut String::new(), Some("ready"));
-        assert!(log.read().contains(&Entry::Group { pid: p.pid(), start: stat(p.pid()).unwrap().start }));
+        assert!(log.read().contains(&Entry::Group { pid: p.pid(), start: procs::get(p.pid()).unwrap().start }));
         assert!(log.leftovers().is_empty());
         p.write(b"\n");
         read(&rx, &mut String::new(), None).expect("exits");
@@ -1148,7 +1113,7 @@ mod tests {
             .output()
             .expect("sh runs");
         let orphan: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("pid");
-        let start = stat(orphan).expect("orphan runs").start;
+        let start = procs::get(orphan).expect("orphan runs").start;
         let _reap = Reap(vec![(orphan, start)]);
         // Next to it: a pid that runs with another start time, and one that doesn't run.
         let text = format!("{orphan} {start}\n{} 1\n999999999 5\ngarbage\n", std::process::id());

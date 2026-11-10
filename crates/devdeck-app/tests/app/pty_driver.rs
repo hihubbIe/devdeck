@@ -127,7 +127,7 @@ fn a_stop_ends_in_stopped_with_nothing_left(cx: &mut TestAppContext) {
     cx.update(|cx| s.runner.update(cx, |r, cx| r.stop(&key("wait"), cx)));
     assert_eq!(state(&s, cx, "wait"), Some(RunState::Stopping));
     assert_eq!(wait_ended(&s, cx, "wait"), RunState::Stopped);
-    assert!(!PathBuf::from(format!("/proc/{}", pids[0].1)).exists(), "the process is gone");
+    assert!(!devdeck_sys::procs::exists(pids[0].1), "the process is gone");
     assert!(cx.read(|cx| s.runner.read(cx).pids()).is_empty());
 }
 

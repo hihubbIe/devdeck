@@ -18,7 +18,6 @@ pub mod list;
 pub mod notes;
 pub mod ports;
 pub mod process;
-pub mod procfs;
 pub mod recent_args;
 pub mod runs;
 pub mod scope;

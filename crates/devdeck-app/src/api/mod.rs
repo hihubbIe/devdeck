@@ -225,7 +225,7 @@ impl Sink for ChannelSink {
 /// This process: `pid-start`, as `core::process` names instances.
 fn instance() -> String {
     let pid = std::process::id();
-    format!("{pid}-{}", devdeck_core::procfs::parent_and_start(pid).map_or(0, |(_, s)| s))
+    format!("{pid}-{}", devdeck_sys::procs::parent_and_start(pid).map_or(0, |(_, s)| s))
 }
 
 /// No sockets' folder, as an environment without one gives it (tests, the snapshot

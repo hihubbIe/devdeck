@@ -1,11 +1,13 @@
 //! Ports of real runs (R6.9).
 //!
-//! - A background scan (`core::ports::listening` over the trees of `Runner::pids`) every
-//!   ~2 s, only while a run with a process runs or a port view is shown; it reads `/proc`
-//!   off the UI thread, results are cached here and applied on the UI thread, and a
-//!   change notifies. Nothing is computed during render (R1.3).
-//! - Detected ports are remembered per command (`core::ports::PortMemory`, in the state
-//!   folder, loaded when first needed); an empty scan never erases them.
+//! - A background scan (`devdeck_sys::ports::listening` over the trees of
+//!   `Runner::pids`) every ~2 s, only while a run with a process runs or a port view is
+//!   shown; it reads the process table off the UI thread, results are cached here and
+//!   applied on the UI thread, and a change notifies. Nothing is computed during render
+//!   (R1.3). Where the OS can't say (macOS until its backend), the scan finds nothing and
+//!   logs why, once.
+//! - Detected ports are remembered per command (`devdeck_core::ports::PortMemory`, in
+//!   the state folder, loaded when first needed); an empty scan never erases them.
 //! - Before a start, a remembered or declared port that someone holds refuses the start
 //!   with "port 5720 is held by …"; the toast offers "Stop holder": our own run stops at
 //!   once; another process is stopped (SIGTERM) only after a confirmation that names it.
@@ -14,8 +16,10 @@
 //! The demo has no machine scan, no memory and no conflicts: its runs are fake.
 
 use crate::runner::{RunKey, RunRefusal, Runner};
-use devdeck_core::ports::{Holder, PortMemory, holder, listening};
-use devdeck_core::procfs;
+use devdeck_core::ports::PortMemory;
+use devdeck_sys::SysError;
+use devdeck_sys::ports::{Holder, holder, listening};
+use devdeck_sys::procs;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, push_modal, theme, toasts};
 use gpui::{
@@ -184,7 +188,7 @@ impl Ports {
         }
         let runs = runner.pids();
         ports.into_iter().find_map(|port| {
-            let h = holder(port)?;
+            let h = holder(port).ok()??;
             let owner = match &h {
                 Holder::Process { pid, .. } => owner(*pid, &runs, None),
                 Holder::Unknown => None,
@@ -275,17 +279,24 @@ impl Ports {
     }
 }
 
+/// Logs why the scan found nothing, the first time only (macOS until its backend).
+fn unsupported(e: SysError) -> SysError {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| log::warn!("ports: {e}"));
+    e
+}
+
 impl Job {
     /// Reads `/proc`: a run's ports are those of every process below it (a dev server is
     /// often a child of the shell devdeck started).
     fn run(self) -> Found {
-        let pairs = if self.runs.is_empty() { Vec::new() } else { procfs::parents() };
-        let trees: Vec<(RunKey, BTreeSet<u32>)> = self.runs.iter().map(|(k, pid)| (k.clone(), procfs::tree(*pid, &pairs))).collect();
+        let pairs = if self.runs.is_empty() { Vec::new() } else { procs::parents().map_err(unsupported).unwrap_or_default() };
+        let trees: Vec<(RunKey, BTreeSet<u32>)> = self.runs.iter().map(|(k, pid)| (k.clone(), procs::tree(*pid, &pairs))).collect();
         let by_pid: BTreeMap<u32, &RunKey> = trees.iter().flat_map(|(k, pids)| pids.iter().map(move |p| (*p, k))).collect();
         let mut found: BTreeMap<RunKey, Vec<u16>> = BTreeMap::new();
         if !by_pid.is_empty() {
             let pids: Vec<u32> = by_pid.keys().copied().collect();
-            for l in listening(&pids) {
+            for l in listening(&pids).map_err(unsupported).unwrap_or_default() {
                 if let Some(key) = by_pid.get(&l.pid) {
                     found.entry((*key).clone()).or_default().push(l.port);
                 }
@@ -299,7 +310,7 @@ impl Job {
             .watched
             .iter()
             .filter_map(|&port| {
-                let h = holder(port)?;
+                let h = holder(port).map_err(unsupported).ok()??;
                 let owner = match &h {
                     Holder::Process { pid, .. } => owner(*pid, &self.runs, Some(&by_pid)),
                     Holder::Unknown => None,
@@ -322,7 +333,7 @@ fn owner(pid: u32, runs: &[(RunKey, u32)], trees: Option<&BTreeMap<u32, &RunKey>
         if let Some((key, _)) = runs.iter().find(|(_, p)| *p == cur) {
             return Some(key.clone());
         }
-        cur = procfs::parent_of(cur).filter(|p| *p > 1)?;
+        cur = procs::parent_of(cur).filter(|p| *p > 1)?;
     }
     None
 }
@@ -406,7 +417,7 @@ impl StopProcess {
         self.close(window, cx);
         // The pid may have ended and been reused since the question: it must still hold
         // the port.
-        let still = matches!(holder(self.port), Some(Holder::Process { pid, .. }) if pid == self.pid);
+        let still = matches!(holder(self.port), Ok(Some(Holder::Process { pid, .. })) if pid == self.pid);
         // Edit mode may have been turned off while this asked.
         let result = if let Some(why) = crate::edit_mode::refusal(cx) {
             Err(why)

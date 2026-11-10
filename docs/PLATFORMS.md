@@ -20,8 +20,8 @@ Status words:
 |---|---|---|---|---|---|
 | L1 | Waiting for a run to exit, waking its thread, reading its terminal | `devdeck-core/src/process.rs:143` (eventfd), `:190` (pidfd_open), `:342-351` (poll on the wake fd, the pidfd and the terminal), `:403` (waitid on a pidfd), `:226` and `:367` (the wake: a `u64` written, 8 bytes read once, an eventfd's counter) | `eventfd`, `pidfd_open`, `poll`, `waitid(WaitId::PidFd)` | one `kqueue` carrying the terminal fd, a wake pipe (drained whole on each wake: several writes, one read) and `EVFILT_PROC`/`NOTE_EXIT`, then `waitpid`. Apple's poll(2) says it "does not support devices", so `poll` on the terminal is not kept (to verify on a Mac; Alacritty and rio use kqueue there) | No build |
 | L2 | A run's processes kept together and killed as one (R8.2) | `devdeck-core/src/scope.rs` (whole file), `process.rs:146-160`, `devdeck/src/main.rs:39` | `systemd-run --user --scope`, cgroup v2 and `cgroup.kill` under `/sys/fs/cgroup`, `/proc/self/cgroup`, `pidfd_open` + `pidfd_send_signal` | no cgroup, no child subreaper, and XNU refuses `NOTE_TRACK`. Best effort: own session, `killpg`, then walk the descendants (L3) and signal any that left the group. A process that double-forks and calls `setsid` is reparented to launchd and escapes unless an earlier walk saw it | No build (pidfd calls); the logic already turns off without systemd |
-| L3 | Process table: parent, children, name, command line, start time, liveness | `devdeck-core/src/procfs.rs`, `process.rs:249` (the program in a shell tab's foreground, `/proc/<group>/comm`), `process.rs:478,486,562,671,758-759,818`, `ports.rs:118`, `devdeck-app/src/lifecycle.rs:201`, `port_scan.rs:282-283,325`, `api/mod.rs:227` (the caller's identity key), `api/identity.rs:45-46` | `/proc/<pid>/stat`, `comm`, `cmdline`, listing `/proc` | `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, `proc_name`, `sysctl(KERN_PROCARGS2)` for the command line (what WezTerm's `procinfo` and Alacritty use); all in `libc` 0.2.191 | Silent: stop reaches only the process group; leftovers of a crashed devdeck aren't found; a shell tab never names its program |
-| L4 | Ports a run listens on (Ports activity) | `devdeck-core/src/ports.rs:75,81,113,124,129` | `/proc/net/tcp`, `tcp6`; socket inodes through `/proc/<pid>/fd` | `proc_pidinfo(PROC_PIDLISTFDS)`, then `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` per fd. `libc` 0.2.191 has `proc_pidfdinfo` but neither `PROC_PIDFDSOCKETINFO` nor `socket_fdinfo`: our own `repr(C)` structs or the `listeners` crate (macOS step 2d) | Silent: no ports found |
+| L3 | Process table: parent, children, name, command line, start time, liveness | `devdeck-sys/src/procs/` (macOS: `unsupported.rs`, but `exists` through `kill(pid, 0)` on both); used by `devdeck-core/src/process.rs` (its runs' trees, liveness, a shell tab's foreground program), `testing.rs` (the sweep), `devdeck-app/src/lifecycle.rs`, `port_scan.rs`, `api/mod.rs` (the caller's identity key), `api/identity.rs`, `devdeck-sys/src/ports/linux.rs` | `/proc/<pid>/stat`, `comm`, `cmdline`, listing `/proc` | `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, `proc_name`, `sysctl(KERN_PROCARGS2)` for the command line (what WezTerm's `procinfo` and Alacritty use); all in `libc` 0.2.191 | Silent: stop reaches only the process group; leftovers of a crashed devdeck aren't found; a shell tab never names its program |
+| L4 | Ports a run listens on (Ports activity) | `devdeck-sys/src/ports/` (macOS: `unsupported.rs`), used by `devdeck-app/src/port_scan.rs`; `devdeck-core/src/ports.rs` keeps `PortMemory` only | `/proc/net/tcp`, `tcp6`; socket inodes through `/proc/<pid>/fd` | `proc_pidinfo(PROC_PIDLISTFDS)`, then `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` per fd. `libc` 0.2.191 has `proc_pidfdinfo` but neither `PROC_PIDFDSOCKETINFO` nor `socket_fdinfo`: our own `repr(C)` structs or the `listeners` crate (macOS step 2d) | Silent: no ports found |
 | L5 | Who calls the control API (R13) | `devdeck-app/src/api/identity.rs` (whole file) | `SO_PEERCRED` (`rustix::net::sockopt::socket_peercred`, Linux only), `SO_PEERPIDFD` (hard-coded 77, `identity.rs:15`, which is wrong on sparc, where it is `0x56`), `/proc/self/fdinfo/<fd>`, poll on the pidfd | `getpeereid` for the user; `LOCAL_PEERTOKEN` for an audit token whose (pid, pidversion) pins the process against pid reuse, as a pidfd does (macOS 13+ per Apple DTS); `LOCAL_PEERPID` as a fallback. rustix has none of these; `nix` has all three; `libc` 0.2.191 has `getpeereid`, `LOCAL_PEERPID` and `LOCAL_PEERTOKEN` but not `audit_token_t` | No build |
 | L6 | Where the control API's socket lives | `devdeck-sys/src/dirs/` (`runtime`, `SOCKET_PATH_MAX`; macOS: `unsupported.rs`), used by `devdeck-api`'s `default_socket`, `devdeck/src/main.rs`, `api/handlers.rs`' `devdecks_own` | `$XDG_RUNTIME_DIR/devdeck/`; `sun_path` holds 108 bytes | no runtime dir; `sun_path` holds 104 bytes, its closing NUL included. `$TMPDIR` is long and its unused files are purged after about 3 days, so it is not used (§5) | Off: control API, `devdeck-ctl` and `devdeck-mcp` don't work |
 | L7 | Config, state and notes folders | `devdeck-sys/src/dirs/xdg.rs` (macOS too, until step 2a), called by `devdeck-core/src/settings.rs`, `state.rs`, `notes.rs`; `config.rs:3` | XDG base dirs, else `~/.config`, `~/.local/state`, `~/.local/share` | see §5 | Works |
@@ -122,10 +122,10 @@ crates/devdeck-sys/src/
   time/             U8
 ```
 
-Built so far (macOS step 1a, 2026-11-10): `lib.rs`, `dirs/`, `memory/`, `signals/`,
-`fs/`, `net/`, `time/`, with their Linux code; macOS takes the code both share (`xdg.rs`,
-`unix.rs`) or `unsupported.rs` until step 2. A source scan test (`src/scan.rs`) lists the
-files still to move.
+Built so far (macOS steps 1a and 1b, 2026-11-10): `lib.rs`, `dirs/`, `memory/`,
+`signals/`, `fs/`, `net/`, `time/`, `procs/`, `ports/`, with their Linux code; macOS
+takes the code both share (`xdg.rs`, `unix.rs`) or `unsupported.rs` until step 2. A
+source scan test (`src/scan.rs`) lists the files still to move.
 
 Each module:
 
@@ -197,9 +197,10 @@ ctrl elsewhere), with per-OS keymaps where a key differs, as Zed ships
   or `std::os::linux` appears in a source file outside `devdeck-sys`: literals and paths
   that no dependency rule catches.
 - **The Mac check on Linux**, by hand before every commit of the macOS milestone:
-  `cargo clippy --target aarch64-apple-darwin -p devdeck-sys -p devdeck-core -p
-  devdeck-api -p devdeck-ctl -p devdeck-mcp --all-targets -- -D warnings`, once the
-  target is added with `rustup target add` (done here 2026-11-10). `-p` is right here,
+  `cargo clippy --target aarch64-apple-darwin -p devdeck-sys -p devdeck-api -p
+  devdeck-ctl -p devdeck-mcp --all-targets -- -D warnings`, once the target is added
+  with `rustup target add` (done here 2026-11-10); `-p devdeck-core` joins once its
+  process code has moved (macOS step 1d). `-p` is right here,
   unlike elsewhere (`docs/WORKFLOW.md`): the rest of the workspace can't be checked from
   Linux (next point), and another target has its own folder in `target/`.
 - **CI** (none exists yet; by the user's choice, 2026-11-10, it comes after the macOS

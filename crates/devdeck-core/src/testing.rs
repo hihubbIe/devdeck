@@ -60,7 +60,7 @@ fn base() -> PathBuf {
 fn sweep() {
     let Ok(entries) = std::fs::read_dir(base()) else { return };
     for e in entries.flatten() {
-        let gone = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()).is_some_and(|pid| !Path::new(&format!("/proc/{pid}")).exists());
+        let gone = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()).is_some_and(|pid| !devdeck_sys::procs::exists(pid));
         if gone {
             let _ = std::fs::remove_dir_all(e.path());
         }

@@ -12,15 +12,9 @@ const FORBIDDEN: &[&str] = &["/proc", "/sys/", "XDG_RUNTIME_DIR", "systemd-run",
 const NOT_YET: &[(&str, &str)] = &[
     ("devdeck-core/src/process.rs", "1d"),
     ("devdeck-core/src/scope.rs", "1d"),
-    ("devdeck-core/src/procfs.rs", "1b"),
-    ("devdeck-core/src/ports.rs", "1b"),
-    ("devdeck-core/src/testing.rs", "1b"),
     ("devdeck-core/src/git.rs", "1d"),
     ("devdeck-core/src/environment.rs", "1d"),
-    ("devdeck-app/src/lifecycle.rs", "1b"),
     ("devdeck-app/src/api/identity.rs", "1c"),
-    ("devdeck-app/tests/app/lifecycle.rs", "1d"),
-    ("devdeck-app/tests/app/pty_driver.rs", "1b"),
 ];
 
 fn crates() -> PathBuf {

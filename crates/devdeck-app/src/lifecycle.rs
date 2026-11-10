@@ -200,7 +200,5 @@ fn row(l: &Leftover) -> String {
 
 /// A process's command line, as `ps` shows it.
 fn command_of(pid: u32) -> String {
-    std::fs::read(format!("/proc/{pid}/cmdline"))
-        .map(|b| b.split(|c| *c == 0).filter(|s| !s.is_empty()).map(String::from_utf8_lossy).collect::<Vec<_>>().join(" "))
-        .unwrap_or_default()
+    devdeck_sys::procs::command(pid).unwrap_or_default()
 }

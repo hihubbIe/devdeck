@@ -665,3 +665,156 @@ again in the sources (GPUI's test macro, `TestPlatform::quit`, `Cargo.lock`, eve
 12. Docs and comments: `PLATFORMS.md` L6 and L12, `shell.rs`'s header, `lifecycle.rs`'s,
     the `fs` typo, a code span split in `socket.rs`, `DEVDECK_LOG`'s `error` and `off`.
     Taken.
+
+## Step 1b plan (2026-11-10): the process table and ports
+
+Every read of the process table (L3) and of listening ports (L4) moves into
+`devdeck-sys`, with no change on Linux. On macOS both are unsupported until 2b (the
+process table) and 2d (ports). R11.6, R6.9, R8.2.
+
+### `procs/` (L3)
+
+From `devdeck-core/src/procfs.rs` and the `/proc` reads around it.
+
+| Function | Replaces |
+|---|---|
+| `get(pid) -> Option<Proc>`: parent, session, start, whether it ended (a zombie) | `procfs::parent_of`, `parent_and_start`; `process.rs`'s `stat` and `parse_stat` (`:561-575`) |
+| `parents() -> Result<Vec<(u32, u32)>, SysError>` | `procfs::parents` |
+| `name(pid) -> Option<String>` | `procfs::name`; `process.rs:249` (a shell tab's foreground program) |
+| `command(pid) -> Option<String>`: the command line, arguments joined | `ports.rs`' `command_of`; `lifecycle.rs:200-204`'s copy |
+| `alive(pid, start)`: running, and the same process as before | `process.rs:588` |
+| `exists(pid)` | `devdeck-core/src/testing.rs:63` (the sweep), `tests/app/pty_driver.rs:130` |
+| `tree(root, pairs)`, `descendants(root)` | `procfs::tree`, `descendants` (plain Rust, `mod.rs`) |
+
+- The start is an opaque number: equal for the same process only. On Linux it stays
+  clock ticks since boot, so the group log already on disk stays valid.
+- `procfs.rs` is deleted; its parsers and their tests move to `procs/linux.rs`.
+- Callers: `process.rs` (`collect`, `kill_all`, `leftovers`, `foreground_program`, its
+  tests' `session_of`), `port_scan.rs:282-283,325`, `api/mod.rs:228`,
+  `api/identity.rs:45-46`, `tests/app/lifecycle.rs:41,49` (`Orphan`).
+
+### `ports/` (L4)
+
+- `listening(pids) -> Result<Vec<Listening>, SysError>`, `holder(port) ->
+  Result<Option<Holder>, SysError>`, `Listening`, `Holder`, from
+  `devdeck-core/src/ports.rs`. `/proc/net/tcp*` parsing, the socket links and the
+  whole-table scan go to `ports/linux.rs`; `Holder::Process` takes its command line from
+  `procs::command`.
+- `PortMemory` (the ports each command used last time) isn't OS code: it stays in core's
+  `ports.rs`, alone there.
+- Callers import from `devdeck_sys::ports`: `port_scan.rs:17`, `tests/app/ports.rs:10`.
+- The parse tests move to `linux.rs`; the tests with real listeners (IPv4, IPv6, pids
+  not scanned, who holds a port) become conformance tests in `mod.rs`.
+
+### Unsupported (decided by the user, 2026-11-10)
+
+The reads over the whole table (`parents`, `listening`, `holder`) return `Result`, as
+`docs/PLATFORMS.md` §4 asks: on a Mac "no ports" must not read as "none found". Answers
+about one pid (`get`, `name`, `command`) stay `Option`: "can't read that one" is a
+normal answer already. Callers keep today's behaviour on an error, so nothing changes on
+Linux; `port_scan.rs` logs the reason once (`log::warn!`), so round 0's log says ports
+aren't found on this OS yet. Showing reasons in the window comes with step 4.
+
+### The scan's list
+
+Off it after 1b: `procfs.rs` (gone), `ports.rs`, `testing.rs`, `lifecycle.rs`,
+`tests/app/pty_driver.rs`, `tests/app/lifecycle.rs`. Left: `process.rs`, `scope.rs`,
+`git.rs`, `environment.rs` (1d), `api/identity.rs` (1c). `process.rs` stays for its
+rustix calls; it no longer reads `/proc` itself.
+
+### Tests
+
+- Conformance in `procs/mod.rs`: this process's parent readable and started before it; a
+  spawned `sh -c 'sleep 5'` in this process's tree; its `name` and `command`; once killed
+  and reaped, `exists` and `alive` false, its start no longer matching.
+- Conformance in `ports/mod.rs`: the real-socket tests above.
+- macOS: each function's unsupported answer, under `#[cfg(not(target_os = "linux"))]`,
+  compiled by the Mac check.
+- The whole suite and clippy on Linux, the Mac check, the scan with its shorter list.
+
+### States to check visually
+
+None change on Linux: the Ports activity, a port conflict before a start, the leftovers
+dialog. No snapshot.
+
+### Out of scope
+
+The API's callers (1c); starting and stopping runs (1d); the macOS process table (2b)
+and ports (2d); reasons shown in the window (step 4).
+
+### Step 1b plan review (subagent), assessed
+
+Where a point is taken, it overrides the plan above. Point 1 was checked again in
+`api/identity.rs:56-68`, point 3 in `port_scan.rs:64-70`.
+
+1. The start isn't only opaque: `identity::chain` keeps a parent only while it started no
+   later than its child. Taken: the start is ordered, a later process has a larger
+   number; on Linux clock ticks since boot as today. 2b's backend must keep that order.
+2. `exists` and `alive` as plain bools can only say "gone" on a Mac, and the test sweep
+   would then delete the folders of tests still running. Taken: `exists` goes in a shared
+   `unix.rs` with `kill(pid, 0)` (gone only on `ESRCH`; `EPERM` means it exists), "any
+   process with this pid, a zombie included", as `/proc/<pid>` says today; so it works on
+   macOS from 1b. `alive` stays on `get` (unsupported reads as not alive until 2b, which
+   only the leftovers dialog uses).
+3. The two `command_of` differ: the ports' falls back to the name, the leftovers' doesn't.
+   Taken: `command` is the command line only (`None` when unreadable or empty);
+   `ports/linux.rs` falls back to `name`, `lifecycle.rs` doesn't, so neither text changes.
+4. Tests moved to `ports/mod.rs` and the procs conformance tests would fail on a Mac, or,
+   gated one by one, leave dead helpers that fail the Mac clippy. Taken: the real-socket
+   and real-process tests, their helpers and imports, go in one `#[cfg(target_os =
+   "linux")] mod conformance` per module until 2b/2d; no `mod.rs` helper only `linux.rs`
+   uses. `command.contains("devdeck_core")` becomes `devdeck_sys`.
+5. Test holes. Taken: spawn `sleep 5` itself (`sh -c` may exec it, so the name would
+   race); a zombie test (killed, not reaped: `exists` true, `alive` false; reaped: `exists`
+   false); `alive(pid, wrong start)` false; `stat_fields_survive_odd_command_names`
+   (`process.rs:1122-1127`) joins the parse tests and checks the session too; the short
+   `stat` lines in `ppid_survives_odd_command_names` get the fields a full parse needs,
+   `(a) b (c)` kept; "its start no longer matching" after reaping dropped (`get` is `None`).
+6. Linux mustn't fail where it answers today. Taken: `holder` keeps `Ok(Some(Unknown))`
+   when `/proc` can't be listed; a missing `/proc/net/tcp6` (IPv6 off) is skipped as today;
+   on Linux `Err` only when `/proc/net/tcp` itself can't be read.
+7. The call sites of the `Result` change weren't listed. Taken: `holder` at
+   `port_scan.rs:187,302,409` and `tests/app/ports.rs:132`; `listening` at
+   `port_scan.rs:288`; `parents` at `process.rs:478,758` and `port_scan.rs:282`; each keeps
+   today's answer on `Err`. `descendants` (only a test uses it) leaves the API: the test
+   takes `tree(root, &parents()?)`. `use devdeck_core::procfs` at `port_scan.rs:18` goes.
+8. "Log once" needs pinning. Taken: a `static` `Once` in `port_scan.rs`; it logs the first
+   `Err` of `Job::run` (`listening`, `holder`, `parents`), nothing else; core
+   (`process.rs`, no `log`) stays silent.
+9. "Ended" must cover `X` (dead) as well as `Z`. Taken. `tests/app/lifecycle.rs`'s
+   `Orphan::alive` (no start) maps to "`get` says not ended".
+10. No `SUPPORT` or `Capability` for the new modules. Taken: `Capability::Processes` and
+    `Ports`, a `SUPPORT` per module, as 1a's.
+11. Docs: PLATFORMS §1 L3 and L4 and §4's "built so far"; `port_scan.rs:3,7`,
+    `process.rs:8,565`, `identity.rs`' header name `procfs` or `core::ports`. Taken. §4's
+    Mac check lists `-p devdeck-core`, which only compiles for macOS after 1d: taken, §4
+    says so. `scripts/measure.py` reads `/proc` by design (L11 lists it): not taken.
+
+## Step 1b, as built (2026-11-10)
+
+- `devdeck-sys/src/procs/`: `Proc` (parent, session, start, ended for `Z` and `X`),
+  `get`, `parents` (a `Result`), `parent_of`, `parent_and_start`, `name`, `command`
+  (`None` when empty), `alive`, `exists` (`unix.rs`, `kill(pid, 0)`, both OSes), `tree`;
+  `linux.rs` reads `/proc`, `unsupported.rs` for macOS until 2b. `descendants` is gone:
+  its one test takes `tree(root, &parents()?)`.
+- `devdeck-sys/src/ports/`: `listening` and `holder` (both `Result`), `Listening`,
+  `Holder`; `linux.rs` keeps today's reads (`tcp6` skipped when missing, `holder`
+  `Unknown` when `/proc` can't be listed; `Err` only when `/proc/net/tcp` can't be
+  read); `unsupported.rs` for macOS until 2d.
+- `Capability::Processes` and `Ports`, with a `SUPPORT` each.
+- `devdeck-core`: `procfs.rs` deleted; `ports.rs` keeps `PortMemory`; `process.rs` reads
+  the table through `procs` (its own `stat` parser went to `procs/linux.rs`, its test
+  with it, checking the session too); `testing.rs`' sweep uses `procs::exists`.
+- `devdeck-app`: `port_scan.rs` imports from `devdeck_sys`, keeps today's answer on an
+  error and logs the first one (`unsupported`, a `static Once`); `lifecycle.rs`,
+  `api/mod.rs`, `api/identity.rs`, `tests/app/pty_driver.rs`, `tests/app/lifecycle.rs`
+  and `tests/app/ports.rs` go through `procs` and `ports`.
+- The scan's list: `process.rs`, `scope.rs`, `git.rs`, `environment.rs` (1d),
+  `api/identity.rs` (1c).
+- Docs: `PLATFORMS.md` L3, L4, §4's modules built and its Mac check (`-p devdeck-core`
+  after 1d).
+- Checked: the whole suite (821) and clippy on Linux, the Mac check, clean. No visible
+  change on Linux, so no snapshot.
+- The diff review by a subagent was refused by the session's permission check; the lead
+  reviewed the diff against the old code instead (`process.rs`, `port_scan.rs`, the
+  moved parsers): no behaviour change found on Linux; one doc line rewrapped.

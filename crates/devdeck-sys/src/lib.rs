@@ -9,6 +9,8 @@ pub mod dirs;
 pub mod fs;
 pub mod memory;
 pub mod net;
+pub mod ports;
+pub mod procs;
 pub mod signals;
 pub mod time;
 
@@ -53,6 +55,10 @@ pub enum Capability {
     Memory,
     /// The path of an open file (L14).
     OpenPath,
+    /// The process table (L3).
+    Processes,
+    /// Listening ports (L4).
+    Ports,
 }
 
 /// Whether this OS does a capability: an action that needs one it doesn't is shown
@@ -71,5 +77,7 @@ pub fn support(capability: Capability) -> Support {
         Capability::Runtime => dirs::SUPPORT,
         Capability::Memory => memory::SUPPORT,
         Capability::OpenPath => fs::OPEN_PATH_SUPPORT,
+        Capability::Processes => procs::SUPPORT,
+        Capability::Ports => ports::SUPPORT,
     }
 }

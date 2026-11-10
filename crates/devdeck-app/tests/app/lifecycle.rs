@@ -38,15 +38,14 @@ impl Orphan {
     fn start(log: &GroupLog) -> Orphan {
         let out = std::process::Command::new("sh").args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"]).output().unwrap();
         let pid: u32 = String::from_utf8(out.stdout).unwrap().trim().parse().unwrap();
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-        let start: u64 = stat.rsplit_once(')').unwrap().1.split_whitespace().nth(19).unwrap().parse().unwrap();
+        let start = devdeck_sys::procs::get(pid).unwrap().start;
         std::fs::create_dir_all(log.path.parent().unwrap()).unwrap();
         std::fs::write(&log.path, format!("{pid} {start}\n")).unwrap();
         Orphan(pid)
     }
 
     fn alive(&self) -> bool {
-        std::fs::read_to_string(format!("/proc/{}/stat", self.0)).is_ok_and(|s| !matches!(s.rsplit_once(')').unwrap().1.trim_start().chars().next(), Some('Z' | 'X')))
+        devdeck_sys::procs::get(self.0).is_some_and(|p| !p.ended)
     }
 }
 
