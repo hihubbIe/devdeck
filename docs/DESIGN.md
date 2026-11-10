@@ -395,7 +395,8 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   (as the watcher does); the UI thread takes a snapshot, the connection's thread encodes
   and writes; the audit log has a writer thread. Observers exist only while a client
   subscribes, timers only while something waits.
-- Identity is the process tree (`SO_PEERCRED`, held as a pidfd), walked up to a shell
+- Identity is the process tree (the peer's user checked and its process pinned by the
+  OS layer, `devdeck_sys::peer`: on Linux `SO_PEERCRED` and a pidfd), walked up to a shell
   devdeck started. No tokens: a string in the environment can be read by any process of
   the user.
 - Approvals: one service; destructive functions take a proof (`Approval<Op>`, holding its

@@ -1,7 +1,7 @@
 //! The OS stays here (R11.6, `docs/PLATFORMS.md` §4): no source file of another crate
 //! names Linux's files, its runtime folder, systemd, or the crates that call the OS.
-//! Line comments are skipped. Once step 1d has moved the last listed file, the other
-//! crates' manifests drop `rustix` and `libc` and guard the rest.
+//! Line comments are skipped. Manifests guard the rest once a crate has nothing left to
+//! move: `devdeck-app` dropped `rustix` and `libc` at step 1c, `devdeck-core` does at 1d.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,6 @@ const NOT_YET: &[(&str, &str)] = &[
     ("devdeck-core/src/scope.rs", "1d"),
     ("devdeck-core/src/git.rs", "1d"),
     ("devdeck-core/src/environment.rs", "1d"),
-    ("devdeck-app/src/api/identity.rs", "1c"),
 ];
 
 fn crates() -> PathBuf {

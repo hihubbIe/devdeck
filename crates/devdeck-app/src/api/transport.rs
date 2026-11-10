@@ -47,7 +47,8 @@ pub trait Sink: Send + Sync + 'static {
     /// to [`MAX_NAME`].
     fn notification(&self, conn: u64, method: String);
     fn close(&self, conn: u64);
-    /// A connection refused before it was opened (another user, too many).
+    /// A connection refused before it was opened (another user, an OS that can't check
+    /// the caller, too many).
     fn refused(&self, why: String);
 }
 

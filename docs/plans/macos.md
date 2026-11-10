@@ -818,3 +818,203 @@ Where a point is taken, it overrides the plan above. Point 1 was checked again i
 - The diff review by a subagent was refused by the session's permission check; the lead
   reviewed the diff against the old code instead (`process.rs`, `port_scan.rs`, the
   moved parsers): no behaviour change found on Linux; one doc line rewrapped.
+
+## Step 1c plan (2026-11-10): who calls the control API
+
+The OS calls that tell who connected to the control API (the user, then the very
+process, pinned so a pid used again can't pass for it) move from
+`devdeck-app/src/api/identity.rs` into `devdeck-sys`, with no change on Linux. L5,
+R13.4, R11.6.
+
+### `peer/`
+
+- `peer::of(stream)`, three answers:
+  - refused (another user, or no credentials), with its reason, so today's texts stay
+    (`another user (uid N)`, `no peer credentials: …`);
+  - not pinned (the OS can't name the very process: a Linux kernel older than 6.5, a
+    pid that doesn't match): the caller is outside, as today;
+  - pinned: its pid, and whether it ended since (`ended()`).
+- Linux: today's calls, moved as they are: `SO_PEERCRED` (rustix), the user check,
+  `SO_PEERPIDFD` (libc, the value 77), its pid from `/proc/self/fdinfo`, `poll` on the
+  pidfd for "ended".
+- macOS until 2e: unsupported, which refuses: a caller that can't be checked never gets
+  in. Round 0 loses nothing: the API is off on a Mac until 2a.
+- `Capability::Peer` and a `SUPPORT`, as the other modules.
+
+### What stays in the app
+
+`identity.rs` keeps `Peer`, the chain of ancestors (`chain`, OS-neutral) and their
+tests; `peer()` asks `devdeck_sys::peer::of` and `devdeck_sys::procs`. `devdeck-app`
+then calls the OS nowhere: its `Cargo.toml` drops `rustix` and `libc`, so it can't by
+accident. `identity.rs` leaves the scan's list, which keeps `devdeck-core`'s four files
+(1d).
+
+### Tests
+
+- Conformance in `peer/mod.rs`, Linux only until 2e: a socket pair to ourselves is
+  pinned to this process, not ended.
+- macOS: the unsupported answer refuses (compiled by the Mac check).
+- The app's real-socket test (`this_process_is_pinned_through_a_real_socket`) is Linux
+  only, with its reason, until 2e.
+- Not tested, said in the commit: "another user" and "the caller ended" (a socket pair's
+  other end still reports this process as the peer).
+- The whole suite and clippy on Linux, the Mac check, the scan with its shorter list.
+
+### Docs
+
+`docs/PLATFORMS.md` row L5 and §4's modules built.
+
+### States to check visually
+
+None change on Linux.
+
+### Out of scope
+
+The macOS backend (2e, choosing between `nix` and the `libc` calls); step 1d.
+
+### Step 1c plan review (subagent), assessed
+
+Where a point is taken, it overrides the plan above.
+
+1. "Ended" must be asked after the reads, the pin held meanwhile ("read while it
+   lived"). Taken: `peer::Pinned { pub pid, pin }`, not `Clone`, with `ended(&self)`
+   (a poll error counts as ended, as today); `identity::peer` holds it as a local until
+   `chain`, `name`, `ended()` and the empty-chain check are done, and never puts it in
+   `Peer`. The pin is an `OwnedFd` on Linux and an empty enum where unsupported. The
+   order in `of` stays: credentials, the user check, the pidfd, its pid equal to the
+   credentials' pid.
+2. The three answers don't fit `SysError`. Taken: `of(&UnixStream) ->
+   Result<Option<Pinned>, Refused>`, `Refused` being `OtherUser(uid)`,
+   `NoCredentials(io::Error)` or `Unsupported(why)`, displayed as today's texts;
+   `identity::peer` keeps returning `Result<Peer, String>`.
+3. "Unsupported refuses" makes the transport's real-socket tests (`transport.rs`
+   from `:320`) fail on a Mac, and would refuse every caller between 2a and 2e. The
+   user's call (asked 2026-11-10), recommended: on macOS from 1c, check the user with
+   `getpeereid` (`libc`, a few lines of 2e brought forward) and answer "not pinned",
+   as an older Linux kernel does: the user is still checked, callers count as outside
+   (they may look, not act), and the transport tests and clients work. The other way:
+   those tests are Linux only until 2e, and a refused client is told why.
+4. `SUPPORT` as a constant `Yes` hides that Linux before 6.5 pins nobody
+   (`Partial`). Not taken now: nothing reads `support()` yet; it is computed once at
+   start (a probe) when an action first uses it.
+5. `libc::SO_PEERPIDFD` (libc 0.2.191 has it per architecture) instead of 77. Taken; the
+   L5 row loses its sparc note.
+6. Test holes. Taken: the Linux decision is a pure function (`decide(cred_uid, own_uid,
+   cred_pid, pidfd_pid)`) with unit tests for another user (the text), a pid that
+   doesn't match and no pidfd; the conformance test's message says it needs Linux 6.5;
+   the macOS test checks the reason. "The caller ended" (a child that connects and
+   exits) is tried; if it can't be made reliable it is said in the commit.
+7. Dropping `rustix` and `libc` from `devdeck-app` is safe; `identity.rs` loses its fd
+   and poll imports. Taken.
+8. Docs and files missed. Taken: `scan.rs`' header (the app's manifest drops them at 1c,
+   core's at 1d), `identity.rs`' header, `Sink::refused`'s doc (`transport.rs:50`),
+   PLATFORMS L5, L12 and §4 "Keeping it there", `DESIGN.md:398`. Files touched:
+   `devdeck-sys/src/lib.rs`, `peer/{mod,linux,unsupported}.rs` (and a `macos.rs` if
+   point 3 goes the recommended way), `scan.rs`, `devdeck-app/Cargo.toml`,
+   `api/identity.rs`, `api/transport.rs`.
+
+The user chose point 3's recommended way (2026-11-10).
+
+## Step 1c, as built (2026-11-10)
+
+- `devdeck-sys/src/peer/`: `of(&UnixStream) -> Result<Option<Pinned>, Refused>`,
+  `Pinned { pid, pin }` with `ended()`, `Refused` (`OtherUser`, `NoCredentials`,
+  `Unsupported`) displayed as today's texts; `linux.rs` moves today's calls
+  (`libc::SO_PEERPIDFD` instead of 77) behind a pure `decide`, unit-tested;
+  `macos.rs` checks the user with `getpeereid` and pins nobody (outside callers) until
+  2e; `unsupported.rs` for other OSes refuses. `Capability::Peer` (`Partial` on macOS).
+- `devdeck-app/src/api/identity.rs` keeps `Peer` and `chain`; `peer()` holds the pin
+  while it reads the chain and the name, then asks `ended()`. Its real-socket test is
+  Linux only until 2e. `devdeck-app/Cargo.toml` dropped `rustix` and `libc`.
+- The scan's list: `devdeck-core`'s `process.rs`, `scope.rs`, `git.rs`,
+  `environment.rs` (1d).
+- Docs: `PLATFORMS.md` L5, L12, §4 (built so far, the guard done for the app),
+  `DESIGN.md` (identity through the OS layer), `transport.rs`' `Sink::refused`.
+- Checked: the whole suite (825) and clippy on Linux; the Mac check, which compiles
+  `peer/macos.rs`. Not tested: "the caller ended" (a child that connects and exits):
+  left for 2e, where the macOS pin needs the same test.
+- Diff review (subagent): one finding, taken: the pidfd was asked for before the user
+  check (same answers, but another user's process was looked at); now the user is
+  checked right after the credentials, as before (`same_user`, then `pinned`).
+
+## Step 1d plan (2026-11-10): running things
+
+The last OS code outside `devdeck-sys` moves in: what starts, watches and stops a run
+(L1, L2, U2, U3) and the systemd scopes, from `devdeck-core`'s `process.rs` and
+`scope.rs`, and the sessions and group kills of `git.rs` and `environment.rs`. No change
+on Linux. After it `devdeck-core` drops `rustix`, the scan's list is empty, and the whole
+workspace compiles for macOS: round 0 can follow. R11.6, R8.2, R6.7. Asked by the user
+to be built in their absence (2026-11-10): plan, review and build in one go.
+
+### `child/`
+
+Split by what both OSes share and what they don't:
+
+- `unix.rs`, Linux and macOS: `Signal` (`Hup`, `Int`, `Term`, `Kill`); `signal(pid)`,
+  `signal_group(pid)` and `group_exists(pid)`, never pid 0 or 1, devdeck itself or its
+  own group (`process.rs`' `ours`, `signal_one`, `signal_group`, the
+  `test_kill_process_group` in `Tree::gone`); `own_session(&mut Command)` (`setsid`
+  before exec: `git.rs:742`, `environment.rs:130`); `terminal_session(&mut Command)`
+  (`setsid`, then the terminal on stdin made the controlling one: `process.rs:167-171`).
+- `linux.rs` (macOS until 2c: `unsupported.rs`, uninhabited types, so nothing on a Mac
+  can start a run in round 0):
+  - `Terminal`: `open(size)` (`openpt` with `CLOEXEC`, `grantpt`, `unlockpt`, the other
+    side opened, the size, `IUTF8`; `process.rs:287-305`) gives the terminal and the
+    process's side; `resize`, `foreground_group`, `set_nonblocking`, `read`, `write`
+    (errors as `io::Error`, `WouldBlock` and `Interrupted` as today's `AGAIN` and
+    `INTR`).
+  - `Watch::new(&Child)`: the child's pidfd and a wake (eventfd); `Waker::wake` for the
+    input side; `Watch::wait(terminal, out, child, timeout) -> io::Result<Ready>` (the
+    poll of `Pump::run`, `process.rs:341-365`); `Watch::drain_wake`; `Watch::reap(wait)
+    -> ExitStatus` (`waitid` on the pidfd: `Code(i32)` or `Signal(i32)`, `Code(-1)` when
+    unknown).
+- `SUPPORT`: `Yes` on Linux, `No(why)` on macOS until 2c. `Process::spawn` checks it
+  first and refuses with the reason (no process started).
+
+### `scope/`
+
+`devdeck-core/src/scope.rs` moves whole (Linux: `systemd_run`, `Scope` with `named`,
+`next`, `command`, `pids`, `is_empty`, `signal` taking `child::Signal`, `kill`).
+Unsupported elsewhere: `systemd_run()` is None and a `Scope` holds nothing. The variables
+`systemd-run` borrows from devdeck (`process.rs:150`, `XDG_RUNTIME_DIR`,
+`DBUS_SESSION_BUS_ADDRESS`) become `scope::BORROWED`.
+
+### What stays in `devdeck-core`
+
+`process.rs` keeps the run's logic (`StopKind`, `Spawn`, `Process`, `Pump`'s loop and
+its draining, `Tree`'s stop sequence, `GroupLog`, `kill_all`, `terminate`), now on
+`child`, `scope` and `procs`; `Exit` is made from `child::ExitStatus`. `git.rs` and
+`environment.rs` use `own_session` and `signal_group`. `devdeck-core/Cargo.toml` drops
+`rustix`. Callers of `devdeck_core::scope` (`devdeck/src/main.rs:42`,
+`tests/app/lifecycle.rs:11,102`) move to `devdeck_sys::scope`.
+
+### Tests
+
+- `process.rs`' tests stay (they test `Process`); the one that makes a scope by hand
+  (`a_leader_that_outlived_a_killed_devdeck_is_in_its_scopes_row_only`) takes
+  `systemd-run`'s path from `scope::systemd_run()` instead of naming it.
+- Conformance in `child/mod.rs` (Linux, macOS from 2c): a terminal opened, a child in
+  it reads what is written and its output comes back; its size; the foreground group of
+  a shell running a command; `Watch` sees the exit and `reap` gives the code, then a
+  signal's number; a wake wakes `wait`. In `unix.rs`'s tests, both OSes: `signal` and
+  `signal_group` never reach pid 1 or devdeck; `own_session` gives a new session.
+- `scope/`: moved as is (its tests skip without a systemd user manager).
+- The scan's list empties; the scan also checks that no `Cargo.toml` but
+  `devdeck-sys`'s names `rustix`, `libc`, `nix` or `signal-hook`.
+- The Mac check gains `-p devdeck-core`. The whole suite and clippy on Linux.
+
+### Docs
+
+`docs/PLATFORMS.md` rows L1, L2, U2, U3, U7 (`environment.rs`' shell stays: plain
+`std`), §4 (built so far; the guard done; the Mac check with `devdeck-core`);
+`process.rs`' header; this file's round 0 note in the roadmap stays as is (round 0 needs
+the build guide's first draft, step 3's work moved forward: next, after this step).
+
+### States to check visually
+
+None change on Linux. One start of the real app (not the demo), a run started and
+stopped, a terminal opened and closed, before the commit.
+
+### Out of scope
+
+The macOS event loop and terminal (2c); the build guide's draft for round 0 (next).

@@ -1,18 +1,14 @@
 //! Who connects (R13.4), found from processes, never from what the caller says.
 //!
-//! The kernel gives the peer's user and a pidfd (`SO_PEERPIDFD`), which pins the very
-//! process that connected: a pid used again can't pass for it. From it the chain of its
-//! ancestors is read from `/proc`, each started no later than its child (otherwise the
-//! pid in between was used again, and the chain stops there). The UI thread then matches
-//! the chain against the shells devdeck runs ([`super::dispatch`]). Anything failing
-//! here makes an outside caller, never a terminal.
+//! The OS gives the peer's user, checked, and pins the very process that connected
+//! (`devdeck_sys::peer`): a pid used again can't pass for it. While it is pinned, the
+//! chain of its ancestors is read from the process table, each started no later than
+//! its child (otherwise the pid in between was used again, and the chain stops there).
+//! The UI thread then matches the chain against the shells devdeck runs
+//! ([`super::dispatch`]). Anything failing here makes an outside caller, never a
+//! terminal.
 
-use rustix::event::{PollFd, PollFlags, Timespec};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-
-/// `SO_PEERPIDFD` (Linux 6.5; the generic value, which x86-64 and arm64 use).
-const SO_PEERPIDFD: libc::c_int = 77;
 
 /// Ancestors read at most (a deeper chain is cut: its top can't be a devdeck shell).
 const MAX_CHAIN: usize = 64;
@@ -36,16 +32,12 @@ impl Peer {
 
 /// The peer of `stream`; an error when it's another user (the connection is refused).
 pub fn peer(stream: &UnixStream) -> Result<Peer, String> {
-    let cred = rustix::net::sockopt::socket_peercred(stream).map_err(|e| format!("no peer credentials: {e}"))?;
-    if cred.uid != rustix::process::getuid() {
-        return Err(format!("another user (uid {})", cred.uid.as_raw()));
-    }
-    let Some(pidfd) = peer_pidfd(stream) else { return Ok(Peer::unpinned()) };
-    let Some(pid) = pidfd_pid(&pidfd).filter(|p| *p == cred.pid.as_raw_nonzero().get() as u32) else { return Ok(Peer::unpinned()) };
+    let Some(pinned) = devdeck_sys::peer::of(stream).map_err(|e| e.to_string())? else { return Ok(Peer::unpinned()) };
+    let pid = pinned.pid;
     let chain = chain(pid, devdeck_sys::procs::parent_and_start);
     let program = devdeck_sys::procs::name(pid).unwrap_or_else(|| "?".into());
-    // Read while it lived: what was read is its own.
-    if exited(&pidfd) || chain.is_empty() {
+    // Read while it lived (still pinned): what was read is its own.
+    if pinned.ended() || chain.is_empty() {
         return Ok(Peer::unpinned());
     }
     Ok(Peer { pid: Some(pid), chain, program })
@@ -66,30 +58,6 @@ pub fn chain(pid: u32, stat: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<(u32, u6
         (parent, start) = (grand, parent_start);
     }
     out
-}
-
-fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
-    let mut fd: libc::c_int = -1;
-    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    // SAFETY: a connected socket, and an int with its size, which SO_PEERPIDFD fills.
-    let r = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, SO_PEERPIDFD, (&raw mut fd).cast(), &mut len) };
-    if r != 0 || fd < 0 || len as usize != std::mem::size_of::<libc::c_int>() {
-        return None;
-    }
-    // SAFETY: the kernel just made this descriptor for us; nothing else owns it.
-    Some(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
-/// The pid a pidfd stands for (its `fdinfo`); None once the process is gone.
-fn pidfd_pid(fd: &OwnedFd) -> Option<u32> {
-    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).ok()?;
-    info.lines().find_map(|l| l.strip_prefix("Pid:"))?.trim().parse::<i64>().ok().filter(|p| *p > 0).map(|p| p as u32)
-}
-
-/// Whether the process ended (its pidfd reads as ready).
-fn exited(fd: &OwnedFd) -> bool {
-    let mut fds = [PollFd::new(fd, PollFlags::IN)];
-    rustix::event::poll(&mut fds, Some(&Timespec { tv_sec: 0, tv_nsec: 0 })).map_or(true, |n| n > 0)
 }
 
 #[cfg(test)]
@@ -116,6 +84,8 @@ mod tests {
         assert_eq!(chain(99, procs(&[])), Vec::<(u32, u64)>::new(), "a process gone");
     }
 
+    /// Linux only until macOS step 2e: a Mac doesn't pin its callers yet.
+    #[cfg(target_os = "linux")]
     #[test]
     fn this_process_is_pinned_through_a_real_socket() {
         let (a, b) = UnixStream::pair().unwrap();

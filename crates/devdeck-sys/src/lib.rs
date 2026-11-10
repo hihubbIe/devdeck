@@ -9,6 +9,7 @@ pub mod dirs;
 pub mod fs;
 pub mod memory;
 pub mod net;
+pub mod peer;
 pub mod ports;
 pub mod procs;
 pub mod signals;
@@ -59,6 +60,8 @@ pub enum Capability {
     Processes,
     /// Listening ports (L4).
     Ports,
+    /// Who is on a socket (L5).
+    Peer,
 }
 
 /// Whether this OS does a capability: an action that needs one it doesn't is shown
@@ -79,5 +82,6 @@ pub fn support(capability: Capability) -> Support {
         Capability::OpenPath => fs::OPEN_PATH_SUPPORT,
         Capability::Processes => procs::SUPPORT,
         Capability::Ports => ports::SUPPORT,
+        Capability::Peer => peer::SUPPORT,
     }
 }
