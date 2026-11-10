@@ -69,7 +69,8 @@ codegen-units = 4
 strip = true
 
 # Debug info stays in `.dwo` files next to the objects instead of being copied into every
-# binary; `limited` keeps file and line for backtraces, not variables (docs/BUILDING.md).
+# binary; `limited` keeps file and line for backtraces, not variables (docs/WORKFLOW.md,
+# "Builds for development").
 [profile.dev]
 split-debuginfo = "unpacked"
 debug = "limited"

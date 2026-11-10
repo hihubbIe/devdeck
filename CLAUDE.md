@@ -1,13 +1,5 @@
 # devdeck
 
-**Testing on a Mac?** If you are helping someone build and test devdeck on macOS, this
-file isn't for you; read only `docs/BUILDING.md`, section "macOS", and the round's
-section of `docs/plans/macos-manual-test.md`, and follow their rules: change no tracked
-file, commit and push nothing, run no `cargo update`, `cargo fmt`, `cargo fix`,
-`cargo clippy --fix` or `cargo add`, install nothing they don't name, run cargo with
-`--locked`. A failure is sent back to the developer, not fixed. `git status` is clean
-when the results are sent.
-
 Native Rust desktop cockpit to find, run and deploy apps. Read these before any change:
 
 - `docs/REQUIREMENTS.md` what must be true (ids R1.1…)

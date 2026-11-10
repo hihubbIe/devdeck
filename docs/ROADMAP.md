@@ -74,10 +74,10 @@ Mac: a colleague builds and tests it, in two rounds, with `docs/BUILDING.md`. Pl
 0. Inventory and requirements.
 1. `devdeck-sys`, Linux only (1a–1d).
 2. The macOS backends (2a–2f).
-3. The build guide and round 1's test guide; push; round 1 on the Mac.
+3. The build guide finished; push; round 1 on the Mac.
 4. Mac behaviour in the app (L9, L10, L13).
 5. What Linux shaped (`docs/PLATFORMS.md` §3).
-6. Round 2's test guide; push; round 2 on the Mac.
+6. Push; round 2 on the Mac.
 
 Then packaging the `.app` (L11), then CI.
 

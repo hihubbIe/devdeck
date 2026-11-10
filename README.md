@@ -8,15 +8,8 @@ Status: M1, a native prototype on fake data (see [docs/plans/M1-manual-test.md](
 
 ## Build
 
-```sh
-cargo build --release
-./target/release/devdeck
-```
-
-Linux build dependencies (Debian/Ubuntu names) are listed in
-[docs/BUILDING.md](docs/BUILDING.md). On a Mac (Apple silicon, macOS 15 or later), follow
-its [macOS section](docs/BUILDING.md#macos) from the start: Xcode is needed, and the
-build is not yet confirmed on a Mac.
+From source, on Linux or on macOS (Apple silicon, macOS 15 or later):
+[docs/BUILDING.md](docs/BUILDING.md), one section per platform.
 
 ## Docs
 

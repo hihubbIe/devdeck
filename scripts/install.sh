@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs devdeck for this user (docs/BUILDING.md, "Install"): the release binary in
+# Installs devdeck for this user (docs/BUILDING.md, Linux, "Install"): the release binary in
 # ~/.local/bin, its icon, and a launcher the desktop's app grid and dock show, named
 # Kugelblitz (the installed app's name; files and ids stay `devdeck`, so a pin in the
 # dock survives a rename), and the control API's clients beside it (`devdeck-ctl`,

@@ -1256,3 +1256,25 @@ in no reference read, so the Xcode version is read from Xcode's About window ins
   commands from ss64 (`xcode-select -p`, `xcrun --find`, `sw_vers -productVersion`).
 - Checked: the whole suite (837) and clippy on Linux; nothing compiled changed. The
   guide itself is checked by round 0. Not pushed: 14 commits wait for the user's OK.
+
+## Round 0, reworked (user, 2026-11-10)
+
+The first version mixed three readers in `docs/BUILDING.md` (anyone building, devdeck's
+developers, one tester in one round) and addressed roles ("(you)", "the tester", "the
+agent"). The user's decision: `docs/BUILDING.md` is a generic build guide, one file with a
+section per platform (macOS, Linux) and contents at the top; no file for the tester. This
+supersedes the plans "The build guide (step 3)" and "The test guides" above, and round 0's
+"Files":
+
+- `docs/BUILDING.md`: supported platforms (macOS's limits in one row, updated as steps
+  land: 2a moves state and notes, 2b–2f and step 4 change the row), then **macOS** and
+  **Linux**, each whole: requirements, setup (Xcode or system packages), Rust, nextest,
+  the source, build, run (first start, a workspace file, the demo), tests, update (Linux:
+  install), devdeck's files, uninstall, troubleshooting. Plain instructions, no roles, no
+  rounds or steps of this plan; each command with its source.
+- `docs/WORKFLOW.md`, "Builds for development": which build (`cargo run`, debug, the
+  snapshot tool), tests and lints, debug info, "The build folder", moved from
+  `docs/BUILDING.md`.
+- `docs/plans/macos-manual-test.md` deleted; `CLAUDE.md`'s "Testing on a Mac?" block
+  removed. What round 0 checks stays in this file: "What round 0 can show" and the
+  review's point 2 (the tests expected to fail); the user tells the tester what to send.

@@ -34,7 +34,7 @@
 
 ## Keep the step loop fast
 
-Tests run with cargo-nextest (`docs/BUILDING.md`): it builds them as `cargo test
+Tests run with cargo-nextest (installed per `docs/BUILDING.md`): it builds them as `cargo test
 --no-run` does (the same set in `target/`), then runs every test in a process of its own,
 all binaries at once. Measured 2026-11-10 (cargo 1.99, nextest 0.9.151), one run: the
 whole suite's 777 tests in 7.8 s, peak memory 310 MB. `cargo test` ran the binaries one
@@ -49,7 +49,7 @@ building the tests about 3 s. The slowest tests wait on real processes and hooks
 (`--all-targets` for check and clippy) and tests are chosen by name. Never `-p`, never from
 a crate's folder: which packages are selected changes the features of shared dependencies
 (GPUI among them), so each selection is a full build of its own, kept next to the others
-in `target/` (`docs/BUILDING.md`). Each crate has one integration test binary: a new test
+in `target/` ("The build folder" below). Each crate has one integration test binary: a new test
 file is a module of `tests/<crate>/main.rs` (`tests/app/`, `tests/ui/`), never a new file
 in `tests/` (a new binary) and never a file without its `mod` line (never compiled). No
 crate runs doctests (`doctest = false` in each `[lib]`, 0.5 s off every whole suite): an
@@ -80,6 +80,57 @@ example in a doc comment is not tested, so a test goes in a test file.
   Builders run their own tests by name and clippy (never `-p`); the lead runs the
   combined build, the review and the commit. Builds share `target/`'s lock: they queue.
 
+## Builds for development
+
+Setting up and building for a platform: `docs/BUILDING.md`.
+
+**Which build.** `cargo build --release` is the release set `scripts/install.sh` makes.
+`cargo run --release` would make a second one: `cargo run` selects only the binary's
+package, and another selection resolves shared dependencies with other features ("One
+way to build"). For a debug run, `cargo build` then `target/debug/devdeck` (`cargo
+build`'s set; `cargo run` would keep one of its own); the snapshot tool: `cargo run --bin
+devdeck-snapshot --features devdeck-app/snapshot` (a set of its own anyway: its features
+change GPUI's).
+
+**Tests and lints.**
+
+```sh
+cargo nextest run --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Nextest runs no doctests; no crate has any (`doctest = false`). `cargo test --workspace`
+still works, on the same build, running the binaries one after another.
+
+**Debug info.** Debug builds keep line tables only, split out of the binaries
+(`Cargo.toml`): backtraces name file and line; a debugger shows the stack, not
+variables. For variables, `cargo build --profile dbg` (full debug info, its own folder
+`target/dbg`, deleted when done). The release build is stripped.
+
+### The build folder
+
+`target/` is a cache: everything in it is rebuilt by cargo, and the installed binaries
+are copies (`scripts/install.sh`), so `cargo clean` never breaks anything. Each kind of
+build keeps one set there, rebuilt in place by the same command. Measured 2026-11-09,
+cargo 1.99, from a clean folder:
+
+| Build | Command | Adds |
+|---|---|---|
+| tests | `cargo nextest run --workspace` (or `cargo test`, the same build) | 6.2 GB (12 test binaries, peak memory 5.2 GB cold) |
+| check and clippy | `cargo clippy --workspace --all-targets` | 1.4 GB |
+| debug binaries | `cargo build` | 1.9 GB |
+| debug run, snapshot tool, release | `cargo run …`, `cargo build --release` | one set each (release: 2.6 GB, 2026-11-10) |
+
+Before (2026-11-09 morning): a test binary per test file with full debug info, about
+1.1 GB each, and one full set per `-p` selection: 435 GB in three days, and builds that
+took more than 50 GB of memory.
+
+What is left behind: a dependency change (`Cargo.lock`) rebuilds the crates above it
+under new names and keeps the old ones (one bump of `itoa`: 42 crates, 3.5 GB), and a new
+rustc rebuilds everything. Cargo removes nothing itself (its `-Z gc` is nightly only), so
+`target/` is cleared at the end of every milestone and after every `rustup update`, or
+whenever it grows past about 30 GB.
+
 ## Components are tested on their own
 
 `devdeck-ui` is the component library every view draws with (R9.3). Each component has
@@ -103,7 +154,7 @@ removes those of runs that crashed. Tests never touch real folders.
   in `docs/perf/<milestone>.md` (RSS and CPU idle and under load, latency, binary size,
   leak test). Compare with the previous milestone; investigate any growth.
 - Then `cargo clean`, and after every `rustup update`: a dependency change or a new rustc
-  leaves the previous build behind in `target/` (`docs/BUILDING.md`, "The build folder").
+  leaves the previous build behind in `target/` ("The build folder").
 - At the end of every milestone, work stops and the user tests the app by hand.
   Feedback goes into `REQUIREMENTS.md` / `DESIGN.md` before the next milestone starts.
 
