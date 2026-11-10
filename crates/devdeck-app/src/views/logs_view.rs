@@ -17,7 +17,7 @@ use devdeck_ui::{Count, Fold, Icon, InputEvent, MenuItem, MenuValue, TextInput, 
 use devdeck_ui::{Scrolls, ToastKind, scroll_list};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
-    ParentElement, Pixels, Render, ScrollStrategy, SharedString, Styled, Subscription, UniformListScrollHandle,
+    ParentElement, Pixels, Render, SharedString, Styled, Subscription, UniformListScrollHandle,
     Window, actions, canvas, div, prelude::*,
 };
 use std::cell::Cell;
@@ -25,7 +25,7 @@ use std::rc::Rc;
 
 pub use crate::fake_cluster::LOGS_TICK;
 
-actions!(logs_view, [Find, NextMatch, PrevMatch, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options, LevelMenu, ToggleTime, TogglePodColumn]);
+actions!(logs_view, [Find, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options, LevelMenu, ToggleTime, TogglePodColumn]);
 
 /// Lowest level shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,8 +68,6 @@ pub struct ServiceLogsView {
     /// Wrapped rows: each a shown row and the character its piece starts at, for a width
     /// in characters and a buffer version.
     wrapped: Option<Wrapped>,
-    /// The current match: its line (absolute index) and which match of that line.
-    pub current: Option<(u64, usize)>,
     scroll: UniformListScrollHandle,
     /// Where the view is in its window.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -88,14 +86,17 @@ impl ServiceLogsView {
             cx.subscribe(&find, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Changed(text) => {
                     this.feed.buffer.set_query(text);
-                    this.current = None;
-                    this.step_match(1, cx);
+                    this.wrapped = None;
+                    if this.follow {
+                        this.scroll.scroll_to_bottom();
+                    }
+                    cx.notify();
                 }
-                InputEvent::Submit(_) => this.step_match(1, cx),
+                InputEvent::Submit(_) => {}
                 InputEvent::Cancel => {
                     this.find.update(cx, |f, cx| f.set_text("", cx));
                     this.feed.buffer.set_query("");
-                    this.current = None;
+                    this.wrapped = None;
                     cx.notify();
                 }
             }),
@@ -118,7 +119,6 @@ impl ServiceLogsView {
             show_time: true,
             show_pod: true,
             wrapped: None,
-            current: None,
             scroll: UniformListScrollHandle::new(),
             bounds: Rc::default(),
             bar: ToolbarState::new(),
@@ -166,53 +166,20 @@ impl ServiceLogsView {
         cx.notify();
     }
 
-    /// Matches of the find text among the lines shown.
-    pub fn matches(&self) -> usize {
-        self.feed.buffer.matches()
-    }
-
-    /// The next (or previous) match, every match of every line in turn.
-    pub fn step_match(&mut self, dir: isize, cx: &mut Context<Self>) {
-        let b = &self.feed.buffer;
-        let total = b.matches();
-        if total == 0 {
-            self.current = None;
-            cx.notify();
-            return;
-        }
-        let next = match self.current.and_then(|(line, nth)| b.match_index(line, nth)) {
-            None => 0,
-            Some(i) => (i as isize + dir).rem_euclid(total as isize) as usize,
-        };
-        let Some((line, nth)) = b.match_at(next) else { return };
-        self.current = Some((line, nth));
-        self.follow = false;
-        if let Some(row) = b.row_of(line) {
-            let item = match &self.wrapped {
-                Some((cols, _, rows)) if self.wrap => {
-                    // The wrapped piece holding the match's first character.
-                    let text = b.row(row).map(|e| e.text.clone()).unwrap_or_default();
-                    let start = match_ranges(&text, b.query()).get(nth).map_or(0, |r| text[..r.start].chars().count());
-                    rows.partition_point(|(r, _)| *r < row) + start / cols.max(&1)
-                }
-                _ => row,
-            };
-            self.scroll.scroll_to_item(item, ScrollStrategy::Center);
-        }
-        cx.notify();
+    /// Lines the filter shows (all lines without a filter).
+    pub fn shown_lines(&self) -> usize {
+        self.feed.buffer.row_count()
     }
 
     pub fn set_min_level(&mut self, l: MinLevel, cx: &mut Context<Self>) {
         self.min_level = l;
         self.feed.buffer.set_min(l);
-        self.current = None;
         cx.notify();
     }
 
     /// Shows one pod's lines only (`None`: every pod's).
     pub fn set_pod(&mut self, pod: Option<SharedString>, cx: &mut Context<Self>) {
         self.feed.buffer.set_pod(pod);
-        self.current = None;
         if self.follow {
             self.scroll.scroll_to_bottom();
         }
@@ -221,7 +188,6 @@ impl ServiceLogsView {
 
     pub fn set_container(&mut self, container: Option<String>, cx: &mut Context<Self>) {
         let cluster = self.cluster.clone();
-        self.current = None;
         self.feed.set_container(container, &cluster, cx);
     }
 
@@ -400,14 +366,8 @@ impl ServiceLogsView {
             let me = me.clone();
             move |_: &mut Window, cx: &mut App| me.update(cx, f)
         };
-        let matches = self.matches();
-        let count = (matches > 0).then(|| {
-            let text = match self.current.and_then(|(line, nth)| self.feed.buffer.match_index(line, nth)) {
-                Some(p) => format!("{}/{matches}", p + 1),
-                None => format!("{matches}"),
-            };
-            Count::new(text, 9, t.mute)
-        });
+        // Filtering: how many lines show.
+        let count = (!self.feed.buffer.query().is_empty()).then(|| Count::new(format!("{} lines", self.feed.buffer.row_count()), 12, t.mute));
         let level = match self.min_level {
             MinLevel::Error => "errors",
             MinLevel::Warn => "warn+",
@@ -418,7 +378,7 @@ impl ServiceLogsView {
         let paused = self.feed.paused;
         let mut bar = Toolbar::new("logs-toolbar", self.bar.clone()).item(ToolItem::Field {
             id: "logs.find".into(),
-            label: label("logs.find", "find").into(),
+            label: label("logs.find", "filter").into(),
             input: self.find.clone().into(),
             focus: self.find.read(cx).focus_handle(cx),
             min_chars: 12,
@@ -462,7 +422,7 @@ impl ServiceLogsView {
             ));
         let c = self.cluster.read(cx);
         let pods = c.pods(&self.env, &self.name).len();
-        let mut figures = format!("{pods} pods · {} lines", self.feed.buffer.row_count());
+        let mut figures = format!("{pods} pods · {} lines", self.feed.buffer.len());
         let dropped = self.feed.buffer.dropped();
         if dropped > 0 {
             figures.push_str(&format!(" · {dropped} older dropped"));
@@ -580,12 +540,9 @@ impl Render for ServiceLogsView {
                 Remote::Ready(0) if self.feed.buffer.is_empty() => empty("no pods".into()),
                 Remote::Ready(_) if count == 0 => empty(if self.feed.buffer.is_empty() { "no lines yet".into() } else { "no line matches the filter".into() }),
                 Remote::Ready(_) => {
-                    let (ok, warn, err, mute, dim, fg, current_bg, accent) = (t.ok, t.warn, t.err, t.mute, t.dim, t.fg, t.selection, t.accent);
-                    // Exactly what matched: every match tinted, the current one in the accent.
-                    let (hit_style, current_style) = (
-                        gpui::HighlightStyle { background_color: Some(t.warn.opacity(0.35)), ..Default::default() },
-                        gpui::HighlightStyle { background_color: Some(t.accent.opacity(0.7)), color: Some(t.hi), ..Default::default() },
-                    );
+                    let (ok, warn, err, mute, dim, fg) = (t.ok, t.warn, t.err, t.mute, t.dim, t.fg);
+                    // Exactly what matched the filter, tinted behind its characters.
+                    let hit_style = gpui::HighlightStyle { background_color: Some(t.warn.opacity(0.35)), ..Default::default() };
                     let (row_h, time_w, pod_w) = (t.line_height, t.size(64.), t.size(56.));
                     let (show_time, show_pod, wrap) = (self.show_time, self.show_pod, self.wrap);
                     let cols = if wrap {
@@ -602,7 +559,6 @@ impl Render for ServiceLogsView {
                         0
                     };
                     let items = if wrap { self.wrap_rows(cols) } else { count };
-                    let current = self.current;
                     let list = scroll_list(
                         "logs-lines",
                         items,
@@ -643,10 +599,7 @@ impl Render for ServiceLogsView {
                                             .into_iter()
                                             .enumerate()
                                             .filter(|(_, r)| r.start < b1 && r.end > b0)
-                                            .map(|(nth, r)| {
-                                                let style = if current == Some((line, nth)) { current_style } else { hit_style };
-                                                (r.start.max(b0) - b0..r.end.min(b1) - b0, style)
-                                            })
+                                            .map(|(_, r)| (r.start.max(b0) - b0..r.end.min(b1) - b0, hit_style))
                                             .collect()
                                     } else {
                                         Vec::new()
@@ -657,7 +610,6 @@ impl Render for ServiceLogsView {
                                         .flex()
                                         .gap_2()
                                         .whitespace_nowrap()
-                                        .when(current.is_some_and(|(l, _)| l == line), |d| d.bg(current_bg).border_l_2().border_color(accent))
                                         .when(show_time, |d| d.child(div().flex_none().w(time_w).text_color(mute).child(if first { clock(e.at) } else { SharedString::default() })))
                                         .when(show_pod, |d| d.child(div().flex_none().w(pod_w).overflow_hidden().text_color(mute).child(if first { SharedString::from(short(&e.pod).to_string()) } else { SharedString::default() })))
                                         .child(div().flex_none().text_color(color).child(gpui::StyledText::new(text).with_highlights(marks)))
@@ -687,8 +639,6 @@ impl Render for ServiceLogsView {
             .flex_col()
             .on_action(cx.listener(|this, _: &crate::actions::ToggleFollow, _, cx| this.toggle_follow(cx)))
             .on_action(cx.listener(|this, _: &Find, window, cx| this.find.read(cx).focus_handle(cx).focus(window, cx)))
-            .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(1, cx)))
-            .on_action(cx.listener(|this, _: &PrevMatch, _, cx| this.step_match(-1, cx)))
             .on_action(cx.listener(|this, _: &TogglePause, _, cx| this.toggle_pause(cx)))
             .on_action(cx.listener(|this, _: &ToggleWrap, _, cx| this.toggle_wrap(cx)))
             .on_action(cx.listener(|this, _: &OnlyErrors, _, cx| this.set_min_level(MinLevel::Error, cx)))

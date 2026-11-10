@@ -776,8 +776,6 @@ fn logs_find(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
         v.update(cx, |v, cx| {
             v.set_min_level(devdeck_app::views::logs_view::MinLevel::Warn, cx);
             v.find.update(cx, |f, cx| f.set_text("slow", cx));
-            v.step_match(1, cx);
-            v.step_match(1, cx);
         })
     });
 }

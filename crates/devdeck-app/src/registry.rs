@@ -186,9 +186,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("lifecycle.kill_leftovers", "pick", "App", Some("Modal && Leftovers"), ["enter"], crate::lifecycle::KillLeftovers),
         spec!("ports.confirm_stop", "stop", "Ports", Some("Modal && StopHolder"), ["enter"], crate::port_scan::ConfirmStopHolder),
         // Logs
-        spec!("logs.find", "find", "Logs", Some("LogsView && !TextInput"), ["/"], lv::Find),
-        spec!("logs.next", "next match", "Logs", Some("LogsView && !TextInput"), ["n"], lv::NextMatch),
-        spec!("logs.prev", "previous match", "Logs", Some("LogsView && !TextInput"), ["shift-n"], lv::PrevMatch),
+        spec!("logs.find", "filter", "Logs", Some("LogsView && !TextInput"), ["/"], lv::Find),
         spec!("logs.pause", "pause", "Logs", Some("LogsView && !TextInput"), ["p"], lv::TogglePause),
         spec!("logs.errors", "errors", "Logs", Some("LogsView && !TextInput"), ["1"], lv::OnlyErrors),
         spec!("logs.warn", "warn+", "Logs", Some("LogsView && !TextInput"), ["2"], lv::WarnAndUp),

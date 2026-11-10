@@ -66,18 +66,13 @@ fn logs_filter_find_pause_and_stop_when_hidden(cx: &mut TestAppContext) {
     });
     assert!(only_errors && cx.read(|cx| v.read(cx).min_level) == MinLevel::Error);
     cx.simulate_keystrokes(main, "4 / ");
-    cx.simulate_input(main, "slow n");
-    assert_eq!(cx.read(|cx| v.read(cx).find.read(cx).text().to_string()), "slow n", "n typed in find is text");
-    cx.simulate_keystrokes(main, "backspace backspace");
-    let found = cx.read(|cx| v.read(cx).matches());
-    assert!(found > 1);
-    let first = cx.read(|cx| v.read(cx).current);
-    assert!(first.is_some(), "typing jumps to the first match");
+    cx.simulate_input(main, "slow");
+    let only_slow = cx.read(|cx| {
+        let b = &v.read(cx).feed.buffer;
+        b.row_count() > 1 && (0..b.row_count()).all(|r| b.row(r).is_some_and(|e| e.text.contains("slow")))
+    });
+    assert!(only_slow, "the filter shows only the lines holding its text");
     focus_view(&v, main, cx);
-    cx.simulate_keystrokes(main, "n");
-    assert_ne!(cx.read(|cx| v.read(cx).current), first, "n goes to the next match");
-    cx.simulate_keystrokes(main, "shift-n");
-    assert_eq!(cx.read(|cx| v.read(cx).current), first);
     cx.simulate_keystrokes(main, "p");
     let paused_at = cx.read(|cx| v.read(cx).feed.buffer.len());
     advance(cx, LOGS_TICK * 4);

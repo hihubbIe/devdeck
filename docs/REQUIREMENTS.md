@@ -81,7 +81,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R7.2** Service inspector: header and actions; live CPU and memory against request and limit; pods (status, ready, restarts, last termination reason, age, node, cpu, memory); container (image, ports, resources, configmap); deploy history recorded by devdeck.
 - [~] **R7.3** Image tag editor with suggestions (tags deployed on other envs, devdeck history, free text), an unsaved marker, save with ctrl+s or a button, and a confirmation that states the exact change and the exact command.
 - [~] **R7.4** Rollout follow-up: progress, success, and failure detection (image pull errors, crashing) with the reason. No undo: a failed deploy is fixed by deploying another branch (user, 2026-11-10).
-- [~] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, pause, follow, find). No k9s: devdeck's own UI does it (user, 2026-11-10).
+- [~] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, a text filter, pause, follow, scrolling back as far as the cluster kept). No k9s: devdeck's own UI does it (user, 2026-11-10).
 - [~] **R7.6** Protected envs (declared in config) refuse writes until unlocked by typing the env name.
 - [~] **R7.7** Branch matrix: services × envs with the image tag in each cell; highlight a tag.
 - [~] **R7.8** Works with what the user's access allows; missing permissions are explained, not hidden.

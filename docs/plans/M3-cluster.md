@@ -1748,3 +1748,100 @@ barely fits a character. Built without a review, as asked:
   sideways. Keys: `w` wrap, `.` the cog's menu, the others as before.
 - `devdeck-ui`: `icon_toggle` (with its test) and the icons funnel, text-wrap, pause and
   arrow-down-to-line (Lucide, from gpui-kit-assets 0.9.0).
+
+## Logs: filter, and scrolling far back (plan, 2026-11-10)
+
+The user: "I don't need find, I need filter"; and scrolling back far, as k9s does, not a
+set number of lines.
+
+### Filter
+
+- The find field becomes **filter**: typing shows only the lines holding the text
+  (ignoring case, per character), each match tinted behind its characters; the count says
+  how many lines show ("12 lines"). No current match, no `n` / `shift+n` (gone from the
+  registry); `/` focuses the filter; Esc clears it. Clearing shows every line again,
+  scrolled to the bottom when following.
+- In the buffer the filter is one more condition of what's shown (with the level and the
+  pod), kept up to date line by line as today.
+
+### Scrolling far back
+
+- A container's logs reach back only as far as its node kept them (from its start unless
+  the node rotated the files, by default about 10 MB a container), current run (and the
+  previous one through "previous run"); the logs API has no paging: earlier lines are read
+  by asking a bigger tail once and keeping what is older than what's shown.
+- `devdeck_kube::read_logs(target, pod, container, tail: Option<u32>)`: one read, not
+  followed, timestamps, the same line reading, batches, errors and `Ended` at its end
+  (`None`: everything the node kept). `ClusterDriver::read_logs` (the fake makes up older
+  lines before the first one it sent).
+- Scrolling to the top (the list's first row in view, filter or not) reads, for every pod
+  still there whose container ran, its last `held + 5 000` lines, keeps those older than
+  the oldest it has (the same skip as a resume: older than its oldest line's time, and at
+  exactly that time only the ones beyond those it has), merges them by time and puts them
+  above; the view keeps the rows in sight where they were. A row at the top says
+  "loading earlier lines…" while it reads, and "start of the logs the cluster kept" once
+  a read brings nothing older for every pod (no more reads then, until the pods change).
+- "From the start" in the `…` menu reads everything the node kept for each pod, the same
+  way.
+- The buffer grows to 100 000 lines and 64 MB. Reading back never pushes out what's
+  shown: when it would pass the cap, the read keeps only what fits (said in the top row).
+  While not following (scrolled back), new lines that would push out the oldest wait in
+  the paused queue, counted ("N new"), until following again.
+- Absolute line indices start high enough that lines can be added above (indices go
+  down), so rows, matches and the longest line stay right.
+
+### Tests
+
+- devdeck-kube, on the mock API: `read_logs` asks `tailLines` (or none), not `follow`,
+  ends with `Ended`.
+- App: the filter shows only matching lines and their count, follows new lines, clears;
+  `n` gone; scrolling to the top reads earlier lines with the bigger tail, keeps only the
+  older ones (two identical lines at the oldest time), merges two pods by time, keeps the
+  rows in sight, stops at the start; "from the start" reads without a tail; the cap holds
+  while reading back and new lines wait while scrolled back; the buffer's indices going
+  down keep rows and the longest line right.
+- Snapshot: a filtered view; the top row loading and at the start.
+
+### Out of scope
+
+Saving logs to a file; reading logs of pods that are gone (their stream ended with them).
+
+### Review of the filter and scroll-back plan (subagent, 2026-11-10) and assessment
+
+The filter was built first (committed on its own); the scroll-back reads as revised here.
+1. Scrolling up doesn't stop following, so "scrolled back" can't happen. **Accepted**:
+   scrolling up turns follow off, reaching the bottom turns it on (as the run view); the
+   feed knows whether the view follows.
+2. "First row in view" fires on open and chains reads; nothing stops a second one.
+   **Accepted**: a user gesture only (scrolling up at the top of a scrollable list), the
+   top row clickable, and a registered action (`logs.earlier`, key `home`, also "from
+   the start" in `…`); one read at a time, its result dropped if the container, the
+   generation, the pod's restarts changed or the view was hidden.
+3. Reading back keeps a prefix (the opposite of the resume skip); the oldest per pod
+   isn't tracked. **Accepted**: at the read's start each pod's oldest line is taken from
+   what's shown, merging and held (notes and previous runs left out); once the read
+   ends, it's cut by position at that line's timestamp group (keep before the first line
+   of the group plus the group's lines not shown yet); no boundary found keeps nothing and
+   says so.
+4. The start condition and growing tails. **Accepted, the simpler way**: one read of
+   everything the cluster kept per pod (no tail), cut as in 3, inserted up to the cap; a
+   pod read once is at its start until its restarts or the generation change.
+5. The cap and the paused queue. **Accepted**: "N new" shows whenever lines wait; a
+   read-back that passes the cap keeps its newest part and the top row says "full".
+6. Wrapping rebuilt every frame. **Accepted**: wrapped pieces are kept by absolute line,
+   appended as lines come, dropped from the front as they go, rebuilt only when the width,
+   the level, the pod or the filter changes, or lines are put above.
+7. The filter's cost. **Accepted**: an ASCII path without allocation; one match per line;
+   the match bookkeeping of find (`hits`, counts) goes, every shown row being a match.
+8. Keeping the rows in sight. **Accepted**: the scroll offset grows by the rows put above,
+   set directly on the list's scroll handle (no notify loop).
+9. `dropped()` once indices go down. **Accepted**: an explicit count of lines dropped for
+   room.
+10. `read_logs` on a transport failure. **Accepted**: the same stream code with no follow
+    and no tail; a failure ends the read with its reason (no resume mid-read). Whether the
+    kubelet serves rotated files is unverified: the top row says "start of what the
+    cluster serves".
+11. Leftovers of find. **Accepted**: tests updated, the figures count every line, Esc
+    scrolls to the bottom when following, R7.5 says filter, a filter set never folds.
+12. Tests. **Accepted** as listed, but the 100k timing check (a test of time is flaky):
+    measured by hand instead.

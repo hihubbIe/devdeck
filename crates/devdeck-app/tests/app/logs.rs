@@ -367,10 +367,10 @@ fn the_level_filter_and_find_follow_new_lines(cx: &mut TestAppContext) {
     assert_eq!(texts(&v, cx).len(), 2, "JSON levels read");
     cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("down", cx))));
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| v.read(cx).matches()), 2);
-    t.driver.send(&name("aaaaa"), &[(4.0, "ERROR down once more")]);
+    assert_eq!(cx.read(|cx| v.read(cx).shown_lines()), 2);
+    t.driver.send(&name("aaaaa"), &[(4.0, "ERROR down once more"), (5.0, "ERROR unrelated")]);
     advance(cx, DRAIN_EVERY);
-    assert_eq!(cx.read(|cx| v.read(cx).matches()), 3, "a new line that matches counts at once");
+    assert_eq!(cx.read(|cx| v.read(cx).shown_lines()), 3, "a new line that matches shows at once, the other doesn't");
 }
 
 #[gpui::test]
@@ -523,23 +523,18 @@ fn matches_are_exact_ranges_ignoring_case() {
 }
 
 #[gpui::test]
-fn n_steps_through_every_match_not_every_line(cx: &mut TestAppContext) {
-    let t = start(cx, "logs-each-match");
+fn the_filter_shows_matching_lines_and_clearing_shows_all(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-filter-only");
     let v = open(&t, cx);
     set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
-    t.driver.send(&name("aaaaa"), &[(1.0, "timeout here, timeout there"), (2.0, "fine"), (3.0, "one more timeout")]);
+    t.driver.send(&name("aaaaa"), &[(1.0, "timeout here, timeout there"), (2.0, "fine"), (3.0, "one more TIMEOUT")]);
     advance(cx, DRAIN_EVERY);
-    cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("TIMEOUT", cx))));
+    cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("timeout", cx))));
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| v.read(cx).matches()), 3, "three matches on two lines");
-    let first = cx.read(|cx| v.read(cx).current).unwrap();
-    assert_eq!(first.1, 0);
-    cx.update(|cx| v.update(cx, |v, cx| v.step_match(1, cx)));
-    assert_eq!(cx.read(|cx| v.read(cx).current), Some((first.0, 1)), "the second match of the same line");
-    cx.update(|cx| v.update(cx, |v, cx| v.step_match(1, cx)));
-    assert_ne!(cx.read(|cx| v.read(cx).current).unwrap().0, first.0, "then the next line");
-    cx.update(|cx| v.update(cx, |v, cx| v.step_match(1, cx)));
-    assert_eq!(cx.read(|cx| v.read(cx).current), Some(first), "and around");
+    assert_eq!(texts(&v, cx), ["timeout here, timeout there", "one more TIMEOUT"]);
+    cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("", cx))));
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx).len(), 3, "cleared: every line");
 }
 
 fn entry(text: &str, level: Level) -> Entry {
@@ -557,7 +552,9 @@ fn the_buffer_keeps_its_caps_and_what_it_shows() {
     b.set_min(MinLevel::Error);
     assert_eq!(b.row_count(), 2, "line 2 and line 4");
     b.set_query("4");
-    assert_eq!(b.hits().iter().copied().collect::<Vec<_>>(), vec![4]);
+    assert_eq!(b.row_count(), 1, "the filter shows only line 4");
+    assert_eq!(b.row(0).unwrap().text.as_ref(), "line 4");
+    b.set_query("");
     b.push(entry("line 5 the longest of them all", Level::Error));
     assert_eq!(b.row_count(), 2, "line 2 dropped, line 5 in");
     assert_eq!(b.row(b.longest_row().unwrap()).unwrap().text.as_ref(), "line 5 the longest of them all");

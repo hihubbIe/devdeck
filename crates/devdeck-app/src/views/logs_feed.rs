@@ -134,7 +134,9 @@ impl LogsBuffer {
     fn shows(&self, e: &Entry) -> bool {
         // A note about no pod in particular shows whatever pod is picked.
         let pod = e.pod.is_empty() || self.pod.as_ref().is_none_or(|p| *p == e.pod);
-        pod && (e.note || super::logs_view::shown(e.level, self.min))
+        // The filter shows only the lines holding its text.
+        let filtered = self.query.is_empty() || self.hit(e) > 0;
+        pod && filtered && (e.note || super::logs_view::shown(e.level, self.min))
     }
 
     /// How many times `e` holds the find text.
@@ -224,7 +226,7 @@ impl LogsBuffer {
 
     pub fn set_query(&mut self, query: &str) {
         self.query = query.chars().flat_map(char::to_lowercase).collect();
-        self.refind();
+        self.refilter();
     }
 
     pub fn clear(&mut self) {
