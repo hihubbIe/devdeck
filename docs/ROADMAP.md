@@ -66,13 +66,15 @@ Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), deci
 5. Chosen MCP tools, instructions, setup docs.
 6. Cluster methods, as M3 steps 4–5 land.
 
-## macOS from source (started 2026-11-10)
+## macOS from source (started 2026-11-10) — paused 2026-11-10, waiting for round 0 on the Mac
 devdeck works on an Apple silicon Mac, macOS 15 or later, for someone who builds it from
 source; it feels like a Mac app (shortcuts, title bar, menu bar, Dock). The user has no
-Mac: a colleague builds and tests it, in two rounds, with `docs/BUILDING.md`. Plan:
+Mac: a colleague builds and tests it with `docs/BUILDING.md`: round 0 (the first build)
+after step 1, round 1 after step 3, round 2 after step 6. Plan, and where it stands:
 [plans/macos.md](plans/macos.md). Steps, one at a time:
-0. Inventory and requirements.
-1. `devdeck-sys`, Linux only (1a–1d).
+0. Inventory and requirements — done 2026-11-10.
+1. `devdeck-sys`, Linux only (1a–1d) — done 2026-11-10; the build guide pushed for
+   round 0.
 2. The macOS backends (2a–2f).
 3. The build guide finished; push; round 1 on the Mac.
 4. Mac behaviour in the app (L9, L10, L13).

@@ -6,6 +6,29 @@ agent and the docs written here. Covers R11.6 (the OS layer) and revisits R1.2, 
 R9.6 and R3.8 (`docs/PLATFORMS.md` §3). The inventory, the OS layer's shape and the
 recommendations this plan builds on are in `docs/PLATFORMS.md`.
 
+## Where it stands (paused 2026-11-10)
+
+- **Done and pushed**: step 0 (`e5f52f1`), step 1 (`74f1585`, `92b0957`, `d976fc9`,
+  `7cd0838`: every OS call in `devdeck-sys`, macOS on `unsupported.rs`), and the build
+  guide, generic, one section per platform (`a6d313e`, `docs/BUILDING.md`).
+- **Waiting on**: the colleague's round 0 on a Mac, following
+  [`docs/BUILDING.md#macos`](../BUILDING.md#macos); no date. What to look at in the
+  results: "What round 0 can show" and point 2 of "Round 0 plan review" below (the tests
+  expected to fail).
+- **When the results arrive**: sort them into setup problems, compile errors in the
+  crates never compiled for a Mac (`devdeck-app`, `devdeck-ui`, `devdeck`, GPUI's Mac
+  platform) and other failures; fix them here, add what they teach to BUILDING.md's
+  troubleshooting; then plan step 2a.
+- **Meanwhile, other features**: OS calls only through `devdeck-sys` (the source scan in
+  the suite enforces it); the Mac compile check (`CLAUDE.md`) after touching
+  `devdeck-sys`, `devdeck-core`, `devdeck-api`, `devdeck-ctl` or `devdeck-mcp`; a new
+  build step or system dependency goes in both sections of BUILDING.md.
+- **Loose end**: the fix for a demo's socket left after a signal is on
+  `refs/heads/claude/dreamy-merkle-8072eb` (`80e14e2`), not merged.
+- **After round 0**: steps 2a–2f, 3–6, then packaging and CI, as planned below. Step 2a
+  moves state and notes to `~/Library/Application Support/devdeck`; each step updates
+  BUILDING.md's macOS section and its row in "Supported platforms".
+
 ## Decisions (user, 2026-11-10)
 
 - **Apple silicon only**: one target, `aarch64-apple-darwin`. No Intel build.

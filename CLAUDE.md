@@ -16,6 +16,12 @@ Rules that are easy to break:
 - Nothing machine-specific in code; it belongs in config (R1.5).
 - Files are view only; notes are the one thing devdeck edits (R12).
 - OS-specific code only in `devdeck-sys`, a backend or "unsupported" per OS (R11.6).
+- After touching `devdeck-sys`, `devdeck-core`, `devdeck-api`, `devdeck-ctl` or
+  `devdeck-mcp`, the Mac compile check passes too (`docs/PLATFORMS.md` §4): `cargo clippy
+  --target aarch64-apple-darwin -p devdeck-sys -p devdeck-core -p devdeck-api -p
+  devdeck-ctl -p devdeck-mcp --all-targets -- -D warnings` (the one place `-p` is right:
+  the other crates can't build for a Mac from Linux). The macOS work is paused:
+  `docs/plans/macos.md`, "Where it stands".
 - `cargo nextest run --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` pass before every commit.
 - Cargo runs from the root with `--workspace`, tests chosen by name, never `-p` or from a
   crate's folder: another selection is another full build. A new test file is a module of
