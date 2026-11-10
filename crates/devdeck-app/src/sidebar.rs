@@ -451,12 +451,17 @@ impl Sidebar {
                         .map(|deps| {
                             deps.values()
                                 .map(|d| {
-                                    let rolling = c.rollout(env, &d.name).is_some_and(|r| matches!(r, devdeck_core::cluster::Rollout::Progressing { .. }));
+                                    let rollout = c.rollout(env, &d.name).filter(|r| !r.finished());
+                                    let rolling = rollout.is_some_and(|r| matches!(r.state, devdeck_core::cluster::RolloutState::Rolling { .. }));
                                     let mut tag = if d.others() > 0 { format!("{} +{}", d.tag(), d.others()) } else { d.tag() };
-                                    // A rollout seen on the cluster can last (a stuck one forever): said, not spun.
-                                    if let Some(state) = d.progress.label() {
+                                    // A rollout can last (a stuck one forever): said, not spun; a followed one says how far.
+                                    if let Some(state) = rollout.and_then(|r| r.label()).or_else(|| d.progress.label().map(str::to_string)) {
                                         tag.push_str(&format!(" · {state}"));
                                     }
+                                    let failing = rollout.and_then(|r| match &r.state {
+                                        devdeck_core::cluster::RolloutState::Failing { reason, .. } | devdeck_core::cluster::RolloutState::Stuck { reason } => Some(reason.clone()),
+                                        _ => None,
+                                    });
                                     // The other containers and, watching pods, running since and restarts, on hover.
                                     let others: Vec<String> = d.containers.iter().filter(|x| x.name != d.main().name).map(|x| format!("{}: {}", x.name, x.image.label())).collect();
                                     let mut hint: Vec<String> = Vec::new();
@@ -472,7 +477,7 @@ impl Sidebar {
                                     }
                                     let hint = (!hint.is_empty()).then(|| format!("{} {} · {}", d.name, d.tag(), hint.join(" · ")));
                                     // Watching pods: a pod in trouble marks the row with its reason.
-                                    let trouble = pods.iter().find_map(|p| p.trouble()).map(str::to_string);
+                                    let trouble = failing.or_else(|| pods.iter().find_map(|p| p.trouble()).map(str::to_string));
                                     ListItem::new(d.name.clone(), d.name.clone()).detail(tag).busy(rolling).running(d.ready == d.replicas).hint(hint).warning(trouble)
                                 })
                                 .collect()

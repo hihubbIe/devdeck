@@ -81,8 +81,8 @@ impl Scripted {
 }
 
 fn pod(id: &str, state: &str, restarts: u32) -> Pod {
-    let main = ContainerStatus { name: SVC.into(), init: false, ready: state == "running", restarts, state: state.into(), last_termination: None };
-    let init = ContainerStatus { name: "migrate".into(), init: true, ready: false, restarts: 0, state: "terminated: Completed (exit 0)".into(), last_termination: None };
+    let main = ContainerStatus { name: SVC.into(), init: false, ready: state == "running", restarts, state: state.into(), last_termination: None, ..Default::default() };
+    let init = ContainerStatus { name: "migrate".into(), init: true, ready: false, restarts: 0, state: "terminated: Completed (exit 0)".into(), last_termination: None, ..Default::default() };
     Pod {
         name: format!("{SVC}-5d9f-{id}"),
         owner: Some(SVC.into()),
@@ -95,6 +95,7 @@ fn pod(id: &str, state: &str, restarts: u32) -> Pod {
         node: "node-1".into(),
         tag: "main".into(),
         containers: vec![main, init],
+        unschedulable: None,
     }
 }
 

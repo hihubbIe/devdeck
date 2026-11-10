@@ -25,6 +25,14 @@ pub fn default_state_dir() -> PathBuf {
 /// catalog are kept, just not shown.
 pub type Pins = BTreeMap<String, BTreeSet<String>>;
 
+/// The deploys a workspace saw (`deploys.json`): by env, then service, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Deploys {
+    pub version: u32,
+    pub envs: BTreeMap<String, BTreeMap<String, Vec<crate::cluster::DeployRecord>>>,
+}
+
 /// What the sidebar of one workspace remembers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -214,6 +222,30 @@ impl StateStore {
         write_atomic(&self.book_path(workspace), &book.to_json())
     }
 
+    fn deploys_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join("workspaces").join(safe_id(workspace)).join("deploys.json")
+    }
+
+    /// The deploys devdeck saw in a workspace (R7.2), the last few per service.
+    pub fn load_deploys(&self, workspace: &str) -> Loaded<Deploys> {
+        let path = self.deploys_path(workspace);
+        match read(&path) {
+            Loaded::Ok(t) => match serde_json::from_str(&t) {
+                Ok(d) => Loaded::Ok(d),
+                Err(e) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: {e} (kept as deploys.json.bad)", path.display()))
+                }
+            },
+            Loaded::Missing => Loaded::Missing,
+            Loaded::Broken(e) => Loaded::Broken(e),
+        }
+    }
+
+    pub fn save_deploys(&self, workspace: &str, deploys: &Deploys) -> Result<(), String> {
+        write_atomic(&self.deploys_path(workspace), &serde_json::to_string_pretty(deploys).map_err(|e| e.to_string())?)
+    }
+
     fn views_path(&self, workspace: &str) -> PathBuf {
         self.dir.join("workspaces").join(safe_id(workspace)).join("views.json")
     }
@@ -294,6 +326,18 @@ mod tests {
         assert_eq!(s.load_layout("work"), Loaded::Missing, "and no longer read");
         let leftovers = std::fs::read_dir(s.dir.join("workspaces/work")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(leftovers, 0, "no temp file left behind");
+    }
+
+    #[test]
+    fn deploys_round_trip_and_broken() {
+        let s = store("deploys");
+        assert_eq!(s.load_deploys("work"), Loaded::Missing);
+        let r = crate::cluster::DeployRecord { at_s: 5, from: "main".into(), to: "lan-1".into(), by: "devdeck".into(), outcome: "done".into() };
+        let d = Deploys { version: 1, envs: BTreeMap::from([("dev33".to_string(), BTreeMap::from([("graphservice".to_string(), vec![r])]))]) };
+        s.save_deploys("work", &d).unwrap();
+        assert_eq!(s.load_deploys("work"), Loaded::Ok(d));
+        std::fs::write(s.dir.join("workspaces/work/deploys.json"), "{").unwrap();
+        assert!(matches!(s.load_deploys("work"), Loaded::Broken(_)));
     }
 
     #[test]

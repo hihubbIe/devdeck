@@ -17,6 +17,7 @@ mod components;
 mod config_workspaces;
 mod context_menu;
 mod deck;
+mod deploys;
 mod drop_preview;
 mod edit_mode;
 mod files;

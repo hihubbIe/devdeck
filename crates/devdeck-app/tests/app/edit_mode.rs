@@ -8,7 +8,7 @@ use devdeck_app::edit_mode::{self, OFF};
 use devdeck_app::repo::Repo;
 use devdeck_app::shell::Shell;
 use devdeck_app::views::service_view::ServiceView;
-use devdeck_core::cluster::Rollout;
+use devdeck_core::cluster::RolloutState;
 use devdeck_core::git::{Doing, Op, PushPlan};
 use devdeck_core::view_addr::ViewAddr;
 use gpui::{AppContext, Entity, TestAppContext};
@@ -43,7 +43,7 @@ fn deploys_wait_for_edit_mode_turned_on_through_its_modal(cx: &mut TestAppContex
     assert!(!cx.read(edit_mode::is_on), "off at start");
     let c = cluster(&shell, cx);
     let view = service(&shell, cx);
-    let deploy = |cx: &mut TestAppContext| cx.update(|cx| c.update(cx, |c, cx| c.set_image("dev35", "entityservice", "lan-177", false, cx)));
+    let deploy = |cx: &mut TestAppContext| cx.update(|cx| deploy_now(&c, cx, "dev35", "entityservice", "lan-177"));
     assert_eq!(deploy(cx), Err(OFF.into()), "refused below the UI");
     assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(OFF.into()), "Save says why before asking anything");
 
@@ -64,12 +64,11 @@ fn deploys_wait_for_edit_mode_turned_on_through_its_modal(cx: &mut TestAppContex
     assert_eq!(deploy(cx), Ok(()));
     cx.executor().advance_clock(ROLLOUT_STEP * 3);
     cx.run_until_parked();
-    assert!(matches!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").cloned()), Some(Rollout::Done { .. })));
-    // Off at once, no modal; the done rollout's undo is refused then.
+    assert_eq!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").map(|r| r.state.clone())), Some(RolloutState::Done));
+    // Off at once, no modal; deploys are refused again.
     toggle(cx);
     assert!(!cx.read(edit_mode::is_on) && layers(cx) == 0);
-    assert_eq!(cx.read(|cx| view.read(cx).undo_blocked(cx)), Some(OFF.into()), "the undo button says why");
-    assert_eq!(cx.update(|cx| c.update(cx, |c, cx| c.undo("dev35", "entityservice", false, cx))), Err(OFF.into()));
+    assert_eq!(cx.update(|cx| deploy_now(&c, cx, "dev35", "entityservice", "lan-178")), Err(OFF.into()));
 }
 
 #[gpui::test]
@@ -131,4 +130,12 @@ fn a_replace_push_and_an_abort_wait_for_edit_mode(cx: &mut TestAppContext) {
         assert_eq!(r.refusal(&replace, cx), None);
         assert_eq!(r.refusal(&Op::Abort(Doing::Rebasing), cx), Some("nothing to abort".into()), "past edit mode: nothing under way");
     });
+}
+
+/// Deploys `tag`, pinned to the image running now.
+fn deploy_now(c: &Entity<Cluster>, cx: &mut gpui::App, env: &str, name: &str, tag: &str) -> Result<(), String> {
+    c.update(cx, |c, cx| {
+        let from = c.deployment(env, name).map(|d| d.main().image.raw.clone()).unwrap_or_default();
+        c.deploy(env, name, &from, tag, false, cx)
+    })
 }

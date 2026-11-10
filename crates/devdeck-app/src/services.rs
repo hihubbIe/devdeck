@@ -57,6 +57,8 @@ pub struct Services {
     /// Why each app that can't be used can't (`Tools::unusable`), by app id: checked
     /// once per catalog, not on every render.
     pub unusable: BTreeMap<String, String>,
+    /// Where the cluster keeps its deploy history; `None` keeps nothing (tests).
+    history: Option<devdeck_core::state::StateStore>,
 }
 
 /// Why each app of `catalog` that can't be used can't, by app id.
@@ -106,7 +108,7 @@ impl Services {
             let unusable = unusable(&catalog);
             // The demo's notes stay in memory.
             let notes = cx.new(|cx| crate::notes::Notes::new(None, cx));
-            Services { workspace: workspace.into(), catalog, env, runner, notes, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable }
+            Services { workspace: workspace.into(), catalog, env, runner, notes, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable, history: None }
         })
     }
 
@@ -131,10 +133,15 @@ impl Services {
             }
         });
         let keeps_notes = state_dir.is_some();
+        let history = state_dir.clone().map(devdeck_core::state::StateStore::new);
         let ports = Ports::new(&config.id, runner.clone(), state_dir, cx);
         let kube = config.cluster.clone().map(|c| {
             let driver = Rc::new(KubeCluster::new(c));
-            (new_cluster(config.envs.clone(), driver.clone(), None, cx), driver)
+            let cluster = new_cluster(config.envs.clone(), driver.clone(), None, cx);
+            if let Some(store) = history.clone() {
+                cluster.update(cx, |c, cx| c.keep_history(store, &config.id, cx));
+            }
+            (cluster, driver)
         });
         let cluster = kube.as_ref().map(|(c, _)| c.clone());
         cx.new(|cx| {
@@ -152,7 +159,7 @@ impl Services {
             // Notes are kept with what the user writes (R10.1), when devdeck keeps state.
             let store = keeps_notes.then(|| devdeck_core::notes::NotesStore::new(devdeck_core::notes::notes_dir(&devdeck_core::notes::default_data_dir(), &config.id)));
             let notes = cx.new(|cx| crate::notes::Notes::new(store, cx));
-            Services { workspace: config.id.clone(), catalog, env, runner, notes, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable }
+            Services { workspace: config.id.clone(), catalog, env, runner, notes, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable, history }
         })
     }
 
@@ -213,6 +220,9 @@ impl Services {
             None => {
                 let driver = Rc::new(KubeCluster::new(k));
                 let c = new_cluster(config.envs.clone(), driver.clone(), None, cx);
+                if let Some(store) = self.history.clone() {
+                    c.update(cx, |c, cx| c.keep_history(store, &config.id, cx));
+                }
                 cx.observe(&c, |_, _, cx| cx.notify()).detach();
                 self.kube = Some((c.clone(), driver));
                 self.cluster = Some(c);

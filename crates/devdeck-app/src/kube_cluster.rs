@@ -5,19 +5,16 @@
 //! changes: only envs whose target changed (another context, folder or file content, a
 //! rotated token) reconnect.
 //!
-//! Deployments, pods (for whoever wants them) and metrics are read, logs streamed;
-//! deploys (step 5) say why they aren't there.
+//! Deployments, pods (for whoever wants them) and metrics are read, logs streamed, the
+//! main image set (deploys), and whether the account may is asked first.
 
-use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, LogFrom, LogStream, MetricsRead, PodScope};
+use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, ImageChange, LogFrom, LogStream, MetricsRead, PodScope};
 use devdeck_core::config::ClusterConfig;
 use devdeck_kube::{Kubeconfigs, Target};
 use gpui::{Context, Task};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-
-/// What the kube driver can't do yet.
-pub const NO_DEPLOYS: &str = "deploys come in a later step";
 
 pub struct KubeCluster {
     config: RefCell<ClusterConfig>,
@@ -98,7 +95,34 @@ impl ClusterDriver for KubeCluster {
     }
 
     fn writes(&self) -> Result<(), String> {
-        Err(NO_DEPLOYS.into())
+        Ok(())
+    }
+
+    fn set_image(&self, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let (env, name) = (env.to_string(), name.to_string());
+        let target = self.target(&env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()));
+        let answer = target.map(|t| devdeck_kube::set_image(&t, &name, &change));
+        Some(cx.spawn(async move |this, cx| {
+            let result = match answer {
+                Ok(rx) => match rx.recv().await {
+                    Ok(Ok(generation)) => Ok(generation),
+                    Ok(Err(devdeck_kube::DeployError::Forbidden(why) | devdeck_kube::DeployError::Gone(why) | devdeck_kube::DeployError::Changed(why) | devdeck_kube::DeployError::Other(why))) => Err(why),
+                    Err(_) => Err("the write stopped".into()),
+                },
+                Err(why) => Err(why),
+            };
+            let _ = this.update(cx, |c, cx| c.write_done(&env, &name, result, cx));
+        }))
+    }
+
+    fn can_deploy(&self, env: &str, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let target = self.target(env)?.ok()?;
+        let rx = devdeck_kube::can(&target, "patch", "apps", "deployments");
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let result = rx.recv().await.unwrap_or_else(|_| Err("the check stopped".into()));
+            let _ = this.update(cx, |c, cx| c.access_known(&env, result, cx));
+        }))
     }
 
     fn stream_logs(&self, env: &str, pod: &str, container: &str, from: LogFrom, previous: bool, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {

@@ -19,7 +19,6 @@ pub fn deployment(d: &apps::Deployment) -> Option<Deployment> {
     let status = d.status.as_ref();
     let count = |n: Option<i32>| n.unwrap_or(0).max(0) as u32;
     Some(Deployment {
-        name,
         containers,
         replicas: spec.replicas.unwrap_or(1).max(0) as u32,
         ready: count(status.and_then(|s| s.ready_replicas)),
@@ -27,7 +26,46 @@ pub fn deployment(d: &apps::Deployment) -> Option<Deployment> {
         progress: progress(d),
         selector: selector(&spec.selector),
         since: since(d),
+        generation: d.metadata.generation.unwrap_or(0).max(0) as u64,
+        observed: status.and_then(|s| s.observed_generation).unwrap_or(0).max(0) as u64,
+        revision: d.metadata.annotations.as_ref().and_then(|a| a.get("deployment.kubernetes.io/revision")).and_then(|r| r.trim().parse().ok()).unwrap_or(0),
+        template: newest_template(d, &name),
+        failure: condition(d, "ReplicaFailure").filter(|c| c.status == "True").and_then(|c| words(&c.message).or(words(&c.reason))),
+        manager: manager(d),
+        name,
     })
+}
+
+fn condition<'a>(d: &'a apps::Deployment, type_: &str) -> Option<&'a apps::DeploymentCondition> {
+    d.status.as_ref()?.conditions.as_ref()?.iter().find(|c| c.type_ == type_)
+}
+
+/// A text that says something, trimmed.
+fn words(text: &Option<String>) -> Option<String> {
+    text.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(String::from)
+}
+
+/// The newest pod template's hash: the first quoted replica set of `name` in the
+/// `Progressing` condition's message (`ReplicaSet "<name>-<hash>" is progressing.`, `Created
+/// new replica set "<name>-<hash>"`).
+fn newest_template(d: &apps::Deployment, name: &str) -> Option<String> {
+    let message = condition(d, "Progressing")?.message.as_deref()?;
+    let prefix = format!("{name}-");
+    message.split('"').skip(1).step_by(2).find_map(|quoted| quoted.strip_prefix(&prefix)).filter(|hash| !hash.is_empty() && !hash.contains(char::is_whitespace)).map(String::from)
+}
+
+/// Who changed the spec last: the manager of the newest `managedFields` entry (by its
+/// time) that touches `spec` and isn't the `status` subresource's.
+fn manager(d: &apps::Deployment) -> Option<String> {
+    let entries = d.metadata.managed_fields.as_deref().unwrap_or_default();
+    entries
+        .iter()
+        .filter(|e| e.subresource.as_deref() != Some("status"))
+        // The pod template: who deployed, not who scaled.
+        .filter(|e| e.fields_v1.as_ref().is_some_and(|f| f.0.get("f:spec").and_then(|s| s.get("f:template")).is_some()))
+        .filter(|e| e.manager.as_deref().is_some_and(|m| !m.is_empty()))
+        .max_by_key(|e| e.time.as_ref().map(|t| t.0))
+        .and_then(|e| e.manager.clone())
 }
 
 /// A label selector as the API takes it (`app=api,tier in (web)`); empty when it selects
@@ -63,24 +101,28 @@ fn resources(r: Option<&core::ResourceRequirements>) -> Resources {
     }
 }
 
-/// Paused (the spec says so), stuck (past its progress deadline), rolling (a newer spec
-/// not observed yet, replicas not all updated, or the new replica set not available
-/// yet), else settled.
+/// Paused (the spec says so), rolling while a newer spec isn't observed yet (its status
+/// and conditions are about the spec before: a deploy over a stuck rollout rolls), stuck
+/// (past its progress deadline), rolling (replicas not all updated, or the new replica
+/// set not available yet), else settled.
 fn progress(d: &apps::Deployment) -> Progress {
     let status = d.status.as_ref();
-    let progressing = status.and_then(|s| s.conditions.as_ref()).and_then(|cs| cs.iter().find(|c| c.type_ == "Progressing"));
+    let progressing = condition(d, "Progressing");
     let reason = progressing.and_then(|c| c.reason.as_deref());
     if d.spec.as_ref().and_then(|s| s.paused).unwrap_or(false) || reason == Some("DeploymentPaused") {
         return Progress::Paused;
+    }
+    let observed = status.and_then(|s| s.observed_generation).unwrap_or(0);
+    if observed < d.metadata.generation.unwrap_or(0) {
+        return Progress::Rolling;
     }
     if reason == Some("ProgressDeadlineExceeded") {
         return Progress::Stuck;
     }
     let replicas = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
-    let observed = status.and_then(|s| s.observed_generation).unwrap_or(0);
     let updated = status.and_then(|s| s.updated_replicas).unwrap_or(0);
     let finished = progressing.is_none() || reason == Some("NewReplicaSetAvailable");
-    if observed < d.metadata.generation.unwrap_or(0) || updated < replicas || !finished { Progress::Rolling } else { Progress::Settled }
+    if updated < replicas || !finished { Progress::Rolling } else { Progress::Settled }
 }
 
 /// When the current version finished rolling out (the `Progressing` condition's update
@@ -90,9 +132,7 @@ fn since(d: &apps::Deployment) -> Option<u64> {
     if progress(d) != Progress::Settled {
         return None;
     }
-    let status = d.status.as_ref();
-    let progressing = status.and_then(|s| s.conditions.as_ref()).and_then(|cs| cs.iter().find(|c| c.type_ == "Progressing"));
-    match progressing {
+    match condition(d, "Progressing") {
         Some(c) if c.reason.as_deref() == Some("NewReplicaSetAvailable") => c.last_update_time.as_ref().or(d.metadata.creation_timestamp.as_ref()).and_then(seconds),
         Some(_) => None,
         None => d.metadata.creation_timestamp.as_ref().and_then(seconds),
@@ -118,6 +158,7 @@ pub fn pod(p: &core::Pod) -> Option<Pod> {
     let ready = status.and_then(|s| s.conditions.as_ref()).is_some_and(|cs| cs.iter().any(|c| c.type_ == "Ready" && c.status == "True"));
     let last_termination = containers.iter().filter_map(|c| c.last_termination.clone()).max_by_key(|t| t.at);
     let spec = p.spec.as_ref();
+    let unschedulable = status.and_then(|s| s.conditions.as_ref()).and_then(|cs| cs.iter().find(|c| c.type_ == "PodScheduled" && c.status == "False")).and_then(|c| words(&c.message).or(words(&c.reason)));
     let image = spec.and_then(|s| s.containers.iter().find(|c| Some(&c.name) == owner.as_ref()).or(s.containers.first())).and_then(|c| c.image.as_deref());
     Some(Pod {
         phase: phase(p, init, main),
@@ -131,6 +172,7 @@ pub fn pod(p: &core::Pod) -> Option<Pod> {
         name,
         owner,
         template,
+        unschedulable,
     })
 }
 
@@ -172,7 +214,8 @@ fn container_status(c: &core::ContainerStatus, init: bool) -> ContainerStatus {
     // other than 0 counts, else its previous end.
     let failed = state.and_then(|s| s.terminated.as_ref()).filter(|t| t.exit_code != 0);
     let ended = failed.or(c.last_state.as_ref().and_then(|s| s.terminated.as_ref()));
-    ContainerStatus { name: c.name.clone(), init, ready: c.ready, restarts: c.restart_count.max(0) as u32, state: text, last_termination: ended.map(termination) }
+    let message = state.and_then(|s| s.waiting.as_ref()).and_then(|w| words(&w.message));
+    ContainerStatus { name: c.name.clone(), init, ready: c.ready, restarts: c.restart_count.max(0) as u32, state: text, message, last_termination: ended.map(termination) }
 }
 
 fn termination(t: &core::ContainerStateTerminated) -> Termination {
@@ -248,6 +291,124 @@ mod tests {
     }
 
     #[test]
+    fn a_new_spec_rolls_before_a_stuck_rollout_counts() {
+        let mut k = fixture("rolling");
+        let progressing = k.status.as_mut().unwrap().conditions.as_mut().unwrap().iter_mut().find(|c| c.type_ == "Progressing").unwrap();
+        progressing.status = "False".into();
+        progressing.reason = Some("ProgressDeadlineExceeded".into());
+        k.metadata.generation = Some(8);
+        let d = deployment(&k).unwrap();
+        assert_eq!((d.progress, d.generation, d.observed), (Progress::Rolling, 8, 7), "a redeploy over a stuck rollout, not observed yet");
+        k.status.as_mut().unwrap().observed_generation = Some(8);
+        assert_eq!(deployment(&k).unwrap().progress, Progress::Stuck, "observed, and still past its deadline");
+        k.spec.as_mut().unwrap().paused = Some(true);
+        k.metadata.generation = Some(9);
+        assert_eq!(deployment(&k).unwrap().progress, Progress::Paused, "paused comes first");
+    }
+
+    #[test]
+    fn generations_revision_and_the_newest_template() {
+        let d = deployment(&fixture("rolling")).unwrap();
+        assert_eq!((d.generation, d.observed, d.revision, d.template.as_deref()), (7, 7, 18, Some("5f6d7c8b9")));
+        assert_eq!((d.failure, d.manager), (None, None));
+        let d = deployment(&fixture("multi-container")).unwrap();
+        assert_eq!((d.generation, d.revision, d.template.as_deref()), (14, 42, Some("7d9c8b6f5")), "has successfully progressed");
+        let d = deployment(&fixture("no-conditions")).unwrap();
+        assert_eq!((d.revision, d.template), (1, None), "no Progressing condition");
+    }
+
+    #[test]
+    fn a_missing_or_bad_revision_is_0() {
+        let mut k = fixture("rolling");
+        k.metadata.annotations.as_mut().unwrap().insert("deployment.kubernetes.io/revision".into(), "eighteen".into());
+        assert_eq!(deployment(&k).unwrap().revision, 0);
+        k.metadata.annotations = None;
+        assert_eq!(deployment(&k).unwrap().revision, 0);
+    }
+
+    #[test]
+    fn the_template_is_a_replica_set_of_this_deployment() {
+        let with = |message: &str| {
+            let mut k = fixture("rolling");
+            let progressing = k.status.as_mut().unwrap().conditions.as_mut().unwrap().iter_mut().find(|c| c.type_ == "Progressing").unwrap();
+            progressing.message = Some(message.into());
+            deployment(&k).unwrap().template
+        };
+        assert_eq!(with("Created new replica set \"graphservice-7a8b9c0d1\"").as_deref(), Some("7a8b9c0d1"));
+        assert_eq!(with("ReplicaSet \"graphservice-5f6d7c8b9\" has timed out progressing.").as_deref(), Some("5f6d7c8b9"));
+        assert_eq!(with("ReplicaSet \"graphservice-api-5f6d7c8b9\" is progressing.").as_deref(), Some("api-5f6d7c8b9"), "only the name's prefix is cut");
+        assert_eq!(with("ReplicaSet \"billing-5f6d7c8b9\" is progressing."), None, "another deployment's");
+        assert_eq!(with("ReplicaSet \"graphservice-\" is progressing."), None, "no hash");
+        assert_eq!(with("Deployment is paused"), None);
+    }
+
+    #[test]
+    fn a_replica_failure_says_why() {
+        let mut k = fixture("rolling");
+        let failure = serde_json::json!({
+            "type": "ReplicaFailure", "status": "True", "reason": "FailedCreate",
+            "message": "pods \"graphservice-5f6d7c8b9-abcde\" is forbidden: exceeded quota: compute, requested: cpu=500m, used: cpu=4, limited: cpu=4"
+        });
+        k.status.as_mut().unwrap().conditions.as_mut().unwrap().push(serde_json::from_value(failure).unwrap());
+        assert_eq!(deployment(&k).unwrap().failure.as_deref(), Some("pods \"graphservice-5f6d7c8b9-abcde\" is forbidden: exceeded quota: compute, requested: cpu=500m, used: cpu=4, limited: cpu=4"));
+        fn replica_failure(k: &mut apps::Deployment) -> &mut apps::DeploymentCondition {
+            k.status.as_mut().unwrap().conditions.as_mut().unwrap().iter_mut().find(|c| c.type_ == "ReplicaFailure").unwrap()
+        }
+        replica_failure(&mut k).message = Some(" ".into());
+        assert_eq!(deployment(&k).unwrap().failure.as_deref(), Some("FailedCreate"), "the reason without a message");
+        replica_failure(&mut k).status = "False".into();
+        assert_eq!(deployment(&k).unwrap().failure, None, "over");
+    }
+
+    #[test]
+    fn the_manager_is_the_newest_to_touch_the_spec() {
+        let mut k = fixture("rolling");
+        let fields = serde_json::json!([
+            {"manager": "helm", "operation": "Update", "apiVersion": "apps/v1", "time": "2026-11-01T10:00:00Z", "fieldsType": "FieldsV1",
+             "fieldsV1": {"f:metadata": {"f:labels": {}}, "f:spec": {"f:replicas": {}, "f:template": {}}}},
+            {"manager": "kubectl-set", "operation": "Update", "apiVersion": "apps/v1", "time": "2026-11-07T10:30:00Z", "fieldsType": "FieldsV1",
+             "fieldsV1": {"f:spec": {"f:template": {"f:spec": {"f:containers": {}}}}}},
+            {"manager": "kube-controller-manager", "operation": "Update", "apiVersion": "apps/v1", "time": "2026-11-07T10:31:52Z", "fieldsType": "FieldsV1", "subresource": "status",
+             "fieldsV1": {"f:status": {"f:replicas": {}}, "f:spec": {}}},
+            {"manager": "argocd", "operation": "Update", "apiVersion": "apps/v1", "time": "2026-11-08T09:00:00Z", "fieldsType": "FieldsV1",
+             "fieldsV1": {"f:metadata": {"f:annotations": {}}}}
+        ]);
+        k.metadata.managed_fields = Some(serde_json::from_value(fields).unwrap());
+        assert_eq!(deployment(&k).unwrap().manager.as_deref(), Some("kubectl-set"), "not the status subresource, not a metadata-only entry");
+        let devdeck = serde_json::json!({"manager": "devdeck", "operation": "Update", "apiVersion": "apps/v1", "time": "2026-11-09T12:00:00Z", "fieldsType": "FieldsV1",
+            "fieldsV1": {"f:spec": {"f:template": {"f:spec": {"f:containers": {}}}}}});
+        k.metadata.managed_fields.as_mut().unwrap().insert(0, serde_json::from_value(devdeck).unwrap());
+        assert_eq!(deployment(&k).unwrap().manager.as_deref(), Some("devdeck"), "by time, not by place");
+        k.metadata.managed_fields = None;
+        assert_eq!(deployment(&k).unwrap().manager, None);
+    }
+
+    #[test]
+    fn a_waiting_container_keeps_its_message() {
+        let p = pod_fixture("image-pull");
+        assert_eq!(p.containers[0].message.as_deref(), Some("Back-off pulling image \"europe-west1-docker.pkg.dev/project/registry06/searchservice:lan-999\""));
+        let p = pod_fixture("crash-loop");
+        assert_eq!(p.containers[0].message.as_deref(), Some("back-off 5m0s restarting failed container=entityservice pod=entityservice-7b5d9f6c8-q8r2t_dev35(a4c2e1f0)"));
+        assert_eq!(pod_fixture("running").containers[0].message, None, "running");
+        let mut k: core::Pod = read("pod-image-pull");
+        let status = &mut k.status.as_mut().unwrap().container_statuses.as_mut().unwrap()[0];
+        status.state.as_mut().unwrap().waiting.as_mut().unwrap().message = Some(String::new());
+        assert_eq!(pod(&k).unwrap().containers[0].message, None, "an empty message");
+    }
+
+    #[test]
+    fn an_unschedulable_pod_says_why() {
+        assert_eq!(pod_fixture("pending").unschedulable.as_deref(), Some("0/6 nodes are available: 6 Insufficient cpu."));
+        let mut k: core::Pod = read("pod-pending");
+        let scheduled = &mut k.status.as_mut().unwrap().conditions.as_mut().unwrap()[0];
+        scheduled.message = None;
+        assert_eq!(pod(&k).unwrap().unschedulable.as_deref(), Some("Unschedulable"), "its reason without a message");
+        k.status.as_mut().unwrap().conditions.as_mut().unwrap()[0].status = "True".into();
+        assert_eq!(pod(&k).unwrap().unschedulable, None, "scheduled");
+        assert_eq!(pod_fixture("running").unschedulable, None);
+    }
+
+    #[test]
     fn without_conditions_since_is_the_creation() {
         let d = deployment(&fixture("no-conditions")).unwrap();
         assert_eq!(d.since, Some(epoch("2026-09-01T08:00:00Z")));
@@ -316,7 +477,7 @@ mod tests {
         assert_eq!((p.phase, p.ready, p.restarts, p.last_termination), (PodPhase::Running, true, 0, None));
         assert_eq!(p.started, Some(epoch("2026-11-07T16:20:41Z")));
         assert_eq!((p.node.as_str(), p.tag.as_str()), ("gke-km011gcp-pool-2-8f3a1c2d-x7kq", "lan-000-slim"));
-        assert_eq!(p.containers, [ContainerStatus { name: "graphservice".into(), init: false, ready: true, restarts: 0, state: "running".into(), last_termination: None }]);
+        assert_eq!(p.containers, [ContainerStatus { name: "graphservice".into(), init: false, ready: true, restarts: 0, state: "running".into(), message: None, last_termination: None }]);
     }
 
     #[test]

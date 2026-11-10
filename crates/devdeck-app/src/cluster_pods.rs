@@ -317,6 +317,8 @@ impl Cluster {
         }
         if self.pod.grouped.get(env) != Some(&grouped) {
             self.pod.grouped.insert(env.to_string(), grouped);
+            // Deploys follow their pods.
+            self.reassess(env, cx);
             cx.notify();
         }
     }

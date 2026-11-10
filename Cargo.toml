@@ -24,8 +24,9 @@ gpui = { package = "gpui-pre", version = "=0.3.11" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11", "font-kit"] }
 async-channel = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
-# `runtime`: the watcher behind the cluster driver (M3).
-kube = { version = "=5.0.0", features = ["runtime"] }
+# `runtime`: the watcher behind the cluster driver (M3); `jsonpatch`: deploys test the
+# image confirmed before replacing it (M3 step 5).
+kube = { version = "=5.0.0", features = ["runtime", "jsonpatch"] }
 # Terminal emulation and pseudo-terminals for runs (what Zed uses). See docs/plans/M2-runner.md.
 alacritty_terminal = "=0.26.0"
 futures-lite = "2"

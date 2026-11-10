@@ -48,7 +48,7 @@ Requirements: R1.5, R2.3, R7.1–R7.8, R6.10 (rewritten, below), R10.1, R11.1–
   in a dropdown on the service view (also an action, R5.1): new branch deployed, same
   branch redeployed, rollout finished, rollout failed, pods crashing outside a deploy.
   Always the desktop's own notification, not a toast, whether devdeck is in front or not.
-  Off at every start. Step 5 plans them.
+  Off at every start. Step 7 plans them.
 - What's left is a list of features built in order of what matters, one at a time, each
   planned, reviewed and committed on its own: logs, changing the deployed branch,
   redeploying the same branch, notifications ("99% of what I need"), then the close; the
@@ -1357,3 +1357,244 @@ the lead (`views/logs_feed.rs`, the view, the drivers).
    kept.
 Tests added too: the pod watch coming back resumes streams; the pod row's "Logs" opens
 on that pod; lines past the cap while paused are counted.
+
+## Step 5 · Change the deployed branch (plan, 2026-11-10)
+
+Requirements: R7.3, R7.4, R7.6, R7.8, R5.5, R5.6, R7.2 (deploy history).
+
+What exists: the service view's tag editor (suggestions, unsaved marker, ctrl+s, a
+confirmation with the exact command, a protected env's name typed, edit mode first); on
+the kube driver the save is refused ("deploys come in a later step"); on the fake, a
+rollout simulated on a timer, an undo, and a history kept in memory only.
+
+### Decisions (user, 2026-11-10)
+
+- No undo: a failed deploy is fixed by deploying another branch; failure detection stays,
+  with its reason.
+- Every deploy seen is recorded, whoever made it; the last 10 per service are kept (the
+  immediate history is what matters).
+- The user's account may patch deployments on dev35 and hades (`kubectl auth can-i patch
+  deployments`, checked by the user). devdeck's own tests and checks never write to the
+  user's cluster; the first real deploy is the user's own, by hand, on dev33.
+- Before writing, devdeck asks the cluster whether it may (a `SelfSubjectAccessReview`,
+  what `kubectl auth can-i` sends): Save is disabled up front with the reason when not.
+
+### The write
+
+- Only the main container's image changes: same image, the tag set (`registry/x:main` →
+  `registry/x:feature-y`; a digest in the old image is dropped). A strategic merge patch
+  of `spec.template.spec.containers[name=<main>].image` through kube-rs, sent on the
+  driver's runtime and client. The confirmation keeps saying the equivalent
+  `kubectl -n <ns> set image deployment/<name> <container>=<repo>:<tag>`.
+- Guards, all below the UI and in this order: edit mode (R5.6), the driver may write,
+  the account may (the access review's answer, when known), a protected env unlocked
+  (R7.6), no rollout of the same service under way, the tag differs from the running one
+  (the same tag is step 6, "redeploy").
+- The patch's own refusal: 403 "your account can't change deployments in <env>"; 404 "the
+  deployment <name> is gone from <env>"; 409/422 and others in the cluster's words. The
+  confirmation stays shown until the patch answers, then closes or shows the refusal.
+
+### May I? (access review)
+
+- `devdeck_kube::can(target, verb, group, resource) -> Receiver<Result<bool, String>>`:
+  one `SelfSubjectAccessReview` (`authorization.k8s.io/v1`) in the target's namespace.
+- The cluster asks `patch deployments.apps` once per env when a service view of it opens,
+  keeps the answer per env, and asks again when the env's log generation moves (target
+  changed, driver changed, reload). Unknown or failed: Save stays possible, the patch
+  decides. No: Save is disabled with "your account can't change deployments in <env>".
+
+### Following a rollout
+
+- A rollout is followed from what the watches already give: the deployment's `progress`
+  (the cluster observed the new spec, every replica updated and available), its ready and
+  updated counts, and the pods of its newest template (`Pod.template` of pods running the
+  new tag). While a rollout is followed, the cluster holds that service's `PodsInterest`
+  itself, so nothing needs to be open.
+- States: rolling out `updated/replicas`; done (settled on the new tag, its pods ready);
+  failed with the reason, from a new-template pod's container waiting on
+  `ErrImagePull`/`ImagePullBackOff` ("image <repo>:<tag> not found" when the message says
+  so, else the message), `CrashLoopBackOff` (its last termination: "Error (exit 2): panic:
+  …"), `CreateContainerConfigError` (its message); stuck when the deployment's
+  progress says `Stuck` (its deadline passed). A failed or stuck rollout stays shown until
+  the next deploy of that service; devdeck does nothing by itself.
+- Shown where rollouts show today: the service view's header and status, the Cluster
+  list row ("rolling out 1/2", "failed: image not found"), the matrix cell.
+- Deploys seen from elsewhere (the watch sees the tag change on a service devdeck didn't
+  deploy) are followed the same way, marked "not from devdeck". Another tag seen while
+  devdeck follows its own: "replaced by <tag>", and the newer one is followed.
+- The fake keeps its simulation (`--demo`, tests, snapshots) through the same states.
+
+### History
+
+- Per workspace, in the state folder (`deploys.json`): for each (env, service) the last
+  10 deploys: when, from, to, who (`devdeck` or `seen`), how it ended (done, failed: reason,
+  stuck, replaced by <tag>, still rolling when devdeck quit). Read at start, written when
+  a deploy starts and when it ends.
+- Shown in the service view's "Deploy history" (newest first) and as "previous" tag
+  suggestions, as today.
+- A deploy seen while devdeck wasn't running isn't known: the history says what devdeck
+  saw.
+
+### Undo goes
+
+The Undo button, the `u` key (`svc.undo`), `Cluster::undo`, `Rollout::undo_target`, the
+edit mode modal's "undoing a rollout", and the tests that used them (rewritten to deploy
+another tag instead).
+
+### Files
+
+- `devdeck-kube`: `deploy.rs` (new: the patch, the access review, their errors), tests on
+  the mock API (the exact patch body and path, refusals).
+- `devdeck-core`: `cluster.rs` (`Rollout` with who and its states, `DeployRecord` with
+  who, history per service capped at 10, the reason from a pod's state), `state.rs`
+  (`deploys.json`).
+- `devdeck-app`: `cluster.rs` (`ClusterDriver::set_image`, `can_write`, the follow, the
+  history and its saving), `kube_cluster.rs`, `fake_cluster.rs`, `cluster_pods.rs` (the
+  cluster's own interest while following), `views/service_view.rs` (Save's reasons, the
+  confirmation waiting for the answer, no undo), `sidebar.rs` and `views/matrix_view.rs`
+  (labels), `edit_mode.rs`, `registry.rs`, `bin/snapshot.rs`.
+- Docs: `DESIGN.md` (Cluster: writes), `REQUIREMENTS.md` (R7.3, R7.4 progress),
+  `ROADMAP.md`.
+
+### OS (R11.6)
+
+None: network only, through kube-rs; the history file through the state store.
+
+### States to check
+
+Save disabled by edit mode off, by the access review's no, by a locked protected env, by
+a rollout under way, by an unchanged tag; the confirmation waiting, then a refusal (403,
+404) shown in it; rolling out 1/2 then done; failed on an image not found; failed on a
+crash loop with its last error; stuck; a deploy seen from elsewhere; replaced by another
+tag; the history with 10 entries, from devdeck and seen; the Cluster list row and matrix
+cell for each rollout state; the demo unchanged.
+
+### Tests
+
+- devdeck-kube, on the mock API: the patch's path, method, content type and body (only
+  the main container's image); 403, 404 and 422 in words; the access review's request
+  and its yes, no and failure.
+- Core: the reason from pod states (each waiting reason, a crash loop's last
+  termination); history capped at 10 per service, newest kept; `deploys.json` round trip.
+- App, on a scripted driver: guards in order (edit mode, access, protected, under way,
+  same tag); a rollout followed to done from deployment and pod updates; failed on
+  ImagePullBackOff and on CrashLoopBackOff with the reason; stuck; a deploy seen from
+  elsewhere recorded as seen; replaced; the cluster's pods interest held while following
+  and dropped after; the history saved and read back after a restart; the access review
+  asked once per env and again after a reload; Undo gone (no action, no key).
+- Snapshots: the confirmation waiting and with a refusal; the service view with a
+  failed rollout (image not found) and with Save disabled by the access review; the
+  history with seen and devdeck entries; the Cluster list with a rolling and a failed row.
+- By hand: the user's first real deploy, on dev33, by the user.
+
+### Out of scope
+
+Redeploying the same branch (step 6); notifications (step 7); containers other than the
+main one; checking the image registry before deploying; cluster writes through the
+control API.
+
+### Review of the step 5 plan (subagent, 2026-11-10) and assessment
+
+Every point accepted; the plan above reads with these changes. Points 1 and 4 checked in
+the code (`progress()` says `Stuck` before looking at `observedGeneration`; a container's
+state keeps its waiting reason, not its message).
+1. A deploy over a stuck deployment read as stuck at once, and "pods running the new tag"
+   breaks for A → B → A. **Accepted**: the generation the patch answers with is kept, and
+   status and conditions don't count until `observedGeneration` reaches it; `progress()`
+   checks the generation first. The newest template comes from the `Progressing`
+   condition's message (`ReplicaSet "x-<hash>"`), no ReplicaSet read (the account can't).
+2. "A rollout under way" blocked the fix for a stuck deploy for up to 10 minutes.
+   **Accepted**: only devdeck's own patch in flight blocks; a later deploy marks the
+   earlier one "replaced by <tag>".
+3. Failure declared final too early: the kubelet keeps pulling (a branch whose image CI
+   hasn't pushed yet succeeds minutes later), and a crash loop shows after one crash.
+   **Accepted**: "failing: <reason>" is a state that keeps following and ends as done,
+   stuck or replaced (the history's outcome follows); a crash loop counts from 2 restarts
+   of a newest-template pod.
+4. The model lacks the reasons. **Accepted**: `convert.rs` (added to Files) keeps a
+   waiting container's message, a pod's `PodScheduled=False` reason (unschedulable) and
+   the deployment's `ReplicaFailure` condition (a quota: no pods at all); reasons use
+   `Pod::trouble`'s list (`Init:`, `CreateContainerError`, `InvalidImageName` included). A
+   paused deployment refuses the deploy ("rollouts of <name> are paused").
+5. Races made devdeck's own deploy look like someone else's (the watch before the patch's
+   answer; two workspaces on one env). **Accepted**: the intended deploy (env, service, from,
+   to) is registered before the patch is sent; the patch carries `field_manager: devdeck`,
+   and who made a deploy is read from the deployment's `managedFields` (the newest entry
+   touching the spec: devdeck, kubectl, helm, argocd…; else "seen").
+6. Spotting deploys by tag misses a redeploy of the same branch and digest-pinned images.
+   **Accepted**: the deployment's `deployment.kubernetes.io/revision` is kept; a revision
+   that grows is a deploy (another tag: a branch change; the same tag: "redeployed",
+   recorded now though devdeck's own redeploy is step 6). The same-tag guard compares the
+   whole image.
+7. What runs wasn't pinned to what was confirmed. **Accepted**: `ConfirmDeploy` passes
+   `from`, `to` and the container; the write is a JSON Patch that `test`s the main
+   container's image (by index) is still the one shown, then `replace`s it; a 422 says
+   "<name> changed since you confirmed". The `kubectl set image` line stays as the
+   equivalent.
+8. The wrong container could be patched (several containers, none named like the
+   deployment: the first, maybe a sidecar). **Accepted**: such a deploy is refused with the
+   reason ("<name> has several containers and none is named <name>").
+9. `updatedReplicas` counts pods created, not ready; a pod watch per seen deploy could
+   open dozens on a stack-wide deploy. **Accepted**: progress shows ready pods of the
+   newest template over replicas; devdeck's own deploys hold the service's pods, deploys
+   seen elsewhere are followed from the deployment's status only (pods when a view holds
+   them).
+10. A restart mid-rollout. **Accepted**: at start, a last record without an end resumes
+    following if the deployment still runs that image, else it ends as "unknown: devdeck
+    was closed"; `deploys.json` is `{ "version": 1, "envs": { env: { service: [records] } } }`.
+11. Every 403 read as a permission problem (admission webhooks answer 403 too).
+    **Accepted**: "your account can't …" only for an RBAC refusal ("… is forbidden: User
+    …"), else the cluster's words; the access review's yes doesn't skip showing a refusal
+    in the confirmation.
+12. The fake's simulation bypassed the follow-up. **Accepted**: the fake's `set_image`
+    sends deployment and pod updates through `apply` as a watch would; the simulation and
+    its rollout timer leave `Cluster`; the `82-svc-failed-undo` snapshot becomes a
+    failing rollout.
+13. The decisions said notifications were planned in step 5. **Fixed**: step 7.
+
+### Step 5 outcome (2026-11-10)
+
+Built as planned with the review's changes; devdeck-kube by a builder (`deploy.rs`: the
+JSON Patch and its errors, the access review; `convert.rs`: generation, revision,
+newest template, `ReplicaFailure`, the pod template's last manager, waiting messages,
+unschedulable pods), the core and the app by the lead (`cluster::assess`,
+`cluster_deploys.rs`, the views, the fake).
+- A failed json-patch `test` comes back as the API server's generic 422 ("the server
+  rejected our request due to an error in our request"); that, 409, or a cause naming the
+  test reads "<name> changed since you confirmed". A container index that no longer exists
+  reads the same.
+- "Who deployed" is the last manager of `f:spec.f:template` (a scale or an HPA isn't a
+  deploy). `kube`'s `jsonpatch` feature is named in `Cargo.toml` (it came only through
+  `runtime` before).
+- The write's task is kept until the next write of the service (the fake goes on rolling
+  after it answered); a write times out after 30 s with "it may have gone through, the
+  rollout will say".
+- The matrix shows tags only, as before: the rollout states show in the service view and
+  the Cluster list.
+- Snapshots: `82-svc-failing` (image not found, followed, in the history),
+  `84-svc-confirm-refused` (someone deployed meanwhile).
+- Not checked by hand: the first real deploy, on dev33, is the user's.
+
+### Review of the step 5 diff (subagent, 2026-11-10) and assessment
+
+1. On a real cluster the image changes before the controller moves the revision, so the
+   history would read `feature → feature`. **Fixed**: the image kept is the one at the last
+   revision. Test with the intermediate event.
+2. Deploys whose pods nobody watches (seen from elsewhere, reopened, a write refused after
+   the watch saw it) never ended. **Fixed**: without pods, the deployment's own counts
+   decide, as `kubectl rollout status`. Test.
+3. An untagged image could never be deployed (pinned to `repo:latest`, which the spec
+   doesn't say). **Fixed**: `Image.raw` keeps the spec's text; deploys pin to it. Test.
+4. A refusal was lost when the confirmation closed while sending. **Fixed**: a write no
+   confirmation waits on says its refusal in a toast and leaves nothing behind. Test.
+5. A deploy left failing when devdeck closed was never followed again. **Fixed**: reopened
+   too. Test.
+6. Baselines survived a change of target. **Fixed**: a restarted env or a new driver starts
+   a new baseline. Test.
+7. Save asked the protected env's name before other refusals; an access answer could be
+   filed under a newer generation; an unasked review was cached as unknown. **Fixed**:
+   every other guard first; the answer goes under the generation asked; not cached when
+   not asked.
+8. A timeout said nothing of a write that may have landed; saves could land out of order;
+   a deleted deployment's rollout was kept forever. **Fixed**: the timeout says so; saves
+   run one at a time; a deployment gone ends its rollout.

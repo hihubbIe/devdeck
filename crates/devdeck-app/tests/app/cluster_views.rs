@@ -98,13 +98,15 @@ fn a_pod_that_goes_away_says_so(cx: &mut TestAppContext) {
     let shell = start(cx, "pod");
     let c = cluster(&shell, cx);
     let _ = open(&shell, cx, ViewAddr::Svc { env: "dev35".into(), name: "vesselservice".into() });
-    cx.update(|cx| c.update(cx, |c, cx| c.set_image("dev35", "vesselservice", "lan-broken", false, cx))).unwrap();
+    let tag = cx.read(|cx| c.read(cx).deployment("dev35", "vesselservice").unwrap().tag());
+    cx.update(|cx| deploy_now(&c, cx, "dev35", "vesselservice", "lan-broken")).unwrap();
     advance(cx, ROLLOUT_STEP);
     let pull = cx.read(|cx| c.read(cx).pods("dev35", "vesselservice").iter().find(|p| p.tag == "lan-broken").unwrap().name.clone());
     let _ = open(&shell, cx, ViewAddr::Pod { env: "dev35".into(), pod: pull.clone() });
     assert!(cx.read(|cx| c.read(cx).find_pod("dev35", &pull).is_some()));
-    cx.update(|cx| c.update(cx, |c, cx| c.undo("dev35", "vesselservice", false, cx))).unwrap();
-    cx.run_until_parked();
+    cx.update(|cx| deploy_now(&c, cx, "dev35", "vesselservice", &tag)).unwrap();
+    let replicas = cx.read(|cx| c.read(cx).deployment("dev35", "vesselservice").unwrap().replicas);
+    advance(cx, ROLLOUT_STEP * replicas);
     assert!(cx.read(|cx| c.read(cx).find_pod("dev35", &pull).is_none()), "the pull pod is gone; its view says so");
 }
 
@@ -125,7 +127,7 @@ fn matrix_highlights_a_tag_and_follows_rollouts(cx: &mut TestAppContext) {
     assert_eq!(vcx.read(|cx| m.read(cx).highlight.clone()), Some(tag.clone()));
     vcx.simulate_keystrokes("escape");
     assert_eq!(vcx.read(|cx| m.read(cx).highlight.clone()), None, "esc clears");
-    vcx.update(|_, cx| c.update(cx, |c, cx| c.set_image("dev35", "entityservice", "lan-177", false, cx))).unwrap();
+    vcx.update(|_, cx| deploy_now(&c, cx, "dev35", "entityservice", "lan-177")).unwrap();
     let replicas = vcx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().replicas);
     vcx.executor().advance_clock(ROLLOUT_STEP * replicas);
     vcx.run_until_parked();
@@ -156,7 +158,7 @@ fn the_cluster_list_follows_a_rollout(cx: &mut TestAppContext) {
     let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
     cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
     advance(cx, LOAD_DELAY);
-    cx.update(|cx| c.update(cx, |c, cx| c.set_image("dev35", "proxyapi", "lan-190", false, cx))).unwrap();
+    cx.update(|cx| deploy_now(&c, cx, "dev35", "proxyapi", "lan-190")).unwrap();
     cx.run_until_parked();
     let item = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "proxyapi").unwrap());
     assert!(item(cx).busy, "rolling");
@@ -164,4 +166,12 @@ fn the_cluster_list_follows_a_rollout(cx: &mut TestAppContext) {
     advance(cx, ROLLOUT_STEP * replicas);
     assert!(!item(cx).busy, "done");
     assert_eq!(item(cx).detail, "lan-190");
+}
+
+/// Deploys `tag`, pinned to the image running now.
+fn deploy_now(c: &Entity<Cluster>, cx: &mut gpui::App, env: &str, name: &str, tag: &str) -> Result<(), String> {
+    c.update(cx, |c, cx| {
+        let from = c.deployment(env, name).map(|d| d.main().image.raw.clone()).unwrap_or_default();
+        c.deploy(env, name, &from, tag, false, cx)
+    })
 }

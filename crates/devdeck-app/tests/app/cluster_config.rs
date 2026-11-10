@@ -4,7 +4,6 @@
 //! problems, refused writes. Nothing here reaches a cluster.
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, new_cluster};
-use devdeck_app::kube_cluster::NO_DEPLOYS;
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::sidebar::Activity;
 use devdeck_app::views::service_view::ServiceView;
@@ -39,7 +38,7 @@ fn env(name: &str) -> Env {
 fn dep(name: &str, tag: &str) -> Deployment {
     let image = Image::parse(&format!("registry/{name}:{tag}"));
     let c = Container { name: name.into(), image, ports: vec![80], resources: Resources::default(), config_maps: Vec::new() };
-    Deployment { name: name.into(), containers: vec![c], replicas: 1, ready: 1, updated: 1, progress: Progress::Settled, selector: format!("app={name}"), since: Some(100) }
+    Deployment { name: name.into(), containers: vec![c], replicas: 1, ready: 1, updated: 1, progress: Progress::Settled, selector: format!("app={name}"), since: Some(100), ..Default::default() }
 }
 
 fn scripted(cx: &mut TestAppContext, envs: &[&str]) -> Entity<Cluster> {
@@ -243,15 +242,15 @@ fn a_cluster_section_brings_the_cluster_area_and_its_kubeconfig_problems(cx: &mu
     });
     assert!(shown.starts_with("no context hades00-hecate in "), "{shown}");
 
-    // Deploys say why they aren't there (R5.5).
-    cx.read(|cx| assert_eq!(c.read(cx).writes(cx), Err(NO_DEPLOYS.to_string())));
+    // Deploys need edit mode (R5.6); the kube driver itself can write.
+    cx.read(|cx| assert_eq!(c.read(cx).writes(cx), Err(devdeck_app::edit_mode::OFF.to_string())));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let r = ViewAddr::Svc { env: "hades".into(), name: "graphservice".into() }.to_ref();
     let open = r.clone();
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(open, l.main().focused).map(|_| ()))));
     cx.run_until_parked();
     let view = cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<ServiceView>().unwrap());
-    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(NO_DEPLOYS.to_string()));
+    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(devdeck_app::edit_mode::OFF.to_string()), "Save says why: edit mode first");
 }
 
 #[gpui::test]

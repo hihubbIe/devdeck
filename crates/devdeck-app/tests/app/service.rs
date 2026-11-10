@@ -1,11 +1,11 @@
 //! M1 step 5b: service inspector on the fake cluster (R7.2–R7.6, R7.8): tag edit →
-//! confirm → rollout → ready, broken tag → failure → undo, protected unlock, metrics
+//! confirm → rollout → ready, broken tag → failing → fixed by another deploy, protected unlock, metrics
 //! sampled only while visible. Fake clock only.
 
 use devdeck_app::cluster::{Cluster, LOAD_DELAY, METRICS_TICK, ROLLOUT_STEP};
 use devdeck_app::shell::Shell;
 use devdeck_app::views::service_view::ServiceView;
-use devdeck_core::cluster::Rollout;
+use devdeck_core::cluster::RolloutState;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::overlay::layer_state;
@@ -77,42 +77,40 @@ fn tag_edit_confirm_rollout_ready(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 0);
-    assert!(matches!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").cloned()), Some(Rollout::Progressing { .. })));
-    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)).as_deref(), Some("a rollout is in progress"));
+    assert!(matches!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").map(|r| r.state.clone())), Some(RolloutState::Rolling { .. })));
     advance(cx, ROLLOUT_STEP * before.replicas);
     let after = cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().clone());
     assert_eq!(after.tag(), "lan-160");
     assert!(!cx.read(|cx| view.read(cx).dirty(cx)), "the editor now shows the deployed tag");
     let history = cx.read(|cx| c.read(cx).history("dev35", "entityservice").to_vec());
-    assert_eq!((history.len(), history[0].from.as_str(), history[0].outcome.as_str()), (1, before.tag().as_str(), "ready"));
+    assert_eq!((history.len(), history[0].from.as_str(), history[0].by.as_str(), history[0].outcome.as_str()), (1, before.tag().as_str(), "devdeck", "done"));
     let suggestions = cx.read(|cx| c.read(cx).tag_suggestions("dev35", "entityservice"));
     assert!(suggestions.iter().any(|(t, why)| *t == before.tag() && why == "previous"), "the previous tag is suggested");
-    // Typing u in the editor writes a u; it doesn't undo.
-    cx.simulate_keystrokes(main, "t");
-    cx.simulate_input(main, "u");
-    assert!(matches!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").cloned()), Some(Rollout::Done { .. })));
+    assert_eq!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").map(|r| r.state.clone())), Some(RolloutState::Done));
 }
 
 #[gpui::test]
-fn broken_tag_fails_and_undo_restores(cx: &mut TestAppContext) {
+fn a_broken_tag_keeps_failing_until_another_deploy_replaces_it(cx: &mut TestAppContext) {
     let shell = start(cx, "broken");
     let main = main_window(&shell, cx);
     let c = cluster(&shell, cx);
-    let view = open_service(&shell, cx, "dev35", "graphservice");
+    let _view = open_service(&shell, cx, "dev35", "graphservice");
     let tag = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag());
     type_tag(main, cx, "lan-broken");
     cx.simulate_keystrokes(main, "ctrl-s enter");
-    advance(cx, ROLLOUT_STEP);
-    let Some(Rollout::Failed { reason, .. }) = cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").cloned()) else { panic!("failed") };
-    assert!(reason.starts_with("ImagePullBackOff"));
+    advance(cx, ROLLOUT_STEP * 4);
+    let state = cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").map(|r| r.state.clone()));
+    let Some(RolloutState::Failing { reason, .. }) = state else { panic!("failing: {state:?}") };
+    assert!(reason.starts_with("image ") && reason.ends_with(":lan-broken not found"), "{reason}");
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().any(|p| p.tag == "lan-broken" && !p.ready)), "a pod stuck pulling");
-    assert_eq!(cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag()), tag, "still on the old tag");
-    // Esc leaves the editor (and reverts it), then u undoes.
-    cx.simulate_keystrokes(main, "escape u");
-    cx.run_until_parked();
-    assert!(cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").is_none()), "undo clears the failure");
+    // The fix: another deploy, right away (nothing waits for the failing one).
+    type_tag(main, cx, &tag);
+    cx.simulate_keystrokes(main, "ctrl-s enter");
+    let replicas = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().replicas);
+    advance(cx, ROLLOUT_STEP * replicas);
+    let history = cx.read(|cx| c.read(cx).history("dev35", "graphservice").to_vec());
+    assert_eq!(history.iter().map(|r| r.outcome.as_str()).collect::<Vec<_>>(), [format!("replaced by {tag}").as_str(), "done"]);
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().all(|p| p.tag == tag)));
-    assert!(!cx.read(|cx| view.read(cx).dirty(cx)), "and reverts the editor");
 }
 
 #[gpui::test]

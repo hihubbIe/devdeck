@@ -1,16 +1,17 @@
 //! Service inspector (`svc/<env>/<name>`, R7.2–R7.6, R7.8): header, actions, the image
 //! tag editor (suggestions, unsaved marker, ctrl+s → confirmation stating the exact
-//! command), rollout progress with one-action Undo, protected-env unlock, then metrics,
-//! pods, container and devdeck's deploy history.
+//! command, waiting for the cluster's answer), the deploy followed to its end,
+//! protected-env unlock, then metrics, pods, container and the deploy history. Opening it
+//! asks the cluster whether the account may change deployments there.
 //!
 //! Metrics are sampled only while the view is visible (it holds a [`Sampling`] handle).
-//! Keys (`ServiceView`): ctrl+s save, u undo, l logs, t edit tag; Esc in the tag editor
+//! Keys (`ServiceView`): ctrl+s save, l logs, t edit tag; Esc in the tag editor
 //! reverts it (the pane then gives the keys back to the view).
 
 use super::{ViewCx, fmt_age};
-use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling};
+use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling, WriteState};
 use crate::repo::{Looking, Repo};
-use devdeck_core::cluster::{Deployment, Pod, Remote, Rollout, unlock_matches};
+use devdeck_core::cluster::{Deployment, Pod, Remote, RolloutState, unlock_matches};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
@@ -23,7 +24,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*, relative,
 };
 
-actions!(service_view, [SaveTag, Undo, OpenLogs, EditTag, ConfirmModal]);
+actions!(service_view, [SaveTag, OpenLogs, EditTag, ConfirmModal]);
 
 pub struct ServiceView {
     pub env: String,
@@ -65,7 +66,10 @@ impl ServiceView {
             }),
         ];
         subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
-        let pods = cluster.update(cx, |c, cx| c.pods_interest(&env, PodScope::Service(name.clone()), cx));
+        let pods = cluster.update(cx, |c, cx| {
+            c.check_access(&env, cx);
+            c.pods_interest(&env, PodScope::Service(name.clone()), cx)
+        });
         let mut this = Self {
             env,
             name,
@@ -169,30 +173,24 @@ impl ServiceView {
 
     /// Why Save can't go ahead now, if it can't.
     pub fn save_blocked(&self, cx: &App) -> Option<String> {
-        let c = self.cluster.read(cx);
-        if let Err(why) = c.writes(cx) {
+        // Edit mode first: it's what the user can do something about.
+        if let Err(why) = self.cluster.read(cx).writes(cx) {
             return Some(why);
-        }
-        if c.deployment(&self.env, &self.name).is_none() {
-            return Some("not deployed here".into());
-        }
-        if matches!(c.rollout(&self.env, &self.name), Some(Rollout::Progressing { .. })) {
-            return Some("a rollout is in progress".into());
         }
         if !self.dirty(cx) {
             return Some("the tag is unchanged".into());
         }
-        if self.protected(cx) && !self.unlocked {
-            return Some(format!("{} is protected: unlock it first", self.env));
-        }
-        None
+        let to = self.tag.read(cx).text().trim().to_string();
+        self.cluster.read(cx).deploy_blocked(&self.env, &self.name, &to, self.unlocked, cx)
     }
 
     /// ctrl+s: on a locked protected env asks to unlock first; otherwise confirms.
     pub fn save(&mut self, cx: &mut Context<Self>) {
         // Edit mode before the protected env's name: never ask the name to then refuse.
-        let writable = self.cluster.read(cx).writes(cx).is_ok();
-        if writable && self.protected(cx) && !self.unlocked && self.dirty(cx) {
+        // Everything else before the protected env's name: never ask it to then refuse.
+        let to = self.tag.read(cx).text().trim().to_string();
+        let other = self.cluster.read(cx).deploy_blocked(&self.env, &self.name, &to, true, cx);
+        if other.is_none() && self.protected(cx) && !self.unlocked && self.dirty(cx) {
             self.request_unlock(cx);
             return;
         }
@@ -201,49 +199,23 @@ impl ServiceView {
             return;
         }
         let to = self.tag.read(cx).text().trim().to_string();
-        let (Some(from), Some(command)) = (self.shown_tag.clone(), self.cluster.read(cx).command_for(&self.env, &self.name, &to)) else { return };
+        let c = self.cluster.read(cx);
+        let (Some(d), Some(command)) = (c.deployment(&self.env, &self.name), c.command_for(&self.env, &self.name, &to)) else { return };
+        let (from_tag, from_image) = (d.tag(), d.main().image.raw.clone());
         let me = cx.entity();
         let (env, name) = (self.env.clone(), self.name.clone());
         self.in_window(cx, move |window, cx| {
-            let modal = cx.new(|cx| ConfirmDeploy::new(me, env, name, from, to, command, window, cx));
+            let modal = cx.new(|cx| ConfirmDeploy::new(me, env, name, from_tag, from_image, to, command, window, cx));
             show_modal(modal, window, cx);
         });
     }
 
-    /// Runs the confirmed change.
-    pub fn deploy(&mut self, cx: &mut Context<Self>) {
-        let to = self.tag.read(cx).text().trim().to_string();
+    /// Sends the change confirmed: `to` on the image `from` that was shown.
+    pub fn deploy(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<(), String> {
         let (env, name, unlocked) = (self.env.clone(), self.name.clone(), self.unlocked);
-        let result = self.cluster.update(cx, |c, cx| c.set_image(&env, &name, &to, unlocked, cx));
-        if let Err(e) = result {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, format!("{env} › {name}: {e}"), vec![], cx));
-        }
+        let result = self.cluster.update(cx, |c, cx| c.deploy(&env, &name, from, to, unlocked, cx));
         cx.notify();
-    }
-
-    /// Why Undo can't go ahead now, if it can't (clearing a failed rollout changes nothing
-    /// in the cluster and is always allowed).
-    pub fn undo_blocked(&self, cx: &App) -> Option<String> {
-        let c = self.cluster.read(cx);
-        let target = c.rollout(&self.env, &self.name).and_then(|r| r.undo_target())?;
-        let clears = c.deployment(&self.env, &self.name).is_some_and(|d| d.tag() == target);
-        if clears { None } else { c.writes(cx).err() }
-    }
-
-    pub fn undo(&mut self, cx: &mut Context<Self>) {
-        if let Some(why) = self.undo_blocked(cx) {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Not undone: {why}."), vec![], cx));
-            return;
-        }
-        if self.protected(cx) && !self.unlocked {
-            self.request_unlock(cx);
-            return;
-        }
-        let (env, name, unlocked) = (self.env.clone(), self.name.clone(), self.unlocked);
-        if let Err(e) = self.cluster.update(cx, |c, cx| c.undo(&env, &name, unlocked, cx)) {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("{env} › {name}: {e}"), vec![], cx));
-        }
-        self.revert(cx);
+        result
     }
 
     fn revert(&mut self, cx: &mut Context<Self>) {
@@ -370,7 +342,6 @@ impl Render for ServiceView {
             .flex()
             .flex_col()
             .on_action(cx.listener(|this, _: &SaveTag, _, cx| this.save(cx)))
-            .on_action(cx.listener(|this, _: &Undo, _, cx| this.undo(cx)))
             .on_action(cx.listener(|this, _: &OpenLogs, _, cx| this.open_logs(cx)))
             .on_action(cx.listener(|this, _: &EditTag, window, cx| {
                 this.tag.read(cx).focus_handle(cx).focus(window, cx);
@@ -393,9 +364,10 @@ impl Render for ServiceView {
         let k9s_missing = !self.ctx.services.read(cx).catalog.tools.found.contains("k9s");
         let dirty = self.dirty(cx);
         let blocked = self.save_blocked(cx);
-        let (status_mark, status, status_color) = match &rollout {
-            Some(Rollout::Progressing { updated, of, .. }) => (icon(Icon::Busy, t.accent, &t).into_any_element(), format!("rolling {updated}/{of}"), t.accent),
-            Some(Rollout::Failed { .. }) => (icon(Icon::Error, t.err, &t).into_any_element(), "rollout failed".to_string(), t.err),
+        let (status_mark, status, status_color) = match rollout.as_ref().map(|r| &r.state) {
+            Some(RolloutState::Rolling { ready, of }) => (icon(Icon::Busy, t.accent, &t).into_any_element(), format!("rolling {ready}/{of}"), t.accent),
+            Some(RolloutState::Failing { .. }) => (icon(Icon::Error, t.err, &t).into_any_element(), "rollout failing".to_string(), t.err),
+            Some(RolloutState::Stuck { .. }) => (icon(Icon::Error, t.err, &t).into_any_element(), "rollout stuck".to_string(), t.err),
             _ if d.ready == d.replicas => (dot(t.ok, true, &t).into_any_element(), format!("ready {}/{}", d.ready, d.replicas), t.ok),
             _ => (icon(Icon::Warning, t.warn, &t).into_any_element(), format!("ready {}/{}", d.ready, d.replicas), t.warn),
         };
@@ -523,31 +495,16 @@ impl Render for ServiceView {
         };
         let repo_line = repo_text.map(|text| div().flex_none().px_3().pb_1().child(label(text).text_color(t.dim)).debug_selector(|| "svc-repo".into()));
 
-        let undo_why = self.undo_blocked(cx);
         let rollout_line = rollout.map(|r| {
-            let (mark, text, color, undo) = match &r {
-                Rollout::Progressing { from, to, updated, of } => (Icon::Busy, format!("rolling out {from} → {to}: {updated}/{of} pods updated"), t.accent, false),
-                Rollout::Failed { to, reason, .. } => (Icon::Error, format!("rollout to {to} failed: {reason}"), t.err, true),
-                Rollout::Done { from, to } => (Icon::Ok, format!("now running {to} (was {from})"), t.ok, true),
+            let who = if r.by == "devdeck" { String::new() } else { format!(" (by {})", r.by) };
+            let (mark, text, color) = match &r.state {
+                RolloutState::Rolling { ready, of } => (Icon::Busy, format!("rolling out {} → {}{who}: {ready}/{of} pods ready", r.from, r.to), t.accent),
+                RolloutState::Failing { ready, of, reason } => (Icon::Error, format!("rollout to {}{who} failing ({ready}/{of} ready): {reason}", r.to), t.err),
+                RolloutState::Stuck { reason } => (Icon::Error, format!("rollout to {}{who} stuck: {reason}", r.to), t.err),
+                RolloutState::Done => (Icon::Ok, format!("now running {} (was {}){who}", r.to, r.from), t.ok),
+                RolloutState::Replaced { by } => (Icon::Info, format!("rollout to {} replaced by {by}", r.to), t.mute),
             };
-            div()
-                .flex_none()
-                .px_3()
-                .pb_2()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(icon_text(mark, color, text, &t).flex_1())
-                .when(undo, |d| {
-                    let why = undo_why.clone();
-                    d.child(
-                        button("undo", "undo", &t)
-                            .debug_selector(|| "rollout-undo".into())
-                            .when(why.is_some(), |b| b.text_color(t.dim))
-                            .tooltip(tip(why.unwrap_or_else(|| "go back to the previous tag".into())))
-                            .on_click(cx.listener(|this, _, _, cx| this.undo(cx))),
-                    )
-                })
+            div().flex_none().px_3().pb_2().flex().items_center().gap_2().debug_selector(|| "svc-rollout".into()).child(icon_text(mark, color, text, &t).flex_1())
         });
 
         let res = d.main().resources;
@@ -693,11 +650,14 @@ impl Render for ServiceView {
 
         let mut hist = div().flex().flex_col();
         if history.is_empty() {
-            hist = hist.child(label("no deploys from Kugelblitz yet").text_color(t.dim));
+            hist = hist.child(label("no deploy seen yet").text_color(t.dim));
         }
+        let now = c.now_s();
         for r in history.iter().rev() {
-            let failed = r.outcome.starts_with("failed");
-            hist = hist.child(label(format!("{} → {} · {}", r.from, r.to, r.outcome)).text_color(if failed { t.err } else { t.mute }));
+            let bad = r.outcome.starts_with("failing") || r.outcome.starts_with("stuck");
+            let outcome = if r.outcome.is_empty() { "rolling out" } else { r.outcome.as_str() };
+            let text = format!("{} ago · {} → {} · by {} · {outcome}", fmt_age(now.saturating_sub(r.at_s)), r.from, r.to, r.by);
+            hist = hist.child(label(text).text_color(if bad { t.err } else { t.mute }));
         }
 
         let body = div()
@@ -727,26 +687,74 @@ impl Render for ServiceView {
 
 // ------------------------------------------------------------------ modals
 
-/// "Deploy X on env: from → to" with the exact command; Enter deploys, Esc cancels.
+/// "Deploy X on env: from → to" with the exact command; Enter deploys, Esc cancels. It
+/// stays until the cluster answers: closes when the write is taken, shows why when not.
 pub struct ConfirmDeploy {
     service: Entity<ServiceView>,
     env: String,
     name: String,
     from: String,
+    /// The image shown when confirming: the write is refused if the cluster changed since.
+    from_image: String,
     to: String,
     command: String,
     focus: ModalFocus,
     restore: Option<WeakFocusHandle>,
+    /// Sent: waiting for the answer.
+    sent: bool,
+    error: Option<String>,
+    _cluster: Option<Subscription>,
 }
 
 impl ConfirmDeploy {
     #[allow(clippy::too_many_arguments)]
-    fn new(service: Entity<ServiceView>, env: String, name: String, from: String, to: String, command: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(service: Entity<ServiceView>, env: String, name: String, from: String, from_image: String, to: String, command: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let restore = window.focused(cx).map(|f| f.downgrade());
-        Self { service, env, name, from, to, command, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore }
+        let cluster = service.read(cx).cluster.clone();
+        let sub = cx.observe_in(&cluster, window, |this: &mut Self, c, window, cx| {
+            if !this.sent {
+                return;
+            }
+            match c.read(cx).write_state(&this.env, &this.name).cloned() {
+                Some(WriteState::Sent) => {
+                    c.update(cx, |c, _| c.clear_write(&this.env, &this.name));
+                    this.close(window, cx);
+                }
+                Some(WriteState::Failed(why)) => {
+                    c.update(cx, |c, _| c.clear_write(&this.env, &this.name));
+                    this.sent = false;
+                    this.error = Some(why);
+                    cx.notify();
+                }
+                _ => {}
+            }
+        });
+        Self { service, env, name, from, from_image, to, command, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore, sent: false, error: None, _cluster: Some(sub) }
+    }
+
+    /// Sends the write; the modal waits for the answer.
+    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sent {
+            return;
+        }
+        let (from, to) = (self.from_image.clone(), self.to.clone());
+        let cluster = self.service.read(cx).cluster.clone();
+        cluster.update(cx, |c, _| c.watch_write(&self.env, &self.name, true));
+        match self.service.update(cx, |s, cx| s.deploy(&from, &to, cx)) {
+            Ok(()) => {
+                self.sent = true;
+                self.error = None;
+            }
+            Err(why) => self.error = Some(why),
+        }
+        let _ = window;
+        cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Closed while sending: the answer goes to a toast.
+        let cluster = self.service.read(cx).cluster.clone();
+        cluster.update(cx, |c, _| c.watch_write(&self.env, &self.name, false));
         pop_modal(window, cx);
         if let Some(h) = self.restore.as_ref().and_then(WeakFocusHandle::upgrade) {
             h.focus(window, cx);
@@ -757,8 +765,7 @@ impl ConfirmDeploy {
         if self.focus.0[1].is_focused(window) {
             return self.close(window, cx);
         }
-        self.close(window, cx);
-        self.service.update(cx, |s, cx| s.deploy(cx));
+        self.send(window, cx);
     }
 }
 
@@ -792,6 +799,9 @@ impl Render for ConfirmDeploy {
             // The one place text wraps (R4.4 allows a view to opt in): the command is
             // shown whole, so the tag being deployed is always visible.
             .child(div().px_2().py_1().rounded(t.radius_s).bg(t.bg).text_color(t.fg).debug_selector(|| "deploy-command".into()).child(self.command.clone()))
+            .when(self.sent, |d| d.child(icon_text(Icon::Busy, t.accent, "sending…", &t)))
+            // Wraps too: the cluster's words, whole.
+            .when_some(self.error.clone(), |d, why| d.child(div().flex().gap_1().text_color(t.err).debug_selector(|| "deploy-error".into()).child(icon(Icon::Error, t.err, &t)).child(div().child(why))))
             .child(
                 div()
                     .flex()
@@ -801,10 +811,8 @@ impl Render for ConfirmDeploy {
                     .child(
                         focus_button("deploy-confirm", "Deploy", &self.focus.0[0], &t)
                             .debug_selector(|| "deploy-confirm".into())
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.close(w, cx);
-                                this.service.update(cx, |s, cx| s.deploy(cx));
-                            })),
+                            .when(self.sent, |b| b.text_color(t.dim))
+                            .on_click(cx.listener(|this, _, w, cx| this.send(w, cx))),
                     ),
             );
         modal_frame(content.into_any_element(), window, &t)

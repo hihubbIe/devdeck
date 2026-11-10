@@ -1,9 +1,12 @@
 //! The demo's cluster driver: an env lists after [`LOAD_DELAY`], dev36's API server can't
 //! be reached, metrics are forbidden on lab (R7.8). Deployments and their pods come from
 //! `devdeck_core::demo`, every pod of an env at once; its metrics walk; rollouts are the
-//! entity's simulation. Logs are made up, one line per stream every [`LOGS_TICK`].
+//! entity's follow-up of what this driver sends, as from a watch: one replica of the new
+//! version per [`ROLLOUT_STEP`]; a tag containing `broken` can't be pulled and keeps
+//! failing. Logs are made up, one line per stream every [`LOGS_TICK`].
 
-use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, LogFrom, LogLine, LogStream, LogUpdate, METRICS_TICK};
+use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, ImageChange, LogFrom, LogLine, LogStream, LogUpdate, METRICS_TICK, ROLLOUT_STEP};
+use devdeck_core::cluster::{Deployment, Image, PodPhase, Progress};
 use devdeck_core::demo::{self, ClusterSpec};
 use devdeck_core::runs::log_level;
 use gpui::{Context, Task};
@@ -65,6 +68,76 @@ impl ClusterDriver for FakeCluster {
 
     fn metrics_every(&self) -> Duration {
         METRICS_TICK
+    }
+
+    fn can_deploy(&self, env: &str, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |c, cx| c.access_known(&env, Ok(true), cx));
+        }))
+    }
+
+    fn set_image(&self, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        let (env, name) = (env.to_string(), name.to_string());
+        Some(cx.spawn(async move |this, cx| {
+            let Ok(Some(old)) = this.update(cx, |c, _| c.deployment(&env, &name).cloned()) else { return };
+            if old.containers.get(change.index).is_none_or(|c| c.image.raw != change.from) {
+                let _ = this.update(cx, |c, cx| c.write_done(&env, &name, Err(format!("{name} changed since you confirmed")), cx));
+                return;
+            }
+            let mut new = old.clone();
+            new.generation += 1;
+            new.observed = new.generation;
+            new.revision += 1;
+            new.containers[change.index].image = Image::parse(&change.to);
+            let broken = change.to.contains("broken");
+            let settled = Deployment { ready: new.replicas, updated: new.replicas, ..new.clone() };
+            let new_pods = demo::pods(&env, &settled);
+            new.template = new_pods.first().map(|p| p.template.clone());
+            let old_pods = demo::pods(&env, &old);
+            let generation = new.generation;
+            let _ = this.update(cx, |c, cx| c.write_done(&env, &name, Ok(generation), cx));
+            let replicas = new.replicas;
+            for step in 0..=replicas {
+                let done = step == replicas && !broken;
+                let mut d = new.clone();
+                d.progress = if done { Progress::Settled } else { Progress::Rolling };
+                d.updated = if broken { 1 } else { step };
+                let mut pods: Vec<_> = if broken { old_pods.clone() } else { new_pods.iter().take(step as usize).cloned().chain(old_pods.iter().skip(step as usize).cloned()).collect() };
+                if broken {
+                    let mut stuck = new_pods[0].clone();
+                    stuck.name = format!("{}-pull", stuck.name);
+                    stuck.phase = PodPhase::Waiting("ImagePullBackOff".into());
+                    stuck.ready = false;
+                    stuck.restarts = 0;
+                    stuck.started = None;
+                    stuck.last_termination = None;
+                    if let Some(c) = stuck.containers.first_mut() {
+                        c.ready = false;
+                        c.restarts = 0;
+                        c.state = "waiting: ImagePullBackOff".into();
+                        c.message = Some(format!("rpc error: manifest for {} not found: manifest unknown", change.to));
+                        c.last_termination = None;
+                    }
+                    pods.push(stuck);
+                }
+                d.ready = pods.iter().filter(|p| p.ready).count() as u32;
+                let alive = this.update(cx, |c, cx| {
+                    if done {
+                        d.since = Some(c.now_s());
+                    }
+                    let mut list: Vec<Deployment> = c.peek(&env).ready().map(|m| m.values().cloned().collect()).unwrap_or_default();
+                    list.retain(|x| x.name != name);
+                    list.push(d);
+                    c.apply(&env, EnvUpdate::Deployments(list), cx);
+                    c.replace_pods(&env, &name, pods, cx);
+                });
+                if alive.is_err() || step == replicas || broken {
+                    return;
+                }
+                cx.background_executor().timer(ROLLOUT_STEP).await;
+            }
+        }))
     }
 
     fn stream_logs(&self, _env: &str, pod: &str, _container: &str, from: LogFrom, previous: bool, cx: &mut Context<Cluster>) -> Result<LogStream, String> {

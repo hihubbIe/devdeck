@@ -55,11 +55,11 @@ impl ClusterDriver for Pods {
 fn dep(name: &str) -> Deployment {
     let image = Image::parse(&format!("registry/{name}:main"));
     let c = Container { name: name.into(), image, ports: vec![], resources: Resources::default(), config_maps: Vec::new() };
-    Deployment { name: name.into(), containers: vec![c], replicas: 2, ready: 2, updated: 2, progress: Progress::Settled, selector: format!("app={name}"), since: Some(1) }
+    Deployment { name: name.into(), containers: vec![c], replicas: 2, ready: 2, updated: 2, progress: Progress::Settled, selector: format!("app={name}"), since: Some(1), ..Default::default() }
 }
 
 fn pod(owner: &str, template: &str, id: &str, started: u64) -> Pod {
-    let status = ContainerStatus { name: owner.into(), init: false, ready: true, restarts: 0, state: "running".into(), last_termination: None };
+    let status = ContainerStatus { name: owner.into(), init: false, ready: true, restarts: 0, state: "running".into(), last_termination: None, ..Default::default() };
     Pod {
         name: format!("{owner}-{template}-{id}"),
         owner: Some(owner.into()),
@@ -72,6 +72,7 @@ fn pod(owner: &str, template: &str, id: &str, started: u64) -> Pod {
         node: "node-1".into(),
         tag: "main".into(),
         containers: vec![status],
+        unschedulable: None,
     }
 }
 

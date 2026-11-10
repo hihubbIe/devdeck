@@ -501,7 +501,8 @@ fn deploy(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, env: &str, name: &
     cx.advance_clock(Duration::from_millis(400));
     cx.run_until_parked();
     cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
-    cx.update(|cx| c.update(cx, |c, cx| c.set_image(env, name, tag, true, cx))).expect("deploys");
+    let from = cx.update(|cx| c.read(cx).deployment(env, name).map(|d| d.main().image.raw.clone())).expect("deployed");
+    cx.update(|cx| c.update(cx, |c, cx| c.deploy(env, name, &from, tag, true, cx))).expect("deploys");
     cx.advance_clock(Duration::from_millis(wait_ms));
     cx.run_until_parked();
 }
@@ -536,6 +537,25 @@ fn svc_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<S
     let _ = cx.update_window(w, |_, window, _| window.refresh());
     cx.run_until_parked();
     cx.update(|cx| v.update(cx, |v, cx| v.save(cx)));
+}
+
+/// The confirmation after the cluster refused: someone deployed since it opened.
+fn svc_confirm_refused(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    svc_confirm(cx, w, shell);
+    cx.run_until_parked();
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| {
+        c.update(cx, |c, cx| {
+            let mut list: Vec<_> = c.peek("dev35").ready().map(|m| m.values().cloned().collect()).unwrap_or_default();
+            if let Some(d) = list.iter_mut().find(|d| d.name == "entityservice") {
+                d.main_mut().image.tag = Some("hotfix-from-slack".into());
+                d.revision += 1;
+            }
+            c.apply("dev35", EnvUpdate::Deployments(list), cx);
+        })
+    });
+    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::views::service_view::ConfirmModal), cx));
+    cx.run_until_parked();
 }
 
 fn svc_suggestions(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -590,7 +610,7 @@ impl ClusterDriver for KubeLike {
         env.into()
     }
     fn writes(&self) -> Result<(), String> {
-        Err(devdeck_app::kube_cluster::NO_DEPLOYS.into())
+        Ok(())
     }
     fn watch_pods(&self, env: &str, scope: PodScope, _selector: Option<&str>, cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
         let env = env.to_string();
@@ -777,7 +797,7 @@ impl ClusterDriver for LogsLike {
         env.into()
     }
     fn writes(&self) -> Result<(), String> {
-        Err(devdeck_app::kube_cluster::NO_DEPLOYS.into())
+        Ok(())
     }
     fn watch_pods(&self, env: &str, scope: PodScope, _selector: Option<&str>, cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
         let env = env.to_string();
@@ -1205,9 +1225,10 @@ fn states() -> Vec<State> {
         w("79-run-args-typing", "work", 1.0, Some(run_args_typing)),
         w("80-svc-ready", "work", 1.0, Some(svc_ready)),
         w("81-svc-rolling", "work", 1.0, Some(svc_rolling)),
-        w("82-svc-failed-undo", "work", 1.0, Some(svc_failed)),
+        w("82-svc-failing", "work", 1.0, Some(svc_failed)),
         w("83-svc-protected-locked", "work", 1.0, Some(svc_protected)),
         w("84-svc-confirm", "work", 1.0, Some(svc_confirm)),
+        w("84-svc-confirm-refused", "work", 1.0, Some(svc_confirm_refused)),
         w("85-svc-suggestions", "work", 1.0, Some(svc_suggestions)),
         w("86-svc-loading", "work", 1.0, Some(svc_loading)),
         w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),

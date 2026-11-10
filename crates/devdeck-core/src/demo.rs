@@ -178,6 +178,10 @@ pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
         progress: Progress::Settled,
         selector: format!("app={name}"),
         since: Some(NOW_S - 3600 * (1 + h % 70)),
+        generation: 1,
+        observed: 1,
+        revision: 1,
+        ..Default::default()
     })
 }
 
@@ -196,7 +200,7 @@ pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
             let crashed = Termination { reason: "Error".into(), exit_code: Some(2), message: Some("panic: missing TADA_DB_URL".into()), at: Some(NOW_S - 40) };
             let last_termination = (!healthy).then_some(crashed);
             let state = if healthy { "running".to_string() } else { "waiting: CrashLoopBackOff".to_string() };
-            let main = ContainerStatus { name: d.main().name.clone(), init: false, ready: healthy, restarts, state, last_termination: last_termination.clone() };
+            let main = ContainerStatus { name: d.main().name.clone(), init: false, ready: healthy, restarts, state, last_termination: last_termination.clone(), ..Default::default() };
             Pod {
                 name: format!("{}-{template}-{:05x}", d.name, (h >> 20) % 0xfffff),
                 owner: Some(d.name.clone()),
@@ -209,6 +213,7 @@ pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
                 node: format!("gke-{env}-pool-{}", h % 4),
                 tag: d.tag(),
                 containers: vec![main],
+                unschedulable: None,
             }
         })
         .collect()

@@ -170,7 +170,6 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("view.toggle_rendered", "source or rendered", "View", Some("FileView || NoteView"), ["ctrl-shift-e"], crate::views::ToggleRendered),
         // Service
         spec!("svc.save", "save tag", "Service", Some("ServiceView"), ["ctrl-s"], sv::SaveTag),
-        spec!("svc.undo", "undo rollout", "Service", Some("ServiceView && !TextInput"), ["u"], sv::Undo),
         spec!("svc.logs", "logs", "Service", Some("ServiceView && !TextInput"), ["l"], sv::OpenLogs),
         spec!("svc.tag", "edit tag", "Service", Some("ServiceView && !TextInput"), ["t"], sv::EditTag),
         spec!("svc.confirm", "confirm", "Service", Some("Modal && ServiceModal"), ["enter"], sv::ConfirmModal),

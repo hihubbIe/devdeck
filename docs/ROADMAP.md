@@ -97,7 +97,7 @@ metrics, protected envs. Plan:
    outlive their tabs ([plans/layouts-own-their-tabs.md](plans/layouts-own-their-tabs.md))
    — done 2026-11-08.
 4. Logs — done 2026-11-10.
-5. Change the deployed branch.
+5. Change the deployed branch — done 2026-11-10.
 6. Redeploy the same branch.
 7. Notifications.
 8. Close.

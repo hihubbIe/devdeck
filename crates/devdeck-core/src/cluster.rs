@@ -78,6 +78,8 @@ pub struct Image {
     /// `latest`.
     pub tag: Option<String>,
     pub digest: Option<String>,
+    /// As the spec writes it (`repo` without a tag stays so): what a deploy pins to.
+    pub raw: String,
 }
 
 impl Image {
@@ -92,7 +94,7 @@ impl Image {
             _ => (rest, None),
         };
         let tag = if tag.is_none() && digest.is_none() { Some("latest".to_string()) } else { tag };
-        Image { repo: repo.to_string(), tag, digest }
+        Image { repo: repo.to_string(), tag, digest, raw: image.to_string() }
     }
 
     /// The last path segment of the repo (`graphservice`).
@@ -140,8 +142,9 @@ pub struct Usage {
     pub mem_mi: u32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum PodPhase {
+    #[default]
     Running,
     Pending,
     /// A container waiting with a reason (`ImagePullBackOff`, `CrashLoopBackOff`,
@@ -191,7 +194,7 @@ impl Termination {
 }
 
 /// One container of a pod, as the cluster reports it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ContainerStatus {
     pub name: String,
     /// An init container (runs before the others).
@@ -200,10 +203,12 @@ pub struct ContainerStatus {
     pub restarts: u32,
     /// `running`, `waiting: CrashLoopBackOff`, `terminated: Error (exit 1)`.
     pub state: String,
+    /// What a waiting container's reason says (`… manifest unknown`, a missing secret).
+    pub message: Option<String>,
     pub last_termination: Option<Termination>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pod {
     pub name: String,
     /// The deployment it belongs to (its ReplicaSet's owner), when it has one.
@@ -222,6 +227,8 @@ pub struct Pod {
     /// The main container's tag, from its spec.
     pub tag: String,
     pub containers: Vec<ContainerStatus>,
+    /// Why it can't be placed on a node (`PodScheduled` false: "0/5 nodes are available…").
+    pub unschedulable: Option<String>,
 }
 
 /// Waiting reasons that mean a pod is in trouble, not on its way (`ContainerCreating`).
@@ -238,7 +245,7 @@ impl Pod {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Deployment {
     pub name: String,
     /// At least one.
@@ -253,6 +260,20 @@ pub struct Deployment {
     /// When the current version finished rolling out (epoch seconds), else when the
     /// deployment was created; `None` unless [`Progress::Settled`].
     pub since: Option<u64>,
+    /// Its spec's generation, and the one the controller has seen: until they meet, its
+    /// status says nothing of the newest spec.
+    pub generation: u64,
+    pub observed: u64,
+    /// `deployment.kubernetes.io/revision`: grows with each new pod template (a deploy),
+    /// not with a scale.
+    pub revision: u64,
+    /// The newest pod template's hash, from the `Progressing` condition (`ReplicaSet
+    /// "<name>-<hash>"`), when it says.
+    pub template: Option<String>,
+    /// Why pods can't be created (the `ReplicaFailure` condition: a quota).
+    pub failure: Option<String>,
+    /// Who changed its spec last (`managedFields`: `devdeck`, `kubectl-set`, `helm`…).
+    pub manager: Option<String>,
 }
 
 /// Where a deployment's rollout stands, as the cluster says.
@@ -281,6 +302,16 @@ impl Progress {
 }
 
 impl Deployment {
+    /// The container a deploy changes: the main one, refused when several containers run
+    /// and none is named like the deployment (a sidecar could be first).
+    pub fn deploy_target(&self) -> Result<(usize, &Container), String> {
+        match self.containers.iter().position(|c| c.name == self.name) {
+            Some(i) => Ok((i, &self.containers[i])),
+            None if self.containers.len() == 1 => Ok((0, &self.containers[0])),
+            None => Err(format!("{} has several containers and none is named {}", self.name, self.name)),
+        }
+    }
+
     /// The container that names the deployment's version: the one named like it, else
     /// the first.
     pub fn main(&self) -> &Container {
@@ -303,13 +334,29 @@ impl Deployment {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// One deploy in devdeck's history (R7.2): what it saw, whoever made it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DeployRecord {
-    /// Seconds since the epoch.
+    /// When it started (epoch seconds).
     pub at_s: u64,
     pub from: String,
     pub to: String,
+    /// `devdeck`, the tool that changed the spec (`kubectl-set`, `helm`…), or `seen`.
+    #[serde(default)]
+    pub by: String,
+    /// How it ended (`done`, `failed: …`, `stuck: …`, `replaced by main`); empty while it
+    /// runs.
     pub outcome: String,
+}
+
+/// Deploys kept per service (the immediate history is what matters; user, 2026-11-10).
+pub const HISTORY_KEPT: usize = 10;
+
+/// Adds `r` to a service's history, newest last, keeping [`HISTORY_KEPT`].
+pub fn remember(history: &mut Vec<DeployRecord>, r: DeployRecord) {
+    history.push(r);
+    let over = history.len().saturating_sub(HISTORY_KEPT);
+    history.drain(..over);
 }
 
 /// The exact command a tag change runs (R7.3 states it before confirming).
@@ -332,53 +379,137 @@ pub fn unlock_matches(env: &Env, typed: &str) -> bool {
     typed.trim() == env.name
 }
 
+/// Where a followed deploy stands (R7.4).
 #[derive(Clone, Debug, PartialEq)]
-pub enum Rollout {
-    Progressing { from: String, to: String, updated: u32, of: u32 },
-    Failed { from: String, to: String, reason: String },
-    Done { from: String, to: String },
+pub enum RolloutState {
+    /// `ready` of `of` pods of the new version ready.
+    Rolling { ready: u32, of: u32 },
+    /// Still rolling, but something's wrong that may fix itself (the kubelet keeps
+    /// pulling an image CI hasn't pushed yet; a crash loop).
+    Failing { ready: u32, of: u32, reason: String },
+    Done,
+    /// Past its progress deadline: the cluster gave up.
+    Stuck { reason: String },
+    /// Another deploy came after it.
+    Replaced { by: String },
+}
+
+/// A deploy followed: devdeck's own, or one seen on the watch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rollout {
+    /// The tags as lists show them.
+    pub from: String,
+    pub to: String,
+    /// The new image in full (`repo:tag`, a digest kept): "still runs it" compares this.
+    pub image: String,
+    /// `devdeck`, the tool that changed the spec, or `seen`.
+    pub by: String,
+    /// The generation that carries it: the deployment's status counts once the controller
+    /// has seen it.
+    pub generation: u64,
+    pub at_s: u64,
+    pub state: RolloutState,
 }
 
 impl Rollout {
-    /// The tag Undo goes back to.
-    pub fn undo_target(&self) -> Option<&str> {
-        match self {
-            Rollout::Failed { from, .. } | Rollout::Done { from, .. } => Some(from),
-            Rollout::Progressing { .. } => None,
-        }
-    }
-}
-
-/// A rollout over time: one replica per step; a tag containing `broken` can't be
-/// pulled and fails at the first step.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RolloutSim {
-    pub state: Rollout,
-}
-
-impl RolloutSim {
-    pub fn start(from: &str, to: &str, replicas: u32) -> Self {
-        Self { state: Rollout::Progressing { from: from.into(), to: to.into(), updated: 0, of: replicas.max(1) } }
-    }
-
-    pub fn step(&mut self, repo: &str) {
-        if let Rollout::Progressing { from, to, updated, of } = &self.state {
-            self.state = if to.contains("broken") {
-                Rollout::Failed {
-                    from: from.clone(),
-                    to: to.clone(),
-                    reason: format!("ImagePullBackOff: manifest for {repo}:{to} not found"),
-                }
-            } else if updated + 1 >= *of {
-                Rollout::Done { from: from.clone(), to: to.clone() }
-            } else {
-                Rollout::Progressing { from: from.clone(), to: to.clone(), updated: updated + 1, of: *of }
-            };
-        }
-    }
-
     pub fn finished(&self) -> bool {
-        !matches!(self.state, Rollout::Progressing { .. })
+        matches!(self.state, RolloutState::Done | RolloutState::Stuck { .. } | RolloutState::Replaced { .. })
+    }
+
+    /// How it ended, for the history; empty while it runs.
+    pub fn outcome(&self) -> String {
+        match &self.state {
+            RolloutState::Rolling { .. } => String::new(),
+            RolloutState::Failing { reason, .. } => format!("failing: {reason}"),
+            RolloutState::Done => "done".into(),
+            RolloutState::Stuck { reason } => format!("stuck: {reason}"),
+            RolloutState::Replaced { by } => format!("replaced by {by}"),
+        }
+    }
+
+    /// What lists say about it: `rolling out 1/2`, `failing: image … not found`.
+    pub fn label(&self) -> Option<String> {
+        match &self.state {
+            RolloutState::Rolling { ready, of } => Some(format!("rolling out {ready}/{of}")),
+            RolloutState::Failing { reason, .. } => Some(format!("failing: {reason}")),
+            RolloutState::Stuck { reason } => Some(format!("stuck: {reason}")),
+            RolloutState::Done | RolloutState::Replaced { .. } => None,
+        }
+    }
+}
+
+/// A crash loop counts as failing from this many restarts of a pod of the new version.
+pub const CRASHES_TO_FAIL: u32 = 2;
+
+/// Why a pod of a new version is in trouble, if it is: an image that can't be pulled, a
+/// crash loop (from [`CRASHES_TO_FAIL`] restarts), a container that can't be made, a pod no
+/// node takes.
+pub fn pod_failure(pod: &Pod, image: &str) -> Option<String> {
+    if let Some(why) = &pod.unschedulable {
+        return Some(format!("can't be scheduled: {why}"));
+    }
+    for c in &pod.containers {
+        let Some(reason) = c.state.strip_prefix("waiting: ") else { continue };
+        let reason = reason.trim_start_matches("Init:");
+        if !TROUBLE.contains(&reason) {
+            continue;
+        }
+        let message = c.message.as_deref().unwrap_or("");
+        let init = if c.init { format!("init container {}: ", c.name) } else { String::new() };
+        let text = match reason {
+            "ErrImagePull" | "ImagePullBackOff" => {
+                let lower = message.to_ascii_lowercase();
+                if lower.contains("not found") || lower.contains("manifest unknown") { format!("image {image} not found") } else if message.is_empty() { format!("can't pull {image}") } else { message.to_string() }
+            }
+            "CrashLoopBackOff" => {
+                if c.restarts < CRASHES_TO_FAIL {
+                    continue;
+                }
+                let last = c.last_termination.as_ref().map(Termination::text).unwrap_or_else(|| "it keeps exiting".into());
+                format!("crash loop: {last}")
+            }
+            _ if message.is_empty() => reason.to_string(),
+            _ => format!("{reason}: {message}"),
+        };
+        return Some(format!("{init}{text}"));
+    }
+    None
+}
+
+/// Where `r` stands on `d` and its pods: nothing counts until the controller has seen its
+/// generation; stuck past the deadline; done once settled with every new pod ready;
+/// failing while a new pod is in trouble or pods can't be created; else rolling.
+pub fn assess(r: &Rollout, d: &Deployment, pods: &[Pod]) -> RolloutState {
+    let of = d.replicas;
+    if d.observed < r.generation {
+        return RolloutState::Rolling { ready: 0, of };
+    }
+    if d.progress == Progress::Stuck {
+        let reason = d.failure.clone().unwrap_or_else(|| "it went past its progress deadline".into());
+        return RolloutState::Stuck { reason };
+    }
+    if pods.is_empty() {
+        // Nobody watches its pods: the deployment's own counts, as `kubectl rollout status`.
+        if d.progress == Progress::Settled && d.updated >= of && d.ready >= of {
+            return RolloutState::Done;
+        }
+        return match &d.failure {
+            Some(reason) => RolloutState::Failing { ready: d.updated.min(d.ready), of, reason: reason.clone() },
+            None => RolloutState::Rolling { ready: d.updated.min(d.ready), of },
+        };
+    }
+    let new: Vec<&Pod> = match &d.template {
+        Some(t) => pods.iter().filter(|p| &p.template == t).collect(),
+        None => pods.iter().filter(|p| p.tag == r.to).collect(),
+    };
+    let ready = new.iter().filter(|p| p.ready).count() as u32;
+    if d.progress == Progress::Settled && ready >= of {
+        return RolloutState::Done;
+    }
+    let reason = d.failure.clone().or_else(|| new.iter().find_map(|p| pod_failure(p, &r.image)));
+    match reason {
+        Some(reason) => RolloutState::Failing { ready, of, reason },
+        None => RolloutState::Rolling { ready, of },
     }
 }
 
@@ -408,6 +539,7 @@ mod tests {
             progress: Progress::Settled,
             selector: "app=entityservice".into(),
             since: Some(60),
+            ..Default::default()
         }
     }
 
@@ -449,26 +581,94 @@ mod tests {
         assert_eq!((cpu_millis("lots"), mem_mib("")), (None, None));
     }
 
-    #[test]
-    fn rollout_succeeds_one_replica_per_step() {
-        let mut r = RolloutSim::start("1.84.2", "lan-160", 2);
-        r.step("repo");
-        assert_eq!(r.state, Rollout::Progressing { from: "1.84.2".into(), to: "lan-160".into(), updated: 1, of: 2 });
-        r.step("repo");
-        assert_eq!(r.state, Rollout::Done { from: "1.84.2".into(), to: "lan-160".into() });
-        assert_eq!(r.state.undo_target(), Some("1.84.2"));
-        r.step("repo");
-        assert!(r.finished(), "stays done");
+    fn rollout(to: &str, generation: u64) -> Rollout {
+        Rollout { from: "1.84.2".into(), to: to.into(), image: format!("registry/entityservice:{to}"), by: "devdeck".into(), generation, at_s: 0, state: RolloutState::Rolling { ready: 0, of: 2 } }
+    }
+
+    fn new_pod(template: &str, ready: bool, state: &str, restarts: u32, message: Option<&str>) -> Pod {
+        let c = ContainerStatus { name: "app".into(), ready, restarts, state: state.into(), message: message.map(String::from), ..Default::default() };
+        Pod { name: format!("entityservice-{template}-x"), template: template.into(), ready, tag: "lan-160".into(), containers: vec![c], ..Default::default() }
     }
 
     #[test]
-    fn broken_tags_fail_with_a_pull_error_and_undo_to_the_previous() {
-        let mut r = RolloutSim::start("1.84.2", "lan-broken", 3);
-        assert_eq!(r.state.undo_target(), None);
-        r.step("registry/entityservice");
-        let Rollout::Failed { reason, .. } = &r.state else { panic!("failed") };
-        assert!(reason.starts_with("ImagePullBackOff"));
-        assert_eq!(r.state.undo_target(), Some("1.84.2"));
+    fn a_rollout_counts_once_the_controller_has_seen_it() {
+        let mut d = dep();
+        d.generation = 5;
+        d.observed = 4;
+        d.progress = Progress::Stuck;
+        assert_eq!(assess(&rollout("lan-160", 5), &d, &[]), RolloutState::Rolling { ready: 0, of: 2 }, "an old stuck state isn't this deploy's");
+        d.observed = 5;
+        d.progress = Progress::Rolling;
+        d.template = Some("abc".into());
+        let pods = [new_pod("abc", true, "running", 0, None), new_pod("old", true, "running", 0, None)];
+        assert_eq!(assess(&rollout("lan-160", 5), &d, &pods), RolloutState::Rolling { ready: 1, of: 2 }, "only the new template's ready pods");
+        d.progress = Progress::Settled;
+        let pods = [new_pod("abc", true, "running", 0, None), new_pod("abc", true, "running", 0, None)];
+        assert_eq!(assess(&rollout("lan-160", 5), &d, &pods), RolloutState::Done);
+        d.progress = Progress::Stuck;
+        d.failure = None;
+        assert_eq!(assess(&rollout("lan-160", 5), &d, &pods), RolloutState::Stuck { reason: "it went past its progress deadline".into() });
+    }
+
+    #[test]
+    fn without_pods_the_deployments_counts_decide() {
+        let mut d = dep();
+        d.progress = Progress::Rolling;
+        d.updated = 1;
+        assert_eq!(assess(&rollout("lan-160", 0), &d, &[]), RolloutState::Rolling { ready: 1, of: 2 });
+        d.progress = Progress::Settled;
+        d.updated = 2;
+        assert_eq!(assess(&rollout("lan-160", 0), &d, &[]), RolloutState::Done, "a deploy nobody watches the pods of still ends");
+    }
+
+    #[test]
+    fn an_untagged_image_keeps_its_spec_text() {
+        let i = Image::parse("registry/app");
+        assert_eq!((i.raw.as_str(), i.to_string().as_str()), ("registry/app", "registry/app:latest"), "a deploy pins to what the spec says");
+    }
+
+    #[test]
+    fn failing_says_why_and_keeps_following() {
+        let mut d = dep();
+        d.progress = Progress::Rolling;
+        d.template = Some("abc".into());
+        let pull = new_pod("abc", false, "waiting: ImagePullBackOff", 0, Some("rpc error: manifest for registry/entityservice:lan-160 not found: manifest unknown"));
+        assert_eq!(assess(&rollout("lan-160", 0), &d, &[pull]), RolloutState::Failing { ready: 0, of: 2, reason: "image registry/entityservice:lan-160 not found".into() });
+        let once = new_pod("abc", false, "waiting: CrashLoopBackOff", 1, None);
+        assert_eq!(assess(&rollout("lan-160", 0), &d, std::slice::from_ref(&once)), RolloutState::Rolling { ready: 0, of: 2 }, "one crash isn't a loop yet");
+        let mut twice = once.clone();
+        twice.containers[0].restarts = 2;
+        twice.containers[0].last_termination = Some(Termination { reason: "Error".into(), exit_code: Some(2), message: Some("panic: missing TADA_DB_URL".into()), at: None });
+        assert_eq!(pod_failure(&twice, "img"), Some("crash loop: Error (exit 2): panic: missing TADA_DB_URL".into()));
+        let config = new_pod("abc", false, "waiting: CreateContainerConfigError", 0, Some("secret \"db\" not found"));
+        assert_eq!(pod_failure(&config, "img"), Some("CreateContainerConfigError: secret \"db\" not found".into()));
+        let mut nowhere = new_pod("abc", false, "waiting: ContainerCreating", 0, None);
+        nowhere.unschedulable = Some("0/5 nodes are available: insufficient cpu".into());
+        assert_eq!(pod_failure(&nowhere, "img"), Some("can't be scheduled: 0/5 nodes are available: insufficient cpu".into()));
+        assert_eq!(pod_failure(&new_pod("abc", false, "waiting: ContainerCreating", 0, None), "img"), None, "on its way");
+        d.failure = Some("exceeded quota: pods".into());
+        d.updated = 0;
+        assert_eq!(assess(&rollout("lan-160", 0), &d, &[]), RolloutState::Failing { ready: 0, of: 2, reason: "exceeded quota: pods".into() });
+    }
+
+    #[test]
+    fn a_deploy_targets_the_main_container_or_refuses() {
+        let mut d = dep();
+        assert_eq!(d.deploy_target().map(|(i, _)| i), Ok(0), "one container");
+        d.containers.push(container("envoy", "registry/envoy:v1"));
+        assert!(d.deploy_target().is_err(), "several, none named like it: a sidecar could be first");
+        d.containers[0].name = "entityservice".into();
+        assert_eq!(d.deploy_target().map(|(i, _)| i), Ok(0));
+    }
+
+    #[test]
+    fn the_history_keeps_the_last_ten() {
+        let mut h = Vec::new();
+        for i in 0..12 {
+            remember(&mut h, DeployRecord { at_s: i, from: "a".into(), to: "b".into(), by: "seen".into(), outcome: "done".into() });
+        }
+        assert_eq!(h.len(), HISTORY_KEPT);
+        assert_eq!((h[0].at_s, h[9].at_s), (2, 11), "the newest kept");
     }
 
     #[test]

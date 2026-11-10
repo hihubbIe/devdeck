@@ -8,10 +8,12 @@
 //! once when one comes back (user, 2026-11-07). A lost connection keeps the last list,
 //! with the problem next to it.
 //!
-//! Pods and metrics: [`crate::cluster_pods`]. Rollouts tick on their own timer while one
-//! runs, in any workspace; they're simulated (the fake's) until real writes (M3 step 5).
+//! Pods and metrics: [`crate::cluster_pods`]; deploys, their follow-up and history:
+//! [`crate::cluster_deploys`].
 
-use devdeck_core::cluster::{DeployRecord, Deployment, Env, PodPhase, Remote, Rollout, RolloutSim, check_write, set_image_command};
+use devdeck_core::cluster::{Deployment, Env, Remote, set_image_command};
+pub use devdeck_kube::ImageChange;
+pub use crate::cluster_deploys::{Access, WriteState};
 pub use crate::cluster_pods::{MetricsRead, PodScope, PodUpdate, PodsInterest, Sampling};
 pub use devdeck_kube::{EnvUpdate, LogFrom, LogLine, LogRefusal, LogUpdate};
 use gpui::{AppContext, Context, Task};
@@ -21,7 +23,7 @@ use std::time::Duration;
 
 pub use crate::fake_cluster::{LOAD_DELAY, NO_METRICS_ENV, UNREACHABLE_ENV};
 
-/// One replica rolls per step.
+/// The fake rolls one replica per step.
 pub const ROLLOUT_STEP: Duration = Duration::from_secs(1);
 /// The fake's metrics pace.
 pub const METRICS_TICK: Duration = Duration::from_secs(2);
@@ -60,6 +62,16 @@ pub trait ClusterDriver {
     fn metrics_every(&self) -> Duration {
         Duration::from_secs(15)
     }
+    /// Sets a deployment's main image (R7.3); the answer goes to [`Cluster::write_done`].
+    /// `None`: this driver can't deploy.
+    fn set_image(&self, _env: &str, _name: &str, _change: ImageChange, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
+    /// Asks whether deployments may be changed in `env`; the answer goes to
+    /// [`Cluster::access_known`]. `None`: not asked (the write decides).
+    fn can_deploy(&self, _env: &str, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
     /// Streams `container`'s logs of `pod` in `env` from `from`, followed, or its run
     /// before the last restart read once (`previous`). Dropping the stream stops it.
     fn stream_logs(&self, _env: &str, _pod: &str, _container: &str, _from: LogFrom, _previous: bool, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
@@ -82,7 +94,7 @@ pub struct EnvState {
     pub problem: Option<String>,
 }
 
-type Key = (String, String);
+
 
 pub struct Cluster {
     /// The workspace's envs, alphabetical.
@@ -100,9 +112,7 @@ pub struct Cluster {
     /// the workspace's problems.
     pub problems: Vec<String>,
     pub(crate) pod: crate::cluster_pods::PodState,
-    rollouts: BTreeMap<Key, RolloutSim>,
-    history: BTreeMap<Key, Vec<DeployRecord>>,
-    rolling: Option<Task<()>>,
+    pub(crate) dep: crate::cluster_deploys::DeployState,
     /// Metrics reads started (tests check sampling stops).
     pub metric_ticks: usize,
     /// A fixed clock (epoch seconds) that rollouts advance: the demo's, so snapshots
@@ -126,9 +136,7 @@ impl Cluster {
             loading,
             problems: Vec::new(),
             pod: Default::default(),
-            rollouts: BTreeMap::new(),
-            history: BTreeMap::new(),
-            rolling: None,
+            dep: Default::default(),
             metric_ticks: 0,
             clock,
             log_gens: (0, BTreeMap::new()),
@@ -144,6 +152,7 @@ impl Cluster {
         self.driver = driver;
         self.problems.clear();
         self.log_gens.0 += 1;
+        self.forget_versions(None);
         self.loading = self.driver.clone().start(cx);
         self.restart(self.wanted.clone(), cx);
         self.reinstate_pods(cx);
@@ -218,6 +227,7 @@ impl Cluster {
                 self.watches.remove(&env);
                 self.start_watch(&env, cx);
                 self.restart_pods(&env, cx);
+                self.forget_versions(Some(&env));
                 *self.log_gens.1.entry(env).or_default() += 1;
                 cx.notify();
             }
@@ -246,6 +256,7 @@ impl Cluster {
                 if changed {
                     // A service's watch waits for its deployment's selector.
                     self.refresh_pods(env, cx);
+                    self.saw_deployments(env, cx);
                 }
                 changed
             }
@@ -313,14 +324,6 @@ impl Cluster {
         self.clock.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()))
     }
 
-    pub fn rollout(&self, env: &str, name: &str) -> Option<&Rollout> {
-        self.rollouts.get(&(env.to_string(), name.to_string())).map(|r| &r.state)
-    }
-
-    pub fn history(&self, env: &str, name: &str) -> &[DeployRecord] {
-        self.history.get(&(env.to_string(), name.to_string())).map_or(&[], |h| h.as_slice())
-    }
-
     /// Streams a container's logs (see [`ClusterDriver::stream_logs`]).
     pub fn stream_logs(&mut self, env: &str, pod: &str, container: &str, from: LogFrom, previous: bool, cx: &mut Context<Self>) -> Result<LogStream, String> {
         let driver = self.driver.clone();
@@ -366,124 +369,6 @@ impl Cluster {
     /// The command a tag change would run.
     pub fn command_for(&self, env: &str, name: &str, tag: &str) -> Option<String> {
         self.deployment(env, name).map(|d| set_image_command(&self.driver.namespace(env), d, tag))
-    }
-
-    /// Starts a rollout to `tag`. Refuses where writes aren't possible, on a protected env
-    /// that isn't unlocked, or while another rollout of the same service runs.
-    pub fn set_image(&mut self, env: &str, name: &str, tag: &str, unlocked: bool, cx: &mut Context<Self>) -> Result<(), String> {
-        self.writes(cx)?;
-        let e = self.env(env).cloned().ok_or_else(|| format!("unknown env {env}"))?;
-        check_write(&e, unlocked)?;
-        let key = (env.to_string(), name.to_string());
-        if self.rollouts.get(&key).is_some_and(|r| !r.finished()) {
-            return Err("a rollout is in progress".into());
-        }
-        let d = self.deployment(env, name).ok_or_else(|| format!("{name} isn't deployed in {env}"))?;
-        if d.tag() == tag {
-            return Err(format!("{name} already runs {tag}"));
-        }
-        let sim = RolloutSim::start(&d.tag(), tag, d.replicas);
-        self.rollouts.insert(key, sim);
-        self.ensure_rolling(cx);
-        cx.notify();
-        Ok(())
-    }
-
-    /// Goes back to the tag before the last rollout.
-    pub fn undo(&mut self, env: &str, name: &str, unlocked: bool, cx: &mut Context<Self>) -> Result<(), String> {
-        let target = self.rollout(env, name).and_then(|r| r.undo_target()).map(str::to_string).ok_or("nothing to undo")?;
-        if self.deployment(env, name).is_some_and(|d| d.tag() == target) {
-            // A failed rollout never replaced the tag: clear the failure.
-            self.rollouts.remove(&(env.to_string(), name.to_string()));
-            self.roll_pods(env, name, cx);
-            cx.notify();
-            return Ok(());
-        }
-        self.set_image(env, name, &target, unlocked, cx)
-    }
-
-    fn ensure_rolling(&mut self, cx: &mut Context<Self>) {
-        if self.rolling.is_some() {
-            return;
-        }
-        self.rolling = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(ROLLOUT_STEP).await;
-                let more = this.update(cx, |c, cx| c.step_rollouts(cx)).unwrap_or(false);
-                if !more {
-                    let _ = this.update(cx, |c, _| c.rolling = None);
-                    return;
-                }
-            }
-        }));
-    }
-
-    /// Advances every running rollout one step; returns whether any still runs.
-    fn step_rollouts(&mut self, cx: &mut Context<Self>) -> bool {
-        if let Some(now) = &mut self.clock {
-            *now += ROLLOUT_STEP.as_secs();
-        }
-        let now = self.now_s();
-        let keys: Vec<Key> = self.rollouts.iter().filter(|(_, r)| !r.finished()).map(|(k, _)| k.clone()).collect();
-        for (env, name) in keys {
-            let repo = self.deployment(&env, &name).map(|d| d.main().image.repo.clone()).unwrap_or_default();
-            let Some(sim) = self.rollouts.get_mut(&(env.clone(), name.clone())) else { continue };
-            sim.step(&repo);
-            let state = sim.state.clone();
-            match &state {
-                Rollout::Done { from, to } => {
-                    if let Some(d) = self.states.get_mut(&env).and_then(|s| s.deployments.as_mut()).and_then(|m| m.get_mut(&name)) {
-                        d.main_mut().image.tag = Some(to.clone());
-                        d.ready = d.replicas;
-                        d.updated = d.replicas;
-                        d.since = Some(now);
-                    }
-                    self.record(&env, &name, from, to, "ready");
-                }
-                Rollout::Failed { from, to, reason } => {
-                    let outcome = format!("failed: {}", reason.split(':').next().unwrap_or(reason));
-                    self.record(&env, &name, from, to, &outcome);
-                }
-                Rollout::Progressing { .. } => {}
-            }
-            self.roll_pods(&env, &name, cx);
-        }
-        cx.notify();
-        self.rollouts.values().any(|r| !r.finished())
-    }
-
-    fn record(&mut self, env: &str, name: &str, from: &str, to: &str, outcome: &str) {
-        let at_s = self.now_s();
-        self.history.entry((env.into(), name.into())).or_default().push(DeployRecord { at_s, from: from.into(), to: to.into(), outcome: outcome.into() });
-    }
-
-    /// Pods follow the deployment and its rollout: new-tag pods appear as it progresses; a
-    /// failed one leaves a pod stuck pulling the image.
-    fn roll_pods(&mut self, env: &str, name: &str, cx: &mut Context<Self>) {
-        let Some(d) = self.deployment(env, name).cloned() else { return };
-        let now = self.now_s();
-        let mut pods = devdeck_core::demo::pods(env, &d);
-        match self.rollout(env, name) {
-            Some(Rollout::Progressing { to, updated, .. }) => {
-                for p in pods.iter_mut().take(*updated as usize) {
-                    p.tag = to.clone();
-                    p.started = Some(now);
-                }
-            }
-            Some(Rollout::Failed { to, .. }) => {
-                let mut stuck = pods[0].clone();
-                stuck.name = format!("{}-pull", stuck.name);
-                stuck.tag = to.clone();
-                stuck.phase = PodPhase::Waiting("ImagePullBackOff".into());
-                stuck.ready = false;
-                stuck.restarts = 0;
-                stuck.started = None;
-                stuck.last_termination = None;
-                pods.push(stuck);
-            }
-            _ => {}
-        }
-        self.replace_pods(env, name, pods, cx);
     }
 }
 
