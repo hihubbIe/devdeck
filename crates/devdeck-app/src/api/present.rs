@@ -134,6 +134,18 @@ fn exists(w: &WsRef, a: &ViewAddr, app: &App) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Views a layout holds at most for the API to open one more (the user's own aren't
+/// counted against them).
+pub const VIEWS_MAX: usize = 100;
+
+/// Refused when the live layout holds [`VIEWS_MAX`] views: a caller can't bury the user's.
+pub(super) fn room(w: &WsRef, app: &App) -> Result<(), ApiError> {
+    if w.deck.read(app).layout().views().len() >= VIEWS_MAX {
+        return Err(ApiError::new(ErrorKind::Refused, format!("the layout holds {VIEWS_MAX} views: close some first")));
+    }
+    Ok(())
+}
+
 /// Opens `r` at `drop`; one already open moves only when a place was named, and shows
 /// when asked.
 fn open(w: &WsRef, r: ViewRef, drop: Drop, placed: bool, activate: bool, app: &mut App) -> Result<(), ApiError> {
@@ -144,6 +156,9 @@ fn open(w: &WsRef, r: ViewRef, drop: Drop, placed: bool, activate: bool, app: &m
             false => Ok(()),
         },
         _ => {
+            if existing.is_none() {
+                room(w, app)?;
+            }
             let target = match drop {
                 Drop::Into(p) if activate => Some(p),
                 _ => None,

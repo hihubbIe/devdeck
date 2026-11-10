@@ -402,6 +402,27 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   shell. The permissions guard what is done through devdeck, give clients least
   privilege, and record everything.
 
+Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, events.
+
+- The user's keys are theirs: a change made through the API goes through
+  `Deck::apply_quietly` (each window keeps its focused pane and each pane its tab unless
+  asked; the panes holding the keys, now or when Settings closes or the workspace shows
+  again, keep their tab and stay shown). What would move them asks the user
+  (`approval_required`, the card in phase 4): a tab shown where the user types, a layout
+  switch, a new window.
+- Answers can come later: a handler gives a task the UI thread finishes (a wait, a git
+  read, a file read in the background); the connection watches for its client hanging
+  up and its caller's shell ending meanwhile.
+- Waits look every 100 ms while someone waits, nothing otherwise; a wait whose time is up
+  leaves a job to resume, not work in the background.
+- Events say what changed, never its content (the client reads it with the methods);
+  one bounded queue per connection, written by a thread of its own; the models are
+  watched only while someone follows a topic.
+- One-off reads hold what views hold (a repository looked at, a port scan with its ports
+  watched) until they answer, and count among the caller's waits.
+- Caps everywhere a caller could grow something: waits, connections, shells, notes,
+  layouts, pins, groups, toasts, a rate for changes.
+
 ## Settings and scaling
 
 - Settings open as a full-window view from a title-bar button, not as a tab.
@@ -417,6 +438,12 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   performance; risk is API churn (pinned commit mitigates).
 - 2026-11-07 Own layout engine instead of a dock widget: detach windows and
   collapse are central and must be testable as pure data.
+- 2026-11-09 Control API phase 3 (user): the approvals service moves to phase 4 with its
+  card; `user.ask` is dropped (an agent asks in its own session); D1–D9 of
+  `plans/control-api-p3.md` decided.
+- 2026-11-10 Anything an API call would do to the user's keys or screen beyond the
+  background asks the user, rather than branching on what the OS allows (GPUI can't open
+  a window without focus on Linux).
 - 2026-11-07 No git or editor features (user decision). 2026-11-08: git has its panel
   (R6.10); files are view only and notes the one thing devdeck edits (R12, user).
 - 2026-11-07 Lists are Pinned + All, alphabetical; no "mine", no "recent" (user decision).

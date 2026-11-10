@@ -340,8 +340,14 @@ pub fn notice(who: &Who, text: String, cx: &mut App) {
     let now = Instant::now();
     let tell = state.update(cx, |s, _| {
         let label = who.label();
+        // The time of the last toast told, not of the last call: a caller acting often
+        // is told every NOTICE_EVERY, not once.
         s.noticed.retain(|_, t| now.duration_since(*t) < NOTICE_EVERY);
-        s.noticed.insert(label, now).is_none()
+        if s.noticed.contains_key(&label) {
+            return false;
+        }
+        s.noticed.insert(label, now);
+        true
     });
     if tell {
         devdeck_ui::overlay::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::overlay::ToastKind::Info, text, vec![], cx));

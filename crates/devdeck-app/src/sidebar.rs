@@ -408,9 +408,21 @@ impl Sidebar {
     }
 
     pub fn items(&self, cx: &App) -> Vec<ListItem> {
+        self.items_in(self.activity(), cx)
+    }
+
+    /// Whether `list` shows `node`: an item (its key or its path), or a folder of its tree.
+    pub fn knows(&self, list: Activity, node: &str, cx: &App) -> bool {
+        let items = if list == Activity::Notes { self.notes_tree(cx).items } else { self.items_in(list, cx) };
+        let folder = format!("{node}/");
+        items.iter().any(|i| i.key == node || i.path.as_ref().is_some_and(|p| p == node || p.starts_with(&folder)))
+    }
+
+    /// The items of `list`, shown or not.
+    pub fn items_in(&self, list: Activity, cx: &App) -> Vec<ListItem> {
         let list_env = self.list_env(cx);
         let s = self.services.read(cx);
-        match self.activity() {
+        match list {
             Activity::Apps => {
                 let runner = s.runner.read(cx);
                 s.catalog

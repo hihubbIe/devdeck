@@ -77,6 +77,11 @@ fn the_callers_shells_open_in_the_background_and_are_its_own(cx: &mut TestAppCon
     assert_eq!(call::<Terminal>("terminal.stop", json!({"n": t.n, "uid": "nope"}), cx).unwrap_err().kind, ErrorKind::NotFound);
     let uid = cx.read(|cx| runner.read(cx).terminal_uid(&RunKey::terminal(t.n)).unwrap().to_string());
     call::<Terminal>("terminal.stop", json!({"n": t.n, "uid": uid}), cx).unwrap();
+    assert!(!cx.read(|cx| deck.read(cx).terminals(cx)).get(&t.n).is_some_and(|x| x.here), "its tab went with it");
+    cx.executor().advance_clock(devdeck_app::fake_driver::STOP_DELAY * 2);
+    cx.run_until_parked();
+    let fifth: Terminal = call("terminal.open", json!({"dir": dir}), cx).expect("one ended: there's room again");
+    assert_ne!(fifth.n, t.n);
     cx.update(|cx| deck.update(cx, |d, cx| d.open_terminal(&web, devdeck_app::places::Place::Pane(focused), cx)));
     cx.run_until_parked();
     let users = cx.read(|cx| deck.read(cx).terminals(cx)).into_keys().max().unwrap();
@@ -122,4 +127,9 @@ fn envs_notes_layouts_pins_and_groups(cx: &mut TestAppContext) {
     assert_eq!(call::<Value>("group.rename", json!({"list": "apps", "path": "nope", "name": "x"}), cx).unwrap_err().kind, ErrorKind::NotFound);
     call::<Value>("group.delete", json!({"list": "apps", "path": "api"}), cx).unwrap();
     assert_eq!(call::<Value>("group.put", json!({"list": "notes", "node": "x"}), cx).unwrap_err().kind, ErrorKind::Invalid);
+    // Only what the list shows, with names of a sane length.
+    assert_eq!(call::<Value>("group.put", json!({"list": "apps", "node": "made-up"}), cx).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(call::<Value>("sidebar.pin", json!({"list": "apps", "key": "made-up", "pinned": true}), cx).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(call::<Value>("sidebar.pin", json!({"list": "apps", "key": "x".repeat(300), "pinned": true}), cx).unwrap_err().kind, ErrorKind::Invalid);
+    assert!(call::<Value>("sidebar.pin", json!({"list": "apps", "key": "made-up", "pinned": false}), cx).is_ok(), "unpinning what isn't there changes nothing");
 }

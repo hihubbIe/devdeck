@@ -57,9 +57,12 @@ Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), deci
    who started what, the `devdeck_run` tool — done 2026-11-08.
 2. Bounded reads: output, screen, search, notes, files — done 2026-11-08.
 3. Operations layer, events, jobs, waits; present, run, organize
-   ([plans/control-api-p3.md](plans/control-api-p3.md)) — steps 1–5 done 2026-11-09;
-   next: step 6, events.
-4. Approvals and its proofs, the approval card; type, remote and destructive methods.
+   ([plans/control-api-p3.md](plans/control-api-p3.md)) — done 2026-11-10, waiting for
+   the user's manual test.
+4. Approvals and its proofs, the approval card; type, remote and destructive methods;
+   and what phase 3 left asking: `window.detach`, `workspace.activate`, `app.open_url`,
+   `leftovers.list`, the `git` topic.
+   Later: `ui.selection`, `sidebar.show`, the matrix highlight.
 5. Chosen MCP tools, instructions, setup docs.
 6. Cluster methods, as M3 steps 4–5 land.
 

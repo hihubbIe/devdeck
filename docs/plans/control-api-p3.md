@@ -3,14 +3,12 @@
 Drafted 2026-11-09. Phase 3 of [control-api.md](control-api.md) (R13.1, R13.5–R13.8,
 R13.10, R13.11). API level 4 for the whole phase.
 
-## Where we are (paused 2026-11-09)
+## Where we are (done 2026-11-10, waiting for the user's manual test)
 
-- Done: steps 1–9 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, `5a49513`,
-  `7c3675a`, `90ecb21`, `90d913e`, step 9's commit); each has an "as built" section at
-  the end of this file.
-- Next: the phase's close: an independent diff review of the phase, perf (idle CPU with
-  no subscriber and no wait), docs (R13 checkboxes, ROADMAP, DESIGN), and the user's
-  manual test.
+- Done: steps 1–9 and the phase's close (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`,
+  `6d26748`, `5a49513`, `7c3675a`, `90ecb21`, `90d913e`, `c600fa9`, the close's commit);
+  each step has an "as built" section, the close its own, at the end of this file.
+- Next: the user's manual test ("Manual test" at the end), then phase 4.
 - Open points carried forward:
   - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
     keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
@@ -777,3 +775,49 @@ Diff review: by the lead (the review subagent was refused for 8a; the user's cho
 - Tests: the new tools' names and hints; `watch`'s arguments and lines.
 
 Review: by the lead (small change; the user's choice for this phase).
+
+## Phase close (2026-11-10)
+
+- After the automated security review of 8b: `group.put` and `sidebar.pin` take only an
+  item or folder the list shows (`Sidebar::knows`, `items_in`), keys of 200 bytes at
+  most, 500 items in groups a list.
+- Phase review (subagent, whole phase), assessed:
+  1. A caller could pile up terminals, tabs and panes (open, stop, open again; a new
+     shell starting a new count) — taken: `Runner::shells_of` counts every terminal a
+     caller's terminal opened that's still known, in any state, whichever of its shells
+     opened it; `terminal.stop` closes the stopped shell's tab (unless the user types in
+     it); the API opens nothing past 100 views in the live layout (`present::room`).
+  2. A caller acting more often than every 2 s was toasted once, then never — taken:
+     the notice remembers the last toast, not the last call.
+  3. `terminal.open` started the shell before checking its pane — taken: the pane first.
+  Left (below the reviewer's threshold): a shell the caller opened stays its own after
+  the user types in it; `not_found` against `permission_denied` tells whether a path
+  outside the workspace exists (the caller has a shell anyway); a cluster deployment
+  can't be pinned before the cluster has loaded.
+- Perf (release build, Wayland, `scripts/measure.py idle`): idle CPU 0.10 %, renders
+  while idle 0, memory at start 135 MB RSS (phase 1: 0.10 %, 0, 132 MB); CPU while
+  streaming a 50 000-line log 13 %.
+- Docs: DESIGN (the control API section, decisions of 2026-11-09 and 2026-11-10),
+  ROADMAP (phase 3 done; what moved to phase 4 and later).
+
+## Manual test
+
+On the installed build (`scripts/install.sh`, then restart Kugelblitz), in a devdeck
+terminal, `claude` with `devdeck` registered (`claude mcp add --scope user devdeck --
+~/.local/bin/devdeck-mcp`). `/mcp` lists `devdeck_observe`, `devdeck_read`,
+`devdeck_run`, `devdeck_present`, `devdeck_organize`.
+
+1. Ask Claude to open an app's view and a file at a line while you type in another
+   tab: the tabs appear in the background, your keys stay where they were; asked to show
+   one in the pane you type in, it says it needs your approval.
+2. Ask it to start a dev server and wait until it's ready (`run.wait` until a line
+   matches), then to read what it printed.
+3. Ask it to open a shell of its own and run nothing; it shows in the Terminals list
+   with a tab in the background; ask it to stop it: the tab goes.
+4. Ask it to write a note (then type in that note yourself and ask it to write again:
+   it says it needs your approval), to pin an app and to make a sidebar group.
+5. Ask it for the repository's status and branches, and the workspace's ports.
+6. In another devdeck terminal: `devdeck-ctl watch runs notes layout`; change things
+   by hand and through Claude: one line per change, never the content.
+7. `ui.notify` through Claude: a toast labelled with its terminal; Settings → API shows
+   every call in the audit.

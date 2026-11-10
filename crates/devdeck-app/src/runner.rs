@@ -270,10 +270,16 @@ impl Runner {
         }
     }
 
-    /// Shells `starter` has: running, or waiting for the tools to start.
+    /// Shells a caller's terminal opened that are still known, in any state (a stopped one
+    /// keeps its tab until closed), or waiting for the tools; whichever shell of that
+    /// terminal opened them (a new shell there doesn't start a new count).
     pub fn shells_of(&self, starter: &Starter) -> usize {
-        let running = self.runs.iter().filter(|(k, r)| k.is_terminal() && &r.starter == starter && r.state.is_running()).count();
-        running + self.waiting_shells.values().filter(|(_, s)| s == starter).count()
+        let same = |s: &Starter| match (s, starter) {
+            (Starter::Caller { workspace: a, n: m, uid: u, .. }, Starter::Caller { workspace: b, n, uid, .. }) => a == b && m == n && u == uid,
+            _ => false,
+        };
+        let known = self.runs.iter().filter(|(k, r)| k.is_terminal() && self.terminals.contains_key(*k) && same(&r.starter)).count();
+        known + self.waiting_shells.values().filter(|(_, s)| same(s)).count()
     }
 
     fn start_waiting_shells(&mut self, cx: &mut Context<Self>) {

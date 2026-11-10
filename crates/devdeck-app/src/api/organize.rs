@@ -30,6 +30,21 @@ pub const NOTES_MAX: usize = 500;
 pub const LAYOUTS_MAX: usize = 50;
 pub const PINS_MAX: usize = 200;
 pub const GROUPS_MAX: usize = 100;
+/// Items put in groups, a list; an item's key as given.
+pub const MEMBERS_MAX: usize = 500;
+pub const KEY_MAX: usize = 200;
+
+/// `node` must be one of `list`'s items or folders, its key of a sane length: a caller
+/// can't grow what's saved with names of its own.
+fn known(s: &Sidebar, list: Activity, node: &str, cx: &App) -> Result<(), ApiError> {
+    if node.is_empty() || node.len() > KEY_MAX {
+        return Err(ApiError::invalid(format!("key: 1 to {KEY_MAX} bytes")));
+    }
+    if !s.knows(list, node, cx) {
+        return Err(ApiError::not_found(format!("{node} isn't in that list")));
+    }
+    Ok(())
+}
 
 fn asks(why: &str) -> ApiError {
     ApiError::new(ErrorKind::ApprovalRequired, format!("{why}: that needs the user's approval, which comes in a later version of devdeck"))
@@ -45,10 +60,12 @@ pub fn terminal_open(cx: &CallCx, p: TerminalOpenParams, app: &mut App) -> Resul
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let me = me(cx)?;
     let runner = w.services.read(app).runner.clone();
-    // Waiting for the tools counts: a caller can't queue shells past the cap.
+    // Every shell this terminal opened that's still known counts (stopped ones keep
+    // their tab), and those waiting for the tools.
     if runner.read(app).shells_of(&me) >= TERMINALS_PER_CALLER {
-        return Err(ApiError::new(ErrorKind::Busy, format!("{TERMINALS_PER_CALLER} shells of yours run already")));
+        return Err(ApiError::new(ErrorKind::Busy, format!("{TERMINALS_PER_CALLER} shells of yours are open already (terminal.stop closes one)")));
     }
+    super::present::room(&w, app)?;
     let services = w.services.read(app);
     if services.protected_env() {
         return Err(asks("the current env is protected"));
@@ -69,6 +86,19 @@ pub fn terminal_open(cx: &CallCx, p: TerminalOpenParams, app: &mut App) -> Resul
             runner.read(app).terminals().into_iter().find(|(k, _)| k.terminal_number() == Some(*n)).map(|(_, d)| d).ok_or_else(|| ApiError::invalid("dir: needed"))?
         }
     };
+    // Where its tab goes, checked before a shell starts.
+    let l = w.deck.read(app).layout();
+    let pane = match p.pane {
+        Some(pane) => {
+            let layout = p.layout.as_deref().ok_or_else(|| ApiError::invalid("layout: needed with pane"))?;
+            if w.deck.read(app).book.current != layout {
+                return Err(ApiError::new(ErrorKind::Conflict, "that layout isn't shown: read ui.get again"));
+            }
+            l.pane(PaneId(pane)).map_err(|_| ApiError::not_found(format!("no pane {pane}")))?;
+            PaneId(pane)
+        }
+        None => l.main().focused,
+    };
     let n = w.deck.read(app).next_terminal(app);
     // The runner first: the tab, built as the user's, finds it asked for by the caller.
     runner.update(app, |r, cx| r.open_shell(n, &dir, env, me.clone(), cx));
@@ -80,17 +110,6 @@ pub fn terminal_open(cx: &CallCx, p: TerminalOpenParams, app: &mut App) -> Resul
         return Err(ApiError::new(ErrorKind::Refused, format!("the shell couldn't start: {why}")));
     }
     let view = ViewAddr::Terminal { n, dir: dir.display().to_string() }.to_ref();
-    let l = w.deck.read(app).layout();
-    let pane = match p.pane {
-        Some(pane) => {
-            let layout = p.layout.as_deref().ok_or_else(|| ApiError::invalid("layout: needed with pane"))?;
-            if w.deck.read(app).book.current != layout {
-                return Err(ApiError::new(ErrorKind::Conflict, "that layout isn't shown: read ui.get again"));
-            }
-            PaneId(pane)
-        }
-        None => l.main().focused,
-    };
     let drop = match p.edge {
         Some(e) => Drop::Edge(pane, edge(e)),
         None => Drop::Into(pane),
@@ -136,6 +155,13 @@ pub fn terminal_stop(cx: &CallCx, p: TerminalStopParams, app: &mut App) -> Resul
         return Err(asks(&format!("terminal {} runs {program}", p.n)));
     }
     runner.update(app, |r, cx| r.stop(&key, cx));
+    // Its tab goes too (the caller made it), unless the user types in it now.
+    let tab = w.deck.read(app).layout().views().into_iter().find(|r| matches!(ViewAddr::parse(r), ViewAddr::Terminal { n, .. } if n == p.n));
+    if let Some(tab) = tab
+        && let Some(keys) = crate::window_view::keys(&w.deck, app)
+    {
+        let _ = w.deck.update(app, |d, cx| d.apply_quietly(&keys, None, cx, |l| l.close_view(&tab)));
+    }
     say(cx, "stopped", &format!("terminal {}", p.n), app);
     terminal_get(cx, TerminalParams { workspace: Some(w.id.clone()), n: p.n }, app)
 }
@@ -293,6 +319,12 @@ fn group_exists(s: &Sidebar, list: Activity, path: &str) -> Result<(), ApiError>
 
 pub fn sidebar_pin(cx: &CallCx, p: PinParams, app: &mut App) -> Result<Done, ApiError> {
     let (s, list) = list(cx, p.workspace.as_deref(), &p.list, app)?;
+    if list == Activity::Terminals {
+        return Err(ApiError::new(ErrorKind::Refused, "terminals aren't pinned"));
+    }
+    if p.pinned {
+        known(s.read(app), list, &p.key, app)?;
+    }
     let pins = s.read(app).state.pins.get(list.list_id()).map_or(0, |x| x.len());
     if p.pinned && pins >= PINS_MAX {
         return Err(ApiError::new(ErrorKind::Refused, format!("{PINS_MAX} pins a list at most")));
@@ -339,6 +371,11 @@ pub fn group_put(cx: &CallCx, p: GroupPutParams, app: &mut App) -> Result<Done, 
     }
     if let Some(g) = &p.group {
         group_exists(s.read(app), list, g)?;
+    }
+    known(s.read(app), list, &p.node, app)?;
+    let members = s.read(app).state.groups.get(list.list_id()).map_or(0, |g| g.members.len());
+    if members >= MEMBERS_MAX {
+        return Err(ApiError::new(ErrorKind::Refused, format!("{MEMBERS_MAX} items in groups a list at most")));
     }
     s.update(app, |s, cx| s.put(list, &p.node, p.group.as_deref(), cx));
     Ok(Done {})
