@@ -63,16 +63,21 @@ impl From<io::Error> for ClientError {
     }
 }
 
+/// Notifications kept while calls wait, at most (the oldest go first).
+pub const KEPT: usize = 1024;
+
 pub struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next: u64,
+    /// Notifications that came while waiting for an answer, oldest first.
+    pending: std::collections::VecDeque<Value>,
 }
 
 impl Client {
     pub fn connect(path: &Path) -> io::Result<Self> {
         let writer = UnixStream::connect(path)?;
-        Ok(Self { reader: BufReader::new(writer.try_clone()?), writer, next: 1 })
+        Ok(Self { reader: BufReader::new(writer.try_clone()?), writer, next: 1, pending: Default::default() })
     }
 
     /// How long to wait for an answer (none: as long as it takes); past it, the call
@@ -85,6 +90,25 @@ impl Client {
         let params = serde_json::to_value(params).map_err(|e| ClientError::Protocol(e.to_string()))?;
         let result = self.call_raw(M::NAME, params)?;
         serde_json::from_value(result).map_err(|e| ClientError::Protocol(format!("{}: {e}", M::NAME)))
+    }
+
+    /// The next notification (`{method, params}`): one kept while a call waited, else the
+    /// next to come, within the read timeout ([`Client::set_timeout`]).
+    pub fn next_notification(&mut self) -> Result<Value, ClientError> {
+        if let Some(n) = self.pending.pop_front() {
+            return Ok(n);
+        }
+        let mut buf = Vec::new();
+        loop {
+            if !read_message(&mut self.reader, &mut buf)? {
+                return Err(ClientError::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "devdeck closed the connection")));
+            }
+            let msg: Value = serde_json::from_slice(&buf).map_err(|e| ClientError::Protocol(e.to_string()))?;
+            // No call is waiting: a stray answer isn't one to keep.
+            if msg.get("id").is_none() {
+                return Ok(msg);
+            }
+        }
     }
 
     /// A call by name, for clients that pass methods through (the CLI, MCP).
@@ -100,8 +124,12 @@ impl Client {
                 return Err(ClientError::Io(io::Error::new(io::ErrorKind::UnexpectedEof, "devdeck closed the connection")));
             }
             let msg: Value = serde_json::from_slice(&buf).map_err(|e| ClientError::Protocol(e.to_string()))?;
-            // Not an answer: an event (a later level).
+            // Not an answer: a notification (an event), kept for `next_notification`.
             if msg.get("id").is_none() {
+                if self.pending.len() == KEPT {
+                    self.pending.pop_front();
+                }
+                self.pending.push_back(msg);
                 continue;
             }
             let r: Response = serde_json::from_value(msg).map_err(|e| ClientError::Protocol(e.to_string()))?;
@@ -173,6 +201,7 @@ mod tests {
         let mut c = Client::connect(&path).unwrap();
         let r = c.call::<crate::methods::EditModeGet>(&crate::types::NoParams {}).unwrap();
         assert!(r.on);
+        assert_eq!(c.next_notification().unwrap()["method"], "event", "the event that came first is kept");
         let (_d, path) = serve(r#"{"jsonrpc":"2.0","id":ID,"error":{"code":-32000,"message":"no","data":{"kind":"permission_denied"}}}"#);
         let mut c = Client::connect(&path).unwrap();
         match c.call_raw("run.get", serde_json::json!({})) {

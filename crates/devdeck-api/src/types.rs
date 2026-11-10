@@ -867,6 +867,63 @@ pub struct Cancelled {
     pub job: String,
 }
 
+// ---- Events (R13.10) ----
+
+/// What a client can follow. An event says what changed, never its content: the client
+/// reads that with the methods (`run.get`, `note.read`…).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Topic {
+    /// A run's state changed: `{app, cmd, state}`.
+    Runs,
+    /// A terminal's shell state changed: `{n, state}`.
+    Terminals,
+    /// New output: `{app, cmd}` for a run, `{n}` for the caller's own terminal; at most
+    /// every 100 ms each.
+    Output,
+    /// The live layout changed (tabs, panes, windows, the current layout): `{}`.
+    Layout,
+    /// A note's text, name or list changed: `{id, revision}`, `{id, deleted: true}`.
+    Notes,
+    /// The caller's workspace was shown or hidden: `{shown}`.
+    Workspace,
+    /// UI scale or theme changed: `{}`.
+    Settings,
+    /// Edit mode turned on or off: `{on}`.
+    EditMode,
+    /// A toast was shown: `{id, kind}` (`ui.toasts` gives its text).
+    Toasts,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TopicsParams {
+    pub topics: Vec<Topic>,
+}
+
+/// The topics this connection follows now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Subscribed {
+    pub topics: Vec<Topic>,
+}
+
+/// A notification `event`: numbered per connection, from 1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Event {
+    pub seq: u64,
+    pub topic: Topic,
+    pub data: serde_json::Value,
+}
+
+/// A notification `events.lagged`: events from `seq` on were dropped (the client read
+/// too slowly); read the state again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Lagged {
+    pub seq: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

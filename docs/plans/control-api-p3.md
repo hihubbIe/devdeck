@@ -5,10 +5,10 @@ R13.10, R13.11). API level 4 for the whole phase.
 
 ## Where we are (paused 2026-11-09)
 
-- Done: steps 1–5 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`); each has an
-  "as built" section at the end of this file.
-- Next: step 6 (events), then 7 (interest handles), 8 (methods), 9 (clients), then the
-  phase's close (diff review, perf, docs, the user's manual test).
+- Done: steps 1–6 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, step 6's commit);
+  each has an "as built" section at the end of this file.
+- Next: step 7 (interest handles), then 8 (methods), 9 (clients), then the phase's close
+  (diff review, perf, docs, the user's manual test).
 - Open points carried forward:
   - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
     keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
@@ -422,3 +422,41 @@ thread, unchanged.
   never made again; the instructions say how to wait.
 
 Review: by the lead.
+
+## Step 6, as built (2026-11-10)
+
+Touches no new OS code (R11.6).
+
+- `events.subscribe{topics}` / `events.unsubscribe`, class observe, API level 4. An event
+  says what changed, never its content (built differently from the plan, which had output
+  as read): `runs {app, cmd, state, exit_code}`, `terminals {n, state, exit_code}`,
+  `output {app, cmd}` or `{n}` (the caller's own terminal only), `layout {}`,
+  `notes {id, revision}` or `{id, deleted}`, `workspace {shown}`, `settings {}`,
+  `edit_mode {on}`, `toasts {id, kind}`. No `jobs` topic: a job doesn't run between
+  waits. Git and ports topics come with step 7.
+- Notifications `event {seq, topic, data}`, numbered per connection from 1;
+  `events.lagged {seq}` names the first one dropped.
+- Transport: each connection has a writer thread fed by one bounded queue
+  (`OUTBOX` = 256 lines) for answers (blocking) and events (`try_send`, never blocking the
+  UI thread); a line not written within 10 s ends the connection. The client
+  (`devdeck-api`) keeps notifications received during a call (1024 at most) for
+  `next_notification`.
+- The hub watches every workspace's runner, deck and notes, the shell, edit mode, the
+  settings and the toasts only while some connection follows a topic, and goes with
+  the last; changes are gathered and sent every 100 ms at most, the last of each thing
+  winning. A caller hears its own workspace only; a caller whose shell ended follows
+  nothing at the next send.
+
+Diff review (subagent), assessed:
+1. A subscriber whose shell ended kept hearing events and kept the hub — taken: dropped
+   at the next send (`ApiState::alive`, which tests set: the demo's shells have no
+   process).
+2. A client that stops reading could block its connection's thread — taken: a 10 s write
+   timeout ends it.
+3. The client's kept notifications had no bound — taken: 1024, the oldest go.
+4. Sends go in (topic, key) order, not time order — kept: the last of each thing wins;
+   `seq` orders what's sent.
+5. Test gaps — taken: a terminal's output reaches that terminal only; closing a
+   connection and an ended shell stop the watching. Left: the workspace, terminals,
+   edit mode, settings and layout topics end to end, and `events.lagged` through a real
+   connection (its queue logic has a unit test).

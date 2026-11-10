@@ -211,7 +211,7 @@ fn wait(cx: &CallCx, spec: Spec, job: Option<String>, timeout: Option<u32>, app:
         let _waiting = waiting;
         let mut spec = spec;
         loop {
-            let looked = cx.update(|app| look(&CallCx { who: &who, instance: &instance, state }, &mut spec, app));
+            let looked = cx.update(|app| look(&CallCx { who: &who, instance: &instance, state, conn: None }, &mut spec, app));
             let (done, mut waited) = match looked {
                 Ok(l) => l,
                 Err(e) => {

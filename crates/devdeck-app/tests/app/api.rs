@@ -29,7 +29,7 @@ fn outside() -> Who {
 }
 
 fn call(who: &Who, method: &str, params: Value, cx: &mut TestAppContext) -> Result<Value, devdeck_api::ApiError> {
-    cx.update(|cx| dispatch::call(&CallCx { who, instance: "1-2", state: "demo" }, method, params, cx))
+    cx.update(|cx| dispatch::call(&CallCx { who, instance: "1-2", state: "demo", conn: None }, method, params, cx))
 }
 
 #[gpui::test]
@@ -97,7 +97,7 @@ fn the_api_serves_a_socket_and_audits_its_callers(cx: &mut TestAppContext) {
     // What the socket's threads hand over (the transport's own tests use a real socket;
     // GPUI's test scheduler refuses wake-ups from other threads).
     let peer = Peer { pid: Some(std::process::id()), chain: vec![(std::process::id(), 1)], program: "devdeck-ctl".into() };
-    let opened = cx.update(|cx| api::open(&api, &peer, cx)).expect("opened");
+    let opened = cx.update(|cx| api::open(&api, &peer, None, cx)).expect("opened");
     assert!(opened.outside, "the test process isn't below a devdeck shell");
     let info = cx.update(|cx| api::call(&api, opened.id, "devdeck.info", json!({}), cx)).unwrap();
     assert_eq!(info["state"], "main");
@@ -119,10 +119,10 @@ fn one_caller_has_a_few_connections_at_most(cx: &mut TestAppContext) {
     let api = cx.update(|cx| api::start(config, cx));
     let peer = |pid: u32| Peer { pid: Some(pid), chain: vec![], program: "devdeck-ctl".into() };
     for _ in 0..api::CONNECTIONS_PER_CALLER {
-        assert!(cx.update(|cx| api::open(&api, &peer(7), cx)).is_some());
+        assert!(cx.update(|cx| api::open(&api, &peer(7), None, cx)).is_some());
     }
-    assert!(cx.update(|cx| api::open(&api, &peer(7), cx)).is_none(), "one more from the same caller");
-    assert!(cx.update(|cx| api::open(&api, &peer(8), cx)).is_some(), "another caller still gets in");
+    assert!(cx.update(|cx| api::open(&api, &peer(7), None, cx)).is_none(), "one more from the same caller");
+    assert!(cx.update(|cx| api::open(&api, &peer(8), None, cx)).is_some(), "another caller still gets in");
 }
 
 #[gpui::test]
@@ -135,7 +135,7 @@ fn a_caller_whose_shell_ended_expires(cx: &mut TestAppContext) {
     assert!(!cx.read(|cx| api::alive(&terminal(9), cx)));
     assert!(cx.read(|cx| api::alive(&outside(), cx)));
     let peer = Peer { pid: None, chain: vec![], program: "?".into() };
-    let opened = cx.update(|cx| api::open(&api, &peer, cx)).expect("opened");
+    let opened = cx.update(|cx| api::open(&api, &peer, None, cx)).expect("opened");
     assert!(cx.update(|cx| api::call(&api, opened.id, "devdeck.info", json!({}), cx)).is_ok(), "an unpinned peer is outside");
 }
 

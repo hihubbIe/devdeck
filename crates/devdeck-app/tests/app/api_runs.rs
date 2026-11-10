@@ -31,7 +31,7 @@ fn agent() -> Who {
 }
 
 fn call(who: &Who, method: &str, params: Value, cx: &mut TestAppContext) -> Result<Run, devdeck_api::ApiError> {
-    let v = cx.update(|cx| dispatch::call(&CallCx { who, instance: "i", state: "demo" }, method, params, cx))?;
+    let v = cx.update(|cx| dispatch::call(&CallCx { who, instance: "i", state: "demo", conn: None }, method, params, cx))?;
     Ok(serde_json::from_value(v).unwrap())
 }
 
@@ -145,7 +145,7 @@ fn an_agents_run_isnt_saved_as_running_and_the_user_is_told(cx: &mut TestAppCont
     assert!(toasts.iter().any(|t| t == "work · terminal 3 stopped eventservice · run"), "{toasts:?}");
     // Every call that acts is audited once, with what came of it.
     let peer = Peer { pid: Some(77), chain: vec![], program: "x".into() };
-    let opened = cx.update(|cx| api::open(&api, &peer, cx)).expect("opened");
+    let opened = cx.update(|cx| api::open(&api, &peer, None, cx)).expect("opened");
     let _ = cx.update(|cx| api::call(&api, opened.id, "run.start", run(APP, CMD), cx));
     let e = cx.read(|cx| api.read(cx).audit.front().cloned().unwrap());
     assert_eq!((e.event.label(), e.method.as_deref(), e.pid), ("called", Some("run.start"), Some(77)));

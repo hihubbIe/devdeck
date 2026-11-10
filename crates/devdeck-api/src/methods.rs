@@ -130,6 +130,10 @@ methods! {
         "Forgets a job.", since 4;
     JobList = "job.list", Read, NoParams => Jobs,
         "The caller's jobs, oldest first.", since 4;
+    EventsSubscribe = "events.subscribe", Observe, TopicsParams => Subscribed,
+        "Follows topics on this connection: devdeck sends `event` notifications saying what changed (never its content).", since 4;
+    EventsUnsubscribe = "events.unsubscribe", Observe, TopicsParams => Subscribed,
+        "Stops following topics.", since 4;
 }
 
 /// A method as the catalog lists it.
@@ -211,6 +215,7 @@ mod tests {
                 Class::Run => 2,
                 Class::Read if m.name.ends_with(".wait") || m.name.starts_with("job.") => 4,
                 Class::Read => 3,
+                _ if m.name.starts_with("events.") => 4,
                 _ => 1,
             };
             assert_eq!(m.since, since, "{}", m.name);

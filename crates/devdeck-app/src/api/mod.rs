@@ -9,6 +9,7 @@
 
 pub mod audit;
 pub mod dispatch;
+pub mod events;
 pub mod handlers;
 pub mod identity;
 pub mod policy;
@@ -101,6 +102,9 @@ pub struct Connection {
     pub pid: Option<u32>,
     pub since: SystemTime,
     pub calls: u64,
+    /// Where its events go, and the topics it follows.
+    events: Option<events::Outbox>,
+    pub topics: std::collections::BTreeSet<devdeck_api::types::Topic>,
 }
 
 pub struct ApiState {
@@ -115,6 +119,14 @@ pub struct ApiState {
     /// Answers coming later, by connection (one call in flight on each): dropped, the
     /// call stops (its client hung up, devdeck quits).
     later: HashMap<u64, gpui::Task<()>>,
+    /// Watching the models while some connection follows a topic; what changed since
+    /// the last send, and the send waiting.
+    hub: Option<events::Hub>,
+    pending: BTreeMap<(devdeck_api::types::Topic, String), events::Change>,
+    flushing: Option<gpui::Task<()>>,
+    /// Whether a caller is still there ([`alive`]; tests give their own: the demo's
+    /// shells have no process).
+    pub alive: fn(&Who, &App) -> bool,
     /// Where the whole audit goes (none: kept in memory only).
     pub audit_path: Option<PathBuf>,
     writer: Option<audit::Writer>,
@@ -144,7 +156,7 @@ pub fn socket_path(cx: &App) -> Option<PathBuf> {
 
 /// What the socket's threads hand to the UI thread.
 enum ToUi {
-    Open(Peer, SyncSender<Option<Opened>>),
+    Open(Peer, SyncSender<Vec<u8>>, SyncSender<Option<Opened>>),
     Call { conn: u64, method: String, params: Value, reply: SyncSender<Result<Value, ApiError>> },
     Notification { conn: u64, method: String },
     Close(u64),
@@ -167,9 +179,9 @@ impl ChannelSink {
 }
 
 impl Sink for ChannelSink {
-    fn open(&self, peer: Peer) -> Option<Opened> {
+    fn open(&self, peer: Peer, events: SyncSender<Vec<u8>>) -> Option<Opened> {
         let (tx, rx) = sync_channel(1);
-        self.send(ToUi::Open(peer, tx))?;
+        self.send(ToUi::Open(peer, events, tx))?;
         rx.recv().ok().flatten()
     }
 
@@ -241,6 +253,10 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
         connections: BTreeMap::new(),
         audit: VecDeque::new(),
         later: HashMap::new(),
+        hub: None,
+        pending: BTreeMap::new(),
+        flushing: None,
+        alive,
         audit_path,
         writer,
         connects: HashMap::new(),
@@ -271,8 +287,8 @@ pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
 fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
     let Some(state) = state.upgrade() else { return };
     match msg {
-        ToUi::Open(peer, reply) => {
-            let _ = reply.send(open(&state, &peer, cx));
+        ToUi::Open(peer, events, reply) => {
+            let _ = reply.send(open(&state, &peer, Some(events), cx));
         }
         ToUi::Call { conn, method, params, reply } => match answer(&state, conn, &method, params, cx) {
             dispatch::Answer::Now(r) => {
@@ -292,12 +308,7 @@ fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
             let caller = s.connections.get(&conn).map_or_else(|| "?".into(), |c| c.who.label());
             s.record(audit::Entry::new(caller, audit::Event::Notification, Some(method), None), cx);
         }),
-        ToUi::Close(conn) => state.update(cx, |s, cx| {
-            s.later.remove(&conn);
-            if s.connections.remove(&conn).is_some() {
-                cx.notify();
-            }
-        }),
+        ToUi::Close(conn) => state.update(cx, |s, cx| s.close_connection(conn, cx)),
         ToUi::Refused(why) => state.update(cx, |s, cx| {
             // Once a minute per reason: a client connecting in a loop doesn't fill the audit.
             if s.first_in_a_while(format!("refused: {why}")) {
@@ -309,9 +320,10 @@ fn on_message(state: &gpui::WeakEntity<ApiState>, msg: ToUi, cx: &mut App) {
 
 /// A new connection from `peer`: who it is, recorded; None past
 /// [`CONNECTIONS_PER_CALLER`].
-pub fn open(state: &Entity<ApiState>, peer: &Peer, cx: &mut App) -> Option<Opened> {
+/// `events`: where its events go (none: it gets none).
+pub fn open(state: &Entity<ApiState>, peer: &Peer, events: Option<SyncSender<Vec<u8>>>, cx: &mut App) -> Option<Opened> {
     let who = identify(peer, cx);
-    state.update(cx, |s, cx| s.open(who, peer.pid, cx))
+    state.update(cx, |s, cx| s.open(who, peer.pid, events, cx))
 }
 
 /// Tells the user what a caller did, in a toast: one per caller every
@@ -349,7 +361,7 @@ pub fn answer(state: &Entity<ApiState>, conn: u64, method: &str, params: Value, 
         state.update(cx, |s, cx| s.record(audit::Entry::new(who.label(), audit::Event::Expired, Some(method.into()), None), cx));
         return dispatch::Answer::Now(Err(ApiError::new(ErrorKind::Expired, "the caller's shell ended; connect again")));
     }
-    let cx_call = dispatch::CallCx { who: &who, instance: &instance, state: kind };
+    let cx_call = dispatch::CallCx { who: &who, instance: &instance, state: kind, conn: Some(conn) };
     let args: String = params.to_string().chars().take(AUDIT_ARGS).collect();
     match dispatch::answer(&cx_call, method, params, cx) {
         dispatch::Answer::Now(result) => {
@@ -429,7 +441,8 @@ pub fn alive(who: &Who, cx: &App) -> bool {
 }
 
 impl ApiState {
-    fn open(&mut self, who: Who, pid: Option<u32>, cx: &mut Context<Self>) -> Option<Opened> {
+    /// A connection of `who` (tests: a caller of their own).
+    pub fn open(&mut self, who: Who, pid: Option<u32>, events: Option<SyncSender<Vec<u8>>>, cx: &mut Context<Self>) -> Option<Opened> {
         if self.connections.values().filter(|c| c.who == who).count() >= CONNECTIONS_PER_CALLER {
             if self.first_in_a_while(format!("too many: {}", who.label())) {
                 self.record(audit::Entry::new(who.label(), audit::Event::Refused, None, Some(format!("more than {CONNECTIONS_PER_CALLER} connections"))), cx);
@@ -443,9 +456,19 @@ impl ApiState {
         if self.first_in_a_while(label.clone()) {
             self.record(audit::Entry::new(label, audit::Event::Connected, None, None).with_pid(pid), cx);
         }
-        self.connections.insert(id, Connection { who, pid, since: SystemTime::now(), calls: 0 });
+        self.connections.insert(id, Connection { who, pid, since: SystemTime::now(), calls: 0, events: events.map(events::Outbox::new), topics: Default::default() });
         cx.notify();
         Some(Opened { id, outside })
+    }
+
+    /// A connection ended: its call answered later stops, its events go (its writer ends),
+    /// and the models stop being watched if it was the last to follow them.
+    pub fn close_connection(&mut self, conn: u64, cx: &mut Context<Self>) {
+        self.later.remove(&conn);
+        if self.connections.remove(&conn).is_some() {
+            self.watch(cx);
+            cx.notify();
+        }
     }
 
     /// Stops serving and removes the socket (devdeck quitting).

@@ -19,6 +19,8 @@ pub struct CallCx<'a> {
     pub instance: &'a str,
     /// `main`, `demo` or `other`.
     pub state: &'static str,
+    /// The connection the call came on (events follow it); none in tests calling here.
+    pub conn: Option<u64>,
 }
 
 /// A method's answer: now, or from a task the UI thread runs.
@@ -101,6 +103,8 @@ handlers! {
     JobWait => later super::waits::job_wait,
     JobCancel => typed super::waits::job_cancel,
     JobList => typed super::waits::job_list,
+    EventsSubscribe => typed super::events::subscribe,
+    EventsUnsubscribe => typed super::events::unsubscribe,
 }
 
 static HANDLERS: LazyLock<BTreeMap<&'static str, Handler>> = LazyLock::new(table);

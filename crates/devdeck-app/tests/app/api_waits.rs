@@ -41,7 +41,7 @@ type Slot = Rc<RefCell<Option<Result<Value, devdeck_api::ApiError>>>>;
 /// Calls `method`; an answer that comes later lands in the slot.
 fn ask(who: &Who, method: &str, params: Value, cx: &mut TestAppContext) -> Slot {
     let slot: Slot = Rc::default();
-    let answer = cx.update(|cx| dispatch::answer(&CallCx { who, instance: "i", state: "demo" }, method, params, cx));
+    let answer = cx.update(|cx| dispatch::answer(&CallCx { who, instance: "i", state: "demo", conn: None }, method, params, cx));
     match answer {
         Answer::Now(r) => *slot.borrow_mut() = Some(r),
         Answer::Later(task) => {

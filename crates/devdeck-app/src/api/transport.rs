@@ -13,11 +13,17 @@ use std::io::{BufReader, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, LazyLock};
 
 /// Connections at most, of which outside callers.
 pub const MAX_CONNECTIONS: usize = 32;
 pub const MAX_OUTSIDE: usize = 8;
+/// Lines waiting to be written to one client, answers and events: past it, events are
+/// dropped (the client reads too slowly) and it's told `events.lagged`.
+pub const OUTBOX: usize = 256;
+/// A line not written to its client within this ends the connection.
+pub const WRITE_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 /// The longest method name a notification is recorded with.
 const MAX_NAME: usize = 128;
 /// After a failed accept (out of descriptors…), the wait before the next.
@@ -32,8 +38,9 @@ pub struct Opened {
 
 /// Where requests go. Calls block the connection's thread until answered.
 pub trait Sink: Send + Sync + 'static {
-    /// A new connection; None refuses it (too many of its caller's).
-    fn open(&self, peer: Peer) -> Option<Opened>;
+    /// A new connection; None refuses it (too many of its caller's). `events` takes the
+    /// lines of events for it (`try_send`: never blocks).
+    fn open(&self, peer: Peer, events: SyncSender<Vec<u8>>) -> Option<Opened>;
     /// A call; `hung_up` says whether its client went meanwhile (its answer can stop).
     fn call(&self, conn: u64, method: String, params: Value, hung_up: &dyn Fn() -> bool) -> Result<Value, ApiError>;
     /// A message without an id: never answered. Told once per connection, its name cut
@@ -94,9 +101,10 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
         sink.refused("too many connections".into());
         return;
     }
+    let (out, outbox) = sync_channel::<Vec<u8>>(OUTBOX);
     let opened = match peer(&stream) {
         Ok(p) => {
-            let opened = sink.open(p);
+            let opened = sink.open(p, out.clone());
             if opened.is_none() {
                 busy(stream.try_clone().ok(), "too many connections from this caller");
             }
@@ -111,7 +119,7 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
     let within = !counted_outside || outside.fetch_add(1, Ordering::SeqCst) < MAX_OUTSIDE;
     if let Some(o) = opened {
         if within {
-            serve_connection(stream, sink, o.id);
+            serve_connection(stream, sink, o.id, out, outbox);
         } else {
             busy(Some(stream), "too many outside connections");
             sink.refused("too many outside connections".into());
@@ -133,12 +141,28 @@ fn busy(stream: Option<UnixStream>, why: &str) {
     }
 }
 
-fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
+/// Writes what `outbox` gets, in order, until the client is gone or nothing can send any
+/// more (the connection ended and the sink let go of its events).
+fn write_out(mut stream: UnixStream, outbox: Receiver<Vec<u8>>) {
+    // A client that stops reading is gone: its connection ends, never blocks.
+    if stream.set_write_timeout(Some(WRITE_WITHIN)).is_err() {
+        return;
+    }
+    while let Ok(line) = outbox.recv() {
+        if stream.write_all(&line).is_err() {
+            return;
+        }
+    }
+}
+
+fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64, out: SyncSender<Vec<u8>>, outbox: Receiver<Vec<u8>>) {
     let Ok(read) = stream.try_clone() else { return };
     let Ok(probe) = stream.try_clone() else { return };
     let hung_up = move || hung_up(&probe);
     let mut reader = BufReader::new(read);
-    let mut writer = stream;
+    // One writer: answers and events never interleave inside a line. It ends once the
+    // connection is closed here and the sink let its events go (`Sink::close`).
+    std::thread::spawn(move || write_out(stream, outbox));
     let mut buf = Vec::new();
     let mut told = false;
     loop {
@@ -156,7 +180,7 @@ fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64) {
                 line = l;
             }
             line.push(b'\n');
-            if writer.write_all(&line).is_err() {
+            if out.send(line).is_err() {
                 return;
             }
         }
@@ -241,10 +265,13 @@ mod tests {
     struct Stub {
         outside: bool,
         log: Mutex<Vec<String>>,
+        /// The last connection's events.
+        events: Mutex<Option<SyncSender<Vec<u8>>>>,
     }
 
     impl Sink for Stub {
-        fn open(&self, peer: Peer) -> Option<Opened> {
+        fn open(&self, peer: Peer, events: SyncSender<Vec<u8>>) -> Option<Opened> {
+            *self.events.lock().unwrap() = Some(events);
             self.log.lock().unwrap().push(format!("open {}", peer.pid.is_some()));
             Some(Opened { id: 1, outside: self.outside })
         }
@@ -267,6 +294,8 @@ mod tests {
             self.log.lock().unwrap().push(format!("notification {method}"));
         }
         fn close(&self, _: u64) {
+            // As devdeck does: the connection's events go with it (its writer ends then).
+            self.events.lock().unwrap().take();
             self.log.lock().unwrap().push("close".into());
         }
         fn refused(&self, why: String) {
@@ -425,5 +454,17 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the hang-up wasn't seen");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn events_reach_the_client_between_answers() {
+        let (_dir, path, stub, _stop) = start(Stub::default());
+        let mut c = Client::connect(&path).unwrap();
+        c.set_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        c.call_raw("run.list", json!({})).unwrap();
+        let line = b"{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"seq\":1}}\n".to_vec();
+        stub.events.lock().unwrap().as_ref().unwrap().try_send(line).unwrap();
+        assert_eq!(c.next_notification().unwrap()["params"]["seq"], 1);
+        assert!(c.call_raw("run.list", json!({})).is_ok(), "answers still come after it");
     }
 }
