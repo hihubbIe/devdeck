@@ -6,13 +6,13 @@
 //! asks first when something is running (R8.1); a quit from outside (a signal, the last
 //! window closed, on macOS the Dock's Quit) stops everything without asking (R8.2).
 
-use crate::deck::Deck;
+use crate::deck::{Deck, NotRevealed, Revealed};
 use crate::runner::RunnerEvent;
 use crate::services::Services;
 use crate::sidebar::Sidebar;
 use devdeck_core::view_addr::ViewAddr;
 use crate::window_view::{WindowView, window_options};
-use devdeck_core::layout::Layout;
+use devdeck_core::layout::{Layout, MAIN_WINDOW, ViewRef};
 use devdeck_core::layout_book::LayoutBook;
 use devdeck_core::state::{AppState, Loaded, SidebarState, StateStore};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
@@ -283,6 +283,46 @@ impl Shell {
         cx.notify();
     }
 
+    /// Brings `view` of workspace `workspace` (an id) on screen, the one way a
+    /// notification's Open, the palette or the API shows a view where it is (R2.2, R3.8):
+    /// the workspace shown, then the view found in its live layout or a saved one
+    /// ([`Deck::reveal`]), its window brought forward (where the window system refuses,
+    /// it asks for attention) with the keys in the view, its tab flashing. Open nowhere,
+    /// it opens in the focused pane ("Open here"). Nothing changes when the workspace is
+    /// gone, the view's target is gone (logged), or a dialog is open (it keeps the keys);
+    /// the caller says it.
+    pub fn reveal(&mut self, workspace: &str, view: &ViewRef, cx: &mut Context<Self>) -> Result<Revealed, NotRevealed> {
+        let Some(i) = self.workspaces.iter().position(|w| w.id == workspace) else {
+            log::warn!("reveal {}: no workspace {workspace}", view.0);
+            return Err(NotRevealed::WorkspaceGone);
+        };
+        if devdeck_ui::overlay::any_modal(cx) {
+            return Err(NotRevealed::Modal);
+        }
+        let deck = self.workspaces[i].deck.clone();
+        if let Some(why) = deck.read(cx).gone(view, cx) {
+            log::warn!("reveal {}: {why}", view.0);
+            return Err(NotRevealed::ViewGone(why));
+        }
+        self.switch(i, cx);
+        let (revealed, window) = deck.update(cx, |d, cx| d.reveal(view, cx))?;
+        let main = self.main;
+        // After the switch's and the layout's deferred work (windows open, the main window
+        // follows the workspace), and outside any window's update.
+        cx.defer(move |cx| {
+            let handle = if window == MAIN_WINDOW { main } else { deck.read(cx).os_window(window) };
+            if let Some(h) = handle {
+                let _ = h.update(cx, |v, window, cx| v.bring_forward(window, cx));
+            }
+        });
+        Ok(revealed)
+    }
+
+    /// Whether `view` is open in workspace `workspace` (its live layout or a saved one).
+    pub fn holds(&self, workspace: &str, view: &ViewRef, cx: &App) -> bool {
+        self.workspaces.iter().find(|w| w.id == workspace).is_some_and(|w| w.deck.read(cx).holds(view))
+    }
+
     /// What runs, per workspace (workspaces with nothing running are left out).
     pub fn running(&self, cx: &App) -> Vec<(String, Vec<String>)> {
         self.workspaces
@@ -458,7 +498,7 @@ fn pin_layouts_by_id(pins: &mut std::collections::BTreeSet<String>, book: &Layou
 
 /// A run ending on its own in any workspace becomes a toast naming the workspace, kept
 /// as that workspace's notification: an error when it failed, a success with how long it
-/// took; "View output" shows that workspace and opens the run.
+/// took; Open (or "Open here") reveals the run's tab in that workspace.
 fn watch_results(w: &Workspace, cx: &mut App) {
     let runner = w.services.read(cx).runner.clone();
     let (name, id) = (w.name.clone(), w.id.clone());
@@ -470,7 +510,8 @@ fn watch_results(w: &Workspace, cx: &mut App) {
         };
         let addr = ViewAddr::Run { app: key.app.clone(), cmd: key.cmd.clone() };
         let text = format!("{name} · {} {outcome}", runner.read(cx).title(key));
-        let toast = devdeck_ui::NewToast::new(kind, text).source(Some(id.clone().into())).note(crate::notifications::open_action("View output", &id, &addr.to_ref()));
+        let open = crate::notifications::reveal_action(&id, &addr.to_ref(), cx);
+        let toast = devdeck_ui::NewToast::new(kind, text).source(Some(id.clone().into())).note(open);
         toasts(cx).update(cx, |t, cx| t.push_new(toast, cx));
     })
     .detach();

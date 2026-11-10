@@ -466,6 +466,30 @@ impl Layout {
         Ok(target)
     }
 
+    /// Brings `view` on screen (an "Open" from a notification): its tab active, its pane
+    /// expanded and focused, and another pane maximized in its window restored. Not open:
+    /// it opens in the main window's focused pane. Returns its pane and whether it was
+    /// open already.
+    pub fn reveal(&mut self, view: ViewRef) -> Result<(PaneId, bool)> {
+        let open = self.find_view(&view).is_some();
+        let pane = match self.find_view(&view) {
+            Some((pane, idx)) => {
+                self.activate(pane, idx)?;
+                pane
+            }
+            None => {
+                let target = self.main().focused;
+                self.open(view, target)?
+            }
+        };
+        let window = self.window_of(pane)?;
+        let w = self.window_mut(window)?;
+        if w.maximized.is_some_and(|m| m != pane) {
+            w.maximized = None;
+        }
+        Ok((pane, open))
+    }
+
     pub fn activate(&mut self, pane: PaneId, idx: usize) -> Result<()> {
         let p = self.pane_mut(pane)?;
         if idx >= p.tabs.len() {

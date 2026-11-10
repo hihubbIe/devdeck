@@ -10,6 +10,7 @@
 //!   the click ([`resolve`]). A toast's closures stay on the toast.
 //! - A notification's source is a workspace's id (`None`: the app's), named here.
 
+use crate::deck::NotRevealed;
 use crate::shell;
 use devdeck_core::layout::ViewRef;
 use devdeck_core::view_addr::ViewAddr;
@@ -32,9 +33,17 @@ actions!(notifications, [ToggleNotifications, CloseNotifications, NextNote, Prev
 /// Separates a payload's fields (never in an id or a view address).
 const SEP: char = '\u{1f}';
 
-/// Opens `view` in `workspace` (shows the workspace first).
+/// Reveals `view` of `workspace` under `label` ([`reveal_action`] picks the label).
 pub fn open_action(label: impl Into<SharedString>, workspace: &str, view: &ViewRef) -> NoteAction {
     NoteAction::new(label, format!("open{SEP}{workspace}{SEP}{}", view.0))
+}
+
+/// Reveals `view` of `workspace` ([`shell::Shell::reveal`]), labelled "Open" when it is
+/// open somewhere in that workspace (shown where it is) and "Open here" otherwise (it
+/// will open in the focused pane); decided now, when the notification is made.
+pub fn reveal_action(workspace: &str, view: &ViewRef, cx: &App) -> NoteAction {
+    let held = shell::try_shell(cx).is_some_and(|s| s.read(cx).holds(workspace, view, cx));
+    open_action(if held { "Open" } else { "Open here" }, workspace, view)
 }
 
 /// Opens the problems view of the workspace on screen.
@@ -62,35 +71,35 @@ fn decode(payload: &str) -> Option<Act> {
     }
 }
 
-/// Does what `action` says: the toasts' and the center's resolver. What it opens takes
-/// the keys, and the center makes way for it. A workspace gone says so in a toast and
-/// leaves the center as it is; a payload not understood does nothing (logged).
-pub fn resolve(action: &NoteAction, _window: &mut Window, cx: &mut App) {
-    let Some(s) = shell::try_shell(cx) else { return };
-    let (switch_to, deck, addr) = match decode(&action.payload) {
-        Some(Act::Open { workspace, view }) => match s.read(cx).workspaces.iter().enumerate().find(|(_, w)| w.id == workspace).map(|(i, w)| (i, w.deck.downgrade())) {
-            Some((i, deck)) => (Some(i), deck, ViewAddr::parse(&view)),
-            None => {
-                let text = format!("{}: the workspace {workspace} is gone", action.label);
-                toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
-                return;
-            }
-        },
-        Some(Act::Problems) => (None, s.read(cx).active_deck().downgrade(), ViewAddr::Problems),
+/// Does what `action` says: the toasts' and the center's resolver. A view is revealed
+/// where it is ([`shell::Shell::reveal`]): it takes the keys and the center makes way for
+/// it. A workspace gone says so in a toast and leaves the center as it is; a view whose
+/// target is gone, or a payload not understood, does nothing (logged). While a dialog is
+/// open it is refused (`false`: the toast stays, unread) with a toast saying so.
+pub fn resolve(action: &NoteAction, _window: &mut Window, cx: &mut App) -> bool {
+    let Some(s) = shell::try_shell(cx) else { return true };
+    let (workspace, view) = match decode(&action.payload) {
+        Some(Act::Open { workspace, view }) => (workspace, view),
+        Some(Act::Problems) => {
+            let shell = s.read(cx);
+            (shell.workspaces[shell.active].id.clone(), ViewAddr::Problems.to_ref())
+        }
         None => {
             log::warn!("notification action not understood: {}", action.payload);
-            return;
+            return true;
         }
     };
-    if let Some(i) = switch_to {
-        shell::switch(i, cx);
-    }
-    crate::views::open_in(&deck, addr, cx);
-    // Deferred: this may run inside the main window's update.
-    if let Some(main) = s.read(cx).main_window() {
-        cx.defer(move |cx| {
-            let _ = main.update(cx, |w, window, cx| w.uncover_to_panes(window, cx));
-        });
+    let say = |text: String, cx: &mut App| toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, text, vec![], cx));
+    match s.update(cx, |s, cx| s.reveal(&workspace, &view, cx)) {
+        Ok(_) | Err(NotRevealed::ViewGone(_) | NotRevealed::Refused) => true,
+        Err(NotRevealed::WorkspaceGone) => {
+            say(format!("{}: the workspace {workspace} is gone", action.label), cx);
+            true
+        }
+        Err(NotRevealed::Modal) => {
+            say(format!("{}: close the dialog first", action.label), cx);
+            false
+        }
     }
 }
 
@@ -497,12 +506,13 @@ pub fn changed_span(old: &[u64], new: &[u64]) -> (std::ops::Range<usize>, usize)
     (start..old.len() - end, new.len() - start - end)
 }
 
-/// Runs a notification's action: it is read, then the app does what it says.
+/// Runs a notification's action: the app does what it says, then it is read (unless the
+/// app refused it).
 fn run_action(id: u64, action: NoteAction, window: &mut Window, cx: &mut App) {
     let store = toasts(cx);
-    store.update(cx, |t, cx| t.mark_read(id, cx));
-    if let Some(resolve) = store.read(cx).resolver() {
-        resolve(&action, window, cx);
+    let done = store.read(cx).resolver().is_none_or(|resolve| resolve(&action, window, cx));
+    if done {
+        store.update(cx, |t, cx| t.mark_read(id, cx));
     }
 }
 

@@ -24,6 +24,41 @@ use std::time::Duration;
 /// How long after a change the layout is written.
 pub const SAVE_DELAY: Duration = Duration::from_millis(1000);
 
+/// How long a revealed tab and its pane flash in the accent ([`Deck::reveal`]).
+pub const FLASH: Duration = Duration::from_millis(1000);
+
+/// A tab flashing after a reveal: drawn fading while it's set, cleared by a one-shot
+/// timer (nothing runs once it's over, R1.3). `n` is fresh per flash: the drawing's
+/// element id, so a second flash starts over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flash {
+    pub view: ViewRef,
+    pub n: u64,
+}
+
+/// What [`Deck::reveal`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Revealed {
+    /// It was open (in this layout or another, now shown): brought on screen.
+    Shown,
+    /// It was open nowhere: opened in the main window's focused pane ("Open here").
+    OpenedHere,
+}
+
+/// Why a reveal did nothing ([`Deck::reveal`], [`crate::shell::Shell::reveal`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotRevealed {
+    /// No workspace with that id any more (the caller says it).
+    WorkspaceGone,
+    /// Open nowhere, and its target is gone from the workspace (its app, command, env
+    /// or note): nothing opened, logged.
+    ViewGone(String),
+    /// A dialog is open somewhere: it keeps the keys (the caller says to close it).
+    Modal,
+    /// The layout refused the change (the deck already said why).
+    Refused,
+}
+
 /// Where a terminal shows ([`Deck::terminals`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalTabs {
@@ -88,6 +123,10 @@ pub struct Deck {
     opening_quietly: bool,
     /// Detached windows to open without taking the focus.
     open_unfocused: HashSet<WindowId>,
+    /// The tab flashing after a reveal, if one is.
+    pub flash: Option<Flash>,
+    flashes: u64,
+    flash_task: Option<Task<()>>,
 }
 
 /// Where the user's keys are in one window, or will be again when it shows the deck
@@ -168,6 +207,9 @@ impl Deck {
             covered: false,
             opening_quietly: false,
             open_unfocused: HashSet::new(),
+            flash: None,
+            flashes: 0,
+            flash_task: None,
         }
     }
 
@@ -535,6 +577,82 @@ impl Deck {
             }
             self.save_book(cx);
         }
+    }
+
+    /// Whether `view` is open in this workspace: in the live layout or a saved one.
+    pub fn holds(&self, view: &ViewRef) -> bool {
+        self.layout.find_view(view).is_some() || self.layout_holding(view).is_some()
+    }
+
+    /// Why `view` can't be revealed: open in no layout, and its target gone from the
+    /// workspace ([`views::gone`]).
+    pub fn gone(&self, view: &ViewRef, cx: &App) -> Option<String> {
+        if self.holds(view) {
+            return None;
+        }
+        self.services.as_ref().and_then(|s| views::gone(view, s.read(cx), cx))
+    }
+
+    /// The saved layout (not the current one) showing `view`, the first by name.
+    fn layout_holding(&self, view: &ViewRef) -> Option<LayoutId> {
+        let mut holding: Vec<(&LayoutId, &str)> = self
+            .book
+            .layouts
+            .iter()
+            .filter(|(id, n)| **id != self.book.current && n.layout.as_ref().is_some_and(|l| l.find_view(view).is_some()))
+            .map(|(id, n)| (id, n.name.as_str()))
+            .collect();
+        holding.sort_by_key(|(_, name)| name.to_lowercase());
+        holding.first().map(|(id, _)| (*id).clone())
+    }
+
+    /// Brings `view` on screen (an "Open" from a notification, R2.2, R3.8): where it is in
+    /// the live layout, else in the saved layout holding it (switched to: the layout left
+    /// keeps its tabs and windows), its tab active, its pane expanded and focused, a pane
+    /// maximized over it restored; open nowhere, it opens in the main window's focused
+    /// pane. Then its tab flashes. Returns what it did and the window showing it (the
+    /// caller brings that window forward).
+    pub fn reveal(&mut self, view: &ViewRef, cx: &mut Context<Self>) -> Result<(Revealed, WindowId), NotRevealed> {
+        if self.layout.find_view(view).is_none() {
+            match self.layout_holding(view) {
+                Some(id) => {
+                    if let Err(e) = self.switch_layout(&id, cx) {
+                        log::warn!("reveal {}: {e}", view.0);
+                    }
+                }
+                None => {
+                    if let Some(why) = self.gone(view, cx) {
+                        log::warn!("reveal {}: {why}", view.0);
+                        return Err(NotRevealed::ViewGone(why));
+                    }
+                }
+            }
+        }
+        let (pane, open) = self.apply(cx, |l| l.reveal(view.clone())).ok_or(NotRevealed::Refused)?;
+        let window = self.layout.window_of(pane).map_err(|e| {
+            log::warn!("reveal {}: {e}", view.0);
+            NotRevealed::Refused
+        })?;
+        self.flash(view.clone(), cx);
+        Ok((if open { Revealed::Shown } else { Revealed::OpenedHere }, window))
+    }
+
+    /// Flashes `view`'s tab and pane for [`FLASH`]; a flash already running gives way.
+    pub fn flash(&mut self, view: ViewRef, cx: &mut Context<Self>) {
+        self.flashes += 1;
+        let n = self.flashes;
+        self.flash = Some(Flash { view, n });
+        self.flash_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLASH).await;
+            let _ = this.update(cx, |d, cx| {
+                if d.flash.as_ref().is_some_and(|f| f.n == n) {
+                    d.flash = None;
+                    d.flash_task = None;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
     }
 
     pub fn rename_layout(&mut self, id: &str, to: &str, cx: &mut Context<Self>) -> Result<(), BookError> {

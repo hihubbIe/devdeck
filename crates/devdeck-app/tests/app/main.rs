@@ -30,6 +30,7 @@ mod notifications;
 mod pane_header;
 mod ports;
 mod pty_driver;
+mod reveal;
 mod runs;
 mod service;
 mod settings;

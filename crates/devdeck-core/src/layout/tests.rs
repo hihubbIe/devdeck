@@ -300,6 +300,34 @@ fn maximize_toggles_and_clears_when_pane_leaves() {
 }
 
 #[test]
+fn reveal_activates_expands_restores_or_opens_here() {
+    let (mut l, p) = with_tabs(&["a", "b", "c"]);
+    l.move_tab(p, 1, Drop::Edge(p, Edge::Right)).unwrap();
+    let (q, _) = l.find_view(&v("b")).unwrap();
+    // Hidden behind another pane maximized, its own pane collapsed, another tab active.
+    l.open(v("d"), q).unwrap();
+    l.toggle_maximize(p).unwrap();
+    assert_eq!(l.reveal(v("b")).unwrap(), (q, true));
+    ok(&l);
+    assert_eq!(l.main().maximized, None, "the maximized pane hiding it is restored");
+    assert_eq!(l.main().focused, q);
+    assert_eq!(l.pane(q).unwrap().active_view(), Some(&v("b")));
+    l.toggle_collapse(q).unwrap();
+    l.focus(p).unwrap();
+    assert_eq!(l.reveal(v("d")).unwrap(), (q, true));
+    assert!(!l.pane(q).unwrap().collapsed, "expanded");
+    ok(&l);
+    // Its own pane maximized stays so.
+    l.toggle_maximize(q).unwrap();
+    l.reveal(v("b")).unwrap();
+    assert_eq!(l.main().maximized, Some(q));
+    // Not open: opened in the main window's focused pane.
+    assert_eq!(l.reveal(v("e")).unwrap(), (q, false));
+    assert_eq!(l.pane(q).unwrap().active_view(), Some(&v("e")));
+    ok(&l);
+}
+
+#[test]
 fn collapsing_maximized_pane_unmaximizes() {
     let (mut l, p) = with_tabs(&["a", "b"]);
     l.move_tab(p, 1, Drop::Edge(p, Edge::Right)).unwrap();

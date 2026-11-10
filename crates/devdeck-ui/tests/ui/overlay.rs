@@ -792,13 +792,19 @@ fn click(vcx: &mut VisualTestContext, selector: String) {
 struct Hooks {
     opened: Rc<RefCell<Vec<Option<u64>>>>,
     resolved: Rc<RefCell<Vec<NoteAction>>>,
+    /// What the app answers: refused when set.
+    refuse: Rc<std::cell::Cell<bool>>,
 }
 
 fn hooks(vcx: &mut VisualTestContext) -> Hooks {
     let h = Hooks::default();
-    let (o, r) = (h.opened.clone(), h.resolved.clone());
+    let (o, r, refuse) = (h.opened.clone(), h.resolved.clone(), h.refuse.clone());
     vcx.update(|_, cx| {
-        toasts(cx).update(cx, |t, _| t.set_hooks(Rc::new(move |on, _, _| o.borrow_mut().push(on)), Rc::new(move |a, _, _| r.borrow_mut().push(a.clone()))))
+        let resolve = Rc::new(move |a: &NoteAction, _: &mut gpui::Window, _: &mut gpui::App| {
+            r.borrow_mut().push(a.clone());
+            !refuse.get()
+        });
+        toasts(cx).update(cx, |t, _| t.set_hooks(Rc::new(move |on, _, _| o.borrow_mut().push(on)), resolve))
     });
     h
 }
@@ -883,6 +889,23 @@ fn an_action_as_data_is_resolved_by_the_app(cx: &mut TestAppContext) {
     assert_eq!(read(&mut vcx, id), Some(true));
     let kept = vcx.update(|_, cx| toasts(cx).read(cx).notes.get(id).map(|n| n.actions.clone()));
     assert_eq!(kept, Some(vec![open]), "kept in the center as data");
+}
+
+#[gpui::test]
+fn an_action_the_app_refuses_leaves_its_toast(cx: &mut TestAppContext) {
+    let (mut vcx, _, _) = setup(cx);
+    let h = hooks(&mut vcx);
+    h.refuse.set(true);
+    let open = NoteAction::new("Open", "open:svc");
+    let id = push_new(&mut vcx, NewToast::new(ToastKind::Ok, "rolled out").note(open.clone()));
+    click(&mut vcx, format!("toast-action-{id}-0"));
+    assert_eq!(*h.resolved.borrow(), std::slice::from_ref(&open));
+    assert_eq!(shown(&mut vcx), ["rolled out"], "still shown, to try again");
+    assert_eq!(read(&mut vcx, id), Some(false));
+    h.refuse.set(false);
+    click(&mut vcx, format!("toast-action-{id}-0"));
+    assert!(shown(&mut vcx).is_empty());
+    assert_eq!(read(&mut vcx, id), Some(true));
 }
 
 #[gpui::test]

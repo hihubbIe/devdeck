@@ -154,3 +154,30 @@ to the top (the list is spliced, not reset); what an action opens takes the keys
 background workspace); an action whose workspace is gone says so and keeps the center
 open; rows are read only once in view (not in the overdraw); row ids by note id;
 kubeconfig problems carry their workspace; every action of a row is reachable by keys.
+
+## Step B outcome (2026-11-10)
+
+Built by a builder from the plan as assessed, checked by the lead (whole suite 1026,
+clippy, Mac check, snapshots E3, E4, E6 the flash mid-fade, E7 the flash under reduced
+motion).
+- `Layout::reveal` finds a view in any pane of any window (detached included), clears
+  another pane's maximize, expands and focuses its pane; `Deck::reveal` picks the live
+  layout, else the first saved layout by name holding it, else opens it here; `Shell::reveal`
+  switches workspace first. The toast's button reads "Open" or "Open here", fixed when the
+  notification is made.
+- `WindowView::bring_forward` activates the window, or asks for attention when it stays
+  behind; the flash is an outline on the tab and the pane, faded once in 1 s (R1.3), a
+  still outline under reduced motion; nothing moves (R9.10).
+- Refusals: a dialog open (a toast says to close it, the notification stays); the view's
+  target gone (nothing, logged); a gone workspace (said).
+- Limit: `request_attention` may fire on X11/Wayland although the window does come forward
+  (activation is asynchronous): for the manual test.
+
+### Review of the step B diff (subagent, 2026-11-10) and assessment
+
+All fixed, each with a test except reduced motion (a snapshot): a dialog open refuses the
+reveal and keeps its keys; reduced motion showed no flash; every failure said "the
+workspace is gone" (now a `NotRevealed` result); "view gone" wasn't built; stale labels in
+the snapshot states. Found while fixing: a resolver pushing a toast from the toast's own
+click updated `Toasts` inside its own update; the resolver now runs deferred, and a toast
+closes only when its action ran.

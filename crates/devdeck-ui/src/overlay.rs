@@ -576,6 +576,11 @@ pub fn push_modal(view: AnyView, window: &mut Window, cx: &mut App) {
     });
 }
 
+/// Whether any window shows a modal (a dialog waiting for an answer).
+pub fn any_modal(cx: &App) -> bool {
+    cx.try_global::<Layers>().is_some_and(|g| g.0.values().any(|l| !l.read(cx).modals.is_empty()))
+}
+
 /// Whether a window currently shows a menu, and how many modals.
 pub fn layer_state(window: AnyWindowHandle, cx: &mut App) -> (bool, usize) {
     let l = layer(window, cx).read(cx);
@@ -902,8 +907,9 @@ impl NoteStore {
 
 /// Opens the notification center, on a notification or not (the app's).
 pub type OpenCenter = Rc<dyn Fn(Option<u64>, &mut Window, &mut App)>;
-/// Does what a [`NoteAction`] says (the app's).
-pub type ResolveNote = Rc<dyn Fn(&NoteAction, &mut Window, &mut App)>;
+/// Does what a [`NoteAction`] says (the app's): `false` when it was refused (the toast
+/// stays, unread, for another try).
+pub type ResolveNote = Rc<dyn Fn(&NoteAction, &mut Window, &mut App) -> bool>;
 
 pub struct Toasts {
     pub queue: ToastQueue,
@@ -1090,10 +1096,17 @@ impl Render for Toasts {
                         .border_color(t.line)
                         .debug_selector(move || format!("toast-action-{id}-{i}"))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.close(id, cx);
-                            if let Some(resolve) = this.resolve.clone() {
-                                resolve(&action, window, cx);
-                            }
+                            let Some(resolve) = this.resolve.clone() else {
+                                this.close(id, cx);
+                                return;
+                            };
+                            // After this update: the app may tell the store something.
+                            let (action, me) = (action.clone(), cx.entity().downgrade());
+                            window.defer(cx, move |window, cx| {
+                                if resolve(&action, window, cx) {
+                                    let _ = me.update(cx, |t, cx| t.close(id, cx));
+                                }
+                            });
                         })),
                 );
             }

@@ -502,7 +502,8 @@ fn bell_errors(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<S
 /// Three toasts (one titled with an action, one long and cut at three lines) and two
 /// waiting behind "+2 more".
 fn toasts_long(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, _shell: &Entity<Shell>) {
-    let open = devdeck_app::notifications::open_action("View output", "work", &ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref());
+    let run = ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref();
+    let open = cx.update(|cx| devdeck_app::notifications::reveal_action("work", &run, cx));
     notify(cx, note(ToastKind::Ok, "rollout finished: 3 of 3 pods ready on lan-160", Some("work")).title("graphservice on dev35").note(open), Duration::ZERO);
     let long = "dev35 › entityservice: not deployed: the cluster refused the change because the image registry/entityservice:feature-a-very-long-branch-name-that-goes-on could not be pulled (manifest unknown), and the previous replica set is still serving every request while the new one waits";
     notify(cx, note(ToastKind::Err, long, Some("work")), Duration::ZERO);
@@ -525,7 +526,8 @@ fn center_rows(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<
     notify(cx, note(ToastKind::Warn, "2 problems reading the config or the projects", None).note(problems), Duration::from_secs(12 * 60));
     let long = "dev35 › entityservice: not deployed: the cluster refused the change because the image registry/entityservice:feature-a-very-long-branch-name-that-goes-on could not be pulled (manifest unknown), and the previous replica set is still serving every request while the new one waits";
     notify(cx, note(ToastKind::Err, long, Some("work")), Duration::from_secs(5 * 60));
-    let open = devdeck_app::notifications::open_action("View output", "work", &ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref());
+    let run = ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref();
+    let open = cx.update(|cx| devdeck_app::notifications::reveal_action("work", &run, cx));
     notify(cx, note(ToastKind::Ok, "rollout finished: 3 of 3 pods ready on lan-160", Some("work")).title("graphservice on dev35").note(open), Duration::from_secs(2 * 60));
     let _ = cx.update(|cx| main.update(cx, |w, window, cx| w.open_notifications(None, window, cx)));
     cx.run_until_parked();
@@ -536,6 +538,33 @@ fn center_rows(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<
             cx.notify();
         })
     });
+}
+
+/// Notifications step B: a revealed tab (behind another, in a pane not focused) mid-flash,
+/// its tab and its pane's border in the accent, fading.
+fn reveal_flash(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    cx.update(|cx| {
+        deck.update(cx, |d, cx| {
+            d.apply(cx, |l| {
+                let matrix = l.find_view(&devdeck_core::layout::ViewRef::new("matrix")).expect("matrix").0;
+                l.focus(matrix)
+            })
+        })
+    });
+    cx.update(|cx| shell.update(cx, |s, cx| s.reveal("work", &devdeck_core::layout::ViewRef::new("demo/gallery"), cx))).expect("revealed");
+    cx.run_until_parked();
+    // Drawn once (the fade starts), then 40 % of the way.
+    let _ = cx.update_window(w, |_, window, _| window.refresh());
+    cx.run_until_parked();
+    cx.advance_clock(devdeck_app::deck::FLASH * 2 / 5);
+    cx.run_until_parked();
+}
+
+/// The same with reduced motion: the flash drawn still, at full strength.
+fn reveal_flash_still(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| cx.set_reduce_motion(true));
+    reveal_flash(cx, w, shell);
 }
 
 fn work_cluster(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) -> Entity<devdeck_app::cluster::Cluster> {
@@ -1456,6 +1485,8 @@ fn states() -> Vec<State> {
         w("E3-toasts-long", "work", 1.0, Some(toasts_long)),
         w("E4-center-rows", "work", 1.0, Some(center_rows)),
         w("E5-center-rows-150", "work", 1.5, Some(center_rows)),
+        w("E6-reveal-flash", "work", 1.0, Some(reveal_flash)),
+        w("E7-reveal-flash-still", "work", 1.0, Some(reveal_flash_still)),
     ]
 }
 
@@ -1470,6 +1501,8 @@ fn main() -> Result<(), String> {
     let mut cx = HeadlessAppContext::with_platform(text, Arc::new(devdeck_ui::Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
     for state in states().into_iter().filter(|s| filter.as_ref().is_none_or(|f| f.split(',').any(|part| s.name.contains(part)))) {
+        // One app for every state: what a state turned on (reduced motion) goes off.
+        cx.update(|cx| cx.set_reduce_motion(false));
         cx.update(|cx| {
             app_settings::set_scale(state.scale, cx);
             app_settings::set_cover(app_settings::Cover::None, cx);

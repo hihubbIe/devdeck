@@ -289,6 +289,25 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
     }
 }
 
+/// Why the target of `r` is gone from the workspace (its app, command, env, cluster or
+/// note), if it is: such a view isn't opened by a reveal. `None` for views whose target
+/// is there, or that don't depend on one (a terminal, a file, a port, the demo's).
+pub fn gone(r: &ViewRef, services: &Services, cx: &App) -> Option<String> {
+    let env_gone = |env: &str| match &services.cluster {
+        None => Some("This workspace has no cluster.".to_string()),
+        Some(c) if c.read(cx).env(env).is_none() => Some(format!("{env} isn't an env of this workspace.")),
+        Some(_) => None,
+    };
+    match ViewAddr::parse(r) {
+        ViewAddr::App { app } => services.catalog.app(&app).is_none().then(|| format!("{app} isn't an app of this workspace.")),
+        ViewAddr::Run { app, cmd } => (!services.catalog.app(&app).is_some_and(|a| a.command(&cmd).is_some())).then(|| format!("{app} has no command {cmd}.")),
+        ViewAddr::Svc { env, .. } | ViewAddr::Logs { env, .. } | ViewAddr::Pod { env, .. } => env_gone(&env),
+        ViewAddr::Matrix => services.cluster.is_none().then(|| "This workspace has no cluster.".to_string()),
+        ViewAddr::Note { id } => services.notes.read(cx).meta(&id).is_none().then(|| "This note was deleted.".to_string()),
+        _ => None,
+    }
+}
+
 /// The workspace's cluster when it has `env`, or the message to show instead.
 fn cluster_env(ctx: &ViewCx, env: &str, cx: &App) -> Result<Entity<crate::cluster::Cluster>, String> {
     let cluster = ctx.services.read(cx).cluster.clone().ok_or("This workspace has no cluster.")?;

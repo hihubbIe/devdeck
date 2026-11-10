@@ -6,7 +6,7 @@
 //! `render`, so drawing never holds a borrow of the deck.
 
 use crate::actions::*;
-use crate::deck::{Deck, Held, Keys, SendSource};
+use crate::deck::{Deck, FLASH, Flash, Held, Keys, SendSource};
 use crate::places::{self, Place};
 use crate::stats;
 use crate::app_settings::{self, Cover};
@@ -18,7 +18,7 @@ use crate::views;
 use devdeck_ui::{APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Metrics, Moved, Node, PaneId, Rect, SplitId, ViewRef, WindowId};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId, ExternalPaths,
+    Animation, AnimationExt, AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId, ExternalPaths,
     FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Point, Render, ResizeEdge, SharedString, Stateful, StyleRefinement, Size, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
     Tiling, WeakFocusHandle, Window, WindowBounds, WindowDecorations, WindowOptions, canvas, div, img, point, prelude::*,
@@ -221,6 +221,10 @@ struct Frame<'a> {
     actions: &'a HashMap<PaneId, Vec<views::ViewAction>>,
     t: &'a Theme,
     tab_insert: &'a Rc<Cell<Option<(PaneId, usize)>>>,
+    /// The tab flashing after a reveal, if one is.
+    flash: Option<&'a Flash>,
+    /// The flash is drawn still, not fading ([`App::reduce_motion`]).
+    still: bool,
 }
 
 impl WindowView {
@@ -496,6 +500,18 @@ impl WindowView {
             self.before_cover = None;
             self.set_cover(Cover::None, window, cx);
         }
+    }
+
+    /// A view of this window was revealed ([`Shell::reveal`]): the window comes to the
+    /// front (where the window system refuses, as Wayland does without a recent input, it
+    /// asks for attention), what covers the panes makes way, the keys go to the view.
+    pub fn bring_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.activate_window();
+        if !window.is_window_active() {
+            window.request_attention();
+        }
+        self.uncover_to_panes(window, cx);
+        self.focus_panes(window, cx);
     }
 
     /// The notification center (main window, once opened).
@@ -790,7 +806,10 @@ impl Render for WindowView {
                 layout.panes.iter().filter_map(|(id, p)| p.active_view().map(|r| (*id, d.view_actions(r, cx)))).filter(|(_, a)| !a.is_empty()).collect();
             (titles, labels, actions)
         };
+        let flash = self.deck.read(cx).flash.clone();
         let frame = Frame {
+            flash: flash.as_ref(),
+            still: cx.reduce_motion(),
             layout: &layout,
             numbers: &numbers,
             view_focus: &view_focus,
@@ -1569,6 +1588,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
         .map(|r| f.labels.get(r).cloned().unwrap_or_else(|| views::TabLabel { icon: Icon::File, tint: views::Tint::Plain, name: views::title(r), detail: None, protected: false }))
         .collect();
     let deck_id = f.deck.entity_id();
+    // A revealed view flashes: its tab and its pane's border (it's the active tab).
+    let flash = f.flash.filter(|fl| p.active_view() == Some(&fl.view)).map(|fl| fl.n);
 
     // Collapsed in a row split: a narrow rail of monograms (GPUI can't rotate text).
     if p.collapsed && parent == Some(Axis::Row) {
@@ -1674,10 +1695,12 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .h_full()
                 .px_2()
                 .items_center()
+                .relative()
                 .text_color(t.fg)
                 .cursor_pointer()
                 .tooltip(tip(title.clone()))
                 .child(views::tab_label_element(&labels[0], t.fg, t))
+                .when_some(flash, |d, n| d.child(flash_overlay("flash-tab", n, f.still, t)))
                 .into_any_element(),
             None => div().flex_1().into_any_element(),
         });
@@ -1759,7 +1782,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     // (R9.10).
                     .when(active && focused, |d| {
                         d.child(div().debug_selector(move || format!("tab-focus-{}", pane.0)).absolute().top_0().left_0().w_full().h(t.hairline * 2.).bg(t.accent))
-                    }),
+                    })
+                    .when_some(flash.filter(|_| active), |d, n| d.child(flash_overlay("flash-tab", n, f.still, t))),
             );
         }
         strip = strip.child(tabs);
@@ -1898,7 +1922,32 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .child(label("Empty pane. Drop a tab here.").debug_selector(|| "empty-message".into()))
                 .into_any_element(),
         });
-    div().size_full().flex().flex_col().min_w_0().min_h_0().child(strip).child(body).into_any_element()
+    div()
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .min_h_0()
+        .child(strip)
+        .child(body)
+        .when_some(flash, |d, n| d.child(flash_overlay("flash-pane", n, f.still, t)))
+        .into_any_element()
+}
+
+/// A revealed view's flash ([`Deck::flash`]): the accent around its tab and around its
+/// pane, fading out over [`FLASH`]. A line over them, never a fill over the tab's label,
+/// and nothing moves (R9.10);
+/// GPUI draws frames only while it fades, and the deck drops it when its timer ends
+/// (R1.3). Its id is the flash's number: a new flash fades again from the start. With
+/// reduced motion (`still`) it stays drawn as it is until the deck drops it: GPUI would
+/// draw a one-shot animation at its end, here invisible.
+fn flash_overlay(name: &'static str, n: u64, still: bool, t: &Theme) -> AnyElement {
+    let base = div().debug_selector(move || format!("{name}-{n}")).absolute().top_0().left_0().size_full().border_2().border_color(t.accent);
+    if still {
+        return base.into_any_element();
+    }
+    base.with_animation((name, n), Animation::new(FLASH), |d, delta| d.opacity(1. - delta)).into_any_element()
 }
 
 

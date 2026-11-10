@@ -157,14 +157,14 @@ fn a_crash_in_a_hidden_workspace_names_it_and_leads_there(cx: &mut TestAppContex
         let t = toasts(cx).read(cx).queue.items.iter().find(|t| t.text.as_ref() == "work · boardservice · run exited 2").cloned();
         (t.as_ref().and_then(|t| t.notes.first().cloned()), t.map(|t| t.id))
     });
-    let action = action.expect("toast with View output");
-    assert_eq!(action.label.as_ref(), "View output");
+    let action = action.expect("toast with an Open");
+    assert_eq!(action.label.as_ref(), "Open here", "its run tab isn't open in that workspace");
     let note = cx.update(|cx| devdeck_ui::toasts(cx).read(cx).notes.get(id.unwrap()).cloned()).expect("kept in the center");
     assert_eq!(note.source.as_deref(), Some("work"), "the notification is the hidden workspace's, not the one shown");
     assert_eq!(note.actions, vec![action.clone()], "its action is kept as data");
     cx.update_window(main, |_, window, cx| devdeck_app::notifications::resolve(&action, window, cx)).unwrap();
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| shell.read(cx).active), work, "View output shows the workspace");
+    assert_eq!(cx.read(|cx| shell.read(cx).active), work, "Open shows the workspace");
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let run = ViewAddr::Run { app: "boardservice".into(), cmd: "go:run".into() }.to_ref();
     assert!(cx.read(|cx| deck.read(cx).layout().find_view(&run).is_some()), "and opens the run");
