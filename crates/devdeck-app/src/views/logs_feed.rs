@@ -86,12 +86,15 @@ pub struct LogsBuffer {
     bytes: usize,
     min: MinLevel,
     pod: Option<SharedString>,
-    /// Lowercase; empty: no find.
-    query: String,
+    /// The find text's characters, lowercase; empty: no find.
+    query: Vec<char>,
     /// Absolute indices of the lines shown, in order.
     rows: VecDeque<u64>,
-    /// Absolute indices of the shown lines holding the find text.
+    /// Absolute indices of the shown lines holding the find text, and how many times each.
     hits: VecDeque<u64>,
+    hit_counts: VecDeque<u32>,
+    /// Every match of the shown lines.
+    total: usize,
     /// The longest line shown, by characters.
     longest: Option<(u64, usize)>,
     max_lines: usize,
@@ -116,9 +119,11 @@ impl LogsBuffer {
             bytes: 0,
             min: MinLevel::All,
             pod: None,
-            query: String::new(),
+            query: Vec::new(),
             rows: VecDeque::new(),
             hits: VecDeque::new(),
+            hit_counts: VecDeque::new(),
+            total: 0,
             longest: None,
             max_lines: max_lines.max(1),
             max_bytes,
@@ -132,8 +137,9 @@ impl LogsBuffer {
         pod && (e.note || super::logs_view::shown(e.level, self.min))
     }
 
-    fn hit(&self, e: &Entry) -> bool {
-        !self.query.is_empty() && e.text.to_lowercase().contains(&self.query)
+    /// How many times `e` holds the find text.
+    fn hit(&self, e: &Entry) -> usize {
+        if self.query.is_empty() { 0 } else { match_ranges(&e.text, &self.query).len() }
     }
 
     pub fn push(&mut self, e: Entry) {
@@ -143,8 +149,11 @@ impl LogsBuffer {
         let chars = e.text.chars().count();
         if self.shows(&e) {
             self.rows.push_back(abs);
-            if self.hit(&e) {
+            let n = self.hit(&e);
+            if n > 0 {
                 self.hits.push_back(abs);
+                self.hit_counts.push_back(n as u32);
+                self.total += n;
             }
             if self.longest.is_none_or(|(_, n)| chars > n) {
                 self.longest = Some((abs, chars));
@@ -167,6 +176,7 @@ impl LogsBuffer {
         }
         while self.hits.front().is_some_and(|i| *i < self.first) {
             self.hits.pop_front();
+            self.total -= self.hit_counts.pop_front().unwrap_or(0) as usize;
         }
         if lost_longest {
             self.find_longest();
@@ -185,7 +195,17 @@ impl LogsBuffer {
     }
 
     fn refind(&mut self) {
-        self.hits = self.rows.iter().copied().filter(|i| self.hit(&self.entries[(*i - self.first) as usize])).collect();
+        self.hits.clear();
+        self.hit_counts.clear();
+        self.total = 0;
+        for i in self.rows.clone() {
+            let n = self.hit(&self.entries[(i - self.first) as usize]);
+            if n > 0 {
+                self.hits.push_back(i);
+                self.hit_counts.push_back(n as u32);
+                self.total += n;
+            }
+        }
     }
 
     pub fn set_min(&mut self, min: MinLevel) {
@@ -203,7 +223,7 @@ impl LogsBuffer {
     }
 
     pub fn set_query(&mut self, query: &str) {
-        self.query = query.to_lowercase();
+        self.query = query.chars().flat_map(char::to_lowercase).collect();
         self.refind();
     }
 
@@ -216,6 +236,8 @@ impl LogsBuffer {
         self.bytes = 0;
         self.rows.clear();
         self.hits.clear();
+        self.hit_counts.clear();
+        self.total = 0;
         self.longest = None;
     }
 
@@ -267,6 +289,36 @@ impl LogsBuffer {
     /// Absolute indices of the shown lines holding the find text, in order.
     pub fn hits(&self) -> &VecDeque<u64> {
         &self.hits
+    }
+
+    /// Every match of the find text in the shown lines.
+    pub fn matches(&self) -> usize {
+        self.total
+    }
+
+    /// The find text's characters, lowercase.
+    pub fn query(&self) -> &[char] {
+        &self.query
+    }
+
+    /// The `index`th match (from 0): its line and which match of that line.
+    pub fn match_at(&self, index: usize) -> Option<(u64, usize)> {
+        let mut left = index;
+        for (line, n) in self.hits.iter().zip(&self.hit_counts) {
+            let n = *n as usize;
+            if left < n {
+                return Some((*line, left));
+            }
+            left -= n;
+        }
+        None
+    }
+
+    /// Where the `nth` match of `line` is among every match.
+    pub fn match_index(&self, line: u64, nth: usize) -> Option<usize> {
+        let at = self.hits.binary_search(&line).ok()?;
+        let before: usize = self.hit_counts.iter().take(at).map(|n| *n as usize).sum();
+        (nth < self.hit_counts[at] as usize).then_some(before + nth)
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &Entry> {
@@ -780,4 +832,29 @@ fn read(stream: crate::cluster::LogStream, pod: SharedString, id: u64, cx: &mut 
             }
         }
     })
+}
+
+/// Where `query` (lowercase characters) is in `text`, ignoring case, as byte ranges of
+/// `text`: every match, left to right, none overlapping.
+pub fn match_ranges(text: &str, query: &[char]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    if query.is_empty() {
+        return out;
+    }
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut i = 0;
+    while i + query.len() <= chars.len() {
+        let hit = query.iter().enumerate().all(|(k, q)| {
+            let mut lower = chars[i + k].1.to_lowercase();
+            lower.next() == Some(*q) && lower.next().is_none()
+        });
+        if hit {
+            let end = chars.get(i + query.len()).map_or(text.len(), |(b, _)| *b);
+            out.push(chars[i].0..end);
+            i += query.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
 }

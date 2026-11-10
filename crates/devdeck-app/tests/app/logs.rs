@@ -6,7 +6,7 @@
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, LOAD_DELAY, LogFrom, LogLine, LogRefusal, LogStream, LogUpdate, PodScope, PodUpdate};
 use devdeck_app::shell::Shell;
-use devdeck_app::views::logs_feed::{CATCH_UP, DRAIN_EVERY, ENDED_RETRY, Entry, FIRST_LINES, LogsBuffer, MAX_LINES, MERGE_WAIT};
+use devdeck_app::views::logs_feed::{CATCH_UP, DRAIN_EVERY, ENDED_RETRY, Entry, FIRST_LINES, LogsBuffer, MAX_LINES, MERGE_WAIT, match_ranges};
 use devdeck_app::views::logs_view::{MinLevel, ServiceLogsView};
 use devdeck_core::cluster::{ContainerStatus, Pod, PodPhase};
 use devdeck_core::runs::Level;
@@ -509,6 +509,37 @@ fn long_lines_wrap_until_wrapping_is_turned_off(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| v.read(cx).list_rows()) > 2, "the long line takes several rows");
     cx.update(|cx| v.update(cx, |v, cx| v.toggle_wrap(cx)));
     assert_eq!(cx.read(|cx| v.read(cx).list_rows()), 2, "one row a line, scrolling sideways");
+}
+
+#[test]
+fn matches_are_exact_ranges_ignoring_case() {
+    let q: Vec<char> = "down".chars().collect();
+    assert_eq!(match_ranges("DB Down, down again; downtown", &q), vec![3..7, 9..13, 21..25], "every match, none overlapping");
+    let q: Vec<char> = "élan".chars().collect();
+    let text = "un ÉLAN, deux élans";
+    let ranges = match_ranges(text, &q);
+    assert_eq!(ranges.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(), ["ÉLAN", "élan"], "byte ranges on character boundaries");
+    assert!(match_ranges("anything", &[]).is_empty());
+}
+
+#[gpui::test]
+fn n_steps_through_every_match_not_every_line(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-each-match");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(1.0, "timeout here, timeout there"), (2.0, "fine"), (3.0, "one more timeout")]);
+    advance(cx, DRAIN_EVERY);
+    cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("TIMEOUT", cx))));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| v.read(cx).matches()), 3, "three matches on two lines");
+    let first = cx.read(|cx| v.read(cx).current).unwrap();
+    assert_eq!(first.1, 0);
+    cx.update(|cx| v.update(cx, |v, cx| v.step_match(1, cx)));
+    assert_eq!(cx.read(|cx| v.read(cx).current), Some((first.0, 1)), "the second match of the same line");
+    cx.update(|cx| v.update(cx, |v, cx| v.step_match(1, cx)));
+    assert_ne!(cx.read(|cx| v.read(cx).current).unwrap().0, first.0, "then the next line");
+    cx.update(|cx| v.update(cx, |v, cx| v.step_match(1, cx)));
+    assert_eq!(cx.read(|cx| v.read(cx).current), Some(first), "and around");
 }
 
 fn entry(text: &str, level: Level) -> Entry {

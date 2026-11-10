@@ -201,3 +201,12 @@ which no longer shares pull's glyph), the logs view moved onto it by the lead.
 - Snapshots: `90-logs-json` (wide), `90-logs-medium` (compact, filtered to warn+),
   `90-logs-narrow` (the floor: find as a button).
 - R9.9 is partly done: the other toolbars move onto the component one at a time.
+
+## Find highlights the match itself (user, 2026-11-10)
+
+Tinting the whole row said only "somewhere in here". Now every match is tinted behind
+exactly its characters (the text keeps its level color), the current one in the accent,
+and the current line keeps its accent bar. `n` / `shift+n` step through every match, not
+every line; the count counts matches; a match on a wrapped line scrolls to its piece.
+Case is ignored per character (`logs_feed::match_ranges`, byte ranges on character
+boundaries, tested with non-ASCII text).

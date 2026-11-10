@@ -9,7 +9,7 @@
 //! c container, o pod, shift+p previous run.
 
 use super::ViewCx;
-use super::logs_feed::{LogsFeed, short};
+use super::logs_feed::{LogsFeed, match_ranges, short};
 use crate::cluster::{Cluster, PodScope, PodsInterest};
 use devdeck_core::cluster::{Pod, Remote};
 use devdeck_core::runs::Level;
@@ -68,8 +68,8 @@ pub struct ServiceLogsView {
     /// Wrapped rows: each a shown row and the character its piece starts at, for a width
     /// in characters and a buffer version.
     wrapped: Option<Wrapped>,
-    /// The line (absolute index) of the current match.
-    pub current: Option<u64>,
+    /// The current match: its line (absolute index) and which match of that line.
+    pub current: Option<(u64, usize)>,
     scroll: UniformListScrollHandle,
     /// Where the view is in its window.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -168,27 +168,33 @@ impl ServiceLogsView {
 
     /// Matches of the find text among the lines shown.
     pub fn matches(&self) -> usize {
-        self.feed.buffer.hits().len()
+        self.feed.buffer.matches()
     }
 
+    /// The next (or previous) match, every match of every line in turn.
     pub fn step_match(&mut self, dir: isize, cx: &mut Context<Self>) {
-        let hits = self.feed.buffer.hits();
-        if hits.is_empty() {
+        let b = &self.feed.buffer;
+        let total = b.matches();
+        if total == 0 {
             self.current = None;
             cx.notify();
             return;
         }
-        let at = self.current.and_then(|c| hits.binary_search(&c).ok());
-        let next = match at {
+        let next = match self.current.and_then(|(line, nth)| b.match_index(line, nth)) {
             None => 0,
-            Some(i) => (i as isize + dir).rem_euclid(hits.len() as isize) as usize,
+            Some(i) => (i as isize + dir).rem_euclid(total as isize) as usize,
         };
-        let line = hits[next];
-        self.current = Some(line);
+        let Some((line, nth)) = b.match_at(next) else { return };
+        self.current = Some((line, nth));
         self.follow = false;
-        if let Some(row) = self.feed.buffer.row_of(line) {
+        if let Some(row) = b.row_of(line) {
             let item = match &self.wrapped {
-                Some((_, _, rows)) if self.wrap => rows.partition_point(|(r, _)| *r < row),
+                Some((cols, _, rows)) if self.wrap => {
+                    // The wrapped piece holding the match's first character.
+                    let text = b.row(row).map(|e| e.text.clone()).unwrap_or_default();
+                    let start = match_ranges(&text, b.query()).get(nth).map_or(0, |r| text[..r.start].chars().count());
+                    rows.partition_point(|(r, _)| *r < row) + start / cols.max(&1)
+                }
                 _ => row,
             };
             self.scroll.scroll_to_item(item, ScrollStrategy::Center);
@@ -396,7 +402,7 @@ impl ServiceLogsView {
         };
         let matches = self.matches();
         let count = (matches > 0).then(|| {
-            let text = match self.current.and_then(|c| self.feed.buffer.hits().binary_search(&c).ok()) {
+            let text = match self.current.and_then(|(line, nth)| self.feed.buffer.match_index(line, nth)) {
                 Some(p) => format!("{}/{matches}", p + 1),
                 None => format!("{matches}"),
             };
@@ -574,7 +580,12 @@ impl Render for ServiceLogsView {
                 Remote::Ready(0) if self.feed.buffer.is_empty() => empty("no pods".into()),
                 Remote::Ready(_) if count == 0 => empty(if self.feed.buffer.is_empty() { "no lines yet".into() } else { "no line matches the filter".into() }),
                 Remote::Ready(_) => {
-                    let (ok, warn, err, mute, dim, fg, hit, current_bg, accent) = (t.ok, t.warn, t.err, t.mute, t.dim, t.fg, t.drop_bg, t.selection, t.accent);
+                    let (ok, warn, err, mute, dim, fg, current_bg, accent) = (t.ok, t.warn, t.err, t.mute, t.dim, t.fg, t.selection, t.accent);
+                    // Exactly what matched: every match tinted, the current one in the accent.
+                    let (hit_style, current_style) = (
+                        gpui::HighlightStyle { background_color: Some(t.warn.opacity(0.35)), ..Default::default() },
+                        gpui::HighlightStyle { background_color: Some(t.accent.opacity(0.7)), color: Some(t.hi), ..Default::default() },
+                    );
                     let (row_h, time_w, pod_w) = (t.line_height, t.size(64.), t.size(56.));
                     let (show_time, show_pod, wrap) = (self.show_time, self.show_pod, self.wrap);
                     let cols = if wrap {
@@ -598,6 +609,7 @@ impl Render for ServiceLogsView {
                         cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
                             let b = &this.feed.buffer;
                             let hits = b.hits();
+                            let query = b.query();
                             range
                                 .filter_map(|i| {
                                     let (row, start) = match &this.wrapped {
@@ -616,18 +628,39 @@ impl Render for ServiceLogsView {
                                         (_, Level::Plain) => fg,
                                     };
                                     let first = start == 0;
-                                    let text: SharedString = if wrap { e.text.chars().skip(start).take(cols).collect::<String>().into() } else { e.text.clone() };
+                                    // The piece shown: the whole line, or its wrapped piece.
+                                    let (b0, b1) = if wrap {
+                                        let mut ix = e.text.char_indices().map(|(i, _)| i).skip(start);
+                                        let b0 = ix.next().unwrap_or(e.text.len());
+                                        let b1 = e.text.char_indices().map(|(i, _)| i).nth(start + cols).unwrap_or(e.text.len());
+                                        (b0, b1)
+                                    } else {
+                                        (0, e.text.len())
+                                    };
+                                    let text: SharedString = if wrap { e.text[b0..b1].to_string().into() } else { e.text.clone() };
+                                    let marks: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> = if hits.binary_search(&line).is_ok() {
+                                        match_ranges(&e.text, query)
+                                            .into_iter()
+                                            .enumerate()
+                                            .filter(|(_, r)| r.start < b1 && r.end > b0)
+                                            .map(|(nth, r)| {
+                                                let style = if current == Some((line, nth)) { current_style } else { hit_style };
+                                                (r.start.max(b0) - b0..r.end.min(b1) - b0, style)
+                                            })
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
                                     div()
                                         .h(row_h)
                                         .px_3()
                                         .flex()
                                         .gap_2()
                                         .whitespace_nowrap()
-                                        .when(hits.binary_search(&line).is_ok(), |d| d.bg(hit))
-                                        .when(current == Some(line), |d| d.bg(current_bg).border_l_2().border_color(accent))
+                                        .when(current.is_some_and(|(l, _)| l == line), |d| d.bg(current_bg).border_l_2().border_color(accent))
                                         .when(show_time, |d| d.child(div().flex_none().w(time_w).text_color(mute).child(if first { clock(e.at) } else { SharedString::default() })))
                                         .when(show_pod, |d| d.child(div().flex_none().w(pod_w).overflow_hidden().text_color(mute).child(if first { SharedString::from(short(&e.pod).to_string()) } else { SharedString::default() })))
-                                        .child(div().flex_none().text_color(color).child(text))
+                                        .child(div().flex_none().text_color(color).child(gpui::StyledText::new(text).with_highlights(marks)))
                                 })
                                 .collect()
                         }),
