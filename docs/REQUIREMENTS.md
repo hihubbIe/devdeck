@@ -10,7 +10,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R1.1** Native desktop app written in Rust, shipped as a single executable.
 - [ ] **R1.2** Linux first (Wayland and X11); macOS 15 and later on Apple silicon, built from source (decided 2026-11-10, `docs/plans/macos.md`). Wide desktop screens (1920×1080 and up). No mobile or narrow layouts.
 - [~] **R1.3** As fast as possible and as cheap as possible: GPU-rendered text, near-zero CPU when idle, minimal RAM. Only visible content is drawn; long lists and logs are virtualized.
-- [~] **R1.4** Self-contained. No dependency on the author's own scripts or tools (`cs`, `f`, the project daemon, aliases). External programs (pnpm, go, kubectl, k9s, docker…) are optional capabilities, detected at runtime.
+- [~] **R1.4** Self-contained. No dependency on the author's own scripts or tools (`cs`, `f`, the project daemon, aliases). External programs (pnpm, go, kubectl, docker…) are optional capabilities, detected at runtime.
 - [~] **R1.5** Shareable. Nothing about one machine is hard-coded: paths, envs, clusters, kubeconfigs, folders and tools all come from config.
 - [~] **R1.6** Monospace font everywhere.
 
@@ -18,7 +18,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 - [~] **R2.1** The app holds several workspaces (for example "work" and "personal"). They share nothing: folders, envs, cluster settings, layouts, pins, processes, history. The theme and the UI scale are global (decided 2026-11-07).
 - [x] **R2.2** Exactly one workspace is displayed at a time. Switching does not stop anything: the others keep running in the background and come back in their exact state.
-- [~] **R2.3** Envs, cluster access and k9s are optional per workspace. When a workspace has none, the related UI (env selector, Cluster area, deploy actions) does not appear at all.
+- [~] **R2.3** Envs and cluster access are optional per workspace. When a workspace has none, the related UI (env selector, Cluster area, deploy actions) does not appear at all.
 
 ## 3. Layout engine (panes, tabs, windows)
 
@@ -56,7 +56,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
 - [~] **R5.4** k9s-inspired single-key shortcuts. Shortcuts are not shown in the UI (no key hints in menus, tooltips, labels or a hint bar: it clutters); they are listed on one page, today the searchable cheat sheet (`?`, ctrl+/), to be redesigned later (changed 2026-11-07, user decision).
 - [~] **R5.5** Unavailable actions show why (missing tool, protected env, no permission).
-- [ ] **R5.6** Edit mode (user, 2026-11-08): potentially destructive actions (deploys, a replace push, a git abort, stopping a process devdeck didn't start, a shell in a pod) run only while edit mode is on: a title bar button, turned on after a modal saying what it allows, off without one, off at every start. k9s opens read only unless it's on. devdeck never pushes `main` or `master`, edit mode or not.
+- [ ] **R5.6** Edit mode (user, 2026-11-08): potentially destructive actions (deploys, a replace push, a git abort, stopping a process devdeck didn't start, a shell in a pod) run only while edit mode is on: a title bar button, turned on after a modal saying what it allows, off without one, off at every start. devdeck never pushes `main` or `master`, edit mode or not.
 - [~] **R5.7** A right-click menu (user, 2026-11-08): what a view offers there, then every action that can take what was right-clicked, shown only where it applies. Content: text selected in a terminal (a run's output or a shell), a file or a note (source or rendered; 2026-11-08, user); first actions: Copy and **Share with**, which pastes the text as it is (no Enter) into another terminal of the workspace whose program takes pastes safely (bracketed paste; others listed, refused with why) and shows it; its own click goes where text went last. Later content: images opened. The menu key opens it at the selection (at the caret in a file or a note), else the tab's menu. Terminals are named by their folder's last part everywhere (tabs, lists, menus).
 
 ## 6. Local apps
@@ -80,8 +80,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 - [~] **R7.1** Per env: list of deployments (alphabetical, Pinned and All) with status, image tag, ready count, restarts, running since. The Cluster list has its own env (user, 2026-11-09): a dropdown whose first choice syncs it with the workspace's env (the default, following it), the others show another env's deployments without changing the workspace's (the one runs use); a service opens in the list's env.
 - [~] **R7.2** Service inspector: header and actions; live CPU and memory against request and limit; pods (status, ready, restarts, last termination reason, age, node, cpu, memory); container (image, ports, resources, configmap); deploy history recorded by devdeck.
 - [~] **R7.3** Image tag editor with suggestions (tags deployed on other envs, devdeck history, free text), an unsaved marker, save with ctrl+s or a button, and a confirmation that states the exact change and the exact command.
-- [~] **R7.4** Rollout follow-up: progress, success, and failure detection (image pull errors) with one-action undo.
-- [~] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, pause, follow, find), open k9s scoped to the env.
+- [~] **R7.4** Rollout follow-up: progress, success, and failure detection (image pull errors, crashing) with the reason. No undo: a failed deploy is fixed by deploying another branch (user, 2026-11-10).
+- [~] **R7.5** Restart, replicas, port-forward, shell (exec in a terminal view), logs (multiple pods, level filter, pause, follow, find). No k9s: devdeck's own UI does it (user, 2026-11-10).
 - [~] **R7.6** Protected envs (declared in config) refuse writes until unlocked by typing the env name.
 - [~] **R7.7** Branch matrix: services × envs with the image tag in each cell; highlight a tag.
 - [~] **R7.8** Works with what the user's access allows; missing permissions are explained, not hidden.

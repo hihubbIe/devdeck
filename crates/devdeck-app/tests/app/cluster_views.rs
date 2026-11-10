@@ -57,16 +57,19 @@ fn logs_filter_find_pause_and_stop_when_hidden(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     let v = open(&shell, cx, ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() }).downcast::<ServiceLogsView>().unwrap();
     advance(cx, LOGS_TICK * 20);
-    let lines = cx.read(|cx| v.read(cx).output.lines.len());
-    assert!(lines >= 20, "every pod writes ({lines})");
+    let lines = cx.read(|cx| v.read(cx).feed.buffer.len());
+    assert!(lines >= 20, "every running pod writes ({lines})");
     cx.simulate_keystrokes(main, "1");
-    let only_errors = cx.read(|cx| v.read(cx).rows().iter().all(|i| v.read(cx).output.lines[*i].level == Level::Error));
+    let only_errors = cx.read(|cx| {
+        let b = &v.read(cx).feed.buffer;
+        (0..b.row_count()).all(|r| b.row(r).is_some_and(|e| e.level == Level::Error))
+    });
     assert!(only_errors && cx.read(|cx| v.read(cx).min_level) == MinLevel::Error);
     cx.simulate_keystrokes(main, "4 / ");
     cx.simulate_input(main, "slow n");
     assert_eq!(cx.read(|cx| v.read(cx).find.read(cx).text().to_string()), "slow n", "n typed in find is text");
     cx.simulate_keystrokes(main, "backspace backspace");
-    let found = cx.read(|cx| v.read(cx).matches(cx).len());
+    let found = cx.read(|cx| v.read(cx).matches());
     assert!(found > 1);
     let first = cx.read(|cx| v.read(cx).current);
     assert!(first.is_some(), "typing jumps to the first match");
@@ -76,10 +79,12 @@ fn logs_filter_find_pause_and_stop_when_hidden(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "shift-n");
     assert_eq!(cx.read(|cx| v.read(cx).current), first);
     cx.simulate_keystrokes(main, "p");
-    let paused_at = cx.read(|cx| v.read(cx).output.lines.len());
+    let paused_at = cx.read(|cx| v.read(cx).feed.buffer.len());
     advance(cx, LOGS_TICK * 4);
-    assert_eq!(cx.read(|cx| v.read(cx).output.lines.len()), paused_at, "paused");
+    assert_eq!(cx.read(|cx| v.read(cx).feed.buffer.len()), paused_at, "paused");
+    assert!(cx.read(|cx| v.read(cx).feed.held()) > 0, "what came meanwhile waits");
     cx.simulate_keystrokes(main, "p");
+    assert!(cx.read(|cx| v.read(cx).feed.buffer.len()) > paused_at, "shown on resume");
     // Another tab in front: the feed stops.
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let r = ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() }.to_ref();

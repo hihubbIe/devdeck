@@ -244,8 +244,18 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Metrics (`metrics.k8s.io`) are read per env while a service or pod view of it is
   visible: at once, then every 15 s, one read at a time, 10 s at most; a 403 or 404 stops
   the reading until the env's target changes. Usage is joined at read time.
-- Logs (step 4) and deploys (step 5) say why they aren't there; nothing is made up from
-  real pods.
+- Logs (`devdeck_kube::logs`, `views/logs_feed.rs`): one stream per pod of the service
+  (its main container, or one picked, init containers too) while the logs view is on
+  screen; the view holds its service's pods, and a container's state decides: running or
+  ended streams, waiting says its reason and asks nothing, an ended stream starts again
+  when the container restarts. Lines carry the server's timestamp (nanoseconds): a resume
+  (shown again, target changed, pod watch back, a dropped connection) asks from the last
+  line's second and skips the lines at exactly its time already shown, so nothing is lost
+  or doubled (kube-core rounds `sinceTime` to the second). The first lines of streams
+  started together are merged by time; updates are drained once a frame; lines are cut at
+  4 KB, 10 000 lines and 16 MB kept; level from JSON (`level`, `lvl`, `severity`, pino's
+  numbers) or the text. A stream silent for 5 minutes resumes (no read timeout otherwise).
+- Deploys (step 5) say why they aren't there; nothing is made up from real pods.
 - The user's RBAC cannot read ReplicaSets or events, so deploy history is kept by
   devdeck in its state folder, and failure reasons come from pod container states.
 - Writes: patch the container image, rollout restart, scale. Protected envs need an
@@ -254,8 +264,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 ### Edit mode
 
 - Potentially destructive actions run only in edit mode (R5.6): deploys (set image,
-  undo, restart, replicas), a git replace push or abort (not a bisect's), stopping a
-  process devdeck didn't start, a shell in a pod; k9s opens `--readonly` otherwise.
+  restart, replicas), a git replace push or abort (not a bisect's), stopping a
+  process devdeck didn't start, a shell in a pod.
   One switch for the app, off at every start; on after a modal, off without one; the
   title bar of every window shows it (a dim warning icon, or a red "edit mode" chip).
 - Checked where the action happens (`Cluster::writes`, `Repo::refusal`, the stop of a
@@ -592,6 +602,14 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   like (back to a space: `foo/bar` goes at once), as VS Code's terminal does.
 - 2026-11-09 "Keep in every layout" removed (user: no use case). A layout shows only
   its own tabs; a saved `layouts.json` with `keep` still loads, the field dropped.
+- 2026-11-10 The rest of M3 (user): no deploy undo (a failed deploy is fixed by
+  deploying another branch); kube-rs for logs, shell, port-forward and writes (its `ws`
+  feature for shell and port-forward); no k9s, devdeck's own UI does what matters; every
+  deploy seen on the deployment watch is recorded, whoever made it; desktop
+  notifications per service and env, events picked in a dropdown on the service view
+  (also an action), always the desktop's own (not a toast), off at every start. What's
+  left is built in order of what matters: logs, changing the deployed branch,
+  redeploying it, notifications, then the close; the rest when wanted.
 
 ## Open questions
 

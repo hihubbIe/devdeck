@@ -12,6 +12,7 @@ pub mod demo;
 pub mod file_view;
 pub mod git_view;
 pub mod info_view;
+pub mod logs_feed;
 pub mod logs_view;
 pub mod matrix_view;
 pub mod note_view;

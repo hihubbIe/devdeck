@@ -13,7 +13,7 @@
 
 use devdeck_core::cluster::{DeployRecord, Deployment, Env, PodPhase, Remote, Rollout, RolloutSim, check_write, set_image_command};
 pub use crate::cluster_pods::{MetricsRead, PodScope, PodUpdate, PodsInterest, Sampling};
-pub use devdeck_kube::EnvUpdate;
+pub use devdeck_kube::{EnvUpdate, LogFrom, LogLine, LogRefusal, LogUpdate};
 use gpui::{AppContext, Context, Task};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -60,10 +60,17 @@ pub trait ClusterDriver {
     fn metrics_every(&self) -> Duration {
         Duration::from_secs(15)
     }
-    /// Why logs aren't shown, if they aren't.
-    fn logs(&self) -> Result<(), String> {
-        Ok(())
+    /// Streams `container`'s logs of `pod` in `env` from `from`, followed, or its run
+    /// before the last restart read once (`previous`). Dropping the stream stops it.
+    fn stream_logs(&self, _env: &str, _pod: &str, _container: &str, _from: LogFrom, _previous: bool, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+        Err("this cluster has no logs".into())
     }
+}
+
+/// One container's logs as they come (R7.5); what keeps the stream going goes with it.
+pub struct LogStream {
+    pub updates: async_channel::Receiver<LogUpdate>,
+    pub keep: Box<dyn std::any::Any>,
 }
 
 /// An env as last heard of.
@@ -101,6 +108,9 @@ pub struct Cluster {
     /// A fixed clock (epoch seconds) that rollouts advance: the demo's, so snapshots
     /// don't change. `None`: the system's.
     clock: Option<u64>,
+    /// Log streams' generations: the whole cluster's (a new driver, a reload) and each
+    /// env's (its target changed).
+    log_gens: (u64, BTreeMap<String, u64>),
 }
 
 impl Cluster {
@@ -121,6 +131,7 @@ impl Cluster {
             rolling: None,
             metric_ticks: 0,
             clock,
+            log_gens: (0, BTreeMap::new()),
         }
     }
 
@@ -132,6 +143,7 @@ impl Cluster {
         self.watches.clear();
         self.driver = driver;
         self.problems.clear();
+        self.log_gens.0 += 1;
         self.loading = self.driver.clone().start(cx);
         self.restart(self.wanted.clone(), cx);
         self.reinstate_pods(cx);
@@ -172,6 +184,8 @@ impl Cluster {
     /// target changed restart.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.retry_metrics();
+        self.log_gens.0 += 1;
+        cx.notify();
         self.loading = self.driver.clone().start(cx);
     }
 
@@ -204,6 +218,8 @@ impl Cluster {
                 self.watches.remove(&env);
                 self.start_watch(&env, cx);
                 self.restart_pods(&env, cx);
+                *self.log_gens.1.entry(env).or_default() += 1;
+                cx.notify();
             }
         }
     }
@@ -305,9 +321,16 @@ impl Cluster {
         self.history.get(&(env.to_string(), name.to_string())).map_or(&[], |h| h.as_slice())
     }
 
-    /// Why logs aren't shown, if they aren't.
-    pub fn logs(&self) -> Result<(), String> {
-        self.driver.logs()
+    /// Streams a container's logs (see [`ClusterDriver::stream_logs`]).
+    pub fn stream_logs(&mut self, env: &str, pod: &str, container: &str, from: LogFrom, previous: bool, cx: &mut Context<Self>) -> Result<LogStream, String> {
+        let driver = self.driver.clone();
+        driver.stream_logs(env, pod, container, from, previous, cx)
+    }
+
+    /// Changes when `env`'s log streams must start again: another driver, its target
+    /// changed, or a reload (permissions may have changed).
+    pub fn log_generation(&self, env: &str) -> (u64, u64) {
+        (self.log_gens.0, self.log_gens.1.get(env).copied().unwrap_or(0))
     }
 
     /// Why deploys can't be made now, if they can't: the driver can't, or edit mode is off

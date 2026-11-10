@@ -84,8 +84,8 @@ after step 1, round 1 after step 3, round 2 after step 6. Plan, and where it sta
 Then packaging the `.app` (L11), then CI.
 
 ## M3 · Real cluster
-kube-rs data, service inspector, git read only, deploys with journal and undo, logs,
-exec, port-forward, metrics, protected envs, k9s launch. Plan:
+kube-rs data, service inspector, git, logs, deploys with a history, notifications,
+metrics, protected envs. Plan:
 [plans/M3-cluster.md](plans/M3-cluster.md). Steps, one at a time:
 1. Config and real deployments, read only — done 2026-11-07.
 2. Service inspector on real data (pods, metrics) — done 2026-11-08.
@@ -96,9 +96,14 @@ exec, port-forward, metrics, protected envs, k9s launch. Plan:
    ([plans/context-menu.md](plans/context-menu.md)) — done 2026-11-08. 3e. Terminals
    outlive their tabs ([plans/layouts-own-their-tabs.md](plans/layouts-own-their-tabs.md))
    — done 2026-11-08.
-4. Logs, shell, port-forward, k9s.
-5. Writes.
-6. Close.
+4. Logs — done 2026-11-10.
+5. Change the deployed branch.
+6. Redeploy the same branch.
+7. Notifications.
+8. Close.
+
+Later, when wanted: shell in a pod, port-forward, replicas, restart, delete a pod, jobs,
+config maps and secrets, services and ingresses, YAML, cluster methods in the control API.
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,

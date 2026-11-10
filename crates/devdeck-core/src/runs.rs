@@ -83,6 +83,30 @@ pub fn level_of(line: &str) -> Level {
     }
 }
 
+/// The level of a pod's log line (R7.5): a JSON line's `level`, `lvl` or `severity` (a
+/// word in any case, or a number as pino writes them: 50 and up error, 40 warn, 30 info,
+/// below debug), else what its text announces ([`level_of`]).
+pub fn log_level(line: &str) -> Level {
+    if line.trim_start().starts_with('{')
+        && let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(line)
+        && let Some(value) = ["level", "lvl", "severity"].iter().find_map(|k| map.get(*k))
+    {
+        match value {
+            serde_json::Value::String(s) => return level_of(s),
+            serde_json::Value::Number(n) => {
+                return match n.as_f64().unwrap_or(0.0) {
+                    n if n >= 50.0 => Level::Error,
+                    n if n >= 40.0 => Level::Warn,
+                    n if n >= 30.0 => Level::Info,
+                    _ => Level::Debug,
+                };
+            }
+            _ => {}
+        }
+    }
+    level_of(line)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub text: String,
@@ -132,6 +156,21 @@ mod tests {
         assert_eq!(level_of("INFO listening on :5800"), Level::Info);
         assert_eq!(level_of("compiled successfully"), Level::Plain);
         assert_eq!(level_of("terrible"), Level::Plain, "whole words only");
+    }
+
+    #[test]
+    fn levels_of_log_lines() {
+        assert_eq!(log_level(r#"{"level":"ERROR","msg":"db down"}"#), Level::Error);
+        assert_eq!(log_level(r#"{"severity":"warning","message":"slow"}"#), Level::Warn);
+        assert_eq!(log_level(r#"{"lvl":"Info"}"#), Level::Info);
+        assert_eq!(log_level(r#"{"level":50,"msg":"x"}"#), Level::Error, "pino's numbers");
+        assert_eq!(log_level(r#"{"level":40}"#), Level::Warn);
+        assert_eq!(log_level(r#"{"level":30}"#), Level::Info);
+        assert_eq!(log_level(r#"{"level":20}"#), Level::Debug);
+        assert_eq!(log_level(r#"{"msg":"error in the message"}"#), Level::Error, "JSON without a level reads as text");
+        assert_eq!(log_level(r#"{"msg":"started"}"#), Level::Plain);
+        assert_eq!(log_level("08:41 WARN not JSON"), Level::Warn);
+        assert_eq!(log_level("{not json ERROR"), Level::Error, "broken JSON reads as text");
     }
 
     #[test]

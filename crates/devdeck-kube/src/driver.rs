@@ -89,8 +89,8 @@ impl std::fmt::Display for MetricsError {
 
 /// A kind of object a watch follows, its model, and what the watch sends.
 pub(crate) trait Watched: Resource<DynamicType = (), Scope = NamespaceResourceScope> + Clone + DeserializeOwned + Debug + Send + Sync + 'static {
-    /// What a watch lists, for messages (`deployments`).
-    const LISTED: &'static str;
+    /// What a watch does, for messages (`list deployments`).
+    const DOING: &'static str;
     type Model: Clone + PartialEq + Send + 'static;
     type Update: Send + 'static;
     /// The model; `None` for an object left out.
@@ -100,7 +100,7 @@ pub(crate) trait Watched: Resource<DynamicType = (), Scope = NamespaceResourceSc
 }
 
 impl Watched for apps::Deployment {
-    const LISTED: &'static str = "deployments";
+    const DOING: &'static str = "list deployments";
     type Model = Deployment;
     type Update = EnvUpdate;
 
@@ -118,7 +118,7 @@ impl Watched for apps::Deployment {
 }
 
 impl Watched for core::Pod {
-    const LISTED: &'static str = "pods";
+    const DOING: &'static str = "list pods";
     type Model = Pod;
     type Update = PodUpdate;
 
@@ -137,7 +137,7 @@ impl Watched for core::Pod {
 
 /// Dropping it stops the watch.
 pub struct WatchHandle {
-    task: tokio::task::AbortHandle,
+    pub(crate) task: tokio::task::AbortHandle,
 }
 
 impl Drop for WatchHandle {
@@ -188,7 +188,7 @@ pub fn metrics(target: &Target) -> async_channel::Receiver<Result<BTreeMap<Strin
         let read = async {
             match client(&target).await {
                 Ok((client, _user)) => read_metrics(client, &target).await,
-                Err(e) => Err(MetricsError::Failed(describe(&e, &target, "pod metrics"))),
+                Err(e) => Err(MetricsError::Failed(describe(&e, &target, "list pod metrics"))),
             }
         };
         // A connection that died without a word would never answer: the next read retries.
@@ -205,7 +205,7 @@ async fn read_metrics(client: Client, target: &Target) -> Result<BTreeMap<String
     let list = api.list(&ListParams::default()).await.map_err(|e| match &e {
         kube::Error::Api(status) if status.code == 403 => MetricsError::Refused(format!("your account can't read metrics in {}", target.env)),
         kube::Error::Api(status) if status.code == 404 => MetricsError::Refused(format!("metrics aren't available on {}", target.cluster)),
-        _ => MetricsError::Failed(describe(&e, target, "pod metrics")),
+        _ => MetricsError::Failed(describe(&e, target, "list pod metrics")),
     })?;
     let mut usage = BTreeMap::new();
     for pod in list.items {
@@ -220,7 +220,7 @@ async fn read_metrics(client: Client, target: &Target) -> Result<BTreeMap<String
     Ok(usage)
 }
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -233,7 +233,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 /// Runs `work` until the receiver of `tx` is gone.
-async fn until_closed<T>(tx: async_channel::Sender<T>, work: impl Future<Output = ()>) {
+pub(crate) async fn until_closed<T>(tx: async_channel::Sender<T>, work: impl Future<Output = ()>) {
     futures_lite::future::or(work, async move { tx.closed().await }).await
 }
 
@@ -244,7 +244,7 @@ async fn connect<K: Watched>(target: &Target, out: &mut Out<K>) -> (Client, Clie
         match client(target).await {
             Ok(client) => return client,
             Err(e) => {
-                out.problem(Some(describe(&e, target, K::LISTED)));
+                out.problem(Some(describe(&e, target, K::DOING)));
                 backoff.wait().await;
             }
         }
@@ -266,7 +266,7 @@ struct Shared {
 static CLIENTS: LazyLock<Mutex<HashMap<ClientKey, Shared>>> = LazyLock::new(Default::default);
 
 /// A use of a client (a watch, a metrics read): the last one dropped drops the client.
-struct ClientUser(ClientKey);
+pub(crate) struct ClientUser(ClientKey);
 
 impl Drop for ClientUser {
     fn drop(&mut self) {
@@ -282,7 +282,7 @@ impl Drop for ClientUser {
 
 /// The client of `target`'s file, cluster and user, built on first use (on the runtime:
 /// it spawns its buffer's task) and again when the file's content changed.
-async fn client(target: &Target) -> Result<(Client, ClientUser), kube::Error> {
+pub(crate) async fn client(target: &Target) -> Result<(Client, ClientUser), kube::Error> {
     let key = (target.file.clone(), target.cluster.clone(), target.user());
     {
         let mut clients = CLIENTS.lock().unwrap();
@@ -362,7 +362,7 @@ async fn feed<K: Watched>(client: Client, target: &Target, config: watcher::Conf
         match failure {
             // An expired resource version: the next list is the fix, not a problem.
             Some(watcher::Error::WatchError(status)) if status.code == 410 => {}
-            Some(e) => out.problem(Some(describe_watcher(&e, target, K::LISTED))),
+            Some(e) => out.problem(Some(describe_watcher(&e, target, K::DOING))),
             None => {}
         }
         backoff.wait().await;
@@ -411,14 +411,14 @@ impl<K: Watched> Out<K> {
 }
 
 /// The wait before trying again: [`FIRST_RETRY`], doubling up to [`LAST_RETRY`].
-struct Backoff(Duration);
+pub(crate) struct Backoff(Duration);
 
 impl Backoff {
-    fn new() -> Backoff {
+    pub(crate) fn new() -> Backoff {
         Backoff(FIRST_RETRY)
     }
 
-    async fn wait(&mut self) {
+    pub(crate) async fn wait(&mut self) {
         tokio::time::sleep(self.0).await;
         self.0 = (self.0 * 2).min(LAST_RETRY);
     }

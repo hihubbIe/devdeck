@@ -5,7 +5,7 @@
 //! `cargo run --bin devdeck-snapshot --features devdeck-app/snapshot -- <out-dir> [filter]`
 //! where `filter` is a comma-separated list of name fragments (`50-,51-`).
 
-use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, PodScope, PodUpdate};
+use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, LogFrom, LogLine, LogRefusal, LogStream, LogUpdate, PodScope, PodUpdate};
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::runner::RunKey;
 use devdeck_app::sidebar::{Activity, Sidebar};
@@ -592,9 +592,6 @@ impl ClusterDriver for KubeLike {
     fn writes(&self) -> Result<(), String> {
         Err(devdeck_app::kube_cluster::NO_DEPLOYS.into())
     }
-    fn logs(&self) -> Result<(), String> {
-        Err(devdeck_app::kube_cluster::NO_LOGS.into())
-    }
     fn watch_pods(&self, env: &str, scope: PodScope, _selector: Option<&str>, cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
         let env = env.to_string();
         Some(cx.spawn(async move |this, cx| {
@@ -763,6 +760,92 @@ fn logs_find(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
             v.step_match(1, cx);
         })
     });
+}
+
+/// As the kube driver, for logs: the demo's pods of a service, the last one waiting on its
+/// image; each running pod's stream answers JSON lines (levels in them), or every stream is
+/// refused (`forbid`).
+struct LogsLike {
+    forbid: bool,
+}
+
+impl ClusterDriver for LogsLike {
+    fn watch(&self, _env: &str, _cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
+        None
+    }
+    fn namespace(&self, env: &str) -> String {
+        env.into()
+    }
+    fn writes(&self) -> Result<(), String> {
+        Err(devdeck_app::kube_cluster::NO_DEPLOYS.into())
+    }
+    fn watch_pods(&self, env: &str, scope: PodScope, _selector: Option<&str>, cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
+        let env = env.to_string();
+        Some(cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |c, cx| {
+                let mut pods = match &scope {
+                    PodScope::Service(name) => c.deployment(&env, name).map(|d| devdeck_core::demo::pods(&env, d)).unwrap_or_default(),
+                    PodScope::Env => Vec::new(),
+                };
+                for p in &mut pods {
+                    p.ready = true;
+                    p.phase = devdeck_core::cluster::PodPhase::Running;
+                    p.containers[0].state = "running".into();
+                }
+                if let Some(last) = pods.last_mut() {
+                    last.containers[0].state = "waiting: ImagePullBackOff".into();
+                    last.phase = devdeck_core::cluster::PodPhase::Waiting("ImagePullBackOff".into());
+                }
+                c.apply_pods(&env, scope, PodUpdate::Pods(pods), cx);
+            });
+        }))
+    }
+    fn stream_logs(&self, env: &str, pod: &str, _container: &str, _from: LogFrom, _previous: bool, _cx: &mut gpui::Context<Cluster>) -> Result<LogStream, String> {
+        let (tx, updates) = async_channel::unbounded();
+        if self.forbid {
+            let _ = tx.try_send(LogUpdate::Refused(LogRefusal::Forbidden(format!("your account can't read logs in {env}"))));
+        } else {
+            let seed = devdeck_core::demo::hash(pod) % 1000;
+            let base = (devdeck_core::demo::NOW_S as i64 - 120) * 1_000_000_000 + seed as i64 * 1_000_000;
+            let texts = [
+                r#"{"level":"info","msg":"GET /v1/graph/entities 200","ms":12}"#.to_string(),
+                r#"{"level":"warn","msg":"slow query entities.find","ms":840}"#.to_string(),
+                r#"{"level":30,"msg":"rabbitmq connected","host":"rabbitmq-0.rabbitmq"}"#.to_string(),
+                r#"{"level":"error","msg":"publish failed: channel closed","exchange":"graph.events","retry":3}"#.to_string(),
+                "plain text line from a library that knows no JSON".to_string(),
+                r#"{"level":"debug","msg":"cache hit","key":"entity:0a3f9c21"}"#.to_string(),
+            ];
+            let lines = texts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| LogLine { at: Some(base + i as i64 * 7_000_000_000), level: devdeck_core::runs::log_level(t), text: t.clone() })
+                .collect();
+            let _ = tx.try_send(LogUpdate::Lines(lines));
+        }
+        Ok(LogStream { updates, keep: Box::new(tx) })
+    }
+}
+
+/// A service's logs on a kube-like driver: two pods' JSON lines merged by time, levels
+/// read from them, a pod waiting on its image; or every stream refused (`forbid`).
+fn logs_kube_like(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, forbid: bool) {
+    let c = work_cluster(cx, shell);
+    cx.update(|cx| c.update(cx, |c, cx| c.want("dev35", cx)));
+    cx.advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.update(|cx| c.update(cx, |c, cx| c.set_driver(c.envs.clone(), std::rc::Rc::new(LogsLike { forbid }), cx)));
+    open_view(cx, shell, ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() });
+    maximize_focused(cx, shell);
+    cx.advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+}
+
+fn logs_json(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    logs_kube_like(cx, shell, false);
+}
+
+fn logs_refused(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    logs_kube_like(cx, shell, true);
 }
 
 fn pod(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -1012,8 +1095,8 @@ fn api_callers(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell
             s.audit_path = Some("/home/u/.local/state/devdeck/api-audit.jsonl".into());
             let terminal = Who::Terminal { workspace: "work".into(), n: 3, uid: "u".into(), shell: 1, shell_start: 1, starts: 1 };
             let long = Who::Outside { pid: Some(4242), program: "a-program-whose-name-is-long-enough-to-be-cut-short-at-the-end-of-the-settings-page-row-when-it-is-narrow".into() };
-            s.connections.insert(1, Connection { who: terminal.clone(), pid: Some(4100), since: now, calls: 12 });
-            s.connections.insert(2, Connection { who: long, pid: Some(4242), since: now, calls: 1 });
+            s.connections.insert(1, Connection::new(terminal.clone(), Some(4100), now, 12));
+            s.connections.insert(2, Connection::new(long, Some(4242), now, 1));
             s.audit.push_front(Entry::new(terminal.label(), Event::Connected, None, None));
             s.audit.push_front(Entry::new("devdeck-ctl (pid 4242)".into(), Event::Denied, Some("run.list".into()), None));
             s.audit.push_front(Entry::new("?".into(), Event::Refused, None, Some("another user (uid 1001)".into())));
@@ -1131,6 +1214,8 @@ fn states() -> Vec<State> {
         w("88-svc-forbidden-narrow", "work", 1.0, Some(svc_forbidden_narrow)),
         w("89-svc-ready-150", "work", 1.5, Some(svc_ready)),
         w("90-logs-filter-find", "work", 1.0, Some(logs_find)),
+        w("90-logs-json", "work", 1.0, Some(logs_json)),
+        w("90-logs-refused", "work", 1.0, Some(logs_refused)),
         w("91-pod-crashloop", "work", 1.0, Some(pod)),
         w("92-matrix-highlight", "work", 1.0, Some(matrix)),
         w("94-svc-lost-connection", "work", 1.0, Some(svc_lost_connection)),

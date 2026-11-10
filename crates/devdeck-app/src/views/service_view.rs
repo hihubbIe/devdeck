@@ -271,10 +271,6 @@ impl ServiceView {
     }
 
     fn open_logs(&mut self, cx: &mut Context<Self>) {
-        if let Err(why) = self.cluster.read(cx).logs() {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, format!("Logs: {why}."), vec![], cx));
-            return;
-        }
         self.ctx.open(ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() }, cx);
     }
 
@@ -443,7 +439,6 @@ impl Render for ServiceView {
             button(id, text, &t).when(!enabled, |b| b.text_color(t.dim)).tooltip(tip(why.unwrap_or_else(|| text.to_string())))
         };
         let later = || Some("comes in a later step of M3".to_string());
-        let logs = c.logs();
         let actions = div()
             .flex_none()
             .px_3()
@@ -453,7 +448,7 @@ impl Render for ServiceView {
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(action("logs", "logs", logs.err().map(|why| format!("logs: {why}"))).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
+            .child(action("logs", "logs", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
             .child(action("git", "git", self.repo.is_none().then(|| self.unlinked.clone().unwrap_or_else(|| "linking to its app…".into()))).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
             .child(action("restart", "restart", later()))
             .child(action("scale", "replicas", later()))
@@ -639,11 +634,15 @@ impl Render for ServiceView {
                         move |e, window, cx| {
                             let (c1, c2) = (ctx.clone(), ctx.clone());
                             let (pod, logs) = (pod.clone(), logs.clone());
+                            let pod_name = match &pod {
+                                ViewAddr::Pod { pod, .. } => pod.clone(),
+                                _ => String::new(),
+                            };
                             open_menu(
                                 e.position,
                                 vec![
                                     MenuItem::new("Open pod", move |_, cx| c1.open(pod.clone(), cx)),
-                                    MenuItem::new("Logs", move |_, cx| c2.open(logs.clone(), cx)),
+                                    MenuItem::new("Logs", move |_, cx| super::logs_view::open_for_pod(&c2, logs.clone(), &pod_name, cx)),
                                 ],
                                 window,
                                 cx,

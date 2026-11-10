@@ -34,6 +34,26 @@ Requirements: R1.5, R2.3, R7.1–R7.8, R6.10 (rewritten, below), R10.1, R11.1–
   Changed 2026-11-08 (user): a git panel per app and service with switch, fetch, pull and
   create branch; no commit or push (step 3).
 
+## Decisions (user, 2026-11-10)
+
+- No deploy undo: a failed deploy is fixed by deploying another branch. Failure
+  detection stays, with its reason.
+- kube-rs for logs, shell, port-forward and writes (its `ws` feature for shell and
+  port-forward): one connection path, errors in devdeck's words, kubectl not needed.
+- No k9s: devdeck's own UI does what the user needs (the plan of step 4a, k9s in a
+  terminal, is kept below, dropped).
+- Every deploy seen on the deployment watch is recorded in the history, whoever made it,
+  with its branch.
+- Desktop notifications per service and env (the service view's env), the events picked
+  in a dropdown on the service view (also an action, R5.1): new branch deployed, same
+  branch redeployed, rollout finished, rollout failed, pods crashing outside a deploy.
+  Always the desktop's own notification, not a toast, whether devdeck is in front or not.
+  Off at every start. Step 5 plans them.
+- What's left is a list of features built in order of what matters, one at a time, each
+  planned, reviewed and committed on its own: logs, changing the deployed branch,
+  redeploying the same branch, notifications ("99% of what I need"), then the close; the
+  rest when wanted.
+
 Seen on the real cluster (read only, 2026-11-07), and what it changes:
 - Some deployments run several containers (envoy-edge 3, frontendapp 2): a deployment
   holds a list of containers, one of them its main one.
@@ -59,19 +79,27 @@ Seen on the real cluster (read only, 2026-11-07), and what it changes:
    and current branch, read off the UI thread and refreshed when `.git` changes; which
    env runs which branch in the app view and the service view; the matrix highlights
    the current branch of a repository; branches are suggestions in the tag editor.
-4. **Logs, shell, port-forward, k9s** (R7.5 minus writes): logs of the pods of a service
-   (several pods, follow, pause, level filter, find), on the logs view; a shell in a
-   container on M2's terminal (kube `ws`); port-forward with the port shown in Ports;
-   k9s in a terminal tab with the env's kubeconfig, context and namespace.
-5. **Writes** (R7.3, R7.4, R7.6): set a branch (image patch) with the exact command in
-   the confirmation; redeploy the newest build of the same branch (rollout restart);
-   follow the rollout from the deployment's status and its pods (image pull and crash
-   detection), one-action undo; restart and replicas; protected envs; the deploy
-   journal in the state folder. Tested against a fake API only: devdeck's own tests and
-   checks never write to the user's cluster; the user tries writes by hand on an env of
-   their choice.
-6. **Close**: idle CPU and memory with every env watched, the whole suite, all
+Steps 4 to 8 replace the earlier "4. logs, shell, port-forward, k9s; 5. writes; 6. close"
+(user, 2026-11-10). Cluster writes are tested against a fake API only: devdeck's own
+tests and checks never write to the user's cluster; the user tries writes by hand on an
+env of their choice.
+
+4. **Logs** (R7.5): real logs of a service's pods on the logs view (several pods,
+   follow, pause, level filter, find).
+5. **Change the deployed branch** (R7.3, R7.4, R7.6): the tag editor sets the image
+   (patch) with the exact command in the confirmation; the rollout followed from the
+   deployment's status and its pods (image pull and crash detection with the reason, no
+   undo); protected envs; the history in the state folder, of every deploy seen.
+6. **Redeploy the same branch** (R7.3): its newest build (rollout restart).
+7. **Notifications**: desktop notifications per service and env, events picked on the
+   service view.
+8. **Close**: idle CPU and memory with every env watched, the whole suite, all
    snapshots, leak run with cluster views, manual test guide.
+
+Later, when wanted, one at a time: shell in a pod (kube `ws`), port-forward (shown in
+Ports), replicas, restart, delete a pod, jobs and cron jobs, config maps and secrets,
+services and ingresses, a resource's YAML, the control API's cluster methods (its phase
+6). Events stay out: the user's account can't read them (checked again 2026-11-10).
 
 ## Step 1 · Config and real deployments, read only (plan, 2026-11-07)
 
@@ -929,3 +957,403 @@ The holes were in the UI and the tests:
 
 Not part of this step: the core test `ports::tests::a_real_ipv4_listener_is_found` fails
 now and then in full runs only (passes alone).
+
+## Step 4a · k9s (plan, 2026-11-10) — dropped
+
+Dropped by the user on 2026-11-10, after its review: no k9s, devdeck's own UI does what
+matters. Kept as a record.
+
+Requirements: R7.5 (open k9s scoped to the env), R5.6 (k9s read only unless edit mode is
+on), R6.12 and R6.13 (terminals, opening somewhere), R3.14 (its tab), R5.1, R5.5, R2.3,
+R1.4 (k9s optional, detected).
+
+Checked on 2026-11-10 against the k9s README and `k9s help` (v0.51.0 on this machine):
+`--kubeconfig <file>`, `--context <name>`, `-n, --namespace <ns>`, `--readonly` (sets read
+only over its config's `readOnly`), `--write` (sets write mode over it).
+
+### Decisions (defaults stated to the user, 2026-11-10)
+
+- k9s is a terminal like the others: listed in Terminals, outlives its tabs, ended with
+  Stop, started again with ⏎ (R6.12). It runs k9s itself, not a shell: quitting k9s ends
+  the terminal, which then shows it ended.
+- Opened from the service view (that view's env) and from the Cluster list's header (the
+  list's env), plus a palette action for the list's env.
+- Edit mode is read at each start of k9s: off, `--readonly`; on, no flag (the user's own
+  k9s config decides; devdeck never passes `--write`). A k9s started read only stays so
+  until it's started again.
+- Turning edit mode off while a k9s started without `--readonly` runs leaves it running
+  (devdeck can't change a running k9s's flags) and says so: a toast naming those k9s,
+  "still able to write: quit them to end it". The edit mode modal's line says k9s opened
+  from then on can write.
+
+### Design
+
+- **What a terminal runs.** Today every terminal runs the user's shell (`SHELL_LINE`).
+  A terminal gets a program: `Shell` (today's) or `K9s { env }`. It lives in the view
+  address, so a layout restored after a restart starts the same thing on ⏎:
+  `ViewAddr::K9s { n, env }`, `k9s/<n>/<env>` (terminal numbers stay one sequence per
+  workspace, `Deck::next_terminal` counts both). Its folder is the workspace's first
+  folder (k9s doesn't care; the runner needs one).
+- **One k9s per env and workspace.** Opening k9s for an env that has one shows that
+  terminal here (as Terminals' **Open** does), running or not; a new one is made only
+  when none exists.
+- **The line.** `exec k9s --kubeconfig <file> --context <context> --namespace <ns>`,
+  each value quoted for `/bin/sh` (`devdeck_core` gets a public quoting function; the
+  toolchains' private `quote` moves there), plus ` --readonly` when edit mode is off at
+  that start. The target (file, context, namespace) comes from the cluster driver:
+  `ClusterDriver::k9s_target(env) -> Result<K9sTarget, String>`; the kube driver answers
+  from its kubeconfigs (the same `Target` its watches use), the fake answers "the demo
+  has no kubeconfig". The target is read at each start, so a changed kubeconfig applies on
+  the next ⏎.
+- **Runner.** `Runner::open_terminal` takes the program. For `K9s`, the runner asks a
+  provider the workspace's services give it (`set_k9s(Rc<dyn Fn(&str, &App) ->
+  Result<String, String>>)`, the line for an env with edit mode applied) at every start;
+  an `Err` refuses the start with that reason (R5.5), shown in the terminal's tab like any
+  run that can't start. k9s missing from the toolbox refuses the same way ("k9s not
+  found"). No `DEVDECK_SOCKET` / `DEVDECK_TERMINAL` for k9s: it isn't a shell (R13.4), so
+  nothing it starts is that terminal's caller.
+- **Where it opens** (R6.13). The service view's **k9s** button: in the service view's
+  pane. The Cluster list header's button and the palette action: the focused pane. The
+  service view's and the Cluster list header's right-click menus get "Open k9s ▸" with
+  every place, as "Open terminal here".
+- **Availability** (R5.5, one reason, in this order): no cluster (the action isn't there
+  at all, R2.3); k9s not found; the env's target can't be had (the driver's reason,
+  e.g. "no context hades00-hecate in ~/…/kubeconfig").
+- **Labels** (R3.14). Tab: a terminal icon, "k9s · dev35" (a protected env in red), "read
+  only" in its tooltip when started so. Terminals list: "k9s @dev35", what it shows as
+  today. The API lists it among terminals with its program (`terminal.list` gains a
+  `program` field: "shell" or "k9s"); reading its output works as for any terminal.
+  Opening k9s through the API is out of scope.
+- **Edit mode.** `edit_mode::ALLOWS` loses "undoing a rollout" (2026-11-10 decision) and
+  says "k9s opened from now on with its write actions". `turn_off` asks every workspace's
+  runner for k9s terminals running without `--readonly` and toasts their names.
+
+### Files
+
+- `devdeck-core`: `view_addr.rs` (`K9s`), a public shell quoting function (moved from
+  `toolchains/project.rs`).
+- `devdeck-app`: `runner.rs` (terminal programs, the k9s provider, refusals),
+  `cluster.rs` and `kube_cluster.rs` and `fake_cluster.rs` (`k9s_target`), `services.rs`
+  (gives the runner its provider), `deck.rs` (`open_k9s`, terminal numbering),
+  `views/mod.rs` (building the view: the terminal view over the run; labels),
+  `views/service_view.rs` (the button), `sidebar.rs` (header button, Terminals row),
+  `context_menu.rs` ("Open k9s ▸"), `actions.rs` / `palette.rs` (the action),
+  `edit_mode.rs` (text, the toast), `api/` (the `program` field), `bin/snapshot.rs`.
+- `devdeck-api`: `types.rs` (`program`).
+- Docs: `DESIGN.md` (Cluster: k9s), `REQUIREMENTS.md` (R7.5 progress), `ROADMAP.md`.
+
+### OS (R11.6)
+
+No new OS capability: k9s starts through the runner's pseudo-terminal, which goes
+through `devdeck-sys` (macOS step 1d). Same on Linux and macOS.
+
+### States to check
+
+k9s running in a tab (read only, and started in edit mode); k9s quit (the terminal
+ended, ⏎ starts it again); the same env opened twice (one terminal, shown here); a
+protected env's tab in red; k9s not found (button and action disabled with the reason);
+a missing context (refused with the driver's reason); the Terminals list with a shell and
+a k9s; a layout restored after a restart ("not started", ⏎ starts k9s); a workspace
+without a cluster (no k9s anywhere); the toast when turning edit mode off with a
+write-capable k9s running.
+
+### Tests
+
+- Core: `ViewAddr::K9s` round trip (an env with odd characters); quoting (spaces, `'`,
+  `$`).
+- App, on the fake run driver (which records each `Launch`): the line with the target's
+  three values and `--readonly` while edit mode is off, without it while on; read again
+  at each start (turn edit mode on, quit, ⏎: no `--readonly`); one k9s per env (opening
+  again shows the same terminal); refused with the reason when k9s is missing and when the
+  target fails; no `DEVDECK_SOCKET` for k9s (pty driver unit test, next to the shell's);
+  the k9s terminal outlives its tab and is forgotten like any terminal; the toast on
+  turning edit mode off; no k9s action without a cluster; the API's `program` field.
+- Snapshots: the service view with its k9s button enabled and disabled (not found); a k9s
+  tab and the Terminals list holding it (the fake driver's output).
+- By hand: k9s on dev35 opens on the right context and namespace, read only while edit
+  mode is off (a delete is refused by k9s), with write actions after turning edit mode on
+  and starting it again.
+
+### Out of scope
+
+Logs (4b), port-forward (4c), shell in a pod (4d); k9s starting on a given resource or
+filtered on the service (`-c`); opening k9s through the control API.
+
+### Review of the step 4a plan (subagent, 2026-11-10) and assessment
+
+Every point accepted; the plan above reads with these changes. Points 1, 4 and 7 checked
+in the code (`api::identify`, `TerminalSummary.program`, the terminal view's build).
+1. Leaving out `DEVDECK_SOCKET` doesn't keep k9s's children from being a caller:
+   `api::identify` takes any process of any terminal-keyed run as that terminal's shell,
+   and the variables grant nothing. **Accepted**: `identify` and `alive` take only
+   terminals whose program is a shell; test: a peer chain through a k9s process is
+   `Outside`.
+2. "Not a shell" is `cmd.source() == "shell"` in the pty driver and `StopKind::of`.
+   **Accepted**: k9s's command is `k9s:<n>` with `tools: ["k9s"]`, so "k9s not found"
+   comes from the existing missing-tool refusal; it runs in a scope (whatever k9s starts
+   goes with it) and stops like an app's run, not with a shell's hang-up.
+3. Edit mode on would give a write-capable k9s on a protected env without its name
+   (R7.6). **Accepted**: a protected env's k9s is always `--readonly` (the header and the
+   palette have no unlock); said in its tooltip.
+4. `terminal.list` already has `program` (the foreground program); the API's `View` has
+   no variant for a new address. **Accepted**: the new field is `kind` (`shell` or `k9s`);
+   `View::K9s` in `devdeck-api`; `handlers::view`, `terminal_places`, `keeps_terminals`
+   and `organize.rs` map it; listed in Files.
+5. Many sites match `ViewAddr::Terminal`. **Accepted**: `ViewAddr::K9s { n, env }` stays a
+   variant of its own (labels and building differ), and `ViewAddr::terminal_number()`
+   serves every place that only needs the number (numbering, Terminals, menus, the API).
+6. Every start passes the workspace's env as the run env, which an app's binding would
+   apply to the k9s line. **Accepted**: k9s runs as a bare app (`EnvApply::None`) with no
+   run env; its env lives only in the program.
+7. Building a terminal view starts it, so a restored k9s tab starts by itself; refusals
+   at ⏎ go to a toast. **Accepted**: a restored k9s starts like a restored shell (read
+   only, edit mode being off at start); "not started" applies only to one no layout of
+   the current one shows. A provider refusal is a failed start ("couldn't start: …" in
+   the tab), at ⏎ also the toast as today; `k9s_target` says "kubeconfigs still loading"
+   before the folder is read. States to check updated accordingly.
+8. Edit mode has no `turn_off` (one setter, `edit_mode::set`), and nothing records how a
+   k9s started. **Accepted**: `Run::read_only: Option<bool>` set at each k9s start; the
+   toast comes from `set` on a change from on to off.
+9. Title, Terminals list, exit note and quit guard. **Accepted**: `Runner::title` gives
+   "k9s · dev35"; the list's doing column says "k9s" (or "k9s · read only"); its end
+   says "k9s ended"; the quit guard doesn't ask for a running k9s (nothing is lost by
+   quitting it).
+10. "One per env" must also see k9s terminals other layouts hold. **Accepted**: looked up
+    through `Deck::terminals`, as the Terminals list's **Open**.
+11. Share with could paste into k9s. **Accepted**: k9s terminals are left out of Share
+    with and `term.paste`; tested.
+12. Tests. **Accepted**: launches are checked on the test-local recording driver of
+    `tests/app/runs.rs`, not `FakeDriver`; `quote` is made public where it is
+    (`toolchains/project.rs`), not moved; the snapshot tool gives the demo a k9s target of
+    its own and scripts a k9s-like screen, so the enabled button and a k9s tab are shot as
+    well as the disabled states.
+
+Smaller points, both **accepted**: the palette action opens k9s for the focused service
+view's env, else the Cluster list's; the check by hand also tries one of the user's k9s
+plugins while read only (k9s's `--readonly` may hide only plugins marked dangerous: if
+so, a known limit in DESIGN.md).
+
+## Step 4 · Logs (plan, 2026-11-10)
+
+Requirements: R7.5 (logs: several pods, level filter, pause, follow, find), R7.8, R1.3,
+R4.4, R5.1, R5.5.
+
+What exists: the logs view (`logs/<env>/<name>`, `views/logs_view.rs`) with its level
+filter, find, pause and follow, fed by a made-up feed while visible; on the kube driver it
+says "logs come in a later step" and the service view's **logs** button is refused. The
+user's account can read pod logs (checked in step 2). kube-rs 5.0.0's `Api::log_stream`
+takes `LogParams` (`container`, `follow`, `previous`, `since_time`, `tail_lines`,
+`timestamps`), read in its source.
+
+### Decisions (defaults, for the user to change at review)
+
+- **What opens:** every pod of the service, its main container (the one named like the
+  deployment, else the first); a deployment with several containers gets a container
+  picker in the toolbar.
+- **History:** the last 200 lines of each pod when the view opens, then followed. Lines
+  carry the server's timestamps (`timestamps: true`): the first tails are merged by time,
+  later lines in the order they arrive; the time shows in a column (local `HH:MM:SS`,
+  the date in the hover text), the pod's short name in the next one (as today).
+- **Pods that come and go** (a rollout): a new pod's logs join from its start; a pod that
+  goes keeps its lines, with a line "pod <short> gone" (dimmed).
+- **A crashed container:** for a pod whose container restarted, "previous run" in its
+  row menu reads the logs of the run before (`previous: true`, last 200 lines, not
+  followed), shown between two marker lines.
+- **Only while visible** (R1.3): streams run while the view is on screen. When it shows
+  again, each pod resumes from the time of its last line (`since_time`), the lines
+  already shown at that same second skipped, so nothing is lost or doubled; a pod that
+  went meanwhile says so.
+- **Pause** freezes what's shown; lines keep coming into the buffer and the toolbar says
+  "N new"; resume shows them.
+- **Level** of a line: a JSON line's `level`, `lvl` or `severity` (a string, any case; a
+  number as pino's: 50+ error, 40 warn, 30 info, below debug), else today's `level_of`
+  on its text. The line itself is shown as it came.
+- **Buffer:** 10 000 lines for the whole view (5 000 today), the oldest dropped first and
+  counted ("N older lines dropped" at the top).
+
+### devdeck-kube
+
+- `logs(target, pod, container, LogFrom, previous) -> (Receiver<LogUpdate>, WatchHandle)`
+  where `LogFrom::{Tail(u32), Since(timestamp)}`; follows unless `previous`.
+- `LogUpdate::{Lines(Vec<LogLine>), Waiting(String), Ended, Problem(String)}`, `LogLine
+  { at: Option<i64 /* epoch ms */>, text }`: the server's timestamp split off the line;
+  lines sent in batches (at most every 50 ms) so a busy pod is one message per batch,
+  not per line; a line over 16 KB cut there (marked).
+- A container that hasn't started (`ContainerCreating`, the 400 "waiting to start"):
+  `Waiting(reason)`, tried again every 2 s. A stream that drops (connection lost, the
+  server closing it): tried again from the last line's time, backoff as the watches
+  (1 s doubling to 30 s), `Problem` while it fails, cleared by the next line. 403: "your
+  account can't read logs in <env>" and no retry. The pod gone (404): `Ended`.
+- Same runtime and shared clients as the watches; dropping the handle ends the stream.
+
+### The cluster entity
+
+- `ClusterDriver::stream_logs(env, pod, container, from, previous, tx) -> Option<Task>`
+  (the fake: its made-up lines, moved out of the view into `fake_cluster.rs`, so the view
+  has one path; the kube driver: `devdeck_kube::logs`). `logs()` (the refusal) goes:
+  both drivers stream.
+- The logs view holds a `PodsInterest` for its service while open (today it reads pods
+  only when a service view happens to hold one: on the kube driver it would show "no
+  pods").
+
+### The view
+
+- `LogsFeed` (new, `views/logs_feed.rs`): one stream per pod while visible, started and
+  stopped as the service's pods change; per pod the last line's time; merging the first
+  tails by time; the "gone", "previous run" and "N new" lines. The view keeps the
+  toolbar, filter, find and rendering it has.
+- Toolbar: "N pods · N lines", the container picker when there are several, a pod's
+  problem or waiting reason in its pod column's hover text and in the toolbar ("2 pods
+  waiting: ContainerCreating"), a refusal (403) in place of the lines.
+- The service view's **logs** button and its action work on the kube driver.
+- Rows stay one line each, cut with an ellipsis, wider content scrolling sideways (R4.4).
+
+### Files
+
+- `devdeck-kube`: `logs.rs` (new: the stream, timestamps, batches, retries), `errors.rs`
+  (403 for logs), `lib.rs`; mock API tests in `driver/tests.rs` or a new module there.
+- `devdeck-core`: `runs.rs` (JSON level, the line's time and pod kept on `Line` or a
+  logs line type of its own).
+- `devdeck-app`: `cluster.rs` (`stream_logs`, `logs()` removed), `kube_cluster.rs`,
+  `fake_cluster.rs` (the made-up feed), `views/logs_feed.rs` (new), `views/logs_view.rs`,
+  `views/service_view.rs`, `bin/snapshot.rs` (its driver streams).
+- Docs: `DESIGN.md` (Cluster: logs), `REQUIREMENTS.md` (R7.5 progress), `ROADMAP.md`.
+
+### OS (R11.6)
+
+None: network only, through kube-rs.
+
+### States to check
+
+Lines from two pods merged; JSON lines with levels and the filter; a busy pod
+(thousands of lines a second: the view stays responsive, the buffer drops the oldest); a
+container picker; a pod waiting to start; a rollout (a pod gone, a new one joining); a
+crashed pod's previous run; paused with "N new"; hidden then shown (resumed, nothing
+doubled); a 403; a lost connection with its problem then back; long lines (ellipsis,
+sideways scroll); the demo unchanged.
+
+### Tests
+
+- devdeck-kube, on the mock API: tail and timestamps parsed; follow delivers later lines;
+  batches; a 403 refused once; a waiting container then lines; a dropped stream resumed
+  from the last line's time; `previous` asked and not followed; a dropped handle ends it.
+- Core: levels from JSON (string, any case, pino numbers, not JSON, JSON without a level).
+- App, on a scripted driver: two pods' first tails merged by time; a new pod starts a
+  stream, a gone pod's line; hidden stops every stream, shown resumes with each pod's last
+  time and skips doubled lines; pause and "N new"; the container picker restarts the
+  streams; previous run; the pods interest held while the view is open and dropped with
+  it; the buffer cap and its count; the existing logs tests on the fake.
+- Snapshots: the logs view with two pods and JSON levels; a pod waiting; a 403; paused
+  with "N new".
+- By hand, read only: a dev35 service's logs match `kubectl logs` (the same lines, the
+  same order within a pod); a rollout seen live; the CPU while a busy service streams.
+
+### Out of scope
+
+Logs through the control API (its phase 6); saving logs to a file; following several
+services in one view; changing the branch (step 5).
+
+### Review of the step 4 plan (subagent, 2026-11-10) and assessment
+
+Every point accepted; the plan above reads with these changes. Points 1 and 9 checked in
+the code (kube-core rounds `since_time` to the nearest second; the service view's pod
+menu "Logs" opens the whole service).
+1. Resuming could lose or double lines: kube-core rounds `since_time` to the nearest
+   second, and milliseconds can't tell a busy pod's lines apart. **Accepted**: the
+   server's timestamp kept whole (nanoseconds); the time asked is the last line's,
+   truncated to the second; on resume, lines older than the last one seen are dropped,
+   and at exactly its timestamp as many as were already seen (a count, not a text
+   compare). The same for devdeck-kube's own retries. Tests: a last line at .700 with
+   lines at .800 after the resume; two identical lines at one timestamp.
+2. On the first list every pod would look new, and gone after a driver change.
+   **Accepted**: the feed follows `pods_state`; pods there when the first list arrives
+   get the 200-line tail, only later ones are new; a list emptied by the cluster
+   forgetting its pods (driver or envs changed, `clear`) isn't "gone". Every `Since`
+   also caps the lines read (`tailLines` with `sinceTime`): a long-running new pod or a
+   long hidden spell reads at most 1 000 lines a pod.
+3. Target changes never reached the streams. **Accepted**: a generation per env, bumped
+   by `Cluster::restart` and `set_driver`, that the feed answers by resuming with
+   `Since`; a refused env (403) is tried again on a reload, as metrics.
+4. Waiting and crashing containers handled by polling and false problems. **Accepted**:
+   the app decides from the pod's container states (the held interest gives them): a
+   stream starts only for a running or terminated container; a waiting one shows its
+   reason from the pod model (ImagePullBackOff…) with no request; a stream that ends
+   waits for a change of restarts or state, with no problem shown; devdeck-kube retries
+   with backoff on transport errors only. An open stream already catches a crashed run's
+   last lines; "previous run" is for a crash before the view opened.
+5. A dead connection would hang a stream silently (no read timeout, no server timeout).
+   **Accepted**: when the env's pod watch reports a problem and then recovers, every
+   stream of that env resumes with `Since`; besides, a stream with no line for 5 minutes
+   is ended and resumed.
+6. `lines()` dies on invalid UTF-8 and grows an endless line. **Accepted**:
+   `read_until(b'\n')` with a byte cap and lossy UTF-8; both tested.
+7. Render cost at high rates. **Accepted**: one channel per view, drained at most once
+   per frame; the filtered rows, matches and longest line kept up to date as lines come
+   and go, not recomputed per render; level and timestamp worked out in devdeck-kube,
+   off the UI thread; the view no longer re-renders on every cluster change, only on
+   its service's pods. Lines cut at 4 KB (marked), and a byte budget of 16 MB on top of
+   the 10 000 lines; the check by hand records the memory and CPU of a busy service.
+8. Pause and the cap conflicted. **Accepted**: lines arriving while paused go to a
+   capped, counted queue appended on resume; the test asserting an unchanged count while
+   paused stays true; `paused` isn't restored from saved state.
+9. Controls. **Accepted**: the container picker, "previous run of <pod>" and a pod filter
+   are registered actions (palette, cheat sheet, a key each where the view has room),
+   each saying why when unavailable (no restart yet; the 400 "previous terminated
+   container not found"); the service view's pod row "Logs" opens the logs filtered to
+   that pod; the picker lists init containers too (a failing migration is a common failed
+   deploy); changing the container clears the lines and starts again with the tails; a
+   chosen container missing after a rollout falls back to the main one, said once.
+10. A gone pod's last lines. **Accepted**: its stream runs to its end or a 404, 30 s at
+    most.
+11. Error wording. **Accepted**: `describe` takes the verb ("read logs", "list pods");
+    the waiting, previous-not-found and invalid-container 400s get their own messages.
+
+### Step 4 outcome (2026-11-10)
+
+Built as planned with the review's changes; devdeck-kube by a builder (`logs.rs`: the
+stream, timestamps, the skip after a resume, batches, retries, errors), the app side by
+the lead (`views/logs_feed.rs`, the view, the drivers).
+- `LogFrom` derives `Copy` and `PartialEq`; `since_time` is kube-core's `jiff::Timestamp`,
+  through `k8s_openapi::jiff` (no new dependency). A resume after a `Tail(n)` start caps
+  at `max(n, 1 000)`. 429 and 5xx are problems tried again (a kubelet timeout is
+  temporary); a 401 and other codes are refusals. A last line without a newline at EOF is
+  still sent; a trailing `\r` goes.
+- `describe` takes what was being done ("list pods", "read logs"); deployments' and pods'
+  messages are unchanged.
+- The fake's made-up feed moved to `fake_cluster.rs` and goes through `stream_logs` like
+  the real one; `ClusterDriver::logs()` and `NO_LOGS` are gone, the service view's logs
+  button works on every driver.
+- Not done: the date in the time column's hover text (devdeck-sys gives only the local
+  time of day); the time column shows `HH:MM:SS`.
+- Found outside the step: the snapshot tool didn't build on the last commit (control API
+  phase 3 made `Connection` private); a `Connection::new` lets it build again.
+- Snapshots: `90-logs-json` (two pods' JSON lines with their levels, one waiting on its
+  image), `90-logs-refused` (a 403 in place of the lines).
+- Not checked by hand on the real cluster: a dev35 service's logs against `kubectl logs`,
+  a rollout seen live, the CPU and memory of a busy service; they're the user's manual
+  test.
+
+### Review of the step 4 diff (subagent, 2026-11-10) and assessment
+
+1. A busy pod's later lines showed before its first ones while a quiet pod held the merge.
+   **Fixed**: every line of a merge's pods is held until it's over. Test.
+2. Hiding the view during the merge dropped the held lines, which a resume then skipped.
+   **Fixed**: hiding shows them. Test.
+3. A stream ended cleanly while the container still ran (a proxy, an API server restart)
+   was never asked again. **Fixed**: asked again after 5 s if the pod still says running.
+   Test.
+4. "Not started yet" and "no such container" stuck until a reload. **Fixed**: only a 403
+   or 401 waits for a reload; the others are asked again when the container changes or
+   after 5 s while it runs. Test.
+5. A stream's problem stayed shown after it connected again without new lines. **Fixed**
+   in devdeck-kube: cleared on connecting. Test.
+6. A previous run could have live lines between its notes, lose its end note when hidden,
+   or be read twice at once. **Fixed**: held and shown whole at its end; a second one is
+   refused while one is read. Test.
+7. Lines cleared on purpose counted as dropped; the container fallback note hid under a
+   pod filter; "previous run" looked at the pod's restarts, not its shown container's.
+   **Fixed**.
+8. Finding the longest line counted every line's characters again. **Fixed**: counts are
+   kept.
+Tests added too: the pod watch coming back resumes streams; the pod row's "Logs" opens
+on that pod; lines past the cap while paused are counted.

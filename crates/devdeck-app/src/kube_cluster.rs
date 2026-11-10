@@ -5,10 +5,10 @@
 //! changes: only envs whose target changed (another context, folder or file content, a
 //! rotated token) reconnect.
 //!
-//! Deployments, pods (for whoever wants them) and metrics are read; logs (step 4) and
+//! Deployments, pods (for whoever wants them) and metrics are read, logs streamed;
 //! deploys (step 5) say why they aren't there.
 
-use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, MetricsRead, PodScope};
+use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, LogFrom, LogStream, MetricsRead, PodScope};
 use devdeck_core::config::ClusterConfig;
 use devdeck_kube::{Kubeconfigs, Target};
 use gpui::{Context, Task};
@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 /// What the kube driver can't do yet.
-pub const NO_LOGS: &str = "logs come in a later step";
 pub const NO_DEPLOYS: &str = "deploys come in a later step";
 
 pub struct KubeCluster {
@@ -102,8 +101,10 @@ impl ClusterDriver for KubeCluster {
         Err(NO_DEPLOYS.into())
     }
 
-    fn logs(&self) -> Result<(), String> {
-        Err(NO_LOGS.into())
+    fn stream_logs(&self, env: &str, pod: &str, container: &str, from: LogFrom, previous: bool, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+        let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()))?;
+        let (updates, handle) = devdeck_kube::logs(&target, pod, container, from, previous);
+        Ok(LogStream { updates, keep: Box::new(handle) })
     }
 
     fn watch_pods(&self, env: &str, scope: PodScope, selector: Option<&str>, cx: &mut Context<Cluster>) -> Option<Task<()>> {

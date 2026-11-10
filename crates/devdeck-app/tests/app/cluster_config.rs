@@ -4,7 +4,7 @@
 //! problems, refused writes. Nothing here reaches a cluster.
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, EnvUpdate, new_cluster};
-use devdeck_app::kube_cluster::{NO_DEPLOYS, NO_LOGS};
+use devdeck_app::kube_cluster::NO_DEPLOYS;
 use devdeck_app::shell::{Shell, WorkspaceSpec};
 use devdeck_app::sidebar::Activity;
 use devdeck_app::views::service_view::ServiceView;
@@ -243,11 +243,8 @@ fn a_cluster_section_brings_the_cluster_area_and_its_kubeconfig_problems(cx: &mu
     });
     assert!(shown.starts_with("no context hades00-hecate in "), "{shown}");
 
-    // Deploys, pods and metrics say why they aren't there (R5.5).
-    cx.read(|cx| {
-        let c = c.read(cx);
-        assert_eq!((c.writes(cx), c.logs()), (Err(NO_DEPLOYS.to_string()), Err(NO_LOGS.to_string())));
-    });
+    // Deploys say why they aren't there (R5.5).
+    cx.read(|cx| assert_eq!(c.read(cx).writes(cx), Err(NO_DEPLOYS.to_string())));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let r = ViewAddr::Svc { env: "hades".into(), name: "graphservice".into() }.to_ref();
     let open = r.clone();

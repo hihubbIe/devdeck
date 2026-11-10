@@ -114,6 +114,13 @@ pub struct Connection {
     pub topics: std::collections::BTreeSet<devdeck_api::types::Topic>,
 }
 
+impl Connection {
+    /// A connection that follows no events (the snapshot tool's settings page).
+    pub fn new(who: Who, pid: Option<u32>, since: SystemTime, calls: u64) -> Self {
+        Self { who, pid, since, calls, events: None, topics: Default::default() }
+    }
+}
+
 pub struct ApiState {
     pub status: Status,
     /// This run of devdeck: pid and start time.

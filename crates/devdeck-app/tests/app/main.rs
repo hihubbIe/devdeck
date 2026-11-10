@@ -22,6 +22,7 @@ mod edit_mode;
 mod files;
 mod git_panel;
 mod lifecycle;
+mod logs;
 mod notes;
 mod notes_sidebar;
 mod pane_header;
