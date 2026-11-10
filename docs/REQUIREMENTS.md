@@ -8,7 +8,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 ## 1. Product
 
 - [~] **R1.1** Native desktop app written in Rust, shipped as a single executable.
-- [ ] **R1.2** Linux first (Wayland and X11). Wide desktop screens (1920×1080 and up). No mobile or narrow layouts.
+- [ ] **R1.2** Linux first (Wayland and X11); macOS 15 and later on Apple silicon, built from source (decided 2026-11-10, `docs/plans/macos.md`). Wide desktop screens (1920×1080 and up). No mobile or narrow layouts.
 - [~] **R1.3** As fast as possible and as cheap as possible: GPU-rendered text, near-zero CPU when idle, minimal RAM. Only visible content is drawn; long lists and logs are virtualized.
 - [~] **R1.4** Self-contained. No dependency on the author's own scripts or tools (`cs`, `f`, the project daemon, aliases). External programs (pnpm, go, kubectl, k9s, docker…) are optional capabilities, detected at runtime.
 - [~] **R1.5** Shareable. Nothing about one machine is hard-coded: paths, envs, clusters, kubeconfigs, folders and tools all come from config.
@@ -51,7 +51,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 5. Interaction
 
-- [~] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts.
+- [~] **R5.1** Every action works with both mouse and keyboard. Actions are registered once (id, label, default key, availability with a reason) and reused by buttons, context menus, the palette and shortcuts. On macOS, an app key written ctrl+… in these requirements is cmd+… (`docs/PLATFORMS.md` L10).
 - [~] **R5.2** Right-click opens a context menu on every interactive element (rows, tabs, panes, commands, pods).
 - [~] **R5.3** Command palette (ctrl+k) with fuzzy search over apps, commands, deployments, envs, layouts, workspaces and actions. `@35` picks the env for one run. Tab shows an app's commands.
 - [~] **R5.4** k9s-inspired single-key shortcuts. Shortcuts are not shown in the UI (no key hints in menus, tooltips, labels or a hint bar: it clutters); they are listed on one page, today the searchable cheat sheet (`?`, ctrl+/), to be redesigned later (changed 2026-11-07, user decision).
@@ -88,8 +88,8 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 8. Lifecycle
 
-- [~] **R8.1** Quitting with running processes (in any workspace) asks: "Stop all and quit" or "Cancel". Cancel keeps the app open.
-- [x] **R8.2** Child processes never outlive the app unless the user chooses so (process groups are killed on quit).
+- [~] **R8.1** Quitting with running processes (in any workspace) asks: "Stop all and quit" or "Cancel". Cancel keeps the app open. On macOS the Dock's Quit, logout and shutdown can't ask (GPUI has no hook before them): they stop everything and quit (`docs/PLATFORMS.md` L13).
+- [~] **R8.2** Child processes never outlive the app unless the user chooses so (process groups are killed on quit). Exact on Linux (scopes); best effort on macOS, where a process that double-forks and leaves its session can escape (`docs/PLATFORMS.md` L2); and on macOS, until its step 1a, the Dock's Quit, logout and shutdown leave runs going (L13).
 
 ## 9. Look and themes
 
@@ -105,7 +105,7 @@ Status markers: `[ ]` not started · `[~]` partly done · `[x]` done and tested.
 
 ## 10. Configuration and setup
 
-- [~] **R10.1** All configuration in `~/.config/devdeck/` (TOML): workspaces, folders, envs, clusters, tools, overrides, themes. State (pins, layouts, history) in `~/.local/state/devdeck/`. What the user writes in devdeck (notes, R12.3) in `~/.local/share/devdeck/` (decided 2026-11-08).
+- [~] **R10.1** All configuration in `~/.config/devdeck/` (TOML): workspaces, folders, envs, clusters, tools, overrides, themes. State (pins, layouts, history) in `~/.local/state/devdeck/`. What the user writes in devdeck (notes, R12.3) in `~/.local/share/devdeck/` (decided 2026-11-08). On macOS: config in the same place; state and notes in `~/Library/Application Support/devdeck/state/` and `notes/` (decided 2026-11-10, `docs/PLATFORMS.md` §5).
 - [ ] **R10.2** `SETUP.md` written for Claude: it walks a new user through an interactive setup on their machine (find project folders, detect tools and kubeconfigs, propose and write the config).
 - [ ] **R10.3** Documentation where it is needed: architecture, adding a view, adding an action, components, config reference, themes.
 
@@ -133,7 +133,7 @@ A generic API for everything devdeck shows and does; MCP and a CLI are its clien
 
 - [~] **R13.1** Everything a user can see or do in devdeck can be read or done through a local API, by explicit ids (never "what has focus"), under the same rules as the UI. Each operation is one function, called by the UI and by the API. No method runs an action by its id, presses a confirm, or drives a modal or a menu.
 - [~] **R13.2** The API knows nothing of agents or MCP. It publishes its own catalog (methods, argument and result schemas, class, level). It only grows: an integer level, nothing removed or changed incompatibly; new methods may be marked experimental.
-- [x] **R13.3** JSON-RPC 2.0, one message per line, on a Unix socket in `$XDG_RUNTIME_DIR/devdeck/` (folder 0700, socket 0600), the caller's user checked; never an abstract socket, never a network port.
+- [~] **R13.3** JSON-RPC 2.0, one message per line, on a Unix socket in `$XDG_RUNTIME_DIR/devdeck/` (on macOS, `~/Library/Application Support/devdeck/run/`, or `/tmp/devdeck-<uid>/` when the socket's path would pass 103 bytes: `docs/PLATFORMS.md` §5) (folder 0700, socket 0600), the caller's user checked; never an abstract socket, never a network port.
 - [~] **R13.4** A caller is known from its process tree, never from a token: a process descending from a shell devdeck started is that terminal. Anything else is outside and may only look, unless the user raises that one program with a card, while it runs. Shells get the socket's path and their terminal in their environment, which grant nothing; app runs get neither; devdeck removes them from its own environment at start. A terminal's grants end with its shell.
 - [~] **R13.5** Every call has a class, from the method and what it acts on: observe, read, present, organize, run, type, remote, destructive. A caller's policy says allow, ask or deny per class (presets: observer, viewer, operator, full). Acting on what the user or another caller started asks; on what the caller started follows its class. Checks, all needed, in order: the policy, the scope (the caller's workspace; protected envs excluded by default), devdeck's own rules (edit mode, protected env, main/master never pushed), approval, rate limit, audit. Defaults for a terminal: the table in the plan.
 - [ ] **R13.6** Every confirmation goes through one approvals service; modals are one way to show it. Functions that destroy require a proof that only the user's answer in the UI makes. An approval is used once, expires in seconds, and is bound to the caller, the method, the exact arguments and the state it was decided on; a change in that state refuses the call. Its card: in an area nothing else draws in, names the caller, shows the arguments in full (wrapped, control and right-to-left characters escaped), never takes focus, Allow is never Enter or y; answers once, for this terminal for some minutes (not for typing into another's terminal, nor protected envs), or deny.

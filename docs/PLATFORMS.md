@@ -4,7 +4,8 @@ devdeck is built and used on Linux. This file lists everything in it that is not
 OS-generic, what macOS would use instead, and how OS code is organised so a feature
 can be supported, partly supported or refused per OS. Inventory as of 2026-11-09
 (commit `9f40aa0`), reviewed against the code and against how established Rust
-projects do it (§6).
+projects do it (§6); refreshed against the code 2026-11-10 (commit `af9fad4`, macOS step
+0, `docs/plans/macos.md`).
 
 Status words:
 - **No build**: the code does not compile for macOS.
@@ -17,26 +18,30 @@ Status words:
 
 | Id | Capability | Where | Linux | macOS equivalent | On macOS today |
 |---|---|---|---|---|---|
-| L1 | Waiting for a run to exit, waking its thread, reading its terminal | `devdeck-core/src/process.rs:143` (eventfd), `:190` (pidfd_open), `:342-351` (poll on the wake fd, the pidfd and the terminal), `:403` (waitid on a pidfd) | `eventfd`, `pidfd_open`, `poll`, `waitid(WaitId::PidFd)` | one `kqueue` carrying the terminal fd, a wake pipe and `EVFILT_PROC`/`NOTE_EXIT`, then `waitpid`. Apple's poll(2) says it "does not support devices", so `poll` on the terminal is not kept (to verify on a Mac; Alacritty and rio use kqueue there) | No build |
+| L1 | Waiting for a run to exit, waking its thread, reading its terminal | `devdeck-core/src/process.rs:143` (eventfd), `:190` (pidfd_open), `:342-351` (poll on the wake fd, the pidfd and the terminal), `:403` (waitid on a pidfd), `:226` and `:367` (the wake: a `u64` written, 8 bytes read once, an eventfd's counter) | `eventfd`, `pidfd_open`, `poll`, `waitid(WaitId::PidFd)` | one `kqueue` carrying the terminal fd, a wake pipe (drained whole on each wake: several writes, one read) and `EVFILT_PROC`/`NOTE_EXIT`, then `waitpid`. Apple's poll(2) says it "does not support devices", so `poll` on the terminal is not kept (to verify on a Mac; Alacritty and rio use kqueue there) | No build |
 | L2 | A run's processes kept together and killed as one (R8.2) | `devdeck-core/src/scope.rs` (whole file), `process.rs:146-160`, `devdeck/src/main.rs:39` | `systemd-run --user --scope`, cgroup v2 and `cgroup.kill` under `/sys/fs/cgroup`, `/proc/self/cgroup`, `pidfd_open` + `pidfd_send_signal` | no cgroup, no child subreaper, and XNU refuses `NOTE_TRACK`. Best effort: own session, `killpg`, then walk the descendants (L3) and signal any that left the group. A process that double-forks and calls `setsid` is reparented to launchd and escapes unless an earlier walk saw it | No build (pidfd calls); the logic already turns off without systemd |
-| L3 | Process table: parent, children, name, command line, start time, liveness | `devdeck-core/src/procfs.rs`, `process.rs:478,486,565,671,758`, `devdeck-app/src/lifecycle.rs:201`, `port_scan.rs:259,302`, `api/mod.rs:188`, `api/identity.rs:45-46` | `/proc/<pid>/stat`, `comm`, `cmdline`, listing `/proc` | `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, `proc_name`, `sysctl(KERN_PROCARGS2)` for the command line (what WezTerm's `procinfo` and Alacritty use) | Silent: stop reaches only the process group; leftovers of a crashed devdeck aren't found |
-| L4 | Ports a run listens on (Ports activity) | `devdeck-core/src/ports.rs:75,81,124,129` | `/proc/net/tcp`, `tcp6`; socket inodes through `/proc/<pid>/fd` | `proc_pidinfo(PROC_PIDLISTFDS)`, then `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` per fd | Silent: no ports found |
-| L5 | Who calls the control API (R13) | `devdeck-app/src/api/identity.rs` (whole file) | `SO_PEERCRED` (`rustix::net::sockopt::socket_peercred`, Linux only), `SO_PEERPIDFD` (hard-coded 77, `identity.rs:15`, which is wrong on some architectures such as mips and sparc), `/proc/self/fdinfo/<fd>`, poll on the pidfd | `getpeereid` for the user; `LOCAL_PEERTOKEN` for an audit token whose (pid, pidversion) pins the process against pid reuse, as a pidfd does (macOS 13+ per Apple DTS); `LOCAL_PEERPID` as a fallback. rustix has none of these; `nix` has all three | No build |
-| L6 | Where the control API's socket lives | `devdeck-app/src/api/mod.rs:79,196`, `api/socket.rs:12-13` (`MAX_PATH = 107`), `devdeck/src/main.rs:82`, `devdeck-api/src/client.rs:14-19`, `devdeck-ctl/src/main.rs:130`, `devdeck-mcp/src/lib.rs:131` | `$XDG_RUNTIME_DIR/devdeck/`; `sun_path` holds 108 bytes | no runtime dir; `sun_path` holds 104 bytes. `$TMPDIR` is long and its unused files are purged after about 3 days, so it is not used (§5) | Off: control API, `devdeck-ctl` and `devdeck-mcp` don't work |
-| L7 | Config, state and notes folders | `devdeck-core/src/settings.rs:61-67`, `state.rs:3,19`, `notes.rs:14,19`, `config.rs:3` | XDG base dirs, else `~/.config`, `~/.local/state`, `~/.local/share` | see §5 | Works |
-| L8 | devdeck's own memory, for stats | `devdeck-app/src/stats.rs:19-28` | `/proc/self/smaps_rollup` | `task_info(TASK_VM_INFO)`, `phys_footprint` | Silent |
-| L9 | Window frame | `devdeck-app/src/window_view.rs:127-155,702-819,1004` | client-side decorations: our own title bar and buttons; `app_id` matched by the `.desktop` launcher | the system's traffic lights; ours would duplicate them. gpui has `TitlebarOptions { appears_transparent, traffic_light_position }` | Works, looks foreign |
-| L10 | Shortcuts | `devdeck-app/src/registry.rs` (every binding), `devdeck-ui/src/terminal.rs:356-359`, `devdeck-ui/src/code.rs:159` (`EDITOR_KEYS`, a copy of gpui-component's Input bindings on Linux), `devdeck-ui/tests/ui/code.rs:184` (`OperatingSystem::Linux`) | `ctrl-…` | `cmd-…` for app keys through gpui's `secondary-` modifier; `ctrl-…` stays the terminal program's; cmd-c / cmd-v copy and paste in the terminal. Where gpui-component switches its Input bindings per OS is to verify | Works, feels wrong |
-| L11 | Build, install, launcher | `scripts/install.sh`, `docs/BUILDING.md` | apt packages, Vulkan driver, `~/.local/bin`, `.desktop` file and hicolor icon | Xcode for `xcrun metal` (or gpui's `runtime_shaders` feature), a `.app` bundle with `Info.plist` and `.icns`, signing (§5) | Missing |
-| L12 | Tests that read Linux state | `devdeck-app/tests/app/lifecycle.rs:41,49,113`, `tests/app/pty_driver.rs:130`, `devdeck-core/src/testing.rs:63`, tests in `ports.rs`, `process.rs:845,925,933`, `scope.rs` | `/proc`, `systemd-run`, `setsid` | through the OS layer's conformance tests and fakes (§4) | Fail |
-| L13 | Menu bar, Dock, last window closed | none: no `set_menus`, no `on_reopen`; `devdeck/src/main.rs:44` stops everything when the last window closes | not expected on Linux | a menu bar (devdeck: About, Settings, Hide ⌘H, Quit ⌘Q; Window), a Dock click that reopens the window, and a choice whether closing the last window quits | Missing |
+| L3 | Process table: parent, children, name, command line, start time, liveness | `devdeck-core/src/procfs.rs`, `process.rs:249` (the program in a shell tab's foreground, `/proc/<group>/comm`), `process.rs:478,486,562,671,758-759,818`, `ports.rs:118`, `devdeck-app/src/lifecycle.rs:201`, `port_scan.rs:282-283,325`, `api/mod.rs:227` (the caller's identity key), `api/identity.rs:45-46` | `/proc/<pid>/stat`, `comm`, `cmdline`, listing `/proc` | `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`, `proc_name`, `sysctl(KERN_PROCARGS2)` for the command line (what WezTerm's `procinfo` and Alacritty use); all in `libc` 0.2.191 | Silent: stop reaches only the process group; leftovers of a crashed devdeck aren't found; a shell tab never names its program |
+| L4 | Ports a run listens on (Ports activity) | `devdeck-core/src/ports.rs:75,81,113,124,129` | `/proc/net/tcp`, `tcp6`; socket inodes through `/proc/<pid>/fd` | `proc_pidinfo(PROC_PIDLISTFDS)`, then `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)` per fd. `libc` 0.2.191 has `proc_pidfdinfo` but neither `PROC_PIDFDSOCKETINFO` nor `socket_fdinfo`: our own `repr(C)` structs or the `listeners` crate (macOS step 2d) | Silent: no ports found |
+| L5 | Who calls the control API (R13) | `devdeck-app/src/api/identity.rs` (whole file) | `SO_PEERCRED` (`rustix::net::sockopt::socket_peercred`, Linux only), `SO_PEERPIDFD` (hard-coded 77, `identity.rs:15`, which is wrong on sparc, where it is `0x56`), `/proc/self/fdinfo/<fd>`, poll on the pidfd | `getpeereid` for the user; `LOCAL_PEERTOKEN` for an audit token whose (pid, pidversion) pins the process against pid reuse, as a pidfd does (macOS 13+ per Apple DTS); `LOCAL_PEERPID` as a fallback. rustix has none of these; `nix` has all three; `libc` 0.2.191 has `getpeereid`, `LOCAL_PEERPID` and `LOCAL_PEERTOKEN` but not `audit_token_t` | No build |
+| L6 | Where the control API's socket lives | `devdeck-app/src/api/mod.rs:89-90,234-235`, `api/socket.rs:13,51` (`MAX_PATH = 107`), `api/handlers.rs:766` (devdeck's own folders, never read through the API), `devdeck/src/main.rs:82`, `devdeck-api/src/client.rs:14-19`; the error texts that name `XDG_RUNTIME_DIR`: `devdeck-ctl/src/main.rs:172`, `devdeck-mcp/src/lib.rs:146` | `$XDG_RUNTIME_DIR/devdeck/`; `sun_path` holds 108 bytes | no runtime dir; `sun_path` holds 104 bytes, its closing NUL included. `$TMPDIR` is long and its unused files are purged after about 3 days, so it is not used (§5) | Off: control API, `devdeck-ctl` and `devdeck-mcp` don't work |
+| L7 | Config, state and notes folders | `devdeck-core/src/settings.rs:63-71`, `state.rs:15-23`, `notes.rs:18-26`, `config.rs:3` | XDG base dirs, else `~/.config`, `~/.local/state`, `~/.local/share` | see §5 | Works |
+| L8 | devdeck's own memory, for stats | `devdeck-app/src/stats.rs:19-28` | `/proc/self/smaps_rollup` | `proc_pid_rusage(RUSAGE_INFO_V2)`, its `ri_phys_footprint` (in `libc` 0.2.191; `task_vm_info` and `TASK_VM_INFO` are not) | Silent |
+| L9 | Window frame | `devdeck-app/src/window_view.rs:147-185` (options, tiling, the frame's colour), the title bar in `render` (`:737-861`), the frame we draw and its resize edges (`:1039-1170`) | client-side decorations: our own title bar and buttons; `app_id` matched by the `.desktop` launcher | the system's traffic lights; ours would duplicate them. gpui has `TitlebarOptions { appears_transparent, traffic_light_position }` | Works, looks foreign |
+| L10 | Shortcuts | `devdeck-app/src/registry.rs` (every binding; `key_text` `:40`, `terminal_takes` `:266-267`), `stress.rs:201`, `devdeck-ui/src/terminal.rs:355-359`, `devdeck-ui/src/code.rs:37,51` (`GIVEN_BACK`), `:150` (`editor_takes`), `:162` (`EDITOR_KEYS`, a copy of gpui-component's Input bindings on Linux), `devdeck-ui/tests/ui/code.rs:170-211` (`OperatingSystem::Linux` at `:184`); `devdeck-core/src/terminal.rs` (`key_bytes`: every `alt` key goes to the app) | `ctrl-…` | `cmd-…` for app keys through gpui's `secondary-` modifier; `ctrl-…` stays the terminal program's; cmd-c / cmd-v copy and paste in the terminal. `Keystroke::parse` refuses `secondary-` without an OS: every parse above must go through `parse_with_os` (none does yet; macOS step 4). gpui-component switches its Input bindings with `#[cfg(target_os = "macos")]` (gpui-base 0.9.0 `input/base/state.rs`), so `EDITOR_KEYS` is per OS. Option types `@ [ ] { } \| ~ \` on non-US layouts, and shells use it as Meta: a choice (macOS step 4) | Works, feels wrong |
+| L11 | Build, install, launcher; measuring | `scripts/install.sh`, `docs/BUILDING.md`, `devdeck-mcp/src/main.rs:2` (`~/.local/bin/devdeck-mcp`); `scripts/measure.py` (R11.4: `/proc/<pid>/stat`, `smaps_rollup`, `maps`, `/sys/fs/cgroup`, `xdotool`, `XDG_SESSION_TYPE`), `scripts/drag_experiment.py` (`xdotool`, X11) | apt packages, Vulkan driver, `~/.local/bin`, `.desktop` file and hicolor icon; measured on Linux | Xcode for `xcrun metal` (or gpui's `runtime_shaders` feature), a `.app` bundle with `Info.plist` and `.icns`, signing (§5) | Missing |
+| L12 | Tests that read Linux state | `devdeck-app/tests/app/lifecycle.rs:41,49,103`, `tests/app/pty_driver.rs:130`, `tests/app/ports.rs:10,132` and its tests from `:188` (the real port scan, L4; one needs `python3`), `tests/app/api.rs:148` (expects `XDG_RUNTIME_DIR` in the reason), `devdeck-core/src/testing.rs:63` (the sweep: a test process counts as gone without `/proc/<pid>`, so on macOS each test deletes the folders of the tests beside it), tests in `ports.rs`, `process.rs:845,862,925,933` (`:862` runs the `setsid` program, which macOS doesn't ship), `scope.rs`; `devdeck-ui/tests/ui/code.rs:170` (`every_editor_key_is_known`, Linux's Input bindings, L10); `devdeck-app/tests/app/settings.rs:87-89` (`text_never_wraps_at_large_scale` starts the real platform; `MacPlatform::new` expects the main thread and libtest likely runs a test on a thread of its own) | `/proc`, `systemd-run`, `setsid` | through the OS layer's conformance tests and fakes (§4) | Fail |
+| L13 | Menu bar, Dock, last window closed, quit | none: no `set_menus`, no `on_reopen`; `devdeck/src/main.rs:44-52` stops everything when the last window closes; the only `on_app_quit` (`devdeck-app/src/api/mod.rs:277`) closes the API | not expected on Linux | a menu bar (devdeck: About, Settings, Hide ⌘H, Quit ⌘Q; Window), a Dock click that reopens the window, and a choice whether closing the last window quits. The Dock's Quit, logout and shutdown reach only `on_app_quit` observers (GPUI registers no `applicationShouldTerminate`), so they skip the quit guard and leave runs going (R8.2) | Missing |
+| L14 | The path of an open file (`file.read` refuses a file that isn't where it was asked) | `devdeck-app/src/api/handlers.rs:839` | `readlink` of `/proc/self/fd/<fd>` | `fcntl(F_GETPATH)` (in `libc` 0.2.191) | Silent: every `file.read` is refused |
 
 Not affected: GPUI has a macOS backend (`gpui-pre-macos`, Metal); the `wayland` and
-`x11` features of `gpui_platform` only apply on Linux. `notify` uses FSEvents on
-macOS. `kube`, `alacritty_terminal` and the tree-sitter grammars are portable.
-`ioctl_tiocsctty`, `waitid`, `kill_process_group` and `IUTF8` exist on macOS in rustix.
-The login-shell environment capture (`environment.rs:46-48`) already gives an app
-started from Finder or the Dock the user's PATH, as Zed does. Fonts are bundled.
+`x11` features of `gpui_platform` only apply on Linux. Its `font-kit` feature is needed
+on macOS: without it GPUI uses a text system that draws no text (`gpui-pre-macos`
+`platform.rs:220-231`), and ours doesn't turn it on (macOS step 1a). `notify` uses
+FSEvents on macOS. `kube`, `alacritty_terminal` and the tree-sitter grammars are
+portable. `ioctl_tiocsctty`, `waitid`, `kill_process_group` and `IUTF8` exist on macOS in
+rustix. The login-shell environment capture (`environment.rs:47`) already gives an app
+started from Finder or the Dock the user's PATH, as Zed does, if `env -0` works there
+(U7). Fonts are bundled.
 
 ## 2. Unix: Linux and macOS, not Windows
 
@@ -45,16 +50,17 @@ layer (§4), starts from this list.
 
 | Id | Capability | Where | Note |
 |---|---|---|---|
-| U1 | Unix domain sockets (control API) | `devdeck-app/src/api/socket.rs`, `api/transport.rs`, `api/handlers.rs:807-822`, `devdeck-api/src/client.rs:10,74` | path length: L6 |
-| U2 | Pseudo-terminals | `devdeck-core/src/process.rs:287-305` (`openpt`, `grantpt`, `unlockpt`, `ptsname`, `tcsetwinsize`, `tcgetattr`, `ioctl_tiocsctty`) | **No build**: `OpenptFlags::CLOEXEC` (`process.rs:289`) exists only on Linux, FreeBSD and NetBSD (rustix 1.1.6 `pty.rs:45-46`); macOS sets `FD_CLOEXEC` with `fcntl` after `openpt` |
-| U3 | Sessions, process groups, signals | `process.rs:166-170,241,516-551,751`, `git.rs:723-742,826-836`, `environment.rs:126-160` | |
-| U4 | devdeck's own signals | `devdeck-app/src/lifecycle.rs:76-82` (`signal_hook`: SIGTERM, SIGHUP, SIGINT) | |
+| U1 | Unix domain sockets (control API) | `devdeck-app/src/api/socket.rs`, `api/transport.rs`, `devdeck-api/src/client.rs:10`; tests: `client.rs:163`, `devdeck-ctl/tests/cli.rs:5`, `devdeck-mcp/tests/stdio.rs:5` | path length: L6 |
+| U2 | Pseudo-terminals | `devdeck-core/src/process.rs:287-304` (`openpt`, `grantpt`, `unlockpt`, `ptsname`, `tcsetwinsize`, `tcgetattr`, `ioctl_tiocsctty`) | **No build**: `OpenptFlags::CLOEXEC` (`process.rs:289`) exists only on Linux, FreeBSD and NetBSD (rustix 1.1.6 `pty.rs:45-46`); macOS sets `FD_CLOEXEC` with `fcntl` after `openpt` |
+| U3 | Sessions, process groups, signals | `process.rs:168-169,241,516-549,751`, `git.rs:723-742,828-836`, `environment.rs:126-160` | |
+| U4 | devdeck's own signals | `devdeck-app/src/lifecycle.rs:81-82` (`signal_hook`: SIGTERM, SIGHUP, SIGINT) | |
 | U5 | File locks | `api/socket.rs:6,54`, `lifecycle.rs:39` (`flock`) | |
-| U6 | Permission bits, owner, `O_NOFOLLOW`, `O_NONBLOCK` | `api/socket.rs:8,54,76`, `api/handlers.rs:807-822`, `environment.rs:103,225`, `apps.rs:250`, `toolchains/node/versions.rs:155`, `toolchains/project.rs:116` | |
-| U7 | Shells | `/bin/sh` in `process.rs:159`, `environment.rs:47,351-371`, `scope.rs:105`; `$SHELL` for the login environment in `environment.rs:47-61` | |
+| U6 | Permission bits, owner, `O_NOFOLLOW`, `O_NONBLOCK`, `ELOOP` | `api/socket.rs:8,54,76`, `api/handlers.rs:818-831`, `devdeck-core/src/git.rs:796`, `environment.rs:103,225`, `apps.rs:250`, `toolchains/node/versions.rs:155`, `toolchains/project.rs:116`; tests: `devdeck-app/tests/app/api_reads.rs:141` (`libc::mkfifo`), `tests/app/notes.rs:252`, `devdeck-core/src/git.rs:1067`, `discovery/tests.rs:6`, `devdeck-core/tests/git.rs:74`; symlinks: `devdeck-core/tests/git.rs:674`, `tests/app/api_reads.rs:134`, `api/socket.rs:108` | |
+| U7 | Shells | `/bin/sh` in `process.rs:159`, `environment.rs:47,351-371`, `scope.rs:105`; `$SHELL` for the login environment in `environment.rs:47-61`; `env -0` prints it (`environment.rs:30`); every shell tab runs `exec "${SHELL:-/bin/sh}" -i` (`devdeck-app/src/runner.rs:55`, `SHELL_LINE`) | to verify on a Mac: macOS 12's `/usr/bin/env` lacked `-0` (a Zed commit, §6); if 15's does too, every run loses the login shell's PATH |
 | U8 | Local time | `devdeck-app/src/settings_view.rs:44-47` (`localtime_r`) | |
 | U9 | Byte paths | `devdeck-app/src/drops.rs:73-75` (test, already `cfg(unix)`) | |
-| U10 | `$HOME` | `devdeck-core/src/config.rs:232`, `discovery/mod.rs:58`, `environment.rs:61`, `devdeck-app/src/deck.rs:216`, `api/handlers.rs:773`, `devdeck-kube/src/kubeconfigs.rs:265` | |
+| U10 | `$HOME` | `devdeck-core/src/config.rs:232`, `discovery/mod.rs:58`, `environment.rs:61`, `devdeck-app/src/deck.rs:254`, `api/handlers.rs:775`, `api/gitports.rs:49`, `bin/snapshot.rs:383`, `devdeck-kube/src/kubeconfigs.rs:265` | |
+| U11 | Socket shutdown and peek (the control API's hang-up check) | `devdeck-app/src/api/transport.rs:61` (`rustix::net::shutdown`), `:201` (`libc::recv` with `MSG_PEEK \| MSG_DONTWAIT`) | no `devdeck-sys` module holds it yet: a `net/` capability (§4) |
 
 ## 3. Requirements and decisions shaped by Linux
 
@@ -71,8 +77,20 @@ To revisit when the macOS port starts:
   Wayland doesn't let apps place windows. On macOS they could be.
 - APFS is case-insensitive by default: path comparisons in discovery, files and notes
   are audited (not done yet).
+- `std::env::temp_dir()` is `$TMPDIR`, under `/var/folders`; `/tmp` and `/var` are links
+  to `/private/…`, so a canonicalized path (`api/present.rs:208`, `api/handlers.rs:826`)
+  differs from the one a test builds, and test socket paths come near 104 bytes (L6).
 - On a Mac without the Command Line Tools, `/usr/bin/git` is a stub that opens an
   install dialog: the git panel says git is missing instead of starting it.
+- **R8.1** (quitting with runs asks): the Dock's Quit, logout and shutdown can't ask on
+  macOS, GPUI has no hook before them (L13); they stop everything and quit.
+- **R5.3, R5.4, R6.12, R7.3, R12.3** name ctrl keys: on macOS app keys are cmd (L10).
+- **R3.8**: the detached window's ⇲ sits next to our ×; beside the traffic lights there is
+  no × of ours (L9). **R9.8**: "maximized" against macOS zoom and full screen.
+- **R1.1** (a single executable): a `.app` bundle on macOS, with packaging, after the
+  macOS milestone; `devdeck-ctl` and `devdeck-mcp` are binaries of their own already.
+- The macOS socket path has a space (`Application Support`): devdeck gives it to shells
+  as `DEVDECK_SOCKET` (R13.4), which a script must quote.
 
 ## 4. The OS layer
 
@@ -99,7 +117,8 @@ crates/devdeck-sys/src/
   dirs/             L6, L7: config, state, data and runtime folders; socket path limit
   memory/           L8
   signals/          U4: devdeck's own SIGTERM/SIGHUP/SIGINT
-  fs/               U5, U6: locks, permissions, no-follow opens
+  fs/               U5, U6, L14: locks, permissions, no-follow opens, an open file's path
+  net/              U11: socket shutdown and peek
   time/             U8
 ```
 
@@ -172,20 +191,24 @@ ctrl elsewhere), with per-OS keymaps where a key differs, as Zed ships
 - **A source scan test** fails when `/proc`, `/sys/`, `XDG_RUNTIME_DIR`, `systemd-run`
   or `std::os::linux` appears in a source file outside `devdeck-sys`: literals and paths
   that no dependency rule catches.
-- **CI** (none exists yet; it comes before the first macOS backend):
+- **The Mac check on Linux**, by hand before every commit of the macOS milestone:
+  `cargo clippy --target aarch64-apple-darwin -p devdeck-sys -p devdeck-core -p
+  devdeck-api -p devdeck-ctl -p devdeck-mcp --all-targets -- -D warnings`, once the
+  target is added with `rustup target add` (done here 2026-11-10). `-p` is right here,
+  unlike elsewhere (`docs/WORKFLOW.md`): the rest of the workspace can't be checked from
+  Linux (next point), and another target has its own folder in `target/`.
+- **CI** (none exists yet; by the user's choice, 2026-11-10, it comes after the macOS
+  milestone and packaging):
   - Linux: `cargo nextest run --workspace`, `cargo clippy --workspace --all-targets -- -D
-    warnings`.
-  - Linux: `cargo check -p devdeck-sys --target aarch64-apple-darwin`, a fast check
-    that the macOS backend compiles. Also usable locally once the target is added
-    with `rustup target add`. `-p` is right here, unlike elsewhere (`docs/WORKFLOW.md`):
-    the rest of the workspace does not build for macOS yet, and another target has its
-    own folder in `target/`.
+    warnings`, and the Mac check above.
   - macOS (`macos-15`, pinned; `macos-latest` moved to macOS 26): `cargo clippy
-    --workspace --all-targets -- -D warnings` and `cargo test -p devdeck-sys`.
+    --workspace --all-targets -- -D warnings` and `cargo nextest run --workspace`.
 - **Build scripts**: `devdeck-sys` has no build script, and no dependency of it needs
-  Apple's SDK to build, so the Linux cross-check keeps working. The whole workspace
-  can't be cross-checked from Linux: GPUI embeds a Metal shader library compiled by
-  `xcrun metal` unless its `runtime_shaders` feature is on.
+  Apple's SDK to build, so the Linux check keeps working. The whole workspace can't be
+  checked from Linux (tried 2026-11-10, `docs/plans/macos.md`): GPUI's Mac build script
+  only runs when built on a Mac, so the Metal shader library its renderer includes is
+  never made, and the C code of `ring`, `psm` and tree-sitter needs a Mac C compiler and
+  Apple's SDK headers.
 
 ### Build or buy
 
@@ -217,8 +240,8 @@ only and macOS 15 at least (`docs/plans/macos.md`).
 |---|---|
 | Crate name | `devdeck-sys` |
 | Existing Unix code (§2) | moves into `devdeck-sys` with the port, U2/U3 together with L1/L2 in `child` |
-| L7 folders on macOS | config in `~/.config/devdeck` (what Zed, WezTerm, Alacritty, Helix do for config), state and notes in `~/Library/Application Support/devdeck`, logs in `~/Library/Logs/devdeck` |
-| L6 socket on macOS | `~/Library/Application Support/devdeck/run/` (0700) when its path fits in 104 bytes, else `/tmp/devdeck-<uid>/` (0700, owner checked, as tmux does). Not `$TMPDIR`. `devdeck-ctl` and `devdeck-mcp` resolve it through the same `devdeck-sys` function |
+| L7 folders on macOS | config in `~/.config/devdeck` (what Zed, WezTerm, Alacritty, Helix do for config), state and notes in `~/Library/Application Support/devdeck`, in `state/` and `notes/` of their own (both use `workspaces/<id>/`; macOS plan review 14), logs in `~/Library/Logs/devdeck` (with packaging). `DEVDECK_*_DIR` come first on every OS; whether `XDG_*_HOME` count on macOS is decided in macOS step 2a's plan |
+| L6 socket on macOS | `~/Library/Application Support/devdeck/run/` (0700) when the socket's path (its longest name, `s-<16 hex>.sock`, `api/socket.rs:26`) fits in 103 bytes, else `/tmp/devdeck-<uid>/` (0700, owner checked, as tmux does). Not `$TMPDIR`. `devdeck-ctl` and `devdeck-mcp` resolve it through the same `devdeck-sys` function |
 | L9 window | transparent title bar with our content beside the traffic lights, as Zed does |
 | L13 last window | native per OS: on Linux, closing the last window quits and stops every run; on macOS, devdeck and its runs keep going, a Dock click reopens the window as it was, and ⌘Q or Quit in the menu quits and stops everything (R8.2) |
 | L11 builds | a GitHub Actions `macos-15` runner builds the `.app` (Zed's `script/bundle-mac` is the model: bundle, `codesign`, DMG, notarize, staple) |
@@ -253,3 +276,4 @@ Crate sources read under `~/.cargo/registry/src/`: rustix 1.1.6 (`pty.rs`,
 - Docker Desktop socket: https://docs.docker.com/desktop/setup/install/mac-permission-requirements/
 - GitHub runner images: https://github.blog/changelog/2026-05-14-github-actions-upcoming-image-migrations
 - Signing on Apple Silicon: https://eclecticlight.co/2020/08/22/apple-silicon-macs-will-require-signed-code/
+- macOS `env` without `-0` (Zed): https://git.secluded.site/zed/commit/b05aa381aa0f83c7f4809ca67b44568248626e55.patch

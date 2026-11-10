@@ -353,3 +353,64 @@ and 9 were checked again in the sources before being taken.
 17. **Build guide details**. Taken: disk for Xcode and the Metal toolchain; `xcode-select
     --install` saying the tools are already there is fine; the repository is public, so
     cloning needs no account.
+
+## Step 0, as built (2026-11-10)
+
+Docs only; no code, no OS touched. Its plan was the step's entry above with review
+points 6–8 and 10; the review below is of the result, against the code.
+
+- `docs/PLATFORMS.md` §1–2 checked line by line against `af9fad4` (a search for `/proc`,
+  `/sys`, `XDG_`, `rustix::`, `libc::`, `signal_hook`, `std::os::`, `cfg(unix)`,
+  `systemd`, `/bin/sh`, `"SHELL"`, `"HOME"`, `Errno::`, `env -0` over every crate, tests
+  included; it missed `${SHELL` and `scripts/`, which the review below found). New rows: **L14** (an open file's path, `file.read`) and **U11** (socket
+  shutdown and peek); new places in L3, L4, L6, L10, L12, L13, U1, U6, U7, U10; what
+  `libc` 0.2.191 has and lacks in L3, L4, L8, L14; the `font-kit` feature in "Not
+  affected".
+- §3: `$TMPDIR` and `/private` paths. §4: `net/`, `fs/` takes L14; the Mac check on
+  Linux by hand, with clippy and `--all-targets` (review point 10); CI after the
+  milestone and packaging; why the whole workspace can't be checked from Linux. §5:
+  state and notes in subfolders (review point 14), logs with packaging. §6: the Zed
+  `env -0` commit.
+- `docs/REQUIREMENTS.md`: R1.2 gains macOS 15 on Apple silicon; R8.2 exact on Linux,
+  best effort on macOS (now `[~]`); R10.1 the macOS folders; R13.3 the macOS socket
+  folder (now `[~]`).
+- `text_never_wraps_at_large_scale` (review point 6): it calls
+  `gpui_platform::current_platform(true)`, which on macOS is `MacPlatform::new`, which
+  panics off the main thread ("Mac platform not created on main thread"). libtest likely
+  runs a test on a thread of its own (rust-src isn't installed here to read it). Step 1a
+  makes the test Linux-only with that reason, unless round 0 shows it passes.
+
+### Step 0 review (subagent), assessed
+
+Each reference below was checked again in the code before being taken. All taken; the
+fixes are in the step's commit.
+
+1. R8.1 and R8.2 didn't say what L13 says (the Dock's Quit, logout and shutdown). Taken:
+   both name it; §3 lists R8.1.
+2. U7 missed `SHELL_LINE` (`runner.rs:55`, every shell tab): the search's `$SHELL`
+   didn't match `${SHELL`. Taken, and the search list above corrected.
+3. L12 missed `tests/app/ports.rs` (the real port scan) and `process.rs:862` (the
+   `setsid` program). Taken.
+4. `scripts/` half covered: `measure.py` (R11.4: `/proc`, `/sys/fs/cgroup`, `xdotool`),
+   `drag_experiment.py`, and `~/.local/bin` in `devdeck-mcp/src/main.rs:2`. Taken, in L11.
+5. L9's references were off and the frame code dropped. Taken: `:147-185`, `:737-861`,
+   `:1039-1170`.
+6. L10 said every parse goes through `parse_with_os`; none does. Taken: a to-do for step
+   4; `GIVEN_BACK` is defined at `code.rs:37`.
+7. `sun_path`'s 104 bytes include the NUL, and the limit is on the socket's path, not the
+   folder's. Taken in L6, §5 and R13.3: the socket's path fits in 103 bytes.
+8. R5.3, R5.4, R6.12, R7.3 and R12.3 name ctrl keys. Taken: one line in R5.1, one in §3.
+9. R3.8, R9.8 and R1.1 become ambiguous on macOS. Taken: listed in §3 (R1.1's `.app`
+   comes with packaging, after this milestone).
+10. L1 didn't cite the wake's write and read (an eventfd's counter; a pipe must be drained
+    whole). Taken.
+11. Whether `XDG_*_HOME` count on macOS; L7's ranges stopped a line short. Taken: ranges
+    widened; §5 says `DEVDECK_*_DIR` first everywhere and leaves `XDG_*` on macOS to step
+    2a's plan.
+12. L5: 77 is right on mips (only sparc differs); `libc` already has `getpeereid`,
+    `LOCAL_PEERPID` and `LOCAL_PEERTOKEN`, only `audit_token_t` is missing. Taken in L5;
+    nix or libc is chosen in step 2e's plan.
+13. U1, U3 and U6 missed sites (tests, `git.rs:796`, the calls at `git.rs:830,836`).
+    Taken.
+14. The macOS socket path has a space, and shells get it as `DEVDECK_SOCKET`. Taken: a
+    line in §3.
