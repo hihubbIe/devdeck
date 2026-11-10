@@ -1,0 +1,15 @@
+[package]
+name = "devdeck-sys"
+description = "devdeck's OS layer (R11.6): the only code that calls the OS, one backend per OS"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+# No doctests: `cargo test` does not run rustdoc on this crate (docs/WORKFLOW.md).
+doctest = false
+
+[dependencies]
+rustix.workspace = true
+libc.workspace = true
+signal-hook.workspace = true

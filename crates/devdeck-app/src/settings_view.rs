@@ -41,13 +41,7 @@ const AUDIT_SHOWN: usize = 8;
 
 /// `14:02:11`, local time, of milliseconds since the epoch.
 fn clock(ms: u64) -> String {
-    let secs = (ms / 1000) as libc::time_t;
-    // SAFETY: an all-zero `tm` is valid, and localtime_r only writes into the one we own.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
-        return String::new();
-    }
-    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    devdeck_sys::time::local_hms(ms).map(|(h, m, s)| format!("{h:02}:{m:02}:{s:02}")).unwrap_or_default()
 }
 
 fn since_ms(t: std::time::SystemTime) -> u64 {

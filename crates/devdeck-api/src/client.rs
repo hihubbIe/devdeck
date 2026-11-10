@@ -11,12 +11,13 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 /// The socket to use: `DEVDECK_SOCKET` (set in devdeck's shells), else the main devdeck's
-/// in `$XDG_RUNTIME_DIR/devdeck/`. `env` reads a variable.
-pub fn default_socket(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+/// in the API's folder (`devdeck_sys::dirs::runtime`), or why there is none. `env` reads
+/// a variable.
+pub fn default_socket(env: impl Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
     if let Some(s) = env(SOCKET_ENV).filter(|s| !s.is_empty()) {
-        return Some(PathBuf::from(s));
+        return Ok(PathBuf::from(s));
     }
-    env("XDG_RUNTIME_DIR").filter(|s| !s.is_empty()).map(|d| PathBuf::from(d).join("devdeck").join("main.sock"))
+    devdeck_sys::dirs::runtime(env).map(|d| d.join("main.sock")).map_err(|e| e.to_string())
 }
 
 /// Reads one message (a line) into `buf`, without its end of line. `Ok(false)` at the end
@@ -168,9 +169,10 @@ mod tests {
 
     #[test]
     fn socket_from_the_shell_else_the_main_one() {
-        assert_eq!(default_socket(env(&[("DEVDECK_SOCKET", "/s"), ("XDG_RUNTIME_DIR", "/r")])), Some("/s".into()));
-        assert_eq!(default_socket(env(&[("XDG_RUNTIME_DIR", "/r")])), Some("/r/devdeck/main.sock".into()));
-        assert_eq!(default_socket(env(&[])), None);
+        let folder = devdeck_sys::dirs::runtime(env(&[]));
+        // Every variable set, the runtime folder's included: the shell's socket wins.
+        assert_eq!(default_socket(|k: &str| Some(if k == SOCKET_ENV { "/s" } else { "/r" }.to_string())), Ok("/s".into()));
+        assert_eq!(default_socket(env(&[])), folder.map(|d| d.join("main.sock")).map_err(|e| e.to_string()));
     }
 
     #[test]

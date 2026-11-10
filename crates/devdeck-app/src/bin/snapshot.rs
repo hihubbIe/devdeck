@@ -987,7 +987,7 @@ fn welcome() -> Layout {
 fn api_off(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell>) {
     cx.update(|cx| {
         let dir = std::env::temp_dir();
-        devdeck_app::api::start(devdeck_app::api::Config { runtime: None, state_dir: dir.clone(), default_state_dir: dir, audit_file: false }, cx);
+        devdeck_app::api::start(devdeck_app::api::Config { runtime: devdeck_app::api::no_runtime(), state_dir: dir.clone(), default_state_dir: dir, audit_file: false }, cx);
     });
 }
 
@@ -998,7 +998,7 @@ fn api_callers(cx: &mut HeadlessAppContext, _: AnyWindowHandle, _: &Entity<Shell
     use devdeck_app::api::{Connection, Status, Who};
     let api = cx.update(|cx| {
         let dir = PathBuf::from("/home/u/.local/state/devdeck");
-        devdeck_app::api::start(devdeck_app::api::Config { runtime: None, state_dir: dir.clone(), default_state_dir: dir, audit_file: false }, cx)
+        devdeck_app::api::start(devdeck_app::api::Config { runtime: devdeck_app::api::no_runtime(), state_dir: dir.clone(), default_state_dir: dir, audit_file: false }, cx)
     });
     cx.run_until_parked();
     cx.update(|cx| {

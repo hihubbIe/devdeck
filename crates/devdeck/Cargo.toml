@@ -23,5 +23,6 @@ profile = ["gpui/profiler"]
 devdeck-app.workspace = true
 devdeck-core.workspace = true
 devdeck-ui.workspace = true
+devdeck-sys.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true

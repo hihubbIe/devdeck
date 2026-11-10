@@ -2,8 +2,9 @@
 //!
 //! Each workspace has its own [`Deck`]; they share nothing. One is shown at a time in
 //! the main window; the others keep running in the background with their detached
-//! windows closed. Every way of quitting goes through [`Shell::request_quit`], which
-//! asks first when something is running (R8.1).
+//! windows closed. Quitting from devdeck goes through [`Shell::request_quit`], which
+//! asks first when something is running (R8.1); a quit from outside (a signal, the last
+//! window closed, on macOS the Dock's Quit) stops everything without asking (R8.2).
 
 use crate::deck::Deck;
 use crate::runner::RunnerEvent;
@@ -85,6 +86,11 @@ pub struct Shell {
     /// Test seam: the test platform can't quit, so tests turn this off and count.
     pub quit_for_real: bool,
     pub quits: usize,
+    /// Everything this devdeck started was killed already (a quit through the shell, a
+    /// signal, the last window closed): quitting doesn't do it again.
+    pub killed: bool,
+    /// Times everything was killed (tests: once per quit, never twice).
+    pub kills: usize,
     app_save_failed: bool,
     _stopping: Option<Task<()>>,
     /// Process groups this devdeck started (none for the demo and tests).
@@ -194,11 +200,27 @@ impl Shell {
             quit_state: QuitState::Idle,
             quit_for_real: true,
             quits: 0,
+            killed: false,
+            kills: 0,
             app_save_failed: false,
             _stopping: None,
             log: None,
         });
         cx.set_global(ShellHandle(shell.clone()));
+        // A quit that didn't come through the shell, a signal or the last window closing
+        // (on macOS: the Dock's Quit, logout, shutdown) still stops everything (R8.2).
+        let quitting = shell.downgrade();
+        cx.on_app_quit(move |cx| {
+            if let Some(s) = quitting.upgrade() {
+                s.update(cx, |s, cx| {
+                    if s.quit_for_real && !s.killed {
+                        s.kill_to_quit(cx);
+                    }
+                });
+            }
+            async {}
+        })
+        .detach();
         // Every workspace's views start now (they keep running in the background); only
         // the active one opens its detached windows.
         for d in decks {
@@ -346,7 +368,9 @@ impl Shell {
 
     /// Kills, now, every process this devdeck started that may still run: the runs' and
     /// what the group log recorded (R8.2).
-    pub fn kill_everything(&self, cx: &App) {
+    pub fn kill_everything(&mut self, cx: &App) {
+        self.killed = true;
+        self.kills += 1;
         let mut pids: Vec<u32> = self.workspaces.iter().flat_map(|w| w.services.read(cx).runner.read(cx).pids()).map(|(_, p)| p).collect();
         pids.extend(self.log.iter().flat_map(|l| l.live()));
         pids.sort_unstable();
@@ -365,6 +389,11 @@ impl Shell {
         self.flush(cx);
         self.quits += 1;
         if self.quit_for_real {
+            // Nothing was running, or it stopped: what the runs left in their scopes (a
+            // build's daemon) still goes with devdeck.
+            if !self.killed {
+                self.kill_everything(cx);
+            }
             cx.quit();
         } else if self.quit_state != QuitState::Idle {
             // Tests: close the guard as quitting would.

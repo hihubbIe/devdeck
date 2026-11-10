@@ -1494,6 +1494,7 @@ version = "0.1.0"
 dependencies = [
  "devdeck-app",
  "devdeck-core",
+ "devdeck-sys",
  "devdeck-ui",
  "gpui-pre",
  "gpui-pre-platform",
@@ -1503,6 +1504,7 @@ dependencies = [
 name = "devdeck-api"
 version = "0.1.0"
 dependencies = [
+ "devdeck-sys",
  "schemars",
  "serde",
  "serde_json",
@@ -1516,18 +1518,19 @@ dependencies = [
  "devdeck-api",
  "devdeck-core",
  "devdeck-kube",
+ "devdeck-sys",
  "devdeck-ui",
  "futures-lite",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
  "libc",
+ "log",
  "notify-debouncer-full",
  "regex",
  "rustix",
  "serde",
  "serde_json",
- "signal-hook",
  "uuid",
 ]
 
@@ -1537,6 +1540,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "async-channel",
+ "devdeck-sys",
  "jsonc-parser",
  "notify",
  "notify-debouncer-full",
@@ -1545,7 +1549,6 @@ dependencies = [
  "serde",
  "serde-saphyr 2.1.1",
  "serde_json",
- "signal-hook",
  "toml 1.2.1+spec-1.1.0",
  "uuid",
 ]
@@ -1583,6 +1586,15 @@ dependencies = [
  "rmcp",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "devdeck-sys"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix",
+ "signal-hook",
 ]
 
 [[package]]

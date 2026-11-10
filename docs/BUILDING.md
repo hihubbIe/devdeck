@@ -41,6 +41,10 @@ then `target/debug/devdeck` (`cargo build`'s set; `cargo run` would keep one of 
 the snapshot tool: `cargo run --bin devdeck-snapshot --features devdeck-app/snapshot`
 (a set of its own anyway: its features change GPUI's).
 
+devdeck logs warnings and errors on stderr, its own and GPUI's, one line each (level,
+where from, message). `DEVDECK_LOG=info`, `debug` or `trace` shows more, `error` less,
+`off` nothing.
+
 GPUI needs the desktop session's `XDG_RUNTIME_DIR` (and `WAYLAND_DISPLAY` or `DISPLAY`).
 A shell that lacks it (one in a tmux server started outside the session, for instance)
 panics with "XDG_RUNTIME_DIR is not set". A fallback in `~/.bashrc` fixes it:

@@ -414,3 +414,254 @@ fixes are in the step's commit.
     Taken.
 14. The macOS socket path has a space, and shells get it as `DEVDECK_SOCKET`. Taken: a
     line in §3.
+
+## Step 1a plan (2026-11-10): `devdeck-sys`, the small capabilities
+
+The crate, and six capabilities moved into it with no change on Linux; with them, the
+three things round 0 needs on a Mac (text, quitting from outside devdeck, a log). R11.6,
+R8.2, R13.3; L6, L7, L8, L14, U4, U5, U6, U8, U11 (`docs/PLATFORMS.md`).
+
+On macOS during step 1: what is portable Unix code already (folders, local time, locks,
+signals, sockets) goes in a `unix.rs` both OSes use; memory and an open file's path are
+unsupported until step 2f; the API's socket folder until step 2a. So in round 0 the API
+is off on a Mac with its reason, and `file.read` is refused.
+
+### The crate
+
+`crates/devdeck-sys`, `doctest = false`. `lib.rs`: `SysError` (`Unsupported(&'static
+str)`, `Io(io::Error)`), `Support` (`Yes`, `Partial(why)`, `No(why)`), `Capability`,
+`support(Capability)`, computed once and cached. Each module: `mod.rs` (the functions
+devdeck calls, documented once, and the conformance tests), and as needed `linux.rs`,
+`unix.rs`, `unsupported.rs`, picked by `cfg_attr` on the target (`docs/PLATFORMS.md` §4).
+
+| Module | devdeck calls | Moves from | Linux | macOS in step 1 |
+|---|---|---|---|---|
+| `dirs/` | `config(env)`, `state(env)`, `data(env)`; `runtime()`, the socket folder with `devdeck` in it; `SOCKET_PATH_MAX` | `devdeck-core/src/settings.rs:63`, `state.rs:15`, `notes.rs:18`; `devdeck-app/src/api/mod.rs:89-90,234-235`, `devdeck/src/main.rs:82`, `devdeck-api/src/client.rs:14-19`, `api/handlers.rs:766`, `api/socket.rs:13,51` | as today | `unix.rs` for the three folders; `runtime()` unsupported |
+| `memory/` | `footprint()` | `devdeck-app/src/stats.rs:19-28`, its parser and tests | as today | unsupported (2f) |
+| `time/` | `local_hms(ms)` | `devdeck-app/src/settings_view.rs:44-47` | `unix.rs` | `unix.rs` |
+| `fs/` | `lock(&File)`, `open_no_follow(path, nonblocking)`, `is_mine(&Metadata)`, `is_loop(&io::Error)`, `open_path(&File)` (L14), `make_fifo(path)` | `api/socket.rs:6,54,76`, `lifecycle.rs:39`, `api/handlers.rs:818-839`, `devdeck-core/src/toolchains/project.rs:116`, `tests/app/api_reads.rs:141` | as today | `unix.rs`; `open_path` unsupported (2f) |
+| `signals/` | `quit_signals()`: SIGTERM, SIGHUP, SIGINT, as an iterator | `devdeck-app/src/lifecycle.rs:81-82` | `unix.rs` | `unix.rs` |
+| `net/` | `shutdown(&OwnedFd)`, `hung_up(&UnixStream)` | `devdeck-app/src/api/transport.rs:61,201` | `unix.rs` | `unix.rs` |
+
+- `devdeck-core` keeps its public folder functions, each one line into `devdeck-sys`;
+  their callers don't change.
+- The socket folder comes whole from `dirs::runtime()`: `socket::bind` stops adding
+  `devdeck`; `api::Config.runtime` becomes `Result<PathBuf, String>`, the reason from
+  `devdeck-sys`. On Linux it still names `XDG_RUNTIME_DIR` (`tests/app/api.rs:148`
+  passes there).
+- `devdeck-api`'s `default_socket` calls `dirs::runtime()`: `devdeck-api` depends on
+  `devdeck-sys`; `devdeck-ctl` and `devdeck-mcp` still depend on `devdeck-api` only
+  (R13.11). Their error texts give the reason instead of naming `XDG_RUNTIME_DIR`.
+- `make_fifo` is a plain public function, so `devdeck-app` doesn't keep `libc` for a
+  test.
+
+### What round 0 needs
+
+1. **Text on a Mac**: `font-kit` joins `gpui_platform`'s features in the root
+   `Cargo.toml`. Nothing changes on Linux: it only enables `gpui_macos`'s feature, not
+   built there. `Cargo.lock` gains font-kit's crates for macOS.
+2. **Quitting from outside devdeck** (the Dock's Quit, logout, shutdown): an
+   `on_app_quit` observer installed with the shell calls `kill_to_quit`. It does nothing
+   when the quit went through the shell (`quits > 0`: no second kill marking runs to
+   start again after "Stop all and quit") and in tests (`quit_for_real` off: every app
+   test ends with GPUI's quit). GPUI calls the observers from its quit path on every
+   platform (`gpui-pre` `app.rs:1212`), so it runs on Linux too.
+3. **The logger**: a `logger` module in `devdeck-app`, installed first thing by
+   `main.rs`; stderr, one line per record (level, target, message); warnings and errors
+   by default, `DEVDECK_LOG=info|debug|trace` for more. `log` 0.4.35, already in the
+   tree. In the library so its level parsing and line format are tested.
+
+### Also
+
+- `text_never_wraps_at_large_scale` is `#[cfg(target_os = "linux")]`, with the reason:
+  on a Mac GPUI's real platform must start on the main thread.
+- `devdeck-core` drops `signal-hook` (in its `Cargo.toml`, never used: only a comment
+  names it). `devdeck-app` drops `signal-hook`; it keeps `rustix` and `libc` until 1c.
+- **Source scan test**, `crates/devdeck-sys/tests/sys/main.rs`: outside `devdeck-sys`,
+  code lines (comments skipped) never use `/proc`, `/sys/`, `XDG_RUNTIME_DIR`,
+  `systemd-run`, `std::os::linux`, `rustix::`, `libc::` or `signal_hook`. Files that
+  1b–1d move are allowed, each with the step that empties it (`process.rs`, `scope.rs`,
+  `procfs.rs`, `ports.rs`, `identity.rs`, `port_scan.rs`, `lifecycle.rs`, `git.rs`,
+  `environment.rs`, the tests of L12); empty after 1d. It also fails when a listed file
+  needs its place no more, so the list can't go stale.
+- **The Mac check** on Linux: `cargo clippy --target aarch64-apple-darwin -p
+  devdeck-sys -p devdeck-api -p devdeck-ctl -p devdeck-mcp --all-targets -- -D
+  warnings`. `devdeck-core` joins after 1d, when its process code has moved; that is
+  also when the whole app first builds on a Mac (round 0).
+- **Docs**: `docs/DESIGN.md:82` (the crate list) gains `devdeck-sys`; `:382-386` (the
+  clients depend only on `devdeck-api`) adds "which uses `devdeck-sys` for the socket's
+  folder"; `docs/PLATFORMS.md` §4 marks the six modules done.
+
+### Tests
+
+- Conformance, in each `mod.rs`: `dirs`, the precedence tests moved from core,
+  `runtime()` with `XDG_RUNTIME_DIR` set and unset, the socket path limit; `memory`, a
+  footprint above zero on Linux, unsupported elsewhere; `time`, a known instant with
+  `TZ` set (nextest runs each test in a process of its own); `fs`, a second lock fails,
+  `open_path` gives the file's real path, a link loop is a loop, a FIFO opens without
+  blocking; `signals`, a SIGHUP sent to ourselves comes through; `net`, on a socket pair
+  `hung_up` is false, then true once the other end is dropped.
+- The quit observer (`tests/app/lifecycle.rs`): with `quit_for_real` and nothing quit, a
+  run's process is gone after `cx.quit()`; with `quits > 0`, no second kill.
+- The logger: level parsing (`DEVDECK_LOG` empty, unknown, each level), the line format.
+- The source scan test; the whole suite and clippy on Linux; the Mac check.
+
+### States to check visually
+
+On Linux nothing changes on screen. With `XDG_RUNTIME_DIR` unset, Settings shows the API
+off with its reason, short and truncated (R4.4).
+
+### Out of scope
+
+The process table, ports, the API's callers, running things (1b–1d); any macOS backend
+(step 2); removing `rustix` and `libc` from `devdeck-core` and `devdeck-app` (1d); the
+menu bar, keys and title bar (step 4).
+
+### Unsure
+
+- Which memory figures a Mac shows (it has one, the physical footprint): 2f.
+- Whether `XDG_*_HOME` count on a Mac: 2a; step 1's `unix.rs` keeps today's behaviour.
+
+### Step 1a plan review (subagent), assessed
+
+Where a point is taken, it overrides the plan above. Points 2, 3 and 10 were checked
+again in the sources (GPUI's test macro, `TestPlatform::quit`, `Cargo.lock`, every
+`api::Config` built).
+
+1. `dirs::runtime()` took no `env`, unlike the three folders, so `default_socket`'s fake
+   env tests and the planned test would set the real environment. Taken:
+   `runtime(env)`, and `default_runtime()` for the real one, as the folders do.
+2. The socket folder change breaks tests the plan didn't list. Taken: `socket::bind`
+   takes the socket folder itself; its unit tests (`api/socket.rs:100-126`) and
+   `tests/app/api.rs:88,93` make that folder 0700 themselves; every `Config { runtime:
+   None }` (`tests/app/api.rs:118,132,146`, `api_runs.rs:142`, `api_events.rs:20`,
+   `settings.rs:133`, `bin/snapshot.rs:990,1001`) gives `Err` with the reason from
+   `devdeck_sys::dirs::runtime(|_| None)`, so `api.rs:148` checks `devdeck-sys`'s
+   reason, not its own. `default_socket` returns a `Result`; `devdeck-mcp`'s
+   `Bridge::new` (`lib.rs:141,146`, its test `:284`) and `devdeck-ctl/src/main.rs:171-172`
+   follow.
+3. The quit observer's `quits > 0` guard misses the signal path (`lifecycle.rs:101-104`)
+   and the window-closed fallback (`main.rs:44-52`): both kill and then `cx.quit()`, and
+   the observer would kill again; and `#[gpui::test]`'s teardown calls `App::quit`, a
+   no-op on the test platform (`gpui-pre-macros` `test.rs:172`, `TestPlatform::quit`),
+   so observers don't run there. Taken: a `killed` flag on the shell, set by
+   `kill_to_quit`, `kill_everything` and `quit_now`; the observer runs only when it isn't
+   set and `quit_for_real` is on (the snapshot tool's `HeadlessAppContext` runs
+   observers when dropped, with `quit_for_real` off). Its test calls
+   `TestAppContext::quit()` directly; "no second kill" is seen through a count of kills.
+4. The scan's allow-list would fail at once: `devdeck-core/src/testing.rs:63` isn't
+   listed; `port_scan.rs` and `tests/app/ports.rs` match no pattern; the files scanned
+   aren't said. Taken: it scans `crates/*/{src,tests,benches}/**/*.rs` and `build.rs`,
+   not `crates/devdeck-sys`, `target/` or `scripts/`; a line is skipped when it starts
+   with `//` once trimmed; the list has `testing.rs` (1b) and no file that matches
+   nothing; `client.rs`'s `XDG_RUNTIME_DIR` tests move to `devdeck-sys` with
+   `runtime(env)`. It is a `#[cfg(test)]` module of `devdeck-sys`'s library: one test
+   binary less to link.
+5. `devdeck-sys`'s tests have no temp folder, and a dev-dependency on core would be a
+   cycle and break the Mac check. Taken: a small `#[cfg(test)]` `TempDir` in
+   `devdeck-sys`, under the same `/tmp/devdeck-tests/<pid>/` (core's sweep still clears
+   crashed runs).
+6. `shutdown` on a listening socket may not wake a blocked `accept` on macOS (from
+   memory of XNU). Taken as a conformance test: shutdown wakes a blocked `accept` within
+   1 s. If it fails on the Mac (round 0 runs `devdeck-sys`'s tests), `net/macos.rs`
+   connects once to the socket after setting the flag.
+7. `memory` must keep rss, pss and uss on Linux: `main.rs:155-166` and `stress.rs:54,281`
+   print them and `scripts/measure.py:434` parses them (R11.4). Taken: `Memory` stays as
+   it is; the smaps parser lives in `linux.rs` (else it is dead code on macOS and fails
+   the Mac clippy); macOS's fields are 2f's.
+8. `open_no_follow(path, nonblocking)` doesn't fit `socket.rs:54` (create, write, mode
+   0600). Taken: `no_follow(&mut OpenOptions, nonblocking)` adds the flags to the
+   caller's options.
+9. The logger must call `log::set_max_level` (the default is off); `log` becomes a
+   workspace dependency of `devdeck-app`; on Linux stderr gains GPUI's, wgpu's and
+   calloop's warnings, silent until now. Taken: that is a change on Linux, wanted (the
+   same warnings are what round 0 needs); one start is checked by eye before the
+   commit. `DEVDECK_LOG` is listed in `main.rs`'s header and in `docs/BUILDING.md`.
+10. `font-kit`'s crates are in `Cargo.lock` already (`zed-font-kit`, `core-text`, through
+    `gpui-pre-apple` and others). Taken: no lock change; the cost is one rebuild of
+    `gpui-pre-platform` and what is above it.
+11. "Removing `rustix` and `libc` from `devdeck-app` (1d)" contradicts "until 1c": after
+    1a only `api/identity.rs` uses them. Taken: 1c.
+12. `devdecks_own` today joins an empty `XDG_RUNTIME_DIR` (a relative `devdeck`, so
+    `file.read` is refused in a cwd's `devdeck` folder); `runtime()` ignores an empty one.
+    Taken: a fix on Linux, said in the commit.
+13. Test holes. Taken: `time` with a POSIX `TZ` of a non-zero offset (`XXX-2`), set before
+    the first local time call; `signals` raises SIGHUP only once the handle exists, and
+    waits with a timeout; the fallback after windows close, a signal then quit (one
+    kill), and the `accept` check of point 6 are tests too.
+14. `docs/DESIGN.md:383` says `devdeck-api` "depends on nothing of devdeck". Taken: it
+    depends on `devdeck-sys` for the socket's folder; the clients still depend only on
+    `devdeck-api` (R13.11).
+15. The Mac clippy check should build from Linux (`rustix`, `libc`, `signal-hook` have no
+    C code on Apple) provided nothing pulls `devdeck-core` in and `unsupported.rs` has
+    no unused parameter. Taken: run before the commit.
+
+## Step 1a, as built (2026-11-10)
+
+- `crates/devdeck-sys`: `lib.rs` (`SysError`, `Support`, `Capability` with `Runtime`,
+  `Memory`, `OpenPath`, `support()`: constants per target so far), `dirs/` (`xdg.rs` for
+  both OSes, `runtime` from `linux.rs` or `unsupported.rs`, `SOCKET_PATH_MAX` 107 on
+  Linux, 103 elsewhere), `memory/`, `time/`, `fs/` (`try_lock`, `no_follow`, `is_mine`,
+  `is_loop`, `open_path`, `make_fifo`), `signals/` (`QuitSignals`), `net/` (`shutdown`,
+  `hung_up`), a `#[cfg(test)]` `TempDir` and the source scan (`scan.rs`, 11 files left
+  to move, each with its step).
+- Callers moved: core's three folder functions are one line each; `devdeck-api`'s
+  `default_socket` returns the socket or why there is none, and `devdeck-ctl` and
+  `devdeck-mcp` print that reason; `api::Config.runtime` is the socket folder or its
+  reason (`api::no_runtime()` for tests and the snapshot tool); `socket::bind` takes the
+  folder itself; `devdecks_own`, `read_file`, the transport, the instance lock, the
+  signal thread, the clock and the stats go through `devdeck-sys`. `signal-hook` left
+  `devdeck-core` (unused) and `devdeck-app`; `devdeck-app` keeps `rustix` and `libc` for
+  `api/identity.rs` (1c).
+- `font-kit` in `gpui_platform`'s features; `Cargo.lock` unchanged but for the new crate.
+- The quit observer in `Shell::start`, guarded by `quit_for_real` and `killed` (set by
+  `kill_everything`); `quit_now` with `quit_for_real` kills what the runs left when
+  nothing did yet (diff review point 1); `kills` counts for tests.
+- `logger.rs` in `devdeck-app`, installed by `main.rs` after the environment is scrubbed.
+- `text_never_wraps_at_large_scale` is Linux only.
+- Docs: `DESIGN.md` (the crate list, what `devdeck-api` depends on), `PLATFORMS.md` (§4's
+  modules built; rows L6–L8, L14, U4–U6, U8, U11 point at `devdeck-sys`), `BUILDING.md`
+  and `main.rs`'s header (`DEVDECK_LOG`).
+- Checked: the whole suite and clippy on Linux; the Mac check (`cargo clippy --target
+  aarch64-apple-darwin -p devdeck-sys -p devdeck-api -p devdeck-ctl -p devdeck-mcp
+  --all-targets -- -D warnings`), clean. One start of the demo: the only line logged is
+  GPUI's `WARN gpui::text_system: failed to load font … ".SystemUIFont"` (its default
+  font; ours are bundled), silent until now. The Settings view's "API off" text is the
+  same as before on Linux (`XDG_RUNTIME_DIR isn't set`), so no snapshot.
+- Found, not of this step: a devdeck stopped by a signal (SIGTERM from `timeout`) leaves
+  its socket and lock in the runtime folder; the build from before this step does the
+  same.
+
+### Step 1a diff review (subagent), assessed
+
+1. `quit_now` set `killed` without killing, so a ctrl+q with nothing running left a
+   build's daemon in its scope and the observer skipped it. Taken: `killed` only in
+   `kill_everything`; `quit_now` (for real) kills when nothing did yet. Tested through
+   "Stop all and quit" (one kill, none at GPUI's quit after); the path with nothing
+   running isn't, since the test workspace's demo runs always go.
+2. `eprintln!` in the logger panics when stderr is gone. Taken: `writeln!`, error ignored.
+3. The quit tests counted kills only and missed `quit_now`; the window-closed fallback in
+   `main.rs` is untested. Taken for "Stop all and quit" (a test). The fallback stays in the
+   binary: moving it is step 4's (L13), with point 5.
+4. The scan: per-file allowance, no manifest check, missed patterns. Partly taken: its
+   header now says the manifests guard the rest only after 1d. Not taken: `/run/` (the
+   hits are sample data in the snapshot tool and a test, not OS calls); a count per file
+   (the files listed are the ones being rewritten in 1b–1d).
+5. On macOS the window-closed fallback might run before GPUI's quit observers and kill
+   without marking runs to start again. Not taken now: whether AppKit closes windows
+   first is for round 0 to show; step 4 designs the last window (L13).
+6. Every quit that skips the shell (stress mode's) now kills again after the loop ends.
+   Not taken: harmless, nothing real runs in the demo, and it is the observer's job.
+7. `default_socket`'s test lost "DEVDECK_SOCKET wins". Taken.
+8. `a_socket_path_fits_its_address` tested nothing. Taken: dropped; `socket.rs` tests that
+   a path past `SOCKET_PATH_MAX` is refused.
+9. A non-UTF-8 `XDG_RUNTIME_DIR` now reads as unset. Not taken: the reason says "isn't
+   set" where it is unusable, and such a folder breaks GPUI before.
+10. `TZ` is set safely only under nextest. Taken: the SAFETY comment says so. The other
+    timing points stand as reviewed (the `accept` test is for round 0 to judge on macOS).
+11. `fs`, `net` and `signals` include `unix.rs` on every OS, and `support()` isn't used
+    yet. Not taken: no third OS is built; `support()` gets its users with the actions
+    that need it.
+12. Docs and comments: `PLATFORMS.md` L6 and L12, `shell.rs`'s header, `lifecycle.rs`'s,
+    the `fs` typo, a code span split in `socket.rs`, `DEVDECK_LOG`'s `error` and `off`.
+    Taken.

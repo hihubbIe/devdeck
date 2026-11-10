@@ -4,6 +4,8 @@
 //! the demo, `DEVDECK_LATENCY`; see docs/WORKFLOW.md).
 //! `DEVDECK_OPEN=<view>` opens a view at start (`run/entityservice/go:run`), and
 //! `DEVDECK_FAKE_RATE` makes the demo's servers write that many lines per second.
+//! `DEVDECK_LOG=error|info|debug|trace|off` changes what is logged on stderr (warnings
+//! and errors by default).
 
 use devdeck_app::shell::{Shell, try_shell};
 use devdeck_app::stats;
@@ -23,6 +25,7 @@ fn main() {
     // SAFETY: first thing, before anything starts a thread that could read the
     // environment.
     devdeck_app::scrub_env(|name| unsafe { std::env::remove_var(name) });
+    devdeck_app::logger::install();
     let demo = std::env::args().any(|a| a == "--demo") || std::env::var("DEVDECK_STRESS").is_ok();
     // The demo keeps its own state, apart from the real workspaces' layouts and pins.
     let state_dir = if demo { default_state_dir().join("demo") } else { default_state_dir() };
@@ -79,7 +82,7 @@ fn main() {
         // The control API (R13): after the shell, which it reads.
         devdeck_app::api::start(
             devdeck_app::api::Config {
-                runtime: std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()).map(Into::into),
+                runtime: devdeck_sys::dirs::default_runtime().map_err(|e| e.to_string()),
                 state_dir: state_dir.clone(),
                 default_state_dir: devdeck_core::state::state_dir(|k| if k == "DEVDECK_STATE_DIR" { None } else { std::env::var(k).ok() }),
                 audit_file: true,

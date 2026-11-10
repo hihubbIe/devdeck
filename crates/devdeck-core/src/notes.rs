@@ -13,17 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// What the user writes in devdeck (R10.1): `DEVDECK_DATA_DIR`, else
-/// `$XDG_DATA_HOME/devdeck`, else `~/.local/share/devdeck`.
+/// What the user writes in devdeck (R10.1; `devdeck_sys::dirs::data`).
 pub fn data_dir(env: impl Fn(&str) -> Option<String>) -> PathBuf {
-    if let Some(d) = env("DEVDECK_DATA_DIR").filter(|s| !s.is_empty()) {
-        return PathBuf::from(d);
-    }
-    if let Some(d) = env("XDG_DATA_HOME").filter(|s| !s.is_empty()) {
-        return PathBuf::from(d).join("devdeck");
-    }
-    let home = env("HOME").unwrap_or_else(|| ".".into());
-    PathBuf::from(home).join(".local").join("share").join("devdeck")
+    devdeck_sys::dirs::data(env)
 }
 
 pub fn default_data_dir() -> PathBuf {
@@ -196,14 +188,6 @@ pub fn tree(notes: &[NoteMeta], app_name: impl Fn(&str) -> Option<String>) -> Tr
 mod tests {
     use super::*;
     use crate::testing::TempDir;
-
-    #[test]
-    fn data_dir_order() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
-        assert_eq!(data_dir(env(&[("DEVDECK_DATA_DIR", "/d"), ("XDG_DATA_HOME", "/x")])), PathBuf::from("/d"));
-        assert_eq!(data_dir(env(&[("XDG_DATA_HOME", "/x"), ("HOME", "/h")])), PathBuf::from("/x/devdeck"));
-        assert_eq!(data_dir(env(&[("HOME", "/h")])), PathBuf::from("/h/.local/share/devdeck"));
-    }
 
     #[test]
     fn make_write_rename_delete() {

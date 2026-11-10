@@ -20,7 +20,7 @@ notify-debouncer-full.workspace = true
 serde-saphyr.workspace = true
 jsonc-parser.workspace = true
 rustix.workspace = true
-signal-hook.workspace = true
+devdeck-sys.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

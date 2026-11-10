@@ -12,15 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// The state folder (`devdeck_sys::dirs::state`).
 pub fn state_dir(env: impl Fn(&str) -> Option<String>) -> PathBuf {
-    if let Some(d) = env("DEVDECK_STATE_DIR").filter(|s| !s.is_empty()) {
-        return PathBuf::from(d);
-    }
-    if let Some(d) = env("XDG_STATE_HOME").filter(|s| !s.is_empty()) {
-        return PathBuf::from(d).join("devdeck");
-    }
-    let home = env("HOME").unwrap_or_else(|| ".".into());
-    PathBuf::from(home).join(".local").join("state").join("devdeck")
+    devdeck_sys::dirs::state(env)
 }
 
 pub fn default_state_dir() -> PathBuf {
@@ -283,14 +277,6 @@ mod tests {
     fn store(tag: &str) -> Store {
         let d = crate::testing::TempDir::new(tag);
         Store { store: StateStore::new(d.to_path_buf()), _dir: d }
-    }
-
-    #[test]
-    fn state_dir_precedence() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
-        assert_eq!(state_dir(env(&[("DEVDECK_STATE_DIR", "/s"), ("XDG_STATE_HOME", "/x")])), PathBuf::from("/s"));
-        assert_eq!(state_dir(env(&[("XDG_STATE_HOME", "/x"), ("HOME", "/h")])), PathBuf::from("/x/devdeck"));
-        assert_eq!(state_dir(env(&[("HOME", "/h")])), PathBuf::from("/h/.local/state/devdeck"));
     }
 
     #[test]

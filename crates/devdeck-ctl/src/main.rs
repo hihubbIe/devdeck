@@ -168,9 +168,12 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
-    let Some(socket) = args.socket.clone().or_else(|| default_socket(|k| std::env::var(k).ok())) else {
-        eprintln!("devdeck-ctl: no socket: set DEVDECK_SOCKET, XDG_RUNTIME_DIR, or pass --socket");
-        return ExitCode::from(2);
+    let socket = match args.socket.clone().map_or_else(|| default_socket(|k| std::env::var(k).ok()), Ok) {
+        Ok(s) => s,
+        Err(why) => {
+            eprintln!("devdeck-ctl: no socket ({why}): set DEVDECK_SOCKET or pass --socket");
+            return ExitCode::from(2);
+        }
     };
     let mut client = match Client::connect(&socket) {
         Ok(c) => c,

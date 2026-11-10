@@ -113,7 +113,7 @@ pub(crate) fn skipped(name: &str) -> bool {
 
 /// An IO error as shown.
 pub(crate) fn reason(e: &io::Error) -> String {
-    if rustix::io::Errno::from_io_error(e) == Some(rustix::io::Errno::LOOP) {
+    if devdeck_sys::fs::is_loop(e) {
         "symlink loop".into()
     } else {
         e.to_string()

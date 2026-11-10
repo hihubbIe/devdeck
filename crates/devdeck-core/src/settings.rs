@@ -58,17 +58,10 @@ pub fn scale_down(v: f32) -> f32 {
     SCALE_STEPS.iter().rev().copied().find(|s| *s < v - 1e-4).unwrap_or(v)
 }
 
-/// The config folder: `DEVDECK_CONFIG_DIR`, else `$XDG_CONFIG_HOME/devdeck`, else
-/// `~/.config/devdeck`. Takes a lookup so tests don't touch the real environment.
+/// The config folder (`devdeck_sys::dirs::config`). Takes a lookup so tests don't touch
+/// the real environment.
 pub fn config_dir(env: impl Fn(&str) -> Option<String>) -> PathBuf {
-    if let Some(d) = env("DEVDECK_CONFIG_DIR").filter(|s| !s.is_empty()) {
-        return PathBuf::from(d);
-    }
-    if let Some(d) = env("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
-        return PathBuf::from(d).join("devdeck");
-    }
-    let home = env("HOME").unwrap_or_else(|| ".".into());
-    PathBuf::from(home).join(".config").join("devdeck")
+    devdeck_sys::dirs::config(env)
 }
 
 pub fn default_config_dir() -> PathBuf {
@@ -137,14 +130,6 @@ mod tests {
         assert_eq!(scale_up(1.5), 1.5);
         assert_eq!(scale_down(1.25), 1.1);
         assert_eq!(scale_down(0.8), 0.8);
-    }
-
-    #[test]
-    fn config_dir_precedence() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
-        assert_eq!(config_dir(env(&[("DEVDECK_CONFIG_DIR", "/a"), ("XDG_CONFIG_HOME", "/b"), ("HOME", "/h")])), PathBuf::from("/a"));
-        assert_eq!(config_dir(env(&[("XDG_CONFIG_HOME", "/b"), ("HOME", "/h")])), PathBuf::from("/b/devdeck"));
-        assert_eq!(config_dir(env(&[("XDG_CONFIG_HOME", ""), ("HOME", "/h")])), PathBuf::from("/h/.config/devdeck"));
     }
 
     #[test]

@@ -84,6 +84,9 @@ fn settings_buttons_work_with_the_mouse(cx: &mut TestAppContext) {
 }
 
 /// Real text shaping: at 150 % in a narrow window, single-line texts stay one line.
+/// Linux only: on macOS GPUI's real platform must start on the main thread, and a test
+/// runs on a thread of its own.
+#[cfg(target_os = "linux")]
 #[test]
 fn text_never_wraps_at_large_scale() {
     let text = gpui_platform::current_platform(true).text_system();
@@ -130,7 +133,7 @@ fn unknown_saved_theme_falls_back_with_a_message(cx: &mut TestAppContext) {
 #[gpui::test]
 fn settings_show_the_control_api(cx: &mut TestAppContext) {
     let (_deck, dir) = setup(cx, "api");
-    let config = devdeck_app::api::Config { runtime: None, state_dir: dir.clone(), default_state_dir: dir, audit_file: false };
+    let config = devdeck_app::api::Config { runtime: devdeck_app::api::no_runtime(), state_dir: dir.clone(), default_state_dir: dir, audit_file: false };
     cx.update(|cx| devdeck_app::api::start(config, cx));
     let main = cx.windows()[0];
     cx.simulate_keystrokes(main, "ctrl-,");

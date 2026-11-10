@@ -211,3 +211,48 @@ fn quitting_waits_for_the_slowest_stop_sequence(cx: &mut TestAppContext) {
     start("compose:up", cx);
     assert_eq!(cx.read(|cx| runner.read(cx).longest_stop()), Duration::from_secs(20), "compose stops its containers");
 }
+
+/// A shell that quits for real, its workspace's demo runs going.
+fn quitting_shell(cx: &mut TestAppContext, tag: &str) -> gpui::Entity<Shell> {
+    let dir = cx.update(|cx| devdeck_app::test_dir(tag, cx));
+    cx.update(|cx| devdeck_app::init_with_config_dir(&dir, cx));
+    let shell = cx.update(|cx| Shell::start_single(devdeck_core::layout::Layout::new, cx));
+    cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = true));
+    shell
+}
+
+#[gpui::test]
+fn a_quit_from_outside_the_shell_kills_everything(cx: &mut TestAppContext) {
+    // The Dock's Quit, logout, shutdown: GPUI quits without asking the shell.
+    let shell = quitting_shell(cx, "quit-outside");
+    cx.quit();
+    assert_eq!(cx.read(|cx| shell.read(cx).kills), 1);
+}
+
+#[gpui::test]
+fn a_quit_after_a_signal_kills_once(cx: &mut TestAppContext) {
+    let shell = quitting_shell(cx, "quit-signal");
+    cx.update(|cx| shell.update(cx, |s, cx| s.kill_to_quit(cx)));
+    cx.quit();
+    assert_eq!(cx.read(|cx| shell.read(cx).kills), 1, "the signal's kill only");
+}
+
+#[gpui::test]
+fn tests_quitting_kill_nothing(cx: &mut TestAppContext) {
+    let shell = quitting_shell(cx, "quit-test");
+    cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+    cx.quit();
+    assert_eq!(cx.read(|cx| shell.read(cx).kills), 0);
+}
+
+#[gpui::test]
+fn stop_all_and_quit_kills_once(cx: &mut TestAppContext) {
+    // The guard's "Stop all and quit": the shell kills, then GPUI quits.
+    let shell = quitting_shell(cx, "quit-stop-all");
+    cx.update(|cx| shell.update(cx, |s, cx| s.stop_all_and_quit(cx)));
+    cx.executor().advance_clock(Duration::from_secs(60));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| (shell.read(cx).quits, shell.read(cx).kills)), (1, 1));
+    cx.quit();
+    assert_eq!(cx.read(|cx| shell.read(cx).kills), 1, "the quit observer doesn't kill again");
+}

@@ -763,8 +763,8 @@ pub(super) fn secret(path: &std::path::Path) -> bool {
 /// API (other workspaces' notes, the audit).
 pub(super) fn devdecks_own() -> Vec<std::path::PathBuf> {
     let mut out = vec![devdeck_core::settings::default_config_dir(), devdeck_core::notes::default_data_dir(), devdeck_core::state::default_state_dir()];
-    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
-        out.push(std::path::PathBuf::from(rt).join("devdeck"));
+    if let Ok(rt) = devdeck_sys::dirs::default_runtime() {
+        out.push(rt);
     }
     out.into_iter().filter_map(|p| p.canonicalize().ok()).collect()
 }
@@ -815,8 +815,6 @@ pub fn file_read(cx: &CallCx, p: FileParams, app: &mut App) -> Result<gpui::Task
 
 fn read_file(p: &FileParams, roots: &[std::path::PathBuf], own: &[std::path::PathBuf]) -> Result<FileLines, ApiError> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
     let (roots, own) = (roots.to_vec(), own.to_vec());
     let asked = std::path::Path::new(&p.path);
     if !asked.is_absolute() {
@@ -826,9 +824,7 @@ fn read_file(p: &FileParams, roots: &[std::path::PathBuf], own: &[std::path::Pat
     let path = asked.canonicalize().map_err(|e| ApiError::not_found(format!("{}: {e}", p.path)))?;
     readable(&path, &roots, &own)?;
     // Without blocking (a FIFO), without following a link swapped in since.
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+    let mut file = devdeck_sys::fs::no_follow(std::fs::OpenOptions::new().read(true), true)
         .open(&path)
         .map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, format!("{}: {e}", path.display())))?;
     let meta = file.metadata().map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, e.to_string()))?;
@@ -836,7 +832,7 @@ fn read_file(p: &FileParams, roots: &[std::path::PathBuf], own: &[std::path::Pat
         return Err(ApiError::new(devdeck_api::ErrorKind::Refused, format!("{}: not a regular file", path.display())));
     }
     // The file opened is the one checked.
-    let opened = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, e.to_string()))?;
+    let opened = devdeck_sys::fs::open_path(&file).map_err(|e| ApiError::new(devdeck_api::ErrorKind::Refused, e.to_string()))?;
     readable(&opened, &roots, &own)?;
     if meta.len() > MAX_FILE {
         return Err(ApiError::new(devdeck_api::ErrorKind::Refused, format!("{} is {} bytes: more than the API reads ({MAX_FILE})", path.display(), meta.len())));

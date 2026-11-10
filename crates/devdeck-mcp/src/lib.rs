@@ -132,18 +132,19 @@ pub fn fallback() -> Vec<MethodEntry> {
 /// The connection to devdeck, made when needed and made again after it broke, and what
 /// the caller may call (asked once per connection).
 pub struct Bridge {
-    socket: Option<PathBuf>,
+    /// The socket, or why there is none.
+    socket: Result<PathBuf, String>,
     client: Mutex<Option<Client>>,
     methods: Mutex<Option<Vec<MethodEntry>>>,
 }
 
 impl Bridge {
-    pub fn new(socket: Option<PathBuf>) -> Self {
+    pub fn new(socket: Result<PathBuf, String>) -> Self {
         Self { socket, client: Mutex::new(None), methods: Mutex::new(None) }
     }
 
     fn connect(&self) -> Result<Client, ClientError> {
-        let path = self.socket.as_ref().ok_or_else(|| ClientError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no socket (DEVDECK_SOCKET, XDG_RUNTIME_DIR)")))?;
+        let path = self.socket.as_ref().map_err(|why| ClientError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("no socket: DEVDECK_SOCKET isn't set and {why}"))))?;
         let mut c = Client::connect(path)?;
         c.set_timeout(Some(ANSWER_WITHIN))?;
         let hello = HelloParams { client: ClientInfo { name: "devdeck-mcp".into(), version: env!("CARGO_PKG_VERSION").into() }, api_level_min: None };
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     fn devdeck_down_answers_unavailable() {
-        let b = Bridge::new(Some("/nonexistent/devdeck.sock".into()));
+        let b = Bridge::new(Ok("/nonexistent/devdeck.sock".into()));
         assert_eq!(b.methods(), fallback(), "listed from the catalog compiled in");
         let args = json!({ "method": "run.list" });
         let r = b.call("devdeck_observe", args.as_object());

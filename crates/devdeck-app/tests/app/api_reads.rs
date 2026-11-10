@@ -136,9 +136,7 @@ fn files_only_inside_the_workspaces_folders(cx: &mut TestAppContext) {
     std::fs::write(inside.join("big"), vec![b'x'; 3 * 1024 * 1024]).unwrap();
     std::fs::write(inside.join(".env"), "TOKEN=x").unwrap();
     std::fs::write(inside.join(".env.example"), "TOKEN=").unwrap();
-    let fifo = std::ffi::CString::new(inside.join("pipe").display().to_string()).unwrap();
-    // SAFETY: a valid C string for a path in the test's own folder.
-    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    devdeck_sys::fs::make_fifo(&inside.join("pipe")).unwrap();
     // An app whose folder is `inside`.
     let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
     cx.update(|cx| {

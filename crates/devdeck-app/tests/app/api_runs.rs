@@ -139,7 +139,7 @@ fn an_agents_run_isnt_saved_as_running_and_the_user_is_told(cx: &mut TestAppCont
     cx.update(|cx| r.update(cx, |r, _| r.quitting()));
     assert!(!cx.read(|cx| r.read(cx).was_running(&RunKey::new(APP, CMD))));
     let state_dir = cx.update(|cx| devdeck_app::test_dir("runs-state", cx));
-    let api = cx.update(|cx| api::start(Config { runtime: None, state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false }, cx));
+    let api = cx.update(|cx| api::start(Config { runtime: api::no_runtime(), state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false }, cx));
     call(&agent(), "run.stop", run(APP, CMD), cx).unwrap();
     let toasts: Vec<String> = cx.update(|cx| devdeck_ui::overlay::toasts(cx).read(cx).queue.items.iter().map(|t| t.text.to_string()).collect());
     assert!(toasts.iter().any(|t| t == "work · terminal 3 stopped eventservice · run"), "{toasts:?}");

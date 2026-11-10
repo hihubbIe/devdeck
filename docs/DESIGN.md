@@ -88,6 +88,8 @@ crates/
   devdeck-views     one module per view type (app, run output, logs, service, pod,
                     text, matrix, ports…), each registered in a view registry.
   devdeck-app       the app: windows, pane tree rendering, activities, palette, menus.
+  devdeck-sys       the OS layer (R11.6): the only code that calls the OS, one backend per
+                    OS chosen by the target (docs/PLATFORMS.md §4).
   devdeck           the binary: `main.rs` only, starting devdeck-app (a package of its
                     own so test builds don't link it).
 ```
@@ -380,7 +382,8 @@ methods, `devdeck-ctl`, `devdeck-mcp`, the API section in Settings.
   devdeck is down.
 
 - Pieces: `devdeck-api` holds the protocol only (types with serde and schemars schemas,
-  the catalog, errors, ids, a small client) and depends on nothing of devdeck.
+  the catalog, errors, ids, a small client) and depends on nothing of devdeck but
+  `devdeck-sys`, for the sockets' folder.
   `devdeck-app/src/api/` is the one part that knows the app: socket, identity, policy,
   approvals, a dispatcher per domain, events, audit. `devdeck-ctl` and `devdeck-mcp` (rmcp,
   stdio) depend only on `devdeck-api`.

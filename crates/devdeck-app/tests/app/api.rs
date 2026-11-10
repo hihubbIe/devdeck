@@ -85,7 +85,7 @@ fn the_api_serves_a_socket_and_audits_its_callers(cx: &mut TestAppContext) {
     let _shell = start(cx, "api-socket");
     let rt = cx.update(|cx| devdeck_app::test_dir("api-rt", cx));
     let state_dir = cx.update(|cx| devdeck_app::test_dir("api-state", cx));
-    let config = Config { runtime: Some(rt.clone()), state_dir: state_dir.clone(), default_state_dir: state_dir.clone(), audit_file: false };
+    let config = Config { runtime: Ok(rt.join("devdeck")), state_dir: state_dir.clone(), default_state_dir: state_dir.clone(), audit_file: false };
     let api = cx.update(|cx| api::start(config, cx));
     let path = match cx.read(|cx| api.read(cx).status.clone()) {
         Status::On(p) => p,
@@ -115,7 +115,7 @@ fn the_api_serves_a_socket_and_audits_its_callers(cx: &mut TestAppContext) {
 fn one_caller_has_a_few_connections_at_most(cx: &mut TestAppContext) {
     let _shell = start(cx, "api-per-caller");
     let state_dir = cx.update(|cx| devdeck_app::test_dir("api-state", cx));
-    let config = Config { runtime: None, state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false };
+    let config = Config { runtime: api::no_runtime(), state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false };
     let api = cx.update(|cx| api::start(config, cx));
     let peer = |pid: u32| Peer { pid: Some(pid), chain: vec![], program: "devdeck-ctl".into() };
     for _ in 0..api::CONNECTIONS_PER_CALLER {
@@ -129,7 +129,7 @@ fn one_caller_has_a_few_connections_at_most(cx: &mut TestAppContext) {
 fn a_caller_whose_shell_ended_expires(cx: &mut TestAppContext) {
     let _shell = start(cx, "api-expired");
     let state_dir = cx.update(|cx| devdeck_app::test_dir("api-state", cx));
-    let config = Config { runtime: None, state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false };
+    let config = Config { runtime: api::no_runtime(), state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false };
     let api = cx.update(|cx| api::start(config, cx));
     // A terminal caller (as `identify` makes them) whose shell isn't running.
     assert!(!cx.read(|cx| api::alive(&terminal(9), cx)));
@@ -143,9 +143,10 @@ fn a_caller_whose_shell_ended_expires(cx: &mut TestAppContext) {
 fn without_a_runtime_folder_the_api_is_off(cx: &mut TestAppContext) {
     let _shell = start(cx, "api-off");
     let state_dir = cx.update(|cx| devdeck_app::test_dir("api-state", cx));
-    let config = Config { runtime: None, state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false };
+    let config = Config { runtime: api::no_runtime(), state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false };
     let api = cx.update(|cx| api::start(config, cx));
-    assert!(matches!(cx.read(|cx| api.read(cx).status.clone()), Status::Off(why) if why.contains("XDG_RUNTIME_DIR")));
+    let reason = devdeck_sys::dirs::runtime(|_| None).unwrap_err().to_string();
+    assert!(matches!(cx.read(|cx| api.read(cx).status.clone()), Status::Off(why) if why.contains(&reason)), "the OS layer's reason");
     assert_eq!(cx.read(api::socket_path), None);
 }
 

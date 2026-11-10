@@ -13,3 +13,5 @@ doctest = false
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+# The socket's folder (the clients depend only on this crate, R13.11).
+devdeck-sys.workspace = true

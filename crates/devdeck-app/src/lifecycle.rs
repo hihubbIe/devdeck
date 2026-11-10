@@ -13,7 +13,11 @@
 //!   recorded live group (`process::kill_all(GroupLog::live())`) and what this devdeck's
 //!   runs left in their scopes (`GroupLog::end_ours`) itself.
 //! - Quitting with runs waits for their stop sequence, then kills what's left, the
-//!   runs' scopes included (`Shell::stop_all_and_quit`, `Shell::kill_everything`).
+//!   runs' scopes included (`Shell::stop_all_and_quit`, `Shell::kill_everything`);
+//!   quitting with none still ends what the runs left in their scopes.
+//! - A quit that comes from outside the shell (on macOS the Dock's Quit, logout,
+//!   shutdown) does what a signal does, unless the shell killed everything already
+//!   (`Shell::start`'s quit observer, `Shell::killed`).
 
 use crate::shell::{Shell, focus_button};
 use devdeck_core::process::{GroupLog, Leftover, kill_all};
@@ -36,12 +40,11 @@ pub struct InstanceLock {
 
 /// Claims the state folder for this devdeck, or says which devdeck has it.
 pub fn claim(state_dir: &Path) -> Result<InstanceLock, String> {
-    use rustix::fs::{FlockOperation, flock};
     std::fs::create_dir_all(state_dir).map_err(|e| format!("{}: {e}", state_dir.display()))?;
     let path = state_dir.join("devdeck.lock");
     let mut file =
         std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if flock(&file, FlockOperation::NonBlockingLockExclusive).is_err() {
+    if devdeck_sys::fs::try_lock(&file).is_err() {
         let mut pid = String::new();
         let _ = file.read_to_string(&mut pid);
         return Err(format!("Kugelblitz is already running (pid {})", pid.trim()));
@@ -78,12 +81,11 @@ pub fn offer_leftovers(shell: &Entity<Shell>, log: &GroupLog, cx: &mut App) {
 /// then kills every recorded group anyway (it reads `/proc`, so not in a signal handler):
 /// once the app answered, or after [`SIGNAL_WAIT`] if it's stuck.
 fn watch_signals(shell: &Entity<Shell>, log: GroupLog, cx: &mut App) {
-    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else { return };
+    let Ok(mut signals) = devdeck_sys::signals::QuitSignals::new() else { return };
     let (tx, rx) = async_channel::bounded::<()>(1);
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let spawned = std::thread::Builder::new().name("devdeck signals".into()).spawn(move || {
-        if signals.forever().next().is_some() {
+        if signals.wait().is_some() {
             let _ = tx.send_blocking(());
             let _ = done_rx.recv_timeout(SIGNAL_WAIT);
             kill_all(&log.live());

@@ -17,7 +17,7 @@ fn start(cx: &mut TestAppContext, tag: &str) -> (Entity<Shell>, Entity<ApiState>
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
     let state_dir = cx.update(|cx| devdeck_app::test_dir(&format!("{tag}-state"), cx));
-    let api = cx.update(|cx| api::start(Config { runtime: None, state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false }, cx));
+    let api = cx.update(|cx| api::start(Config { runtime: api::no_runtime(), state_dir: state_dir.clone(), default_state_dir: state_dir, audit_file: false }, cx));
     // The demo's shells have no process: these callers are there unless a test says.
     cx.update(|cx| api.update(cx, |s, _| s.alive = |who, _| !matches!(who, Who::Terminal { n: 99, .. })));
     cx.run_until_parked();

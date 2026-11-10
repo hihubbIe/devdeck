@@ -1,16 +1,14 @@
-//! The API's socket (R13.3): `$XDG_RUNTIME_DIR/devdeck/<name>.sock`, the folder 0700 and
-//! ours, the socket 0600. A name is guarded by its own lock (`<name>.lock`), so a second
+//! The API's socket (R13.3): `<name>.sock` in the API's folder
+//! (`devdeck_sys::dirs::runtime`: `$XDG_RUNTIME_DIR/devdeck/` on Linux), the folder 0700
+//! and ours, the socket 0600. A name is guarded by its own lock (`<name>.lock`), so a second
 //! devdeck never takes over a socket a first one serves; held by us, a stale socket from
 //! a devdeck that's gone is removed.
 
-use rustix::fs::{FlockOperation, flock};
+use devdeck_sys::dirs::SOCKET_PATH_MAX;
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-
-/// The longest socket path (`sun_path` holds 108 bytes, its end included).
-const MAX_PATH: usize = 107;
 
 /// The socket's name for a state folder: `main` for the default one, `demo` for the
 /// demo's, else one made from the folder (measure runs, a second devdeck), and which of
@@ -43,16 +41,17 @@ impl Bound {
     }
 }
 
-/// Makes or checks the folder, takes the name's lock, binds the socket.
-pub fn bind(runtime: &Path, name: &str) -> Result<Bound, String> {
-    let dir = runtime.join("devdeck");
-    folder(&dir)?;
+/// Makes or checks the folder `dir`, takes the name's lock, binds the socket.
+pub fn bind(dir: &Path, name: &str) -> Result<Bound, String> {
+    folder(dir)?;
     let path = dir.join(format!("{name}.sock"));
-    if path.as_os_str().len() > MAX_PATH {
+    if path.as_os_str().len() > SOCKET_PATH_MAX {
         return Err(format!("{}: too long for a socket", path.display()));
     }
-    let lock = OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(dir.join(format!("{name}.lock"))).map_err(|e| format!("{}: {e}", dir.display()))?;
-    if flock(&lock, FlockOperation::NonBlockingLockExclusive).is_err() {
+    let lock = devdeck_sys::fs::no_follow(OpenOptions::new().create(true).truncate(false).write(true).mode(0o600), false)
+        .open(dir.join(format!("{name}.lock")))
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    if devdeck_sys::fs::try_lock(&lock).is_err() {
         return Err(format!("another devdeck serves {}", path.display()));
     }
     match std::fs::remove_file(&path) {
@@ -73,7 +72,7 @@ fn folder(dir: &Path) -> Result<(), String> {
         }
         Err(e) => Err(format!("{}: {e}", dir.display())),
         Ok(m) if !m.is_dir() => Err(format!("{}: not a folder", dir.display())),
-        Ok(m) if m.uid() != rustix::process::getuid().as_raw() => Err(format!("{}: not yours", dir.display())),
+        Ok(m) if !devdeck_sys::fs::is_mine(&m) => Err(format!("{}: not yours", dir.display())),
         Ok(m) if m.mode() & 0o777 != 0o700 => Err(format!("{}: open to others (mode {:o}, wants 700)", dir.display(), m.mode() & 0o777)),
         Ok(_) => Ok(()),
     }
@@ -101,26 +100,33 @@ mod tests {
         let dir = rt.join("devdeck");
         DirBuilder::new().mode(0o755).create(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(bind(&rt, "t").err().unwrap().contains("open to others"));
+        assert!(bind(&rt.join("devdeck"), "t").err().unwrap().contains("open to others"));
         std::fs::remove_dir(&dir).unwrap();
         let elsewhere = rt.join("elsewhere");
         DirBuilder::new().mode(0o700).create(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
-        assert!(bind(&rt, "t").err().unwrap().contains("not a folder"));
+        assert!(bind(&rt.join("devdeck"), "t").err().unwrap().contains("not a folder"));
+    }
+
+    #[test]
+    fn a_path_longer_than_a_socket_address_is_refused() {
+        let rt = TempDir::new("api-sock");
+        let name = "x".repeat(SOCKET_PATH_MAX);
+        assert!(bind(&rt.join("devdeck"), &name).err().unwrap().contains("too long for a socket"));
     }
 
     #[test]
     fn a_name_is_served_once_and_a_stale_socket_goes() {
         let rt = TempDir::new("api-sock");
-        let first = bind(&rt, "t").unwrap();
+        let first = bind(&rt.join("devdeck"), "t").unwrap();
         let mode = std::fs::metadata(rt.join("devdeck")).unwrap().mode() & 0o777;
         assert_eq!(mode, 0o700);
         assert_eq!(std::fs::metadata(&first.path).unwrap().mode() & 0o777, 0o600);
-        assert!(bind(&rt, "t").err().unwrap().contains("another devdeck"), "the lock is held");
+        assert!(bind(&rt.join("devdeck"), "t").err().unwrap().contains("another devdeck"), "the lock is held");
         let path = first.path.clone();
         drop(first);
         assert!(path.exists(), "a socket left behind");
-        let again = bind(&rt, "t").expect("taken over once the lock is free");
+        let again = bind(&rt.join("devdeck"), "t").expect("taken over once the lock is free");
         assert!(std::os::unix::net::UnixStream::connect(&again.path).is_ok());
         again.remove();
         assert_eq!(std::fs::read_dir(rt.join("devdeck")).unwrap().count(), 0, "nothing left");

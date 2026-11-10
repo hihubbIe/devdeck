@@ -58,7 +58,7 @@ impl Stop {
     pub fn stop(&mut self) {
         if let Some(fd) = self.0.take() {
             self.1.store(true, Ordering::SeqCst);
-            let _ = rustix::net::shutdown(&fd, rustix::net::Shutdown::Both);
+            devdeck_sys::net::shutdown(&fd);
         }
     }
 }
@@ -191,22 +191,10 @@ fn serve_connection(stream: UnixStream, sink: &dyn Sink, conn: u64, out: SyncSen
     }
 }
 
-/// Whether the client closed its end: a read would end (one call is in flight, so it
-/// has nothing more to send). Looked at without blocking or taking anything (POSIX
-/// `recv` with `MSG_PEEK | MSG_DONTWAIT`, Linux and macOS: std's `peek` isn't stable).
+/// Whether the client closed its end (one call is in flight, so it has nothing more to
+/// send): `devdeck_sys::net::hung_up`.
 fn hung_up(stream: &UnixStream) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let mut byte = 0u8;
-    // SAFETY: a valid descriptor, one byte of our own buffer.
-    let n = unsafe { libc::recv(stream.as_raw_fd(), (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
-    match n {
-        0 => true,
-        n if n > 0 => false,
-        _ => {
-            let e = std::io::Error::last_os_error().kind();
-            e != std::io::ErrorKind::WouldBlock && e != std::io::ErrorKind::Interrupted
-        }
-    }
+    devdeck_sys::net::hung_up(stream)
 }
 
 /// The answer to one message (None for a notification), and whether to close after it.

@@ -86,8 +86,9 @@ impl Who {
 
 /// Where the API's settings come from (`main`; tests give their own).
 pub struct Config {
-    /// `$XDG_RUNTIME_DIR`; None: the API is off.
-    pub runtime: Option<PathBuf>,
+    /// The sockets' folder (`devdeck_sys::dirs::runtime`), or why there is none: the API
+    /// is off.
+    pub runtime: Result<PathBuf, String>,
     pub state_dir: PathBuf,
     /// The state folder devdeck uses when nothing overrides it (`main` is that one).
     pub default_state_dir: PathBuf,
@@ -227,14 +228,17 @@ fn instance() -> String {
     format!("{pid}-{}", devdeck_core::procfs::parent_and_start(pid).map_or(0, |(_, s)| s))
 }
 
+/// No sockets' folder, as an environment without one gives it (tests, the snapshot
+/// tool): the API is off, with the reason the OS layer gives.
+pub fn no_runtime() -> Result<PathBuf, String> {
+    devdeck_sys::dirs::runtime(|_| None).map_err(|e| e.to_string())
+}
+
 /// Starts the API: binds the socket and serves it, or says why it's off (a toast and
 /// the Settings view).
 pub fn start(config: Config, cx: &mut App) -> Entity<ApiState> {
     let (name, kind) = socket::name(&config.state_dir, &config.default_state_dir);
-    let bound = match &config.runtime {
-        None => Err("XDG_RUNTIME_DIR isn't set".to_string()),
-        Some(rt) => socket::bind(rt, &name),
-    };
+    let bound = config.runtime.clone().and_then(|dir| socket::bind(&dir, &name));
     let audit_path = config.audit_file.then(|| config.state_dir.join(audit::FILE));
     let writer = audit_path.clone().and_then(|p| audit::Writer::start(p).ok());
     let (tx, rx) = async_channel::unbounded::<ToUi>();
