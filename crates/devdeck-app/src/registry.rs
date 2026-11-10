@@ -194,6 +194,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("logs.warn", "warn+", "Logs", Some("LogsView && !TextInput"), ["2"], lv::WarnAndUp),
         spec!("logs.info", "info+", "Logs", Some("LogsView && !TextInput"), ["3"], lv::InfoAndUp),
         spec!("logs.all", "all levels", "Logs", Some("LogsView && !TextInput"), ["4"], lv::Everything),
+        spec!("logs.wrap", "wrap long lines", "Logs", Some("LogsView && !TextInput"), ["w"], lv::ToggleWrap),
+        spec!("logs.options", "logs options", "Logs", Some("LogsView && !TextInput"), ["."], lv::Options),
         spec!("logs.container", "pick the container", "Logs", Some("LogsView && !TextInput"), ["c"], lv::PickContainer),
         spec!("logs.pod", "pick the pod", "Logs", Some("LogsView && !TextInput"), ["o"], lv::PickPod),
         spec!("logs.previous", "previous run of a pod", "Logs", Some("LogsView && !TextInput"), ["shift-p"], lv::PreviousRun),

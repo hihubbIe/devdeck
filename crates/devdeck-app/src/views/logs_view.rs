@@ -3,15 +3,17 @@
 //! crashed pod's previous run. What streams and what's kept: [`super::logs_feed`]; the
 //! streams run only while the view is on screen, and it holds its service's pods while
 //! open (their containers' states decide what streams).
-//! Keys (`LogsView`): / find, n next, shift+n previous, p pause, 1–4 level filter, c
-//! container, o pod, shift+p previous run.
+//! The toolbar keeps find (the free width), the level, wrap, pause, follow and a cog menu
+//! for the rest (pod, container, previous run, columns); a warning icon says what's wrong.
+//! Keys (`LogsView`): / find, n next, shift+n previous, p pause, 1–4 level filter, w wrap,
+//! c container, o pod, shift+p previous run.
 
 use super::ViewCx;
 use super::logs_feed::{LogsFeed, short};
 use crate::cluster::{Cluster, PodScope, PodsInterest};
 use devdeck_core::cluster::{Pod, Remote};
 use devdeck_core::runs::Level;
-use devdeck_ui::{InputEvent, MenuItem, TextInput, button, label, open_menu, theme, tip, toasts, toggle_button};
+use devdeck_ui::{Icon, InputEvent, MenuItem, TextInput, button, button_icon, icon, icon_action, icon_toggle, label, open_menu, theme, tip, toasts};
 use devdeck_ui::{Scrolls, ToastKind, scroll_list};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
@@ -23,7 +25,7 @@ use std::rc::Rc;
 
 pub use crate::fake_cluster::LOGS_TICK;
 
-actions!(logs_view, [Find, NextMatch, PrevMatch, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun]);
+actions!(logs_view, [Find, NextMatch, PrevMatch, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options]);
 
 /// Lowest level shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -43,6 +45,10 @@ pub fn shown(level: Level, min: MinLevel) -> bool {
     }
 }
 
+/// Wrapped rows: the width in characters and the buffer version they were made for, and
+/// each piece's shown row and first character.
+type Wrapped = (usize, u64, Vec<(usize, usize)>);
+
 /// What the service's pods looked like last: a change syncs the streams and renders.
 type Seen = (Option<Vec<Pod>>, (u64, u64), bool);
 
@@ -55,6 +61,13 @@ pub struct ServiceLogsView {
     pub feed: LogsFeed,
     pub min_level: MinLevel,
     pub follow: bool,
+    /// Long lines wrap at the pane's width (R4.4 lets a log view opt in); on by default.
+    pub wrap: bool,
+    pub show_time: bool,
+    pub show_pod: bool,
+    /// Wrapped rows: each a shown row and the character its piece starts at, for a width
+    /// in characters and a buffer version.
+    wrapped: Option<Wrapped>,
     /// The line (absolute index) of the current match.
     pub current: Option<u64>,
     scroll: UniformListScrollHandle,
@@ -99,6 +112,10 @@ impl ServiceLogsView {
             find,
             min_level: MinLevel::All,
             follow: true,
+            wrap: true,
+            show_time: true,
+            show_pod: true,
+            wrapped: None,
             current: None,
             scroll: UniformListScrollHandle::new(),
             bounds: Rc::default(),
@@ -167,7 +184,11 @@ impl ServiceLogsView {
         self.current = Some(line);
         self.follow = false;
         if let Some(row) = self.feed.buffer.row_of(line) {
-            self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+            let item = match &self.wrapped {
+                Some((_, _, rows)) if self.wrap => rows.partition_point(|(r, _)| *r < row),
+                _ => row,
+            };
+            self.scroll.scroll_to_item(item, ScrollStrategy::Center);
         }
         cx.notify();
     }
@@ -197,6 +218,23 @@ impl ServiceLogsView {
 
     pub fn toggle_follow(&mut self, cx: &mut Context<Self>) {
         self.follow = !self.follow;
+        if self.follow {
+            self.scroll.scroll_to_bottom();
+        }
+        cx.notify();
+    }
+
+    /// Rows on screen's list: wrapped pieces when wrapping (as last drawn), else lines.
+    pub fn list_rows(&self) -> usize {
+        match &self.wrapped {
+            Some((_, _, rows)) if self.wrap => rows.len(),
+            _ => self.feed.buffer.row_count(),
+        }
+    }
+
+    pub fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        self.wrapped = None;
         if self.follow {
             self.scroll.scroll_to_bottom();
         }
@@ -284,6 +322,66 @@ impl ServiceLogsView {
         items
     }
 
+    fn level_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
+        let current = this.read(cx).min_level;
+        [(MinLevel::Error, "errors"), (MinLevel::Warn, "warn+"), (MinLevel::Info, "info+"), (MinLevel::All, "all")]
+            .into_iter()
+            .map(|(l, text)| {
+                let me = this.clone();
+                MenuItem::new(text, move |_, cx| me.update(cx, |v, cx| v.set_min_level(l, cx))).checked(current == l)
+            })
+            .collect()
+    }
+
+    /// The cog's menu: the pod and container shown, a previous run, the columns, wrapping.
+    fn options_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
+        let v = this.read(cx);
+        let toggle = |f: fn(&mut Self)| {
+            let me = this.clone();
+            move |_: &mut Window, cx: &mut App| {
+                me.update(cx, |v, cx| {
+                    f(v);
+                    v.wrapped = None;
+                    cx.notify();
+                })
+            }
+        };
+        let mut items = vec![MenuItem::new("pod", |_, _| {}).submenu(Self::pod_menu(this, cx))];
+        if v.containers(cx).len() > 1 {
+            items.push(MenuItem::new("container", |_, _| {}).submenu(Self::container_menu(this, cx)));
+        }
+        let me = this.clone();
+        let previous = MenuItem::new("previous run of a pod", move |_, cx| me.update(cx, |v, cx| v.previous_run(cx)));
+        items.push(match v.previous_target(cx) {
+            Ok(_) => previous,
+            Err(why) => previous.disabled(why),
+        });
+        items.push(MenuItem::separator());
+        items.push(MenuItem::new("show the time", toggle(|v| v.show_time = !v.show_time)).checked(v.show_time));
+        items.push(MenuItem::new("show the pod", toggle(|v| v.show_pod = !v.show_pod)).checked(v.show_pod));
+        let me = this.clone();
+        items.push(MenuItem::new("wrap long lines", move |_, cx| me.update(cx, |v, cx| v.toggle_wrap(cx))).checked(v.wrap));
+        items
+    }
+
+    /// Wrapped rows for `cols` characters of text: worked out again only when the width or
+    /// what's shown changed.
+    fn wrap_rows(&mut self, cols: usize) -> usize {
+        let version = self.feed.buffer.version();
+        let fresh = self.wrapped.as_ref().is_some_and(|(c, v, _)| *c == cols && *v == version);
+        if !fresh {
+            let b = &self.feed.buffer;
+            let mut rows = Vec::with_capacity(b.row_count());
+            for r in 0..b.row_count() {
+                let chars = b.row(r).map_or(0, |e| e.text.chars().count());
+                let pieces = chars.div_ceil(cols).max(1);
+                rows.extend((0..pieces).map(|p| (r, p * cols)));
+            }
+            self.wrapped = Some((cols, version, rows));
+        }
+        self.wrapped.as_ref().map_or(0, |(_, _, rows)| rows.len())
+    }
+
     /// Opens a picker's menu under the toolbar (by key) or at the click.
     fn open_picker(&mut self, which: fn(&Entity<Self>, &App) -> Vec<MenuItem>, at: Option<gpui::Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let t = theme(cx);
@@ -307,7 +405,8 @@ pub fn open_for_pod(ctx: &ViewCx, logs: devdeck_core::view_addr::ViewAddr, pod: 
     }
 }
 
-/// The level shown, the find text and follow; never paused (lines would pile up unseen).
+/// The level shown, the find text, follow, wrap and the columns; never paused (lines would
+/// pile up unseen).
 impl super::KeepsState for ServiceLogsView {
     fn save(&self, cx: &App) -> serde_json::Value {
         let level = match self.min_level {
@@ -316,7 +415,7 @@ impl super::KeepsState for ServiceLogsView {
             MinLevel::Info => "info",
             MinLevel::All => "all",
         };
-        serde_json::json!({ "level": level, "find": self.find.read(cx).text(), "follow": self.follow })
+        serde_json::json!({ "level": level, "find": self.find.read(cx).text(), "follow": self.follow, "wrap": self.wrap, "time": self.show_time, "pod": self.show_pod })
     }
 
     fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
@@ -328,6 +427,9 @@ impl super::KeepsState for ServiceLogsView {
         };
         self.set_min_level(level, cx);
         self.follow = state["follow"].as_bool().unwrap_or(true);
+        self.wrap = state["wrap"].as_bool().unwrap_or(true);
+        self.show_time = state["time"].as_bool().unwrap_or(true);
+        self.show_pod = state["pod"].as_bool().unwrap_or(true);
         if let Some(text) = state["find"].as_str().filter(|t| !t.is_empty()) {
             self.find.update(cx, |f, cx| f.set_text(text, cx));
             self.feed.buffer.set_query(text);
@@ -352,7 +454,7 @@ fn clock(at: Option<i64>) -> SharedString {
 }
 
 impl Render for ServiceLogsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let c = self.cluster.read(cx);
         let pods_state = match c.pods_state(&self.env, &self.name) {
@@ -364,82 +466,60 @@ impl Render for ServiceLogsView {
             Remote::Ready(n) => *n,
             _ => 0,
         };
-        let buffer = &self.feed.buffer;
-        let count = buffer.row_count();
+        let count = self.feed.buffer.row_count();
         let matches = self.matches();
-        let containers = self.containers(cx);
-        let previous = self.previous_target(cx).err();
-        let waiting = self.feed.waiting();
-        let problems = self.feed.problems();
-        let level_button = |id: &'static str, text: &'static str, l: MinLevel, cx: &mut Context<Self>| {
-            toggle_button(id, text, self.min_level == l, &t)
-                .tooltip(tip(format!("show {text}")))
-                .on_click(cx.listener(move |this, _, _, cx| this.set_min_level(l, cx)))
+        let level = match self.min_level {
+            MinLevel::Error => "errors",
+            MinLevel::Warn => "warn+",
+            MinLevel::Info => "info+",
+            MinLevel::All => "all",
         };
-        let dropped = buffer.dropped();
-        let stats = div().id("logs-stats").flex_none().text_color(t.mute).px_2().child(format!("{pods} pods · {count} lines"));
-        let stats = if dropped > 0 { stats.tooltip(tip(format!("{dropped} older lines dropped"))) } else { stats };
-        let pod_text = match buffer.pod() {
-            Some(p) => format!("pod {}", short(p)),
-            None => "every pod".into(),
-        };
+        // What's wrong, in one icon: pods waiting, streams' problems.
+        let mut wrong: Vec<String> = self.feed.waiting().iter().map(|(why, n)| format!("{n} waiting: {why}")).collect();
+        wrong.extend(self.feed.problems().iter().map(|(pod, why)| format!("{}: {why}", short(pod))));
+        let dropped = self.feed.buffer.dropped();
+        let mut about = format!("{pods} pods · {count} lines");
+        if dropped > 0 {
+            about.push_str(&format!(" · {dropped} older lines dropped"));
+        }
+        if let Some(pod) = self.feed.buffer.pod() {
+            about.push_str(&format!(" · pod {}", short(pod)));
+        }
+        if let Some(container) = &self.feed.container {
+            about.push_str(&format!(" · container {container}"));
+        }
+        let held = self.feed.held();
         let toolbar = div()
             .flex_none()
             .h(t.toolbar_h)
-            .px_3()
+            .px_2()
             .flex()
             .items_center()
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(div().flex_none().text_color(t.hi).child(format!("{} › {}", self.env, self.name)))
-            .child(stats)
-            .when(containers.len() > 1, |d| {
-                let text = self.feed.container.clone().unwrap_or_else(|| "main container".into());
-                d.child(button("logs-container", text, &t).flex_none().tooltip(tip("the container shown")).on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
-                    this.open_picker(Self::container_menu, Some(e.position()), window, cx)
-                })))
-            })
-            .child(toggle_button("logs-pod", pod_text, buffer.pod().is_some(), &t).flex_none().tooltip(tip("the pods shown")).on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
-                this.open_picker(Self::pod_menu, Some(e.position()), window, cx)
-            })))
-            .child(level_button("lvl-err", "errors", MinLevel::Error, cx))
-            .child(level_button("lvl-warn", "warn+", MinLevel::Warn, cx))
-            .child(level_button("lvl-info", "info+", MinLevel::Info, cx))
-            .child(level_button("lvl-all", "all", MinLevel::All, cx))
-            .child(div().w(t.size(180.)).px_1().debug_selector(|| "logs-find".into()).child(self.find.clone()))
+            // Find takes what's left, never less than a few words.
+            .child(div().flex_1().min_w(t.size(120.)).debug_selector(|| "logs-find".into()).child(self.find.clone()))
             .child(div().flex_none().text_color(t.mute).child(match (self.current, matches) {
                 (_, 0) => String::new(),
-                (Some(c), n) => format!("{}/{n}", buffer.hits().binary_search(&c).map_or(0, |p| p + 1)),
+                (Some(cur), n) => format!("{}/{n}", self.feed.buffer.hits().binary_search(&cur).map_or(0, |p| p + 1)),
                 (None, n) => format!("{n} found"),
             }))
-            .when(!waiting.is_empty(), |d| {
-                let text = waiting.iter().map(|(why, n)| format!("{n} waiting: {why}")).collect::<Vec<_>>().join(" · ");
-                d.child(label(text.clone()).id("logs-waiting").text_color(t.warn).min_w_0().tooltip(tip(text)))
-            })
-            .when(!problems.is_empty(), |d| {
-                let text = problems.iter().map(|(pod, why)| format!("{}: {why}", short(pod))).collect::<Vec<_>>().join("\n");
-                let n = problems.len();
-                d.child(label(if n == 1 { "1 problem".to_string() } else { format!("{n} problems") }).id("logs-problems").flex_none().text_color(t.err).tooltip(tip(text)))
-            })
-            .child(div().flex_1())
+            .when(!wrong.is_empty(), |d| d.child(div().id("logs-wrong").flex_none().child(icon(Icon::Warning, t.warn, &t)).tooltip(tip(wrong.join("\n")))))
             .child(
-                button("logs-previous", "previous run", &t)
+                button("logs-level", level, &t)
                     .flex_none()
-                    .when(previous.is_some(), |b| b.text_color(t.dim))
-                    .tooltip(tip(previous.clone().unwrap_or_else(|| "the logs of the run before the last restart".into())))
-                    .on_click(cx.listener(|this, _, _, cx| this.previous_run(cx))),
+                    .child(button_icon(Icon::Filter, &t))
+                    .tooltip(tip("the lowest level shown"))
+                    .on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| this.open_picker(Self::level_menu, Some(e.position()), window, cx))),
             )
-            .child({
-                let held = self.feed.held();
-                let text = match (self.feed.paused, held) {
-                    (false, _) => "pause".to_string(),
-                    (true, 0) => "paused".to_string(),
-                    (true, n) => format!("paused · {n} new"),
-                };
-                toggle_button("pause", text, self.feed.paused, &t).flex_none().tooltip(tip("pause the stream")).on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx)))
-            })
-            .child(toggle_button("follow", "follow", self.follow, &t).flex_none().tooltip(tip("follow")).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))));
+            .child(icon_toggle("logs-wrap", Icon::Wrap, "wrap long lines", self.wrap, &t).on_click(cx.listener(|this, _, _, cx| this.toggle_wrap(cx))))
+            .child(icon_toggle("pause", Icon::Pause, if self.feed.paused { "resume" } else { "pause" }, self.feed.paused, &t).on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx))))
+            .when(self.feed.paused && held > 0, |d| d.child(div().flex_none().text_color(t.warn).child(format!("{held} new"))))
+            .child(icon_toggle("follow", Icon::Follow, "follow the newest line", self.follow, &t).on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))))
+            .child(icon_action("logs-options", Icon::Settings, about, true, &t).on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
+                this.open_picker(Self::options_menu, Some(e.position()), window, cx)
+            })));
 
         let empty = |text: String| div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label(text)).into_any_element();
         let body = if let Some(why) = self.feed.refused() {
@@ -448,21 +528,42 @@ impl Render for ServiceLogsView {
             match pods_state {
                 Remote::Loading => empty("loading pods…".into()),
                 Remote::Error(why) => empty(format!("pods: {why}")),
-                Remote::Ready(0) if buffer.is_empty() => empty("no pods".into()),
-                Remote::Ready(_) if count == 0 => empty(if buffer.is_empty() { "no lines yet".into() } else { "no line matches the filter".into() }),
+                Remote::Ready(0) if self.feed.buffer.is_empty() => empty("no pods".into()),
+                Remote::Ready(_) if count == 0 => empty(if self.feed.buffer.is_empty() { "no lines yet".into() } else { "no line matches the filter".into() }),
                 Remote::Ready(_) => {
                     let (ok, warn, err, mute, dim, fg, hit, current_bg, accent) = (t.ok, t.warn, t.err, t.mute, t.dim, t.fg, t.drop_bg, t.selection, t.accent);
                     let (row_h, time_w, pod_w) = (t.line_height, t.size(64.), t.size(56.));
+                    let (show_time, show_pod, wrap) = (self.show_time, self.show_pod, self.wrap);
+                    let cols = if wrap {
+                        let cell = devdeck_ui::terminal::cell_size(window, &t);
+                        let mut text_w = self.bounds.get().size.width - t.size(28.);
+                        if show_time {
+                            text_w -= time_w + t.size(8.);
+                        }
+                        if show_pod {
+                            text_w -= pod_w + t.size(8.);
+                        }
+                        ((text_w / cell.width).floor() as usize).max(20)
+                    } else {
+                        0
+                    };
+                    let items = if wrap { self.wrap_rows(cols) } else { count };
                     let current = self.current;
-                    scroll_list(
+                    let list = scroll_list(
                         "logs-lines",
-                        count,
+                        items,
                         cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
                             let b = &this.feed.buffer;
                             let hits = b.hits();
                             range
-                                .filter_map(|r| Some((b.row_line(r)?, b.row(r)?)))
-                                .map(|(line, e)| {
+                                .filter_map(|i| {
+                                    let (row, start) = match &this.wrapped {
+                                        Some((_, _, rows)) if wrap => *rows.get(i)?,
+                                        _ => (i, 0),
+                                    };
+                                    Some((b.row_line(row)?, b.row(row)?, start))
+                                })
+                                .map(|(line, e, start)| {
                                     let color = match (e.note, e.level) {
                                         (true, _) => dim,
                                         (_, Level::Error) => err,
@@ -471,6 +572,8 @@ impl Render for ServiceLogsView {
                                         (_, Level::Info) => ok,
                                         (_, Level::Plain) => fg,
                                     };
+                                    let first = start == 0;
+                                    let text: SharedString = if wrap { e.text.chars().skip(start).take(cols).collect::<String>().into() } else { e.text.clone() };
                                     div()
                                         .h(row_h)
                                         .px_3()
@@ -479,20 +582,20 @@ impl Render for ServiceLogsView {
                                         .whitespace_nowrap()
                                         .when(hits.binary_search(&line).is_ok(), |d| d.bg(hit))
                                         .when(current == Some(line), |d| d.bg(current_bg).border_l_2().border_color(accent))
-                                        .child(div().flex_none().w(time_w).text_color(mute).child(clock(e.at)))
-                                        .child(div().flex_none().w(pod_w).overflow_hidden().text_color(mute).child(SharedString::from(short(&e.pod).to_string())))
-                                        .child(div().flex_none().text_color(color).child(e.text.clone()))
+                                        .when(show_time, |d| d.child(div().flex_none().w(time_w).text_color(mute).child(if first { clock(e.at) } else { SharedString::default() })))
+                                        .when(show_pod, |d| d.child(div().flex_none().w(pod_w).overflow_hidden().text_color(mute).child(if first { SharedString::from(short(&e.pod).to_string()) } else { SharedString::default() })))
+                                        .child(div().flex_none().text_color(color).child(text))
                                 })
                                 .collect()
                         }),
                     )
-                    .track_scroll(&self.scroll)
-                    .scroll_xy()
-                    .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-                    .with_width_from_item(buffer.longest_row())
-                    .flex_1()
-                    .min_h_0()
-                    .into_any_element()
+                    .track_scroll(&self.scroll);
+                    let list = if wrap {
+                        list
+                    } else {
+                        list.scroll_xy().with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).with_width_from_item(self.feed.buffer.longest_row())
+                    };
+                    list.flex_1().min_h_0().into_any_element()
                 }
             }
         };
@@ -511,12 +614,14 @@ impl Render for ServiceLogsView {
             .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.step_match(1, cx)))
             .on_action(cx.listener(|this, _: &PrevMatch, _, cx| this.step_match(-1, cx)))
             .on_action(cx.listener(|this, _: &TogglePause, _, cx| this.toggle_pause(cx)))
+            .on_action(cx.listener(|this, _: &ToggleWrap, _, cx| this.toggle_wrap(cx)))
             .on_action(cx.listener(|this, _: &OnlyErrors, _, cx| this.set_min_level(MinLevel::Error, cx)))
             .on_action(cx.listener(|this, _: &WarnAndUp, _, cx| this.set_min_level(MinLevel::Warn, cx)))
             .on_action(cx.listener(|this, _: &InfoAndUp, _, cx| this.set_min_level(MinLevel::Info, cx)))
             .on_action(cx.listener(|this, _: &Everything, _, cx| this.set_min_level(MinLevel::All, cx)))
             .on_action(cx.listener(|this, _: &PickContainer, window, cx| this.open_picker(Self::container_menu, None, window, cx)))
             .on_action(cx.listener(|this, _: &PickPod, window, cx| this.open_picker(Self::pod_menu, None, window, cx)))
+            .on_action(cx.listener(|this, _: &Options, window, cx| this.open_picker(Self::options_menu, None, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousRun, _, cx| this.previous_run(cx)))
             .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().size_full())
             .child(toolbar)

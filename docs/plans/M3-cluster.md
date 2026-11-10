@@ -1598,3 +1598,153 @@ unschedulable pods), the core and the app by the lead (`cluster::assess`,
 8. A timeout said nothing of a write that may have landed; saves could land out of order;
    a deleted deployment's rollout was kept forever. **Fixed**: the timeout says so; saves
    run one at a time; a deployment gone ends its rollout.
+
+## Step 6 · Redeploy the same branch (plan, 2026-11-10)
+
+Requirements: R7.3 (a deploy of the same branch), R7.5 (restart), R7.4, R7.6, R5.5, R5.6.
+
+What exists after step 5: deploys pinned to the image confirmed, every deploy followed
+(a growing revision with the same image already reads as "redeployed"), the history, the
+access review; the service view's "restart" button says "comes in a later step of M3".
+
+### Decisions (user, 2026-11-10)
+
+- One action, **redeploy**: what `kubectl rollout restart` does. It is R7.5's restart too;
+  the "restart" placeholder becomes "redeploy".
+- The services that matter pull with `imagePullPolicy: Always` (checked by the user on
+  dev33); some use `IfNotPresent`. When the main container's policy isn't `Always`, the
+  confirmation warns that pods on nodes that already have the tag keep the build they
+  have; the redeploy isn't refused.
+
+### The write
+
+- `devdeck_kube::restart(target, deployment, &Restart { index, container, image, at })`:
+  a JSON Patch that tests the main container's name and image (still the one shown), then
+  sets the pod template's `kubectl.kubernetes.io/restartedAt` annotation to `at` (RFC
+  3339, now): `add` on `/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt`
+  when the template has annotations, else `add` of the whole `annotations` map; field
+  manager `devdeck`. Same errors and timeout as `set_image` (`DeployError`).
+- `convert.rs` keeps, per container, `pull_policy: Option<String>`, and on the deployment
+  whether its pod template has annotations (`template_annotated: bool`), so the patch is
+  built right without reading the object again.
+- `ClusterDriver::restart(env, name, change, cx)`; the answer goes to
+  `Cluster::write_done` as a branch change's does. `Cluster::redeploy(env, name, image,
+  unlocked, cx)` with the same guards as `deploy` (edit mode, the account, a protected env
+  unlocked, no write of the service in flight, not paused, a main container clearly
+  named), but the same image is what it asks for.
+
+### Following and history
+
+- The pending write is devdeck's with `to_image` = the image it runs; the watch sees the
+  revision grow with that image: the existing detection records it, `by devdeck`, `main →
+  main`, and follows it. The history says "redeployed" when from and to are the same
+  (`outcome` unchanged: done, failing…); the service view's line says "redeploying main:
+  1/2 pods ready".
+
+### The view
+
+- The service view's **redeploy** button and a registered action (`svc.redeploy`, key `r`
+  in the service view, palette, cheat sheet); disabled with the guard's reason (R5.5).
+- A confirmation "Redeploy graphservice on dev33?" with the branch, the equivalent
+  `kubectl -n <ns> rollout restart deployment/<name>`, the pull policy warning when not
+  `Always`, waiting for the answer and showing a refusal as the branch change's does (the
+  same modal, its title and command chosen by the kind of write).
+- A protected env asks its name first, as for a branch change.
+
+### Fake
+
+The demo's redeploy: a new template on the same tag, one replica per step, through the
+same `apply` path as its branch changes.
+
+### Files
+
+- `devdeck-kube`: `deploy.rs` (`restart`, `Restart`), `convert.rs` (pull policy,
+  template annotated), tests.
+- `devdeck-core`: `cluster.rs` (`Container.pull_policy`, `Deployment.template_annotated`,
+  `restart_command`).
+- `devdeck-app`: `cluster.rs` (`ClusterDriver::restart`), `cluster_deploys.rs`
+  (`redeploy`, its guards), `kube_cluster.rs`, `fake_cluster.rs`,
+  `views/service_view.rs` (button, action, the modal's kinds), `registry.rs`,
+  `bin/snapshot.rs`.
+- Docs: `DESIGN.md` (Cluster), `REQUIREMENTS.md` (R7.5 progress), `ROADMAP.md`.
+
+### OS (R11.6)
+
+None.
+
+### States to check
+
+The redeploy button enabled and disabled (edit mode off, the account, locked protected,
+in flight, paused); the confirmation with and without the pull policy warning; waiting;
+refused (changed since confirmed); rolling "redeploying main 1/2"; done; failing; the
+history's "redeployed" entry.
+
+### Tests
+
+- devdeck-kube, on the mock API: the patch body with and without existing template
+  annotations (escaped `~1`), the test operations, field manager, the generation returned,
+  the errors; conversion of the pull policy and of `template_annotated`.
+- Core: `restart_command`.
+- App, on a scripted driver: the guards; the write pinned to the image shown; the
+  redeploy recorded as devdeck's with from = to and followed to done; a redeploy seen from
+  elsewhere (already covered) unchanged; the button's reasons; the action registered.
+- Snapshots: the confirmation with the pull policy warning; the service view rolling a
+  redeploy.
+- By hand: the user's, on dev33.
+
+### Out of scope
+
+Notifications (step 7); scaling replicas; restarting one pod (deleting it); checking the
+registry for a newer build.
+
+### Review of the step 6 plan (subagent, 2026-11-10) and assessment
+
+Every point accepted; the plan above reads with these changes.
+1. Adding the whole `annotations` map replaces it (RFC 6902): a stale "not annotated"
+   would wipe annotations added meanwhile. **Accepted**: that patch also `test`s
+   `/metadata/generation` equals the one seen (a spec change since refuses it, as
+   "changed since you confirmed"). Tested on the mock API.
+2. For a redeploy, "ours" (`pending.to_image == image`) matches any redeploy while the
+   write is pending, and a patch that changes nothing (same `restartedAt` within a second)
+   leaves a pending write for good. **Accepted**: `convert.rs` keeps the template's
+   `kubectl.kubernetes.io/restartedAt`; a redeploy is devdeck's when it equals the
+   pending `at`, which has fractional seconds; an answer whose generation isn't higher
+   than the one seen drops the pending write and says "nothing changed". Tests: a foreign
+   redeploy while sending, a patch that changes nothing.
+3. The fake can't show a redeploy (`demo::pods` hashes the template from name and tag).
+   **Accepted**: the template and pod names are seeded with the revision; `demo.rs` added
+   to Files; a test that the fake's redeploy rolls then ends.
+4. Without a template, `assess` counts old pods as new when from = to. **Accepted**: then
+   the deployment's own counts decide, as without pods. Core test.
+5. The pull-policy warning's cases. **Accepted**: an absent policy means the API server's
+   default (`Always` for `latest` or no tag, else `IfNotPresent`); `Never` warns too; a
+   digest-pinned image says "pinned to a digest: the same build restarts"; only the main
+   container is checked (said in the warning's wording).
+6. How the guards split. **Accepted**: `write_blocked(env, name, unlocked)` holds every
+   guard but "already runs", shared by both; the protected env's name is still asked last;
+   the modal carries its kind (a branch change with `from`/`to`, or a redeploy with its
+   image and `at`) and sends the right write.
+7. Smaller ones. **Accepted**: the edit mode modal says "redeploys"; `reopen` compares the
+   revision (and `restartedAt`) for a redeploy, not the tag; a redeploy replaced by another
+   reads "replaced by a redeploy".
+8. kube's `Api::restart` sends a merge patch on `kube.kubernetes.io/restartedAt` (not
+   kubectl's key), with no field manager and no test. **Accepted**: not used, said in the
+   plan so a builder doesn't swap it in.
+
+## Logs toolbar rework (user, 2026-11-10)
+
+The user, on the logs view in use: too many things in the header, no way to wrap, find
+barely fits a character. Built without a review, as asked:
+- The toolbar keeps find (all the free width, at least a few words) with its match count,
+  a warning icon only when something is wrong (pods waiting, streams' problems, in its
+  hover text), the level as one icon button with a menu (errors, warn+, info+, all), and
+  icon toggles for wrap, pause ("N new" while paused) and follow; a cog opens the rest:
+  the pod and the container (submenus), a previous run, showing the time and pod
+  columns, wrapping. "env › service" and the counts left the toolbar (the tab names it;
+  the counts are the cog's hover text).
+- Wrapping is on by default and remembered per tab with the columns: lines are cut by the
+  monospace cell width into rows of the same list (still a uniform list), worked out
+  again only when the width or what's shown changes; off, one row a line scrolls
+  sideways. Keys: `w` wrap, `.` the cog's menu, the others as before.
+- `devdeck-ui`: `icon_toggle` (with its test) and the icons funnel, text-wrap, pause and
+  arrow-down-to-line (Lucide, from gpui-kit-assets 0.9.0).

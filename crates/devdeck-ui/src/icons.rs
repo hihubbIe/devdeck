@@ -100,6 +100,14 @@ icons! {
     Push => "arrow-up-from-line",
     NewBranch => "git-branch-plus",
     Refresh => "refresh-cw",
+    // Logs.
+    /// What level of lines shows.
+    Filter => "funnel",
+    /// Long lines wrap at the pane's width.
+    Wrap => "text-wrap",
+    Pause => "pause",
+    /// Keep the newest line in view.
+    Follow => "arrow-down-to-line",
     // Window controls.
     WindowMinimize => "minus",
     WindowMaximize => "square",

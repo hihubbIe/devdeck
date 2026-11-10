@@ -145,6 +145,13 @@ pub fn icon_action(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedS
         .child(child)
 }
 
+/// [`icon_action`] for something on or off (wrap, follow, pause): framed in the accent
+/// while on.
+pub fn icon_toggle(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedString>, on: bool, t: &Theme) -> Stateful<gpui::Div> {
+    let b = icon_action(id, i, tooltip, true, t).border_1();
+    if on { b.border_color(t.accent).bg(t.accent_bg) } else { b.border_color(gpui::transparent_black()) }
+}
+
 /// Square icon-sized button with a tooltip.
 pub fn icon_button(id: impl Into<ElementId>, i: Icon, tooltip: &'static str, t: &Theme) -> Stateful<gpui::Div> {
     let hover = t.hover;

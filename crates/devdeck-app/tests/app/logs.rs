@@ -495,6 +495,22 @@ fn lines_past_the_cap_while_paused_are_counted(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| v.read(cx).feed.held()), 0);
 }
 
+#[gpui::test]
+fn long_lines_wrap_until_wrapping_is_turned_off(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-wrap");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    let long = "x".repeat(2000);
+    t.driver.send(&name("aaaaa"), &[(1.0, long.as_str()), (2.0, "short")]);
+    advance(cx, DRAIN_EVERY);
+    cx.update(|cx| cx.refresh_windows());
+    cx.run_until_parked();
+    assert!(cx.read(|cx| v.read(cx).wrap), "on by default");
+    assert!(cx.read(|cx| v.read(cx).list_rows()) > 2, "the long line takes several rows");
+    cx.update(|cx| v.update(cx, |v, cx| v.toggle_wrap(cx)));
+    assert_eq!(cx.read(|cx| v.read(cx).list_rows()), 2, "one row a line, scrolling sideways");
+}
+
 fn entry(text: &str, level: Level) -> Entry {
     Entry { at: None, pod: "p".into(), text: text.into(), level, note: false }
 }

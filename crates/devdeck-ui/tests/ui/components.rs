@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::{host, the_theme};
-use devdeck_ui::{TREE_INDENT, button, icon_button, label, logical, section, tip, toggle_button, tree_row};
+use devdeck_ui::{Icon, TREE_INDENT, button, icon_button, icon_toggle, label, logical, section, tip, toggle_button, tree_row};
 use gpui::{
     InteractiveElement, IntoElement, Modifiers, MouseButton, ParentElement, StatefulInteractiveElement, Styled, TestAppContext,
     VisualTestContext, div, point,
@@ -50,6 +50,23 @@ fn a_toggle_button_clicks_whatever_its_state(cx: &mut TestAppContext) {
     let mut vcx = VisualTestContext::from_window(window, cx);
     for want in [true, false, true] {
         let b = vcx.debug_bounds("t").expect("drawn");
+        vcx.simulate_click(b.center(), Modifiers::none());
+        assert_eq!(on.get(), want);
+    }
+}
+
+#[gpui::test]
+fn an_icon_toggle_clicks_whatever_its_state(cx: &mut TestAppContext) {
+    let on = Rc::new(Cell::new(false));
+    let o = on.clone();
+    let window = host(cx, move |_, cx| {
+        let o = o.clone();
+        let t = devdeck_ui::theme(cx).clone();
+        div().p(logical(20.)).child(icon_toggle("w", Icon::Wrap, "wrap long lines", o.get(), &t).debug_selector(|| "w".into()).on_click(move |_, _, _| o.set(!o.get()))).into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    for want in [true, false] {
+        let b = vcx.debug_bounds("w").expect("drawn");
         vcx.simulate_click(b.center(), Modifiers::none());
         assert_eq!(on.get(), want);
     }

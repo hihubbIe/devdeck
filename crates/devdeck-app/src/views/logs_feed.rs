@@ -96,6 +96,8 @@ pub struct LogsBuffer {
     longest: Option<(u64, usize)>,
     max_lines: usize,
     max_bytes: usize,
+    /// Moves whenever what's shown changes (wrapping is worked out again then).
+    version: u64,
 }
 
 impl Default for LogsBuffer {
@@ -120,6 +122,7 @@ impl LogsBuffer {
             longest: None,
             max_lines: max_lines.max(1),
             max_bytes,
+            version: 0,
         }
     }
 
@@ -134,6 +137,7 @@ impl LogsBuffer {
     }
 
     pub fn push(&mut self, e: Entry) {
+        self.version += 1;
         let abs = self.first + self.entries.len() as u64;
         self.bytes += e.text.len();
         let chars = e.text.chars().count();
@@ -174,6 +178,7 @@ impl LogsBuffer {
     }
 
     fn refilter(&mut self) {
+        self.version += 1;
         self.rows = (0..self.entries.len()).filter(|i| self.shows(&self.entries[*i])).map(|i| self.first + i as u64).collect();
         self.find_longest();
         self.refind();
@@ -203,6 +208,7 @@ impl LogsBuffer {
     }
 
     pub fn clear(&mut self) {
+        self.version += 1;
         self.first += self.entries.len() as u64;
         self.cleared += self.entries.len() as u64;
         self.entries.clear();
@@ -211,6 +217,11 @@ impl LogsBuffer {
         self.rows.clear();
         self.hits.clear();
         self.longest = None;
+    }
+
+    /// What's shown changed when this did.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     /// Lines kept.
