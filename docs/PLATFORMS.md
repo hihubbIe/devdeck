@@ -173,7 +173,8 @@ ctrl elsewhere), with per-OS keymaps where a key differs, as Zed ships
   or `std::os::linux` appears in a source file outside `devdeck-sys`: literals and paths
   that no dependency rule catches.
 - **CI** (none exists yet; it comes before the first macOS backend):
-  - Linux: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`.
+  - Linux: `cargo nextest run --workspace`, `cargo clippy --workspace --all-targets -- -D
+    warnings`.
   - Linux: `cargo check -p devdeck-sys --target aarch64-apple-darwin`, a fast check
     that the macOS backend compiles. Also usable locally once the target is added
     with `rustup target add`. `-p` is right here, unlike elsewhere (`docs/WORKFLOW.md`):

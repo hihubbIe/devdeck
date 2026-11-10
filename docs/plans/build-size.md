@@ -381,3 +381,15 @@ Measured 2026-11-09, cargo 1.99, capped scope, medians of five:
     named in Step 3.
 15. The fallback for `--workspace --test app` is not needed: **accepted**, removed; Step 3
     runs it.
+
+## Phase 3: cargo-nextest (2026-11-10, the user installed it)
+
+The whole suite's 12 s of running was the binaries run one after another. cargo-nextest
+(0.9.151) builds the tests as `cargo test --no-run` does ("How it works" on nexte.st;
+checked: after `cargo test --workspace --no-run`, `cargo nextest run --workspace --no-run`
+compiled nothing) and runs every test in its own process, all binaries at once. One run,
+capped scope, memory read from the scope's `memory.peak` (every spike, page cache
+included): 777 passed in 7.8 s, peak 310 MB. No comparison series (user: accepted as is).
+`cargo nextest run --workspace deck::` runs the 16 deck tests (a substring filter, as
+"Selecting tests" on nexte.st describes). The commands in `CLAUDE.md`, `WORKFLOW.md`,
+`BUILDING.md` (with the install page's command) and `PLATFORMS.md`'s Linux CI line use it.

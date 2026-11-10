@@ -1,5 +1,5 @@
 //! The app's integration tests, one binary: a new test file is a module here, never a new
-//! file in `tests/` (docs/WORKFLOW.md). One area: `cargo test --workspace --test app deck::`.
+//! file in `tests/` (docs/WORKFLOW.md). One area: `cargo nextest run --workspace deck::`.
 
 mod actions;
 mod api;

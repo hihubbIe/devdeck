@@ -1,5 +1,5 @@
 //! The component library's tests, one binary: a new test file is a module here, never a
-//! new file in `tests/` (docs/WORKFLOW.md). One area: `cargo test --workspace --test ui input::`.
+//! new file in `tests/` (docs/WORKFLOW.md). One area: `cargo nextest run --workspace input::`.
 
 mod common;
 

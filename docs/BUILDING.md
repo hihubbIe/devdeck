@@ -4,6 +4,17 @@
 
 Rust stable (developed with 1.99). `rustup update stable`.
 
+Tests run with [cargo-nextest](https://nexte.st) (developed with 0.9.151). Its pre-built
+binary for Linux x86_64, as its install page gives it
+([nexte.st/docs/installation/pre-built-binaries](https://nexte.st/docs/installation/pre-built-binaries/#linux-x86_64)):
+
+```sh
+curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+```
+
+Or from source: `cargo install cargo-nextest --locked`
+([nexte.st/docs/installation/from-source](https://nexte.st/docs/installation/from-source/)).
+
 ## Linux system packages
 
 Debian / Ubuntu:
@@ -60,12 +71,14 @@ terminals get the login shell's on top (PATH, nvm, pnpm).
 ## Tests and lints
 
 ```sh
-cargo test --workspace
+cargo nextest run --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-From the workspace root, with `--workspace`; one area's tests by name (`cargo test
---workspace --test app deck::`), never with `-p` (`docs/WORKFLOW.md`, "One way to build").
+From the workspace root, with `--workspace`; one area's tests by name (`cargo nextest run
+--workspace deck::`), never with `-p` (`docs/WORKFLOW.md`, "One way to build"). Nextest
+runs no doctests; no crate has any (`doctest = false`). `cargo test --workspace` still
+works, on the same build, running the binaries one after another.
 
 ## The build folder
 
@@ -76,7 +89,7 @@ cargo 1.99, from a clean folder:
 
 | Build | Command | Adds |
 |---|---|---|
-| tests | `cargo test --workspace` | 6.2 GB (12 test binaries, peak memory 5.2 GB cold) |
+| tests | `cargo nextest run --workspace` (or `cargo test`, the same build) | 6.2 GB (12 test binaries, peak memory 5.2 GB cold) |
 | check and clippy | `cargo clippy --workspace --all-targets` | 1.4 GB |
 | debug binaries | `cargo build` | 1.9 GB |
 | debug run, snapshot tool, release | `cargo run …`, `cargo build --release` | one set each |

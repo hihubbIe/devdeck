@@ -16,9 +16,9 @@
 5. **Check visually.** Run the app and look at every state listed in the plan (empty,
    loading, error, missing tool, protected env, collapsed, detached, narrow pane…).
    Fix what doesn't match the design before moving on.
-6. **Test.** `cargo test --workspace` must pass. `cargo clippy --workspace --all-targets
-   -- -D warnings` must pass. New features ship with unit tests; bugs ship with a
-   regression test.
+6. **Test.** `cargo nextest run --workspace` must pass. `cargo clippy --workspace
+   --all-targets -- -D warnings` must pass. New features ship with unit tests; bugs ship
+   with a regression test.
 7. **Commit.** One commit per step, message naming the step and requirement ids.
    Update the requirement checkboxes in `REQUIREMENTS.md` in the same commit.
 
@@ -34,12 +34,14 @@
 
 ## Keep the step loop fast
 
-Measured 2026-11-09 (cargo 1.99), medians of five, after a one-line edit in
-`devdeck-app`: clippy 2.0 s, one area's tests 3.4 s, the whole suite (777 tests) 15.0 s,
-of which about 12 s is running the tests; peak memory under 1 GB. The test binaries run
-one after another, each as long as its slowest test or its share of the work: the app's
-6.4 s, `devdeck-core`'s unit tests 2.2 s and its `tests/git.rs` 2.3 s (tests that wait on
-real processes and hooks), the rest under 1 s. Rendering every snapshot takes
+Tests run with cargo-nextest (`docs/BUILDING.md`): it builds them as `cargo test
+--no-run` does (the same set in `target/`), then runs every test in a process of its own,
+all binaries at once. Measured 2026-11-10 (cargo 1.99, nextest 0.9.151), one run: the
+whole suite's 777 tests in 7.8 s, peak memory 310 MB. `cargo test` ran the binaries one
+after another, each as long as its slowest test or its share of the work: about 12 s
+(medians of five, 2026-11-09). After a one-line edit in `devdeck-app`: clippy 2.0 s,
+building the tests about 3 s. The slowest tests wait on real processes and hooks
+(`devdeck-core`'s process and git tests, about 2 s each). Rendering every snapshot takes
 45 s (it was 133 s before the PNG crates were optimized in debug builds, see
 `Cargo.toml`); two snapshots take about 3 s.
 
@@ -53,10 +55,11 @@ in `tests/` (a new binary) and never a file without its `mod` line (never compil
 crate runs doctests (`doctest = false` in each `[lib]`, 0.5 s off every whole suite): an
 example in a doc comment is not tested, so a test goes in a test file.
 
-- **While building:** the tests of the area being changed, by name: `cargo test
-  --workspace --test app deck::` (a name is a substring: `sidebar::` also runs
-  `notes_sidebar::`); a crate's unit tests with `--lib`: `cargo test --workspace --lib
-  layout`. For errors without tests, clippy (`cargo clippy --workspace --all-targets`),
+- **While building:** the tests of the area being changed, by name: `cargo nextest run
+  --workspace deck::` (16 tests, 0.2 s once built). A name is a substring of the test's
+  path in every binary, unit tests included: `sidebar::` also runs `notes_sidebar::`,
+  `layout` runs `devdeck-core`'s layout tests and any other with `layout` in its name.
+  For errors without tests, clippy (`cargo clippy --workspace --all-targets`),
   not `cargo check`: the two keep separate results for our crates, so running both
   repeats the work, and a test build already reports every compile error except the
   binary's (`crates/devdeck/src/main.rs`, which only clippy and `cargo build` compile):
