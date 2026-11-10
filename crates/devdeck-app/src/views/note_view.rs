@@ -128,6 +128,15 @@ impl NoteView {
         }
     }
 
+    /// Shows the note rendered or as its source, without moving the focus (the control
+    /// API): its editor is made at the next draw.
+    pub fn set_rendered(&mut self, rendered: bool, cx: &mut Context<Self>) {
+        if self.rendered != rendered {
+            self.rendered = rendered;
+            cx.notify();
+        }
+    }
+
     pub fn toggle_rendered(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rendered = !self.rendered;
         if !self.rendered {

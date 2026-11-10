@@ -144,6 +144,42 @@ methods! {
         "The workspace's ports: those its runs listen on and its commands declare, and who holds each.", since 4;
     PortGet = "port.get", Observe, PortParams => PortEntry,
         "One of the workspace's ports and who holds it.", since 4;
+    ViewOpen = "view.open", Present, ViewOpenParams => Ui,
+        "Opens an app, a run, a file, a note or a port into a pane or beside it, in the background unless `activate`; never moves the user's keys.", since 4;
+    ViewClose = "view.close", Present, ViewParams => Ui,
+        "Closes a view's tab (a terminal's shell goes on).", since 4;
+    ViewFocus = "view.focus", Present, ViewParams => Ui,
+        "Makes a view its pane's active tab (never the keyboard's).", since 4;
+    FileOpen = "file.open", Present, FileOpenParams => Ui,
+        "Opens a file of the workspace's apps' folders, at a line when given.", since 4;
+    FileRendered = "file.rendered", Present, RenderedParams => Done,
+        "Shows a Markdown file or a note rendered, or its source.", since 4;
+    PaneSplit = "pane.split", Present, PaneSplitParams => Ui,
+        "Moves a pane's active tab to a new pane on one of its edges.", since 4;
+    PaneClose = "pane.close", Present, PaneParams => Ui,
+        "Closes a pane's tabs (terminals' shells go on).", since 4;
+    PaneCollapse = "pane.collapse", Present, PaneCollapseParams => Ui,
+        "Collapses or expands a pane.", since 4;
+    PaneMaximize = "pane.maximize", Present, PaneMaximizeParams => Ui,
+        "Maximizes a pane in its window, or not.", since 4;
+    PaneResize = "pane.resize", Present, PaneResizeParams => Ui,
+        "Moves a boundary of a split.", since 4;
+    PaneMoveTab = "pane.move_tab", Present, MoveTabParams => Ui,
+        "Moves an open view into a pane or beside it.", since 4;
+    WindowAttach = "window.attach", Present, WindowAttachParams => Ui,
+        "Moves a detached window's tabs into a pane and closes it.", since 4;
+    WindowClose = "window.close", Present, WindowParams => Ui,
+        "Closes a detached window and its tabs (terminals' shells go on).", since 4;
+    LayoutSwitch = "layout.switch", Present, IdParams => Ui,
+        "Shows another saved layout (asks the user while their keys are in a pane).", since 4;
+    SettingsSet = "settings.set", Present, SettingsSetParams => Settings,
+        "Sets the UI scale or the theme.", since 4;
+    WorkspaceRescan = "workspace.rescan", Present, InWorkspace => Done,
+        "Finds the workspace's apps again.", since 4;
+    UiNotify = "ui.notify", Present, NotifyParams => Notified,
+        "Shows the user a one-line toast, labelled with the caller.", since 4;
+    UiToasts = "ui.toasts", Read, NoParams => Toasts,
+        "The toasts shown lately, oldest first.", since 4;
 }
 
 /// A method as the catalog lists it.
@@ -220,12 +256,13 @@ mod tests {
     #[test]
     fn methods_look_or_run_and_levels_say_when() {
         for m in catalog() {
-            assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read) && m.escalates_to.is_empty(), "{}", m.name);
+            assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read | Class::Present) && m.escalates_to.is_empty(), "{}", m.name);
             let since = match m.class {
                 Class::Run => 2,
-                Class::Read if m.name.ends_with(".wait") || m.name.starts_with("job.") => 4,
+                Class::Read if m.name.ends_with(".wait") || m.name.starts_with("job.") || m.name == "ui.toasts" => 4,
                 Class::Read => 3,
                 _ if ["events.", "git.", "port."].iter().any(|d| m.name.starts_with(d)) => 4,
+                Class::Present => 4,
                 _ => 1,
             };
             assert_eq!(m.since, since, "{}", m.name);

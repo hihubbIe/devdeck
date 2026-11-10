@@ -151,6 +151,7 @@ fn windows(l: &CoreLayout, deck: Option<&Deck>, app: &App) -> Vec<Window> {
     fn node(n: &CoreNode, l: &CoreLayout, deck: Option<&Deck>, app: &App) -> Node {
         match n {
             CoreNode::Split(s) => Node::Split {
+                id: s.id.0,
                 axis: match s.axis {
                     CoreAxis::Row => Axis::Row,
                     CoreAxis::Column => Axis::Column,
@@ -399,7 +400,7 @@ fn own(me: &Starter, title: &str, r: &crate::runner::Run) -> Result<(), ApiError
 }
 
 /// Tells the user what a caller did (a toast, a few per caller at most).
-fn say(cx: &CallCx, what: &str, title: &str, app: &mut App) {
+pub(super) fn say(cx: &CallCx, what: &str, title: &str, app: &mut App) {
     crate::api::notice(cx.who, format!("{} {what} {title}", cx.who.label()), app);
 }
 
@@ -759,7 +760,7 @@ pub(super) fn secret(path: &std::path::Path) -> bool {
 
 /// devdeck's own folders (config, notes, state, its sockets): never read through the
 /// API (other workspaces' notes, the audit).
-fn devdecks_own() -> Vec<std::path::PathBuf> {
+pub(super) fn devdecks_own() -> Vec<std::path::PathBuf> {
     let mut out = vec![devdeck_core::settings::default_config_dir(), devdeck_core::notes::default_data_dir(), devdeck_core::state::default_state_dir()];
     if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
         out.push(std::path::PathBuf::from(rt).join("devdeck"));
@@ -769,7 +770,7 @@ fn devdecks_own() -> Vec<std::path::PathBuf> {
 
 /// Where `file.read` may read: the workspace's apps' folders (not hidden ones), never
 /// `/`, the home folder or one above it.
-fn file_roots(s: &Services) -> Vec<std::path::PathBuf> {
+pub(super) fn file_roots(s: &Services) -> Vec<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).and_then(|h| h.canonicalize().ok());
     let hidden = |id: &str| s.config.as_ref().is_some_and(|c| c.apps.get(id).is_some_and(|o| o.hidden));
     s.catalog
@@ -782,7 +783,7 @@ fn file_roots(s: &Services) -> Vec<std::path::PathBuf> {
 }
 
 /// May `path` (links resolved) be read?
-fn readable(path: &std::path::Path, roots: &[std::path::PathBuf], own: &[std::path::PathBuf]) -> Result<(), ApiError> {
+pub(super) fn readable(path: &std::path::Path, roots: &[std::path::PathBuf], own: &[std::path::PathBuf]) -> Result<(), ApiError> {
     let denied = |why: &str| Err(ApiError::new(devdeck_api::ErrorKind::PermissionDenied, format!("{}: {why}", path.display())));
     if own.iter().any(|o| path.starts_with(o)) {
         return denied("devdeck's own files");

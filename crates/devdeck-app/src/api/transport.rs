@@ -97,8 +97,9 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
     let (all, outside) = counts;
     if all.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
         all.fetch_sub(1, Ordering::SeqCst);
-        busy(Some(stream), "too many connections");
+        // Recorded before the client hears it: what it was told is always in the audit.
         sink.refused("too many connections".into());
+        busy(Some(stream), "too many connections");
         return;
     }
     let (out, outbox) = sync_channel::<Vec<u8>>(OUTBOX);
@@ -121,8 +122,8 @@ fn connection(stream: UnixStream, sink: &dyn Sink, counts: &(AtomicUsize, Atomic
         if within {
             serve_connection(stream, sink, o.id, out, outbox);
         } else {
-            busy(Some(stream), "too many outside connections");
             sink.refused("too many outside connections".into());
+            busy(Some(stream), "too many outside connections");
         }
         sink.close(o.id);
     }

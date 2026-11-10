@@ -110,6 +110,24 @@ handlers! {
     GitBranches => later super::gitports::git_branches,
     PortList_ => later super::gitports::port_list,
     PortGet => later super::gitports::port_get,
+    ViewOpen => later super::present::view_open,
+    ViewClose => typed super::present::view_close,
+    ViewFocus => typed super::present::view_focus,
+    FileOpen => later super::present::file_open,
+    FileRendered => typed super::present::file_rendered,
+    PaneSplit => typed super::present::pane_split,
+    PaneClose => typed super::present::pane_close,
+    PaneCollapse => typed super::present::pane_collapse,
+    PaneMaximize => typed super::present::pane_maximize,
+    PaneResize => typed super::present::pane_resize,
+    PaneMoveTab => typed super::present::pane_move_tab,
+    WindowAttach => typed super::present::window_attach,
+    WindowClose => typed super::present::window_close,
+    LayoutSwitch => typed super::present::layout_switch,
+    SettingsSet => typed super::present::settings_set,
+    WorkspaceRescan => typed super::present::workspace_rescan,
+    UiNotify => typed super::present::ui_notify,
+    UiToasts => typed super::present::ui_toasts,
 }
 
 static HANDLERS: LazyLock<BTreeMap<&'static str, Handler>> = LazyLock::new(table);
@@ -133,10 +151,43 @@ pub fn answer(cx: &CallCx, method: &str, params: Value, app: &mut App) -> Answer
     if let Some(e) = refused {
         return Answer::Now(Err(e));
     }
+    if let Err(e) = paced(cx.who, m.class, app) {
+        return Answer::Now(Err(e));
+    }
     match HANDLERS.get(method) {
         Some(handler) => handler(cx, params, app),
         None => Answer::Now(Err(ApiError::unavailable(format!("{method} isn't built yet")))),
     }
+}
+
+/// Calls that change something, per caller, at most (R13.5): an agent in a loop doesn't
+/// churn the user's screen or data.
+pub const CALLS_PER_WINDOW: usize = 30;
+pub const CALLS_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Default)]
+struct Calls(std::collections::HashMap<String, std::collections::VecDeque<std::time::Instant>>);
+
+impl gpui::Global for Calls {}
+
+/// Counts a call that changes something (present, organize, run); refused past the rate.
+fn paced(who: &Who, class: devdeck_api::Class, app: &mut App) -> Result<(), ApiError> {
+    use devdeck_api::Class::{Organize, Present, Run};
+    if !matches!(class, Present | Organize | Run) {
+        return Ok(());
+    }
+    let now = app.background_executor().now();
+    let calls = app.default_global::<Calls>();
+    calls.0.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < CALLS_WINDOW));
+    let q = calls.0.entry(who.label()).or_default();
+    while q.front().is_some_and(|t| now.duration_since(*t) >= CALLS_WINDOW) {
+        q.pop_front();
+    }
+    if q.len() >= CALLS_PER_WINDOW {
+        return Err(ApiError::new(ErrorKind::RateLimited, format!("{CALLS_PER_WINDOW} changes every {} s at most", CALLS_WINDOW.as_secs())));
+    }
+    q.push_back(now);
+    Ok(())
 }
 
 /// [`answer`] for a method that answers now (tests, and every method but waits and

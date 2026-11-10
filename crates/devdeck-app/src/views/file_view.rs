@@ -156,6 +156,19 @@ impl FileView {
         cx.notify();
     }
 
+    /// Shows a Markdown file rendered or as its source, without moving the focus (the
+    /// control API); false when it isn't Markdown.
+    pub fn set_rendered(&mut self, rendered: bool, cx: &mut Context<Self>) -> bool {
+        if !self.markdown {
+            return false;
+        }
+        if self.rendered != rendered {
+            self.rendered = rendered;
+            cx.notify();
+        }
+        true
+    }
+
     pub fn toggle_rendered(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.markdown {
             return;

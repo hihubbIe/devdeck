@@ -573,3 +573,163 @@ Diff review (subagent), assessed:
 3. A stale read error answered while a new read was in flight — taken.
 4. A scan under way could answer without the newly watched port's holder — taken: the
    read waits for the scan after it.
+
+## Step 8 plan (2026-11-10): the methods
+
+Built in two commits under this one plan: 8a present and read, 8b run and organize. No
+new OS code (R11.6). API level 4; a terminal caller's own workspace (R2.1). Every call
+that changes something is audited (it is already, by class) and told in a toast, one per
+caller every 2 s at most (as in 1c).
+
+Rules for all of them:
+- **Taking the user's keys asks the user.** A change `Deck::apply_quietly` refuses with
+  `Quiet::Keys`, `window.detach` (a new window may take the keyboard: on Linux GPUI can't
+  open one without focus, and nothing in our code branches on the OS), a `layout.switch`
+  that opens detached windows or hides the panes holding the keys, and
+  `workspace.activate` while another workspace is shown answer `approval_required` (P4's
+  card can allow them). This settles the step 1 open points without OS-specific code.
+- Panes, windows and splits are named by the ids `ui.get` gives (live layout only);
+  views by the typed `View` of `ui.get` (`{kind: "file", path}`…).
+- Toggles are states asked for (`collapsed: bool`, `maximized: bool`, `pinned: bool`,
+  `keep: bool`, `rendered: bool`): asking twice changes nothing more.
+- Rate limit (R13.5 check 5): calls of the present, organize and run classes, 30 per
+  10 s per caller, then `rate_limited`; `ui.notify` 1 per 2 s on top.
+
+### 8a, present and read
+
+- `view.open{view, pane?, edge?, activate?}`: an app, a run, a file (with `file.read`'s
+  scope and secret rules), a note, or a port of the workspace; other kinds `invalid`
+  (terminals open through `terminal.open`, repositories later). Into `pane` (the main
+  window's focused one when left out) or beside it on `edge`; `activate` (false) makes it
+  that pane's active tab (`target` of `apply_quietly`). Already open: moved only when a
+  place is given, else activated when asked.
+- `view.close{view}`, `view.focus{view}` (its pane's active tab; never the keyboard).
+- `file.open{path, line?, pane?}`: `view.open` of the file, then `FileView::go_to_line`.
+- `file.rendered{view, rendered}`: a Markdown file's or note's rendered or source form.
+- `pane.split{pane, edge}` (its active tab to a new pane on `edge`; a pane of one tab:
+  `invalid`), `pane.close{pane}` (its tabs close; a terminal's shell goes on, R6.12),
+  `pane.collapse{pane, collapsed}`, `pane.maximize{pane, maximized}`,
+  `pane.resize{split, index, fraction}`, `pane.move_tab{view, pane, at?, edge?}`.
+- `window.detach{view}` (asks, see above), `window.attach{window, pane}`,
+  `window.close{window}` (a detached one; the main window: `invalid`, quitting is P4).
+- `layout.switch{id}` (asks when it would take the keys or open windows).
+- `sidebar.show{activity}` (the sidebar and that activity; another activity while the
+  user types in the filter: `busy`).
+- `settings.set{scale?, theme?}` (a known theme; scale within the UI's bounds).
+- `workspace.activate{}`: the caller's own workspace; already shown: nothing; else asks.
+  `workspace.rescan{}`.
+- `app.open_url{app, url}`: one of the app's own URLs, by its name or index, opened in
+  the browser as the app view's link does; never a free URL.
+- `ui.notify{text, kind}`: a toast labelled with the caller, `info` or `warn` (never
+  `err`, which looks like devdeck's own), one line, 200 characters at most.
+- `ui.toasts{}` (observe): the toast history (id, kind, text untrusted), oldest first.
+- `ui.selection{view}` (read): the selected text of a view; a terminal's the caller's own
+  only (`with_terminal`'s rule); untrusted, bounded like `file.read`.
+
+### 8b, run and organize
+
+- `terminal.open{dir?, pane?, edge?}`: a shell started as the caller (`Runner::open_shell`
+  with `Starter::Caller`) in `dir` (one of the workspace's apps' folders or folders; the
+  caller's own terminal's folder when left out), the next number; a tab only when a
+  place is given (else the Terminals list shows it). With a command it is `type` (P4).
+- Own terminals: the caller's shell, or one it started (`Run.starter`); waits, output,
+  search, screen and selection follow (review 15).
+- `terminal.stop{n}`: one it started, with no program in the foreground; the user's,
+  another caller's, or one running a program: `approval_required`.
+- `env.set_current{env}`: `Sidebar::set_env`; a protected env: `approval_required`.
+- `note.create{app?, name}` (its id and revision), `note.write{id, text, base_revision}`,
+  `note.append{id, text, base_revision?}`, `note.rename{id, name}`: a note the user typed
+  in within 10 s: `approval_required` (D3); `base_revision` not the note's: `conflict`;
+  64 KB of text at most per call.
+- `layout.save_as{name}`, `layout.rename{id, name}`, `layout.keep{view, keep}`.
+- `sidebar.pin{list, key, pinned}`, `group.create{list, parent?, name}`,
+  `group.rename{list, path, name}`, `group.move{list, path, parent?}`,
+  `group.put{list, node, group?}`, `group.delete{list, path}` (its contents move up).
+
+### Tests
+
+A module per area of `tests/app/` (`api_present.rs`, `api_organize.rs`), on the demo:
+every method's happy path; the keys guard answering `approval_required` (a view opened in
+the pane holding the keys, a layout switch, `window.detach`, `workspace.activate` while
+another workspace shows); a file outside the scope or secret-named refused by
+`view.open` and `file.open`; `app.open_url` with an unknown name; `ui.notify` cut and
+rate-limited; the rate limit; `terminal.open` without a place (no tab, listed, started as
+the caller), then its output readable as the caller's own; `terminal.stop` of the user's
+terminal asks; a protected env asks; notes: conflict, the user typing asks, append; pins
+and groups by list, twice the same; another workspace's anything `not_found`.
+
+States to check visually (8a): a view opened beside the pane holding the keys; a toast
+from `ui.notify`, long text truncated (R4.4); the Terminals list with a terminal opened
+by the API and no tab.
+
+Out of scope: the card and what it approves, `type` (commands, input, paste), git
+writes, deletes, quitting, cluster (P4–P6); `user.ask` (dropped); `devdeck_present` and
+`devdeck_organize` MCP tools (step 9).
+
+Plan review (subagent), assessed:
+1. `layout.keep`: "keep in every layout" was removed (DESIGN, 2026-11-09) — taken:
+   dropped (the inventory line above is out of date on it).
+2. Bare pane ids repeat across layouts; terminals need their uid — taken: panes,
+   windows and splits are named with the layout id (`{layout, pane}`), `conflict` when
+   it isn't the live layout; `terminal.stop{n, uid}`.
+3. The matrix highlight — deferred (later, with the logs' view state, D8).
+4. `toggle_rendered` takes the window and moves focus — taken: a `set_rendered(bool)`
+   without focus for the file and note views.
+5. `layout.switch` can't tell per target whether the keys move — taken: it asks whenever
+   a pane holds the keys or either layout has a detached window; the book changes only
+   once allowed.
+6. `Deck::open_terminal` isn't quiet and starts as the user — taken: a quiet
+   `open_terminal_as(n, dir, place, starter, keys)`, the runner told first.
+7. A terminal without a tab is forgotten once not running — taken: `terminal.open`
+   always gives it a tab, in the background unless a place is asked.
+8. `app.open_url`: no app-view link exists, discovered URLs come from files an agent
+   can edit, and a browser takes the keyboard — taken: moved to P4 (it asks there).
+9. `view.open` of a file must check its scope off the UI thread; missing targets make
+   junk tabs — taken: an answer that comes later, the canonical path in the view; apps
+   (not hidden), notes and ports must exist.
+10. `ui.selection`: only terminals have one; scope and secrets — deferred to P5 with
+    selection in the file and note views.
+11. `sidebar.show`'s "user types in the filter" needs a window check that doesn't exist
+    — deferred (later).
+12. Model functions that toast instead of returning errors — taken: the handlers check
+    first (note exists, name not empty, theme known, group exists).
+13. Pane states from toggles — taken: a state already as asked changes nothing.
+14. `workspace.activate` would always ask until P4 — taken: moved to P4.
+15. No cap on terminals — taken: 4 live terminals opened by one caller.
+16. A shell under a protected current env — taken: `terminal.open` asks then.
+17. Note growth — taken: a write or append past `MAX_NOTE` refused; names 100
+    characters; 500 notes a workspace; `app` must be one of the workspace's (or none).
+18. `ui.toasts` is content — taken: class read.
+19. `ui.notify` and the per-caller notice — taken: its own toast, control and
+    right-to-left characters removed.
+20. Closing the tab of a terminal not running forgets it (with its output) — taken:
+    `view.close` / `pane.close` of such a tab asks.
+21. Caps — taken: 200 pins a list, 100 groups a list, 50 layouts, a rescan per 5 s.
+Moved with it: `window.detach` (it always asked) goes to P4 too.
+
+## Step 8a, as built (2026-11-10)
+
+No new OS code (R11.6). API level 4, class present (`ui.toasts`: read).
+
+- `api/present.rs`: `view.open` (an app, a run, a file, a note, a port of the workspace;
+  hidden apps and missing targets refused; in the background unless `activate`),
+  `view.close`, `view.focus`, `file.open{path, line?}` (shows the file; `file.read`'s
+  scope and secret rules, checked in the background; the real path in the view),
+  `file.rendered` (`set_rendered` on the file and note views, no focus; refused while the
+  user types in the view), `pane.split/close/collapse/maximize/resize/move_tab`,
+  `window.attach/close` (never the main window), `layout.switch`, `settings.set`,
+  `workspace.rescan` (once per 5 s a workspace), `ui.notify` (one clean line of 200
+  characters at most, labelled, one per 2 s a caller, its own toast), `ui.toasts`.
+- Every layout change through `Deck::apply_quietly`; its `Quiet::Keys` answers
+  `approval_required`, as does a layout switch while a pane holds the keys or a detached
+  window is involved, and closing the tab of a terminal that isn't running.
+- Panes, windows and splits named with the live layout's id (`conflict` otherwise);
+  `ui.get` gives split ids.
+- Rate limit in the dispatcher: 30 calls of the present, organize and run classes per
+  10 s a caller, then `rate_limited`.
+- Found in the suite: the transport's refusal was audited after the client heard it (a
+  test raced); now before.
+
+Diff review: the subagent was refused by Claude Code's permission classifier; reviewed by
+the lead, the user's choice (2026-11-10). Found: `view.open` of a file always showed it
+(ignoring `activate`) — fixed.

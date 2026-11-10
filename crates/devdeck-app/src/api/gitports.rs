@@ -202,7 +202,7 @@ fn declared(s: &Services) -> BTreeSet<u16> {
 
 /// The workspace's ports now: declared or listened on by its runs, and who holds each
 /// (another program by its name only).
-fn ports_now(s: &Services, app: &App) -> Vec<PortEntry> {
+pub(super) fn ports_now(s: &Services, app: &App) -> Vec<PortEntry> {
     let infos = s.ports(app);
     let mut wanted = declared(s);
     wanted.extend(infos.iter().filter(|i| i.run.as_ref().is_some_and(|k| !k.is_terminal())).map(|i| i.port));
