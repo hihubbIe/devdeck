@@ -6,7 +6,7 @@
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, LOAD_DELAY, LogFrom, LogLine, LogRefusal, LogStream, LogUpdate, PodScope, PodUpdate};
 use devdeck_app::shell::Shell;
-use devdeck_app::views::logs_feed::{CATCH_UP, DRAIN_EVERY, ENDED_RETRY, Entry, FIRST_INDEX, FIRST_LINES, Kind, LogsBuffer, MAX_LINES, MERGE_WAIT, cut, match_ranges};
+use devdeck_app::views::logs_feed::{BoundedLines, CATCH_UP, DRAIN_EVERY, ENDED_RETRY, Entry, FIRST_INDEX, FIRST_LINES, Kind, LogsBuffer, MAX_LINES, MERGE_WAIT, cut, match_ranges};
 use devdeck_app::views::logs_view::{MinLevel, ServiceLogsView};
 use devdeck_core::cluster::{ContainerStatus, Pod, PodPhase};
 use devdeck_core::runs::Level;
@@ -38,6 +38,8 @@ struct Read {
 /// with its sender. `refuse` answers every stream with a refusal.
 #[derive(Default)]
 struct Scripted {
+    /// The tail each read-back asked.
+    tails: RefCell<Vec<Option<u32>>>,
     asked: RefCell<Vec<Asked>>,
     reads: RefCell<Vec<Read>>,
     refuse: RefCell<Option<LogRefusal>>,
@@ -64,8 +66,9 @@ impl ClusterDriver for Scripted {
         self.asked.borrow_mut().push(Asked { pod: pod.into(), container: container.into(), from, previous, tx });
         Ok(LogStream { updates, keep: Box::new(()) })
     }
-    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+    fn read_logs(&self, _env: &str, pod: &str, _container: &str, tail: Option<u32>, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
         let (tx, updates) = async_channel::unbounded();
+        self.tails.borrow_mut().push(tail);
         self.reads.borrow_mut().push(Read { pod: pod.into(), tx });
         Ok(LogStream { updates, keep: Box::new(()) })
     }
@@ -564,6 +567,23 @@ fn the_filter_shows_matching_lines_and_clearing_shows_all(cx: &mut TestAppContex
     assert_eq!(texts(&v, cx).len(), 3, "cleared: every line");
 }
 
+#[test]
+fn a_read_back_never_holds_more_than_the_room() {
+    let line = |s: i64, t: &str| LogLine { at: Some(s), text: t.into(), level: Level::Plain };
+    let mut b = BoundedLines::new(100, (10, 1 << 20));
+    // Far more than the room before the oldest line shown.
+    assert!(!b.extend((1..100).map(|s| line(s, "older")).collect()));
+    assert!(!b.extend(vec![line(100, "oldest shown"), line(100, "oldest shown")]));
+    assert!(b.extend(vec![line(101, "shown already"), line(102, "shown already")]), "past the oldest line's group: the read can stop");
+    assert!(b.trimmed, "older lines were left out");
+    let kept = b.into_vec();
+    assert_eq!(kept.len(), 12, "the room's 10 newest older lines and the whole group");
+    assert_eq!(kept[0].at, Some(90));
+    let mut bytes = BoundedLines::new(100, (1000, 40));
+    bytes.extend((1..50).map(|s| line(s, "0123456789")).collect());
+    assert_eq!(bytes.into_vec().len(), 4, "the byte room too");
+}
+
 fn entry(text: &str, level: Level) -> Entry {
     Entry { at: None, pod: "p".into(), text: text.into(), level, kind: Kind::Line }
 }
@@ -720,6 +740,8 @@ fn earlier_lines_are_cut_at_the_oldest_shown_and_merged_by_time(cx: &mut TestApp
     // A restart: its run is new, it can be read again.
     set_pods(&t, cx, vec![pod("aaaaa", "running", 1), pod("bbbbb", "running", 0)]);
     assert_eq!(top_row(&v, cx), "load earlier lines");
+    // Every read asked a bounded tail: never "everything", which can be far bigger than the buffer.
+    assert!(t.driver.tails.borrow().iter().all(|t| t.is_some_and(|n| n as usize <= MAX_LINES + 2000)), "{:?}", t.driver.tails.borrow());
 }
 
 #[gpui::test]

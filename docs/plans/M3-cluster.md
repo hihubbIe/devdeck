@@ -1864,3 +1864,10 @@ and clippy, snapshots `90-logs-earlier-loading`, `90-logs-earlier-start`).
 - Limits: pods with no line shown aren't read; whether the kubelet serves rotated files is
   unverified ("the logs the cluster serves"); the click on the top row shares the wheel's
   code but has no test of its own.
+- Security review after the commit (automated): a read-back held a pod's whole log in
+  memory before the cap applied. **Fixed**: the read asks a bounded tail (the pod's lines
+  shown, the buffer's room and a margin of 1 000), and the lines are collected within the
+  room (the oldest dropped first), the read stopping at the first line past the oldest
+  line shown; a read cut short for room says "full". Tests: the collector never holds more
+  than the room (lines and bytes), every read asks a bounded tail, the mock API's
+  `tailLines`.

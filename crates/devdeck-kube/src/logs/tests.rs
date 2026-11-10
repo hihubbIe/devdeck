@@ -343,7 +343,7 @@ async fn dropping_the_handle_ends_the_request() {
 #[tokio::test(start_paused = true)]
 async fn read_logs_asks_everything_once_and_ends() {
     let body = [raw(1, 0, "oldest"), raw(1, 0, "oldest"), "no timestamp\n".to_string(), raw(2, 0, "newest")].concat();
-    let l = Logs::asking(vec![Reply::Whole(body.into())], Ask::Everything);
+    let l = Logs::asking(vec![Reply::Whole(body.into())], Ask::Everything { tail: None });
     let expected = vec![line(1, 0, "oldest"), line(1, 0, "oldest"), LogLine { at: None, text: "no timestamp".into(), level: Level::Plain }, line(2, 0, "newest")];
     assert_eq!(l.next().await, LogUpdate::Lines(expected), "the same lines and batches as a stream");
     assert_eq!(l.next().await, LogUpdate::Ended);
@@ -356,8 +356,16 @@ async fn read_logs_asks_everything_once_and_ends() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn read_logs_with_a_tail_asks_only_that_many_lines() {
+    let l = Logs::asking(vec![Reply::Whole(raw(1, 0, "x").into())], Ask::Everything { tail: Some(5000) });
+    assert_eq!(l.next().await, LogUpdate::Lines(vec![line(1, 0, "x")]));
+    let query = &l.queries()[0];
+    assert!(query.contains("tailLines=5000") && !query.contains("follow"), "the server sends at most that much: {query}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn read_logs_ends_with_the_reason_of_a_transport_failure() {
-    let l = Logs::asking(vec![Reply::Open], Ask::Everything);
+    let l = Logs::asking(vec![Reply::Open], Ask::Everything { tail: None });
     let mut body = l.body().await;
     send(&mut body, raw(1, 0, "a")).await;
     assert_eq!(l.next().await, LogUpdate::Lines(vec![line(1, 0, "a")]));
@@ -370,11 +378,11 @@ async fn read_logs_ends_with_the_reason_of_a_transport_failure() {
 
 #[tokio::test(start_paused = true)]
 async fn read_logs_ends_on_a_server_error_and_says_a_refusal() {
-    let l = Logs::asking(vec![Reply::Status(503, "the server is currently unable to handle the request")], Ask::Everything);
+    let l = Logs::asking(vec![Reply::Status(503, "the server is currently unable to handle the request")], Ask::Everything { tail: None });
     assert_eq!(l.next().await, LogUpdate::Refused(LogRefusal::Other("km011gcp (dev35): the server is currently unable to handle the request (503)".into())));
     l.closed().await;
     let forbidden = "pods \"api-5d8f7c9b6-x2k4p\" is forbidden: User \"x\" cannot get resource \"pods/log\"";
-    let l = Logs::asking(vec![Reply::Status(403, forbidden)], Ask::Everything);
+    let l = Logs::asking(vec![Reply::Status(403, forbidden)], Ask::Everything { tail: None });
     assert_eq!(l.next().await, LogUpdate::Refused(LogRefusal::Forbidden("your account can't read logs in dev35".into())));
     l.closed().await;
 }

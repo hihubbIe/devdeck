@@ -184,7 +184,7 @@ impl ClusterDriver for FakeCluster {
 
     /// [`FAKE_EARLIER`] made-up lines older than a stream's first, then that stream's
     /// first lines (what's shown lines up with them), then the end.
-    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _tail: Option<u32>, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
         let (tx, updates) = async_channel::unbounded();
         let service = pod.rsplitn(3, '-').nth(2).unwrap_or(pod).to_string();
         let seed = demo::hash(pod);

@@ -102,8 +102,9 @@ pub enum LogRefusal {
 enum Ask {
     /// Followed from `from`, or the run before the last restart read once (`previous`).
     Stream { from: LogFrom, previous: bool },
-    /// Everything the node serves of the current run, read once: no follow, no tail.
-    Everything,
+    /// The current run read once, no follow: its last `tail` lines, or everything the node
+    /// serves (`None`).
+    Everything { tail: Option<u32> },
 }
 
 /// Streams `container`'s logs of `pod` in `target`'s namespace: followed unless `previous`
@@ -116,8 +117,9 @@ pub fn logs(target: &Target, pod: &str, container: &str, from: LogFrom, previous
 /// Reads everything the node serves of `container`'s current run in `pod` once, with the
 /// same lines, batches and refusals as [`logs`], then [`LogUpdate::Ended`]. A transport
 /// failure ends it with [`LogRefusal::Other`] and its reason.
-pub fn read_logs(target: &Target, pod: &str, container: &str) -> (async_channel::Receiver<LogUpdate>, WatchHandle) {
-    start(target, pod, container, Ask::Everything)
+/// `tail` bounds what the server sends (its last lines); `None` asks everything.
+pub fn read_logs(target: &Target, pod: &str, container: &str, tail: Option<u32>) -> (async_channel::Receiver<LogUpdate>, WatchHandle) {
+    start(target, pod, container, Ask::Everything { tail })
 }
 
 fn start(target: &Target, pod: &str, container: &str, ask: Ask) -> (async_channel::Receiver<LogUpdate>, WatchHandle) {
@@ -130,7 +132,7 @@ fn start(target: &Target, pod: &str, container: &str, ask: Ask) -> (async_channe
         let (client, _user) = loop {
             match client(&target).await {
                 Ok(client) => break client,
-                Err(e) if ask == Ask::Everything => return out.send(LogUpdate::Refused(LogRefusal::Other(describe(&e, &target, DOING)))),
+                Err(e) if matches!(ask, Ask::Everything { .. }) => return out.send(LogUpdate::Refused(LogRefusal::Other(describe(&e, &target, DOING)))),
                 Err(e) => {
                     out.problem(describe(&e, &target, DOING));
                     backoff.wait().await;
@@ -165,9 +167,9 @@ enum End {
 /// it is refused.
 async fn stream(client: Client, target: &Target, pod: &str, container: &str, ask: Ask, mut out: Out) {
     let api: Api<core::Pod> = Api::namespaced(client, &target.namespace);
-    let (from, previous, once) = match ask {
-        Ask::Stream { from, previous } => (Some(from), previous, false),
-        Ask::Everything => (None, false, true),
+    let (from, previous, once, once_tail) = match ask {
+        Ask::Stream { from, previous } => (Some(from), previous, false, None),
+        Ask::Everything { tail } => (None, false, true, tail),
     };
     let (tail, cap, mut seen) = match from {
         Some(LogFrom::Tail(n)) => (n, RESUME_CAP.max(n), None),
@@ -181,7 +183,7 @@ async fn stream(client: Client, target: &Target, pod: &str, container: &str, ask
             follow: !previous && !once,
             previous,
             timestamps: true,
-            tail_lines: (!once).then(|| i64::from(if seen.is_some() { cap } else { tail })),
+            tail_lines: if once { once_tail.map(i64::from) } else { Some(i64::from(if seen.is_some() { cap } else { tail })) },
             since_time: seen.and_then(|s| Timestamp::from_second(s.at.div_euclid(NANOS)).ok()),
             ..LogParams::default()
         };

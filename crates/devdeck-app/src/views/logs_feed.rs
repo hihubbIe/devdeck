@@ -223,6 +223,11 @@ impl LogsBuffer {
         }
     }
 
+    /// What can still be taken in lines and bytes before the caps.
+    pub fn room(&self) -> (usize, usize) {
+        (self.max_lines.saturating_sub(self.entries.len()), self.max_bytes.saturating_sub(self.bytes))
+    }
+
     /// Puts `lines` (oldest first) above the first line, as many as fit within the caps:
     /// the newest of them, nothing pushed out.
     pub fn prepend(&mut self, lines: Vec<Entry>) -> Prepended {
@@ -466,7 +471,8 @@ pub enum Back {
 }
 
 /// What one pod's read back brought: its lines, or why not.
-pub type ReadResult = (SharedString, Result<Vec<LogLine>, String>);
+/// A pod's read-back: its lines, and whether older ones were left out for room.
+pub type ReadResult = (SharedString, Result<(Vec<LogLine>, bool), String>);
 
 /// Lines held while the first lines of streams started together arrive.
 struct Merge {
@@ -1038,29 +1044,41 @@ impl LogsFeed {
             return false;
         }
         let (env, service) = (self.env.clone(), self.name.clone());
-        let mut streams: Vec<(SharedString, Result<LogStream, String>)> = Vec::new();
-        for (name, _, _) in &pods {
+        // What a read may bring: the buffer's room, never more (a pod's logs can be far
+        // bigger than the buffer).
+        let room = self.buffer.room();
+        let mut streams: Vec<PodRead> = Vec::new();
+        for (name, _, oldest) in &pods {
             let container = cluster.read(cx).pods(&env, &service).iter().find(|p| p.name == name.as_ref()).and_then(|p| self.container_of(p));
+            // The server sends at most its lines shown since the oldest, the room, and a margin.
+            let shown = self.buffer.entries().filter(|e| e.pod == *name && e.kind == Kind::Line).count();
+            let tail = u32::try_from(shown + room.0 + READ_MARGIN).unwrap_or(u32::MAX);
             let stream = match container {
-                Some(c) => cluster.update(cx, |cl, cx| cl.read_logs(&env, name, &c, cx)),
+                Some(c) => cluster.update(cx, |cl, cx| cl.read_logs(&env, name, &c, Some(tail), cx)),
                 None => Err(format!("pod {} has no such container", short(name))),
             };
-            streams.push((name.clone(), stream));
+            streams.push((name.clone(), *oldest, stream));
         }
         self.next_id += 1;
         let id = self.next_id;
         let task = cx.spawn(async move |this, cx| {
             let mut results: Vec<ReadResult> = Vec::new();
-            for (pod, stream) in streams {
+            for (pod, oldest, stream) in streams {
                 let result = match stream {
                     Err(why) => Err(why),
                     Ok(LogStream { updates, keep }) => {
                         let _keep = keep;
-                        let mut lines = Vec::new();
+                        let mut lines = BoundedLines::new(oldest.0, room);
                         let mut end = Err("the read stopped".to_string());
                         while let Ok(update) = updates.recv().await {
                             match update {
-                                LogUpdate::Lines(l) => lines.extend(l),
+                                LogUpdate::Lines(l) => {
+                                    // Past the oldest line shown: the rest is shown already.
+                                    if lines.extend(l) {
+                                        end = Ok(());
+                                        break;
+                                    }
+                                }
                                 LogUpdate::Problem(_) => {}
                                 LogUpdate::Ended => {
                                     end = Ok(());
@@ -1076,7 +1094,10 @@ impl LogsFeed {
                                 }
                             }
                         }
-                        end.map(|()| lines)
+                        end.map(|()| {
+                            let trimmed = lines.trimmed;
+                            (lines.into_vec(), trimmed)
+                        })
                     }
                 };
                 results.push((pod, result));
@@ -1102,6 +1123,7 @@ impl LogsFeed {
         let mut kept = Vec::new();
         let mut unaligned = Vec::new();
         let mut failed = None;
+        let mut trimmed = false;
         for (pod, result) in results {
             let Some(&(_, restarts, oldest)) = reading.pods.iter().find(|(p, _, _)| *p == pod) else { continue };
             match result {
@@ -1109,10 +1131,17 @@ impl LogsFeed {
                     failed.get_or_insert(why);
                     continue;
                 }
-                Ok(lines) => match cut(&lines, oldest) {
-                    Some(n) => kept.push(lines.into_iter().take(n).map(|l| Entry::line(&pod, l)).collect::<Vec<_>>()),
-                    None => unaligned.push(short(&pod).to_string()),
-                },
+                Ok((lines, cut_short)) => {
+                    trimmed |= cut_short;
+                    match cut(&lines, oldest) {
+                        Some(n) => kept.push(lines.into_iter().take(n).map(|l| Entry::line(&pod, l)).collect::<Vec<_>>()),
+                        None => unaligned.push(short(&pod).to_string()),
+                    }
+                    // Older lines left out for room: not its start.
+                    if cut_short {
+                        continue;
+                    }
+                }
             }
             if let Some(f) = self.pods.get_mut(&pod) {
                 f.start = Some((restarts, self.generation));
@@ -1121,7 +1150,7 @@ impl LogsFeed {
         let added = self.buffer.prepend(merge_by_time(kept));
         self.last = match failed {
             Some(why) => Some(BackEnd::Failed(why)),
-            None if added.full => Some(BackEnd::Full),
+            None if added.full || trimmed => Some(BackEnd::Full),
             None if !unaligned.is_empty() => Some(BackEnd::Unaligned(unaligned)),
             None => None,
         };
@@ -1256,4 +1285,57 @@ pub fn match_ranges(text: &str, query: &[char]) -> Vec<std::ops::Range<usize>> {
         }
     }
     out
+}
+
+/// A pod's read-back as it starts: its name, its oldest line shown, the stream.
+type PodRead = (SharedString, (i64, u32), Result<LogStream, String>);
+
+/// Lines a pod's read-back may add beyond what the buffer can take back (its own lines
+/// shown and the room): a margin for lines written while the read starts.
+const READ_MARGIN: usize = 1000;
+
+/// A read-back's lines as they come, never more than the buffer's room: the oldest go first
+/// while the read is before the oldest line shown; it ends at the first line after that
+/// line's time group (the rest is shown already).
+pub struct BoundedLines {
+    oldest: i64,
+    room: (usize, usize),
+    lines: VecDeque<LogLine>,
+    bytes: usize,
+    /// The group at the oldest time has started.
+    at_group: bool,
+    /// Older lines were left out for room.
+    pub trimmed: bool,
+}
+
+impl BoundedLines {
+    pub fn new(oldest: i64, room: (usize, usize)) -> Self {
+        Self { oldest, room: (room.0.max(1), room.1.max(1)), lines: VecDeque::new(), bytes: 0, at_group: false, trimmed: false }
+    }
+
+    /// Adds a batch; whether the read went past the oldest line's group (nothing more is
+    /// needed).
+    pub fn extend(&mut self, batch: Vec<LogLine>) -> bool {
+        for l in batch {
+            match l.at {
+                Some(t) if t > self.oldest && self.at_group => return true,
+                Some(t) if t == self.oldest => self.at_group = true,
+                _ => {}
+            }
+            // The group itself is kept whole (cut counts it); before it, only the room.
+            self.bytes += l.text.len();
+            self.lines.push_back(l);
+            while !self.at_group && (self.lines.len() > self.room.0 || self.bytes > self.room.1) {
+                if let Some(gone) = self.lines.pop_front() {
+                    self.bytes -= gone.text.len();
+                    self.trimmed = true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn into_vec(self) -> Vec<LogLine> {
+        self.lines.into()
+    }
 }

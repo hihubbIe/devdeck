@@ -132,9 +132,9 @@ impl ClusterDriver for KubeCluster {
         Ok(LogStream { updates, keep: Box::new(handle) })
     }
 
-    fn read_logs(&self, env: &str, pod: &str, container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+    fn read_logs(&self, env: &str, pod: &str, container: &str, tail: Option<u32>, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
         let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()))?;
-        let (updates, handle) = devdeck_kube::read_logs(&target, pod, container);
+        let (updates, handle) = devdeck_kube::read_logs(&target, pod, container, tail);
         Ok(LogStream { updates, keep: Box::new(handle) })
     }
 

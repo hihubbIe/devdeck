@@ -79,7 +79,7 @@ pub trait ClusterDriver {
     }
     /// Reads everything the node serves of `container`'s current run in `pod` once, then
     /// [`LogUpdate::Ended`] (or why not). Dropping the stream stops it.
-    fn read_logs(&self, _env: &str, _pod: &str, _container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+    fn read_logs(&self, _env: &str, _pod: &str, _container: &str, _tail: Option<u32>, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
         Err("this cluster can't read logs back".into())
     }
 }
@@ -336,9 +336,9 @@ impl Cluster {
     }
 
     /// Reads a container's logs back once (see [`ClusterDriver::read_logs`]).
-    pub fn read_logs(&mut self, env: &str, pod: &str, container: &str, cx: &mut Context<Self>) -> Result<LogStream, String> {
+    pub fn read_logs(&mut self, env: &str, pod: &str, container: &str, tail: Option<u32>, cx: &mut Context<Self>) -> Result<LogStream, String> {
         let driver = self.driver.clone();
-        driver.read_logs(env, pod, container, cx)
+        driver.read_logs(env, pod, container, tail, cx)
     }
 
     /// Changes when `env`'s log streams must start again: another driver, its target
