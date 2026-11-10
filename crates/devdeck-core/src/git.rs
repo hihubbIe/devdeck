@@ -720,7 +720,6 @@ fn limit(d: Duration) -> Duration {
 /// looking for a repository in `ceiling` or above. Err only when it can't start or took
 /// too long.
 fn exec(dir: &Path, vars: &[(String, String)], ceiling: Option<&Path>, args: &[&str], mode: Mode) -> Result<Output, String> {
-    use std::os::unix::process::CommandExt;
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
     if !vars.is_empty() {
@@ -737,10 +736,7 @@ fn exec(dir: &Path, vars: &[(String, String)], ceiling: Option<&Path>, args: &[&
         cmd.env("GIT_OPTIONAL_LOCKS", "0");
     }
     cmd.stdin(Stdio::null());
-    // SAFETY: `setsid` is async-signal-safe and touches no memory of the parent.
-    unsafe {
-        cmd.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
-    }
+    devdeck_sys::child::own_session(&mut cmd);
     if let Mode::Tree = mode {
         return to_files(cmd);
     }
@@ -825,15 +821,15 @@ fn drain(mut pipe: impl Read + Send + 'static, done: mpsc::Sender<()>) -> Arc<Mu
 
 /// SIGTERM to git's process group, SIGKILL after [`GRACE`].
 fn stop(child: &mut Child) {
-    use rustix::process::{Pid, Signal, kill_process_group};
-    let group = Pid::from_child(child);
-    let _ = kill_process_group(group, Signal::TERM);
+    use devdeck_sys::child::{Signal, signal_group};
+    let group = child.id();
+    signal_group(group, Signal::Term);
     let end = Instant::now() + GRACE;
     while Instant::now() < end && matches!(child.try_wait(), Ok(None)) {
         std::thread::sleep(Duration::from_millis(20));
     }
     // What git started (ssh) may outlive it.
-    let _ = kill_process_group(group, Signal::KILL);
+    signal_group(group, Signal::Kill);
     let _ = child.wait();
 }
 

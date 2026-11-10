@@ -1018,3 +1018,82 @@ stopped, a terminal opened and closed, before the commit.
 ### Out of scope
 
 The macOS event loop and terminal (2c); the build guide's draft for round 0 (next).
+
+### Step 1d plan review (subagent), assessed
+
+Where a point is taken, it overrides the plan above.
+
+1. `kill_all` filters pids (never 0, 1, devdeck or its group) before walking their trees.
+   Taken: `child::may_signal(pid)` is public, `kill_all` keeps filtering first, and a
+   unit test covers the predicate (never by killing pid 1).
+2. `scope.rs` has no tests of its own. Taken: conformance tests in `scope/mod.rs`, skipped
+   without a systemd user manager (start `sleep` in a scope, `pids` sees it, `signal`,
+   `kill` empties it, `named` finds it again); PLATFORMS L12 corrected.
+3. Where unsupported, `Scope` must still exist (`GroupLog` builds it from the log on every
+   OS). Taken: a plain struct with `unit`, `named`, `next`, `command`, `pids` (none),
+   `is_empty` (true), `signal` and `kill` doing nothing.
+4. `wait` must be told not to watch the terminal or the child. Taken: `wait(terminal:
+   Option<&Terminal>, out: bool, child: bool, timeout)`; `Ready` has `wake`, `child`,
+   `readable` (in, hang-up, error) and `writable`; `Interrupted` means try again.
+5. The waker's owner wasn't said. Taken: `Watch::waker()` gives a `Waker` (`Send + Sync`,
+   shared), which never blocks and ignores errors once the watch is gone. The wake is
+   now made after the spawn: a failure there takes the kill-and-reap path.
+6. `terminate`'s two messages. Taken: `may_signal` for "won't stop pid N", and
+   `signal(pid, Signal) -> io::Result<()>` for "couldn't stop pid N: …".
+7. Imports left unused (`CommandExt`). Taken.
+8. Smaller gaps. Taken: `child.id()` for the group; `own_session` and `terminal_session`
+   allocate nothing before exec; the process's side of the terminal is an `OwnedFd`;
+   `group_exists` and the group kills of `git.rs` and `environment.rs` gain the
+   `may_signal` guard (safer, the same in practice); `Watch::new` stays where the pidfd
+   was opened, so nothing reaps before it.
+9. The scope test fix works. Taken: the path quoted (`"$0"`).
+10. Uninhabited `Terminal` and `Watch` compile; no sys function returns them bare. Taken.
+    `process.rs`' tests start real processes: `#[cfg(target_os = "linux")]` until 2c.
+    The app's tests that start real runs fail on a Mac until 2c: listed in round 0's
+    guide as expected.
+11. No `Capability` for running. Taken: `Capability::Run` (`child::SUPPORT`); showing run
+    actions disabled with the reason comes with step 4.
+12. Docs missed. Taken: `DESIGN.md:186-201`, PLATFORMS L2 (`main.rs:42`), L12, §4 "Keeping
+    it there", `scan.rs`' header.
+13. The Mac check with `devdeck-core` should build from Linux. Taken: run before the
+    commit.
+14. The manifest check must read dependency keys, not substrings. Taken: the
+    dependency sections of `crates/*/Cargo.toml` are read line by line, their keys
+    compared; the root manifest's `[workspace.dependencies]` isn't checked.
+15. Test holes. Taken: several wakes then one drain don't leave `wait` woken; with
+    `child=false` an exited child doesn't wake `wait`; a closed other side reads as
+    readable then an error; `terminal_session` makes the terminal the controlling one
+    (its foreground group is the child); `may_signal` refuses devdeck's own group.
+16. For 2c: `Watch` may want the terminal at creation for kqueue; whether `EVFILT_PROC`
+    can be added for an exited, unreaped child on XNU is unverified. Noted for 2c.
+
+## Step 1d, as built (2026-11-10)
+
+- `devdeck-sys/src/child/`: `Signal`, `ExitStatus`, `may_signal`, `signal`,
+  `signal_group`, `group_exists`, `own_session`, `terminal_session` (`unix.rs`, both
+  OSes); `Terminal`, `Watch`, `Waker`, `Ready` (`linux.rs`: openpt, eventfd, pidfd,
+  poll, waitid; `unsupported.rs` for macOS until 2c, uninhabited types).
+  `Capability::Run`.
+- `devdeck-sys/src/scope/`: `scope.rs` moved whole to `linux.rs`, signals as
+  `child::Signal`; `unsupported.rs` a plain `Scope` holding nothing; `BORROWED`; its
+  first tests (a process in a scope found, signalled, killed with it), which ran here.
+- `devdeck-core`: `process.rs` runs on `child`, `scope` and `procs`, its tests Linux
+  only until 2c (the scope test takes `systemd-run`'s path from `scope::systemd_run`);
+  `Process::spawn` refuses with `child::SUPPORT`'s reason first; the wake is made with
+  the watch, after the spawn (a failure takes the kill-and-reap path: "can't watch it:
+  …"). `git.rs` and `environment.rs` use `own_session` and `signal_group`. `scope.rs`
+  deleted; `Cargo.toml` dropped `rustix`.
+- The scan's list is empty; a second test checks that only `devdeck-sys`' manifest names
+  `rustix`, `libc`, `nix` or `signal-hook`.
+- Docs: `PLATFORMS.md` L1, L2, U2, U3, L12, §4 (built; the guard done; the Mac check
+  with `devdeck-core`); `DESIGN.md` (processes); `process.rs`' header.
+- Checked: the whole suite (837) and clippy on Linux; the Mac check with
+  `devdeck-core`, clean: core compiles for macOS. One start of the real app (temporary
+  folders): it started, a SIGTERM quit it and its socket went. Runs and terminals by hand
+  weren't tried (no workspace in the temporary config): the app's tests start real runs
+  and terminals (`pty_driver`, `terminals`), and passed.
+- The diff review by a subagent was refused by the session's permission check; the lead
+  reviewed the diff against the old code instead (`Pump`'s loop case by case, `spawn`'s
+  order, the guards in `Tree`, `kill_all` and `terminate` with their texts, `git.rs` and
+  `environment.rs`, `scope` unchanged but its signal type): no behaviour change found on
+  Linux; one test variable renamed.

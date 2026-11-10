@@ -1,12 +1,8 @@
-//! A run's processes kept together by the kernel (R8.2): each run starts in a systemd
-//! scope of its own (`systemd-run --user --scope`), a cgroup its descendants stay in
-//! whatever they do (`setsid`, a daemon's double fork, a cleared environment). A stop
-//! signals what's in it and empties it (`cgroup.kill`); the scopes a devdeck left are
-//! found again by name. Only where a systemd user manager and cgroup v2 with
-//! `cgroup.kill` (Linux 5.14) are there ([`systemd_run`]); elsewhere a run follows its
-//! process tree, as before.
+//! systemd scopes: `systemd-run --user --scope`, found again under the user manager's
+//! cgroup.
 
-use rustix::process::{Pid, PidfdFlags, Signal};
+use crate::child::Signal;
+use rustix::process::{Pid, PidfdFlags};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -135,7 +131,7 @@ impl Scope {
             let Ok(fd) = rustix::process::pidfd_open(p, PidfdFlags::empty()) else { continue };
             let inside = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(|c| c.lines().any(|l| l.trim_end().ends_with(&suffix)));
             if inside {
-                let _ = rustix::process::pidfd_send_signal(&fd, signal);
+                let _ = rustix::process::pidfd_send_signal(&fd, crate::child::unix::to_rustix(signal));
             }
         }
     }

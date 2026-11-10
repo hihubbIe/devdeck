@@ -5,6 +5,7 @@
 //! A function that can't work returns [`SysError::Unsupported`], never an empty answer
 //! that reads as "nothing found".
 
+pub mod child;
 pub mod dirs;
 pub mod fs;
 pub mod memory;
@@ -12,6 +13,7 @@ pub mod net;
 pub mod peer;
 pub mod ports;
 pub mod procs;
+pub mod scope;
 pub mod signals;
 pub mod time;
 
@@ -62,6 +64,8 @@ pub enum Capability {
     Ports,
     /// Who is on a socket (L5).
     Peer,
+    /// Running in a terminal (L1, U2).
+    Run,
 }
 
 /// Whether this OS does a capability: an action that needs one it doesn't is shown
@@ -83,5 +87,6 @@ pub fn support(capability: Capability) -> Support {
         Capability::Processes => procs::SUPPORT,
         Capability::Ports => ports::SUPPORT,
         Capability::Peer => peer::SUPPORT,
+        Capability::Run => child::SUPPORT,
     }
 }

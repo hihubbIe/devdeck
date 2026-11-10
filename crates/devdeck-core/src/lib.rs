@@ -20,7 +20,6 @@ pub mod ports;
 pub mod process;
 pub mod recent_args;
 pub mod runs;
-pub mod scope;
 pub mod settings;
 pub mod state;
 pub mod terminal;

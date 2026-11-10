@@ -123,12 +123,8 @@ fn shell_command(shell: &str) -> std::process::Command {
 /// background may keep the output open), or after `timeout`; then what it started is
 /// killed. What was read is kept: the caller decides whether it's complete.
 fn capture(mut cmd: std::process::Command, timeout: Duration) -> Result<Vec<u8>, String> {
-    use std::os::unix::process::CommandExt;
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    // SAFETY: `setsid` is async-signal-safe and touches no memory of the parent.
-    unsafe {
-        cmd.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
-    }
+    devdeck_sys::child::own_session(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -156,8 +152,7 @@ fn capture(mut cmd: std::process::Command, timeout: Duration) -> Result<Vec<u8>,
             break false;
         }
     };
-    let group = rustix::process::Pid::from_child(&child);
-    let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+    devdeck_sys::child::signal_group(child.id(), devdeck_sys::child::Signal::Kill);
     let _ = child.wait();
     let out = std::mem::take(&mut *out.lock().unwrap_or_else(|e| e.into_inner()));
     if !ended && exited.is_none() && out.is_empty() {

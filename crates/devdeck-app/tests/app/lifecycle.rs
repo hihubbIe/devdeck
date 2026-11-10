@@ -8,7 +8,7 @@ use devdeck_app::shell::Shell;
 use devdeck_core::apps::{App as AppDef, Command, EnvApply, Tier, Tools};
 use devdeck_core::catalog::Catalog;
 use devdeck_core::process::{GroupLog, Process, Spawn, StopKind};
-use devdeck_core::scope::Scope;
+use devdeck_sys::scope::Scope;
 use devdeck_core::terminal::TermSize;
 use gpui::{AppContext, TestAppContext};
 use std::rc::Rc;
@@ -99,7 +99,7 @@ fn leftovers_left_alone_stay_alone(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_scope_a_killed_devdeck_left_is_one_row_named_after_its_run(cx: &mut TestAppContext) {
-    if devdeck_core::scope::systemd_run().is_none() {
+    if devdeck_sys::scope::systemd_run().is_none() {
         eprintln!("no systemd user manager here: scope test skipped");
         return;
     }

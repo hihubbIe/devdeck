@@ -183,17 +183,18 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 
 ### Processes
 
-- Each run is a child in a pseudo-terminal opened with rustix (the mechanism
-  `alacritty_terminal`'s `tty` uses, without its drawbacks: it passes devdeck's own
-  environment on, ignores a missing folder and blocks when dropped), started as
-  `/bin/sh -c <line>` with exactly the run's environment, in its own session and process
-  group. One thread per run reads output, reaps the child (pidfd) and takes input.
+- Each run is a child in a pseudo-terminal opened by the OS layer (`devdeck_sys::child`;
+  the mechanism `alacritty_terminal`'s `tty` uses, without its drawbacks: it passes
+  devdeck's own environment on, ignores a missing folder and blocks when dropped),
+  started as `/bin/sh -c <line>` with exactly the run's environment, in its own session
+  and process group. One thread per run reads output, reaps the child (on Linux through
+  a pidfd) and takes input.
 - A driver reports output bytes and the exit; the runner owns one terminal per run
   (`core::terminal` over alacritty_terminal, 2 000 lines of history), so output is kept
   while no view shows it. The run view draws only visible rows, wrapping at the pane
   width; the terminal is resized to the pane.
 - Each run (not a terminal's shell) starts in a systemd user scope of its own
-  (`core::scope`: `systemd-run --user --scope`, keeping its pid, session, terminal and
+  (`devdeck_sys::scope`: `systemd-run --user --scope`, keeping its pid, session, terminal and
   exact environment), so the kernel keeps every descendant whatever it does (`setsid`,
   a daemon's double fork, `env -i`). A stop empties the scope (^C to the group, SIGTERM
   to the scope through pidfds, then `cgroup.kill`). A run that ends on its own ends its

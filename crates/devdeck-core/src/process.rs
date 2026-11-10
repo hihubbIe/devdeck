@@ -8,7 +8,7 @@
 //!   [`StopKind`]'s wait; descendants that left the group (found through
 //!   `devdeck_sys::procs`) get SIGTERM and SIGKILL too (a terminal's ^C never reaches them
 //!   either). It ends once nothing is left. Dropping a [`Process`] kills it at once.
-//! - Where it can ([`scope`](crate::scope)), a run starts in a systemd scope of its own,
+//! - Where it can (`devdeck_sys::scope`), a run starts in a systemd scope of its own,
 //!   which keeps every descendant whatever it does: a stop empties it. A run that ends on
 //!   its own ends its group; what it left in the scope (a build's daemon) runs on until
 //!   devdeck quits ([`GroupLog::end_ours`]).
@@ -19,22 +19,21 @@
 //! - [`kill_all`] is safe to call from a signal-handling thread (devdeck receiving
 //!   SIGTERM, SIGHUP or SIGINT).
 //!
-//! The terminal is opened here rather than with `alacritty_terminal`'s `tty`, which does
-//! the same (`openpty`, `setsid`, `TIOCSCTTY`) but always passes devdeck's own environment
-//! on, ignores a missing folder, and blocks in its `Drop` until the child exits. One
-//! thread per run polls the terminal, the child's pidfd and a wake-up for input.
+//! The terminal comes from `devdeck_sys::child` rather than `alacritty_terminal`'s `tty`,
+//! which does the same (`openpty`, `setsid`, `TIOCSCTTY`) but always passes devdeck's own
+//! environment on, ignores a missing folder, and blocks in its `Drop` until the child
+//! exits. One thread per run waits on the terminal, the child and a wake-up for input
+//! (`devdeck_sys::child::Watch`).
 
 use crate::apps::Command;
 use crate::runs::Exit;
-use crate::scope::Scope;
 use crate::terminal::TermSize;
+use devdeck_sys::Support;
+use devdeck_sys::child::{self, ExitStatus, Signal, Terminal, Waker, Watch};
 use devdeck_sys::procs::{self, alive};
-use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec};
-use rustix::fd::{AsFd, OwnedFd};
-use rustix::io::Errno;
-use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus};
+use devdeck_sys::scope::{self, Scope};
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::unix::process::CommandExt;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -121,7 +120,7 @@ pub enum ProcessEvent {
 pub struct Process {
     tree: Arc<Tree>,
     stop: StopKind,
-    master: Arc<OwnedFd>,
+    master: Arc<Terminal>,
     input: Arc<Input>,
 }
 
@@ -129,26 +128,28 @@ pub struct Process {
 /// blocks the caller.
 struct Input {
     bytes: Mutex<Vec<u8>>,
-    /// An eventfd that wakes the thread.
-    wake: OwnedFd,
+    /// Wakes the thread.
+    wake: Waker,
 }
 
 impl Process {
     /// Starts `spawn`; its output and exit arrive on the receiver.
     pub fn spawn(spawn: Spawn, log: Option<GroupLog>) -> Result<(Process, async_channel::Receiver<ProcessEvent>), String> {
+        if let Support::No(why) = child::SUPPORT {
+            return Err(why.into());
+        }
         if !spawn.dir.is_dir() {
             return Err(format!("{}: no such folder", spawn.dir.display()));
         }
-        let (master, slave) = open_terminal(spawn.size).map_err(|e| format!("no pseudo-terminal: {e}"))?;
-        let wake = rustix::event::eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)
-            .map_err(|e| format!("no eventfd: {e}"))?;
+        let (master, slave) = Terminal::open(spawn.size.rows, spawn.size.cols).map_err(|e| format!("no pseudo-terminal: {e}"))?;
         let stdio = || slave.try_clone().map(std::process::Stdio::from).map_err(|e| e.to_string());
-        let scope = spawn.scope.then(crate::scope::systemd_run).flatten().map(|run| (Scope::next(&instance()), run));
+        let scope = spawn.scope.then(scope::systemd_run).flatten().map(|run| (Scope::next(&instance()), run));
         // `systemd-run` reaches the user manager through these; taken from devdeck when the
         // run's environment lacks them, and kept from the run itself.
         let lent: Vec<(&str, std::ffi::OsString)> = match scope {
-            Some(_) => ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
-                .into_iter()
+            Some(_) => scope::BORROWED
+                .iter()
+                .copied()
                 .filter(|name| !spawn.vars.iter().any(|(k, _)| k == name))
                 .filter_map(|name| Some((name, std::env::var_os(name)?)))
                 .collect(),
@@ -161,15 +162,7 @@ impl Process {
         cmd.arg("-c").arg(&spawn.line).current_dir(&spawn.dir).env_clear().envs(spawn.vars.iter().map(|(k, v)| (k, v))).envs(lent);
         let scope = scope.map(|(s, _)| s);
         cmd.stdin(stdio()?).stdout(stdio()?).stderr(stdio()?);
-        // SAFETY: between fork and exec, only system calls (no allocation, no locks). The
-        // terminal is already on 0, 1 and 2: the new session takes it as its own.
-        unsafe {
-            cmd.pre_exec(|| {
-                rustix::process::setsid()?;
-                rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())?;
-                Ok(())
-            });
-        }
+        child::terminal_session(&mut cmd);
         let child = cmd.spawn().map_err(|e| format!("couldn't start sh in {}: {e}", spawn.dir.display()))?;
         // Our copies of the terminal's other end close, so the output ends when the
         // process tree closes its own.
@@ -186,20 +179,21 @@ impl Process {
             ended: AtomicBool::new(false),
             seen: Mutex::new(BTreeMap::new()),
         });
-        // std's `Child` neither waits nor kills when dropped: the thread reaps it.
-        let pidfd = match rustix::process::pidfd_open(Pid::from_child(&child), rustix::process::PidfdFlags::empty()) {
-            Ok(fd) => fd,
+        // std's `Child` neither waits nor kills when dropped: the thread reaps it, through
+        // the watch made now, before anything could reap it.
+        let watch = match Watch::new(&child) {
+            Ok(w) => w,
             Err(e) => {
-                tree.signal_all(Signal::KILL);
+                tree.signal_all(Signal::Kill);
                 let mut child = child;
                 let _ = child.wait();
-                return Err(format!("no pidfd: {e}"));
+                return Err(format!("can't watch it: {e}"));
             }
         };
         let master = Arc::new(master);
-        let input = Arc::new(Input { bytes: Mutex::new(Vec::new()), wake });
+        let input = Arc::new(Input { bytes: Mutex::new(Vec::new()), wake: watch.waker() });
         let (tx, rx) = async_channel::bounded(QUEUE);
-        let pump = Pump { tree: tree.clone(), label: spawn.label, master: master.clone(), pidfd, input: input.clone(), tx, log };
+        let pump = Pump { tree: tree.clone(), label: spawn.label, master: master.clone(), watch, input: input.clone(), tx, log };
         let thread = std::thread::Builder::new().name(format!("run {pid}")).spawn(move || pump.run());
         let process = Process { tree, stop: spawn.stop, master, input };
         if let Err(e) = thread {
@@ -223,11 +217,11 @@ impl Process {
             return;
         }
         self.input.bytes.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
-        let _ = rustix::io::write(&self.input.wake, &1u64.to_ne_bytes());
+        self.input.wake.wake();
     }
 
     pub fn resize(&self, size: TermSize) {
-        let _ = rustix::termios::tcsetwinsize(&*self.master, winsize(size));
+        self.master.resize(size.rows, size.cols);
     }
 
     /// Something other than the process itself runs in its terminal's foreground (a
@@ -238,7 +232,7 @@ impl Process {
 
     /// The process group in its terminal's foreground, when it isn't the process's own.
     pub fn foreground(&self) -> Option<u32> {
-        let group = rustix::termios::tcgetpgrp(&*self.master).ok()?.as_raw_nonzero().get() as u32;
+        let group = self.master.foreground_group()?;
         (group != self.tree.pid).then_some(group)
     }
 
@@ -259,7 +253,7 @@ impl Process {
         let name = format!("stop {}", tree.pid);
         if std::thread::Builder::new().name(name).spawn(move || tree.stop(waits, hang_up)).is_err() {
             self.tree.collect();
-            self.tree.signal_all(Signal::KILL);
+            self.tree.signal_all(Signal::Kill);
         }
     }
 }
@@ -275,7 +269,7 @@ impl Drop for Process {
         let finish = move || {
             tree.collect();
             let ended = tree.ended.load(Ordering::SeqCst);
-            tree.signal(Signal::KILL, !ended);
+            tree.signal(Signal::Kill, !ended);
         };
         if std::thread::Builder::new().name(name).spawn(finish.clone()).is_err() {
             finish();
@@ -283,33 +277,12 @@ impl Drop for Process {
     }
 }
 
-/// A new terminal of `size`: the side devdeck keeps and the side the process gets.
-fn open_terminal(size: TermSize) -> rustix::io::Result<(OwnedFd, OwnedFd)> {
-    use rustix::pty::OpenptFlags;
-    let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
-    rustix::pty::grantpt(&master)?;
-    rustix::pty::unlockpt(&master)?;
-    let name = rustix::pty::ptsname(&master, Vec::new())?;
-    use rustix::fs::{Mode, OFlags};
-    let slave = rustix::fs::open(name.as_c_str(), OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC, Mode::empty())?;
-    rustix::termios::tcsetwinsize(&master, winsize(size))?;
-    if let Ok(mut t) = rustix::termios::tcgetattr(&master) {
-        t.input_modes.insert(rustix::termios::InputModes::IUTF8);
-        let _ = rustix::termios::tcsetattr(&master, rustix::termios::OptionalActions::Now, &t);
-    }
-    Ok((master, slave))
-}
-
-fn winsize(size: TermSize) -> rustix::termios::Winsize {
-    rustix::termios::Winsize { ws_row: size.rows, ws_col: size.cols, ws_xpixel: 0, ws_ypixel: 0 }
-}
-
 /// A run's thread: output out, input in, the exit once the output is drained.
 struct Pump {
     tree: Arc<Tree>,
     label: String,
-    master: Arc<OwnedFd>,
-    pidfd: OwnedFd,
+    master: Arc<Terminal>,
+    watch: Watch,
     input: Arc<Input>,
     tx: async_channel::Sender<ProcessEvent>,
     log: Option<GroupLog>,
@@ -324,7 +297,7 @@ impl Pump {
                 log.add(Entry::Scope { unit: scope.unit.clone(), instance: instance(), label: self.label.clone() });
             }
         }
-        let _ = rustix::io::ioctl_fionbio(&*self.master, true);
+        self.master.set_nonblocking();
         let mut buf = vec![0u8; 64 * 1024];
         let mut pending: Vec<u8> = Vec::new();
         // Some process still has the terminal open.
@@ -338,57 +311,43 @@ impl Pump {
                 let _ = self.tx.send_blocking(ProcessEvent::Exited(code.clone()));
                 return;
             }
-            let (child, term, wake) = {
-                let mut fds = vec![PollFd::new(&self.input.wake, PollFlags::IN)];
-                if exit.is_none() {
-                    fds.push(PollFd::new(&self.pidfd, PollFlags::IN));
+            let timeout = exit.as_ref().map(|(_, at)| DRAIN.saturating_sub(at.elapsed()));
+            let ready = match self.watch.wait(open.then_some(&*self.master), !pending.is_empty(), exit.is_none(), timeout) {
+                Ok(ready) => ready,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    // Can't watch any more: report the exit when it comes.
+                    let code = exit.map(|(c, _)| c).unwrap_or_else(|| self.reap(true));
+                    let _ = self.tx.send_blocking(ProcessEvent::Exited(code));
+                    return;
                 }
-                if open {
-                    let out = if pending.is_empty() { PollFlags::empty() } else { PollFlags::OUT };
-                    fds.push(PollFd::new(&*self.master, PollFlags::IN | out));
-                }
-                let timeout = exit.as_ref().map(|(_, at)| timespec(DRAIN.saturating_sub(at.elapsed())));
-                match rustix::event::poll(&mut fds, timeout.as_ref()) {
-                    Ok(_) => {}
-                    Err(Errno::INTR) => continue,
-                    Err(_) => {
-                        // Can't watch any more: report the exit when it comes.
-                        let code = exit.map(|(c, _)| c).unwrap_or_else(|| self.reap(WaitIdOptions::EXITED));
-                        let _ = self.tx.send_blocking(ProcessEvent::Exited(code));
-                        return;
-                    }
-                }
-                let wake = fds[0].revents();
-                let child = if exit.is_none() { fds[1].revents() } else { PollFlags::empty() };
-                let term = if open { fds[fds.len() - 1].revents() } else { PollFlags::empty() };
-                (child, term, wake)
             };
-            if !wake.is_empty() {
-                let _ = rustix::io::read(&self.input.wake, &mut [0u8; 8]);
+            if ready.wake {
+                self.watch.drain_wake();
                 pending.append(&mut self.input.bytes.lock().unwrap_or_else(|e| e.into_inner()));
             }
-            if term.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
-                match rustix::io::read(&*self.master, &mut buf[..]) {
+            if ready.readable {
+                match self.master.read(&mut buf[..]) {
                     Ok(0) => open = false,
                     // An error means nobody listens any more: keep reading so the process
                     // never blocks on its output.
                     Ok(n) => drop(self.tx.send_blocking(ProcessEvent::Output(buf[..n].to_vec()))),
-                    Err(Errno::AGAIN | Errno::INTR) => {}
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
                     // EIO: every process closed the terminal.
                     Err(_) => open = false,
                 }
             }
             if !open {
                 pending.clear();
-            } else if term.contains(PollFlags::OUT) {
-                match rustix::io::write(&*self.master, &pending) {
+            } else if ready.writable {
+                match self.master.write(&pending) {
                     Ok(n) => drop(pending.drain(..n)),
-                    Err(Errno::AGAIN | Errno::INTR) => {}
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
                     Err(_) => pending.clear(),
                 }
             }
-            if !child.is_empty() {
-                let code = self.reap(WaitIdOptions::EXITED | WaitIdOptions::NOHANG);
+            if ready.child {
+                let code = self.reap(false);
                 exit = Some((code, Instant::now()));
                 self.tree.ended.store(true, Ordering::SeqCst);
                 if let Some(log) = &self.log {
@@ -398,24 +357,14 @@ impl Pump {
         }
     }
 
-    /// The child's exit status, reaping it. `-1` when it can't be known.
-    fn reap(&self, options: WaitIdOptions) -> Exit {
-        match rustix::process::waitid(WaitId::PidFd(self.pidfd.as_fd()), options) {
-            Ok(Some(status)) => exit_of(&status),
-            _ => Exit::Code(-1),
+    /// The child's exit status, reaping it (waiting for it when `wait`). `-1` when it
+    /// can't be known.
+    fn reap(&self, wait: bool) -> Exit {
+        match self.watch.reap(wait) {
+            ExitStatus::Code(c) => Exit::Code(c),
+            ExitStatus::Signal(s) => Exit::Signal(s),
         }
     }
-}
-
-fn exit_of(status: &WaitIdStatus) -> Exit {
-    match status.terminating_signal() {
-        Some(signal) => Exit::Signal(signal),
-        None => Exit::Code(status.exit_status().unwrap_or(-1)),
-    }
-}
-
-fn timespec(d: Duration) -> Timespec {
-    Timespec { tv_sec: d.as_secs() as _, tv_nsec: d.subsec_nanos() as _ }
 }
 
 /// A run's processes: its group, its scope when it has one, and every descendant seen
@@ -440,20 +389,20 @@ impl Tree {
     fn stop(&self, waits: (Duration, Duration), hang_up: bool) {
         self.collect();
         if hang_up {
-            self.signal_all(Signal::HUP);
+            self.signal_all(Signal::Hup);
         } else {
-            self.signal_group(Signal::INT);
+            self.signal_group(Signal::Int);
         }
         if self.gone_within(waits.0) {
             return;
         }
         self.collect();
-        self.signal_all(Signal::TERM);
+        self.signal_all(Signal::Term);
         if self.gone_within(waits.1) {
             return;
         }
         self.collect();
-        self.signal_all(Signal::KILL);
+        self.signal_all(Signal::Kill);
     }
 
     /// `signal` to the group and the descendants seen, and to the scope when `scope`.
@@ -462,11 +411,11 @@ impl Tree {
         let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         for (pid, start) in seen.iter() {
             if alive(*pid, *start) {
-                signal_one(*pid, signal);
+                let _ = child::signal(*pid, signal);
             }
         }
         match &self.scope {
-            Some(s) if scope && signal == Signal::KILL => s.kill(),
+            Some(s) if scope && signal == Signal::Kill => s.kill(),
             Some(s) if scope => s.signal(signal),
             _ => {}
         }
@@ -503,7 +452,7 @@ impl Tree {
 
     fn signal_group(&self, signal: Signal) {
         if self.group_is_ours() {
-            signal_group(self.pid, signal);
+            child::signal_group(self.pid, signal);
         }
     }
 
@@ -513,7 +462,7 @@ impl Tree {
     }
 
     fn gone(&self) -> bool {
-        let group = self.group_is_ours() && Pid::from_raw(self.pid as i32).is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok());
+        let group = self.group_is_ours() && child::group_exists(self.pid);
         !group && self.seen.lock().unwrap_or_else(|e| e.into_inner()).iter().all(|(pid, start)| !alive(*pid, *start)) && self.scope.as_ref().is_none_or(Scope::is_empty)
     }
 
@@ -528,25 +477,6 @@ impl Tree {
             }
             std::thread::sleep(TICK);
         }
-    }
-}
-
-/// Never pid 0 or 1 (which would mean our own group or every process) nor devdeck itself.
-fn ours(pid: u32) -> Option<Pid> {
-    let p = Pid::from_raw(i32::try_from(pid).ok()?)?;
-    let me = rustix::process::getpid();
-    (pid > 1 && p != me && p != rustix::process::getpgrp()).then_some(p)
-}
-
-fn signal_group(pid: u32, signal: Signal) {
-    if let Some(p) = ours(pid) {
-        let _ = rustix::process::kill_process_group(p, signal);
-    }
-}
-
-fn signal_one(pid: u32, signal: Signal) {
-    if let Some(p) = ours(pid) {
-        let _ = rustix::process::kill_process(p, signal);
     }
 }
 
@@ -720,8 +650,10 @@ impl GroupLog {
 /// Asks one process to end (SIGTERM): a port holder the user chose to stop. Never pid 0
 /// or 1, nor devdeck itself.
 pub fn terminate(pid: u32) -> Result<(), String> {
-    let p = ours(pid).ok_or_else(|| format!("won't stop pid {pid}"))?;
-    rustix::process::kill_process(p, Signal::TERM).map_err(|e| format!("couldn't stop pid {pid}: {e}"))
+    if !child::may_signal(pid) {
+        return Err(format!("won't stop pid {pid}"));
+    }
+    child::signal(pid, Signal::Term).map_err(|e| format!("couldn't stop pid {pid}: {e}"))
 }
 
 /// Kills these process groups and their escaped descendants (SIGKILL), now. Reads the
@@ -730,18 +662,20 @@ pub fn terminate(pid: u32) -> Result<(), String> {
 pub fn kill_all(pids: &[u32]) {
     // Descendants first: once a leader is killed, its children move to another parent.
     let pairs = procs::parents().unwrap_or_default();
-    let all: BTreeSet<u32> = pids.iter().filter(|p| ours(**p).is_some()).flat_map(|p| procs::tree(*p, &pairs)).collect();
+    let all: BTreeSet<u32> = pids.iter().filter(|p| child::may_signal(**p)).flat_map(|p| procs::tree(*p, &pairs)).collect();
     for pid in pids {
-        signal_group(*pid, Signal::KILL);
+        child::signal_group(*pid, Signal::Kill);
     }
     for pid in all {
-        signal_one(pid, Signal::KILL);
+        let _ = child::signal(pid, Signal::Kill);
     }
 }
 
-#[cfg(test)]
+/// Real processes: Linux only until macOS step 2c.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use async_channel::Receiver;
 
     const SIZE: TermSize = TermSize { cols: 80, rows: 24 };
@@ -807,7 +741,7 @@ mod tests {
         fn drop(&mut self) {
             for (pid, start) in &self.0 {
                 if alive(*pid, *start) {
-                    signal_one(*pid, Signal::KILL);
+                    let _ = child::signal(*pid, Signal::Kill);
                 }
             }
         }
@@ -815,7 +749,7 @@ mod tests {
 
     /// Spawns in a scope; `None` (the test is skipped) where scopes don't work.
     fn spawn_scoped(line: &str, log: Option<GroupLog>) -> Option<(Process, Receiver<ProcessEvent>)> {
-        if crate::scope::systemd_run().is_none() {
+        if scope::systemd_run().is_none() {
             eprintln!("no systemd user manager here: scope test skipped");
             return None;
         }
@@ -895,16 +829,16 @@ mod tests {
 
     #[test]
     fn a_leader_that_outlived_a_killed_devdeck_is_in_its_scopes_row_only() {
-        if crate::scope::systemd_run().is_none() {
+        let Some(run) = scope::systemd_run() else {
             eprintln!("no systemd user manager here: scope test skipped");
             return;
-        }
+        };
         let dir = crate::testing::TempDir::new("scope-one-row");
         let log = GroupLog::new(&dir);
         // A run's leader that survived the hang-up, in its scope, not our child.
         let unit = format!("devdeck-test-{}-one-row", std::process::id());
-        let line = format!("systemd-run --user --scope --quiet --collect --unit={unit} sleep 300 >/dev/null 2>&1 & echo $!");
-        let out = std::process::Command::new("sh").args(["-c", &line]).output().expect("sh runs");
+        let line = format!("\"$0\" --user --scope --quiet --collect --unit={unit} sleep 300 >/dev/null 2>&1 & echo $!");
+        let out = std::process::Command::new("sh").args(["-c", &line]).arg(run).output().expect("sh runs");
         let leader = running(String::from_utf8_lossy(&out.stdout).trim().parse().expect("pid"));
         let _reap = Reap(vec![leader]);
         wait_until("the scope", || !Scope::named(unit.clone()).is_empty());
