@@ -66,6 +66,21 @@ Claude are its clients. Plan: [plans/control-api.md](plans/control-api.md), deci
 5. Chosen MCP tools, instructions, setup docs.
 6. Cluster methods, as M3 steps 4–5 land.
 
+## macOS from source (started 2026-11-10)
+devdeck works on an Apple silicon Mac, macOS 15 or later, for someone who builds it from
+source; it feels like a Mac app (shortcuts, title bar, menu bar, Dock). The user has no
+Mac: a colleague builds and tests it, in two rounds, with `docs/BUILDING.md`. Plan:
+[plans/macos.md](plans/macos.md). Steps, one at a time:
+0. Inventory and requirements.
+1. `devdeck-sys`, Linux only (1a–1d).
+2. The macOS backends (2a–2f).
+3. The build guide and round 1's test guide; push; round 1 on the Mac.
+4. Mac behaviour in the app (L9, L10, L13).
+5. What Linux shaped (`docs/PLATFORMS.md` §3).
+6. Round 2's test guide; push; round 2 on the Mac.
+
+Then packaging the `.app` (L11), then CI.
+
 ## M3 · Real cluster
 kube-rs data, service inspector, git read only, deploys with journal and undo, logs,
 exec, port-forward, metrics, protected envs, k9s launch. Plan:

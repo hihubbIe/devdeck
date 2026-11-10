@@ -210,7 +210,8 @@ The review checks it.
 
 ## 5. Decisions
 
-Recommended from the review (§6). Each is the user's to confirm.
+Recommended from the review (§6); confirmed by the user, 2026-11-10, with Apple silicon
+only and macOS 15 at least (`docs/plans/macos.md`).
 
 | Topic | Recommendation |
 |---|---|
