@@ -792,6 +792,7 @@ Result<Option<String>, String>` (the app id, or a problem when ambiguous).
   6. up to date: says so, nothing to do.
   The remote: the branch's upstream remote, else its `pushRemote`, `remote.pushDefault`,
   else the only remote; several and none chosen: refused with the reason.
+  Changed (user, 2026-11-10): 2 and 3 run at once after the check, no modal; only 4 asks.
 - **An operation under way (rebase, merge, cherry-pick, revert, bisect) is shown, and
   blocks every write**: the only action is **Abort** (`rebase --abort`, `merge --abort`,
   `cherry-pick --abort`, `revert --abort`, `bisect reset`), behind a modal saying what

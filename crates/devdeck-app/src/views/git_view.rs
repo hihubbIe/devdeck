@@ -257,7 +257,8 @@ impl GitView {
         self.confirm(op, format!("Pull {branch}"), format!("pulling {branch}…"), "Pull", lines, cx);
     }
 
-    /// Asks what a push would do (the remote is fetched first), then offers it.
+    /// Asks what a push would do (the remote is fetched first), then does it; only a
+    /// replace asks first (user, 2026-11-10).
     pub fn push(&mut self, cx: &mut Context<Self>) {
         if let Some(why) = self.refusal(&Op::Push(PushPlan::UpToDate { remote: String::new(), branch: String::new() }), cx) {
             return self.toast(format!("Push: {why}"), cx);
@@ -273,13 +274,21 @@ impl GitView {
             Ok(p) => p,
             Err(why) => return self.toast(format!("Push: {why}"), cx),
         };
+        // Nothing on the remote can be lost: done at once (refused if the branch moved).
+        let plain = match &plan {
+            PushPlan::Publish { branch, .. } => Some((format!("Publish {branch}"), format!("publishing {branch}…"))),
+            PushPlan::Send { branch, commits: 1, .. } => Some((format!("Push {branch}"), format!("pushing 1 commit of {branch}…"))),
+            PushPlan::Send { branch, commits, .. } => Some((format!("Push {branch}"), format!("pushing {commits} commits of {branch}…"))),
+            _ => None,
+        };
+        if let Some((title, doing)) = plain {
+            if let Err(why) = self.repo.update(cx, |r, cx| r.run(Op::Push(plan), title.clone(), doing, cx)) {
+                self.toast(format!("{title}: {why}"), cx);
+            }
+            return;
+        }
         let (title, lines, label) = match &plan {
-            PushPlan::Publish { remote, branch } => {
-                (format!("Publish {branch}"), vec![format!("{branch} isn't on {remote} yet: it's published there, and later pushes go there.")], "Publish")
-            }
-            PushPlan::Send { remote, branch, commits, .. } => {
-                (format!("Push {branch}"), vec![format!("Sends {commits} commits of {branch} to {remote}."), "Refused if your branch moved since this check.".into()], "Push")
-            }
+            PushPlan::Publish { .. } | PushPlan::Send { .. } => unreachable!("pushed above"),
             PushPlan::Replace { remote, branch, .. } if crate::edit_mode::refusal(cx).is_some() => {
                 return self.toast(format!("Push: your {branch} was rewritten, so pushing it replaces {remote}'s: {}.", crate::edit_mode::OFF), cx);
             }

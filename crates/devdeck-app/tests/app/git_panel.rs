@@ -186,7 +186,7 @@ fn a_switch_made_in_a_terminal_shows_and_a_rebase_under_way_only_offers_its_abor
 }
 
 #[gpui::test]
-fn a_new_branch_is_published_after_asking_and_a_remote_ahead_is_refused(cx: &mut TestAppContext) {
+fn a_new_branch_is_published_and_pushed_without_asking_and_a_remote_ahead_is_refused(cx: &mut TestAppContext) {
     let (folder, web) = repos(cx);
     let (shell, _) = start(cx, &folder);
     let main = cx.read(|cx| shell.read(cx).main_window().expect("main"));
@@ -204,18 +204,21 @@ fn a_new_branch_is_published_after_asking_and_a_remote_ahead_is_refused(cx: &mut
     until(cx, "on topic", |cx| head(&repo, cx) == Some(Head::Branch("topic".into())));
     assert_eq!(layers(cx), 0);
 
-    // Push: the remote is checked, then a confirmation to publish; nothing before it.
+    // Push: the remote is checked, then it's published without asking (nothing there to lose).
     cx.update(|cx| panel.update(cx, |p, cx| p.push(cx)));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while layers(cx) != 1 {
-        assert!(Instant::now() < deadline, "timed out waiting for the publish confirmation");
-        std::thread::sleep(Duration::from_millis(20));
-        cx.run_until_parked();
-    }
-    assert!(git(&web, &["ls-remote", "--heads", "origin", "topic"]).trim().is_empty(), "nothing pushed yet");
-    cx.simulate_keystrokes(main.into(), "enter");
     until(cx, "published", |_| !git(&web, &["ls-remote", "--heads", "origin", "topic"]).trim().is_empty());
     until(cx, "tracking it", |cx| cx.read(|cx| repo.read(cx).snapshot().is_some_and(|s| s.status.upstream.as_ref().is_some_and(|u| u.name == "origin/topic"))));
+    assert_eq!(layers(cx), 0, "publish: nothing asked");
+
+    // A commit more: a plain push, without asking either.
+    std::fs::write(web.join("c.txt"), "mine\n").unwrap();
+    git(&web, &["add", "."]);
+    git(&web, &["commit", "-q", "-m", "mine"]);
+    let mine = git(&web, &["rev-parse", "HEAD"]);
+    until(cx, "idle", |cx| cx.read(|cx| repo.read(cx).busy.is_none()));
+    cx.update(|cx| panel.update(cx, |p, cx| p.push(cx)));
+    until(cx, "pushed", |_| git(&web, &["ls-remote", "origin", "refs/heads/topic"]).split_whitespace().next() == mine.split_whitespace().next());
+    assert_eq!(layers(cx), 0, "plain push: nothing asked");
 
     // Someone else pushes to topic: our push is refused without a modal, and the remote keeps theirs.
     let other = folder.join("other");

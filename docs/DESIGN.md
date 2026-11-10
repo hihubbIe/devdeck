@@ -672,6 +672,9 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   (also an action), always the desktop's own (not a toast), off at every start. What's
   left is built in order of what matters: logs, changing the deployed branch,
   redeploying it, notifications, then the close; the rest when wanted.
+- 2026-11-10 (user, M3) A push that can't lose anything on the remote (a publish or a
+  plain push) runs at once after its check, no modal; only a replace (force-with-lease)
+  asks. Amends "every write confirmed" (2026-11-08).
 
 ## Open questions
 
