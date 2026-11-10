@@ -14,7 +14,9 @@ cargo build --release
 ```
 
 Linux build dependencies (Debian/Ubuntu names) are listed in
-[docs/BUILDING.md](docs/BUILDING.md).
+[docs/BUILDING.md](docs/BUILDING.md). On a Mac (Apple silicon, macOS 15 or later), follow
+its [macOS section](docs/BUILDING.md#macos) from the start: Xcode is needed, and the
+build is not yet confirmed on a Mac.
 
 ## Docs
 

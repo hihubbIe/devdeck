@@ -1097,3 +1097,162 @@ Where a point is taken, it overrides the plan above.
   order, the guards in `Tree`, `kill_all` and `terminate` with their texts, `git.rs` and
   `environment.rs`, `scope` unchanged but its signal type): no behaviour change found on
   Linux; one test variable renamed.
+
+## Round 0 plan (2026-11-10): the build guide's draft and the round's notes
+
+Asked by the user ("Plan round 0", then GO). Review point 11 above: after step 1 the whole
+workspace should build on a Mac with `unsupported.rs` wherever a backend is missing, so a
+first build catches setup, GPUI and compile problems before step 2's backends. Docs only:
+no code changes, nothing OS-specific (R11.6 unchanged). R1.2 (macOS 15+, Apple silicon)
+is what the guide checks first.
+
+### What round 0 can show
+
+- **The Mac half nobody compiled yet**: `devdeck-app`, `devdeck-ui`, `devdeck` and GPUI's
+  Mac platform can't be checked from Linux ("The Mac compile check"), so a compile error
+  there is the likeliest finding. GPUI's `build.rs` (`gpui-pre-apple` 0.3.11, read
+  2026-11-10) compiles its shaders with `xcrun metal` unless `runtime_shaders` is on: full
+  Xcode, not only the Command Line Tools. Our tree has no `cmake` or `bindgen` (read in
+  `Cargo.lock`), so Zed's cmake step and its `dispatch.h` fix don't apply.
+- **Three starts**: no config (the "No workspace yet" screen, `WelcomeView`, which names
+  the config folder); `--demo` (the demo's runs use the fake driver, so the sidebar, tabs,
+  panes, layouts, palette, menus, notes, themes and scale all work without a backend;
+  shortcuts are Linux's, ctrl not ⌘, until step 4); one real workspace file whose folder
+  holds a few projects (discovery lists them).
+- **Not yet, and why**: a real run or a terminal is refused with "running in a terminal
+  isn't supported on this OS yet" (2c); the control API is off, so `devdeck-ctl` and
+  `devdeck-mcp` say why (2a); leftovers, ports and memory show nothing (2b, 2d, 2f); the
+  Mac title bar, menu bar, Dock and ⌘ keys (step 4).
+- **Tests**: expected to fail until 2c, the app's tests that start real runs or
+  terminals (`pty_driver`, `terminals`, `ports`, the quit tests with runs in
+  `lifecycle`), and `every_editor_key_is_known` (step 4); maybe the socket accept test in
+  `devdeck-sys` `net`. A guess, which round 0's output replaces.
+- **Folders in round 0**: config in `~/.config/devdeck` (it stays there, §5), state in
+  `~/.local/state/devdeck`, notes in `~/.local/share/devdeck`; from 2a state and notes
+  move to `~/Library/Application Support/devdeck`, and what round 0 left there isn't
+  carried over (the notes say so). The workspace file stays where it is.
+
+### Files
+
+1. **`docs/BUILDING.md`**: a short intro naming the two sections; **macOS** (new, whole
+   on its own) and **Linux** (today's toolchain, system packages, the `XDG_RUNTIME_DIR`
+   note, install); "Build and run", "Tests and lints" and "The build folder" stay shared.
+   The macOS section, for someone who doesn't know Rust, read with their coding agent (a
+   line at its top says so), steps as planned in "The build guide (step 3)" above, each
+   with: what it is for, the command in a `bash` block with its source, how to check it
+   worked, known errors. Rules for the agent: cargo from the repo root, `--workspace`,
+   never `-p`; never `scripts/install.sh`; `sudo` only where the guide says; a build or
+   test failure is sent back, not fixed on the Mac (the user's choice, 2026-11-10: fixes
+   are made here, where the Linux suite and clippy run). Optional: adding Terminal to
+   Developer Tools (nexte.st's macOS page: XProtect slows each test binary), the
+   tester's call since it changes a security setting. Draft: "not yet run on a Mac" at
+   the top; step 3 finishes it with round 0's findings and round 1's additions.
+2. **`docs/plans/macos-manual-test.md`**, "Round 0": before you start (time, disk); the
+   three starts and what each should show; the "not yet" list; what to send back
+   (`sw_vers`, `uname -m`, `xcodebuild -version`, `rustc -vV`, `cargo nextest --version`,
+   `git rev-parse HEAD`; the build log if it fails; devdeck's log from
+   `RUST_BACKTRACE=1 target/release/devdeck 2>&1 | tee …`; the test output file;
+   screenshots of the three starts; any crash report from
+   `~/Library/Logs/DiagnosticReports`); quitting (ctrl+Q, or closing the last window;
+   closing the Terminal window that started devdeck quits it too).
+3. **`README.md`**: the Build section points Mac users to BUILDING.md's macOS section.
+4. **`CLAUDE.md`** (the project's): one line for a tester's agent: on a Mac, to build and
+   test, follow BUILDING.md's macOS section and the round's notes in
+   `docs/plans/macos-manual-test.md`; don't change code.
+
+Sources, read 2026-11-10: [Zed, Building Zed for macOS](https://zed.dev/docs/development/macos),
+[rust-lang.org, Install Rust](https://rust-lang.org/tools/install/),
+[nexte.st, pre-built binaries](https://nexte.st/docs/installation/pre-built-binaries/),
+[nexte.st, macOS](https://nexte.st/docs/installation/macos/).
+
+### Then
+
+The suite and clippy before the commit (nothing compiled changes). The push, which
+publishes the 13 commits not yet on `origin/main` (2026-11-10) on the public repository, waits for the user's
+OK. The side branch's fix (a demo socket left after a signal) isn't needed for round 0.
+
+### States to check visually
+
+None here: no view changes. On the Mac, the three starts above, by the tester.
+
+### Out of scope
+
+The guide's steps for round 1 (a sample workspace with a small server, runs, ports,
+`devdeck-ctl`); packaging; a log file in `~/Library/Logs/devdeck`.
+
+### Unsure
+
+- How long the first build takes on an Apple silicon Mac; the guide gives Linux's
+  measured sizes and says time is unmeasured.
+- Whether macOS asks for access to Documents or Desktop, and in whose name (Terminal's,
+  most likely): "to verify".
+- Whether `.SystemUIFont` resolves on macOS without a warning (on Linux it falls back to
+  Ubuntu with one).
+
+### Round 0 plan review (subagent), assessed
+
+1. **Step numbers out of date** (review point 5 made `procs/` 2b and `child/` 2c). Taken:
+   runs and terminals 2c, leftovers 2b, ports 2d, memory 2f.
+2. **Failures not listed**. Taken, verified: `api_reads::files_only_inside_the_workspaces_folders`
+   (`fs::open_path`, 2f); the two leftover tests in `lifecycle` (`procs::get`, 2b; each
+   leaves a `sleep 30` for 30 s); `api::transport` `stopping_ends_accepting`, listed with
+   `devdeck-sys`' accept test (the same `net::shutdown`).
+3. **A stuck test never stops** (no nextest profile; `devdeck-mcp/tests/stdio.rs:75`
+   reads without a timeout). Taken in the notes: a test still SLOW after 5 minutes is
+   stopped with ctrl+C and named. A nextest profile with a hard limit isn't added here: it
+   changes the Linux runs too, and round 0 is docs only.
+4. **Not only the demo starts without a backend**: a real start reads the login shell's
+   environment (`$SHELL -lic`, `env -0`, 5 s) and runs `git`. Taken: the notes list a
+   possible "printed no environment" toast (whether macOS' `env` has `-0` is unverified).
+5. **Quitting the demo** asks first (its runs start on their own), and the demo doesn't
+   save on a signal; the window says "Kugelblitz". Taken in the notes.
+6. **The release build is stripped** (`strip = true`): no function names in a panic.
+   Taken: on a panic, a debug build (`target/debug/devdeck`, file and line).
+7. **Order**: the agent reads the project `CLAUDE.md` only when started in the clone.
+   Taken: Xcode, the clone, the agent started there, then Rust, nextest, the build; the
+   tester reads the guide's first steps on GitHub.
+8. **`CLAUDE.md` invites fixing and committing**. Taken: a "Testing on a Mac" block at
+   its top: only the guide and the notes; no edits, commits, pushes, `cargo update`,
+   `fmt`, `fix` or `add`; nothing installed beyond the guide; `--locked` (nextest takes
+   it, checked); `git status` clean when sending results.
+9. **No system library beyond Xcode** (no cmake, bindgen, openssl). Agreed;
+   `runtime_shaders` is the fallback if the Metal toolchain blocks, a change made here.
+10. Claims verified as holding. Nothing to do.
+11. **Watcher tests may fail** (`/private/var` against `/var` under `$TMPDIR`). Taken as a
+    "maybe" in the notes.
+12. **`shutdown` may not wake `accept` on macOS**. Taken as a "maybe" (point 2's pair);
+    it matters for 2a.
+13. **Agent mechanics**. Taken: `sh -s -- -y` (the rustup book shows `-y` with `sh -s
+    --`); the line the installer prints to load cargo in the same shell, or a new
+    terminal; steps with a window or a password marked as the tester's; no `timeout` on
+    macOS, so none is used.
+14. **`freetype-sys` and `fontconfig` in the lock**. Ruled out: `cargo tree --target
+    aarch64-apple-darwin -i` finds neither on the Mac.
+15. **A foreign `strip` breaking the signature** ("killed: 9"). Not taken as a fix (the
+    command is unverified and the cause a guess); the troubleshooting table says to send
+    it back.
+16. **Documents or Desktop refused**: discovery may show nothing. Taken in the notes and
+    the troubleshooting table.
+
+Commands checked against: the rustup book ([installation](https://rust-lang.github.io/rustup/installation/index.html),
+[other methods](https://rust-lang.github.io/rustup/installation/other.html)); ss64 for
+`xcode-select -p`, `xcrun --find`, `sw_vers -productVersion`. `xcodebuild -version` found
+in no reference read, so the Xcode version is read from Xcode's About window instead.
+
+## Round 0, as built (2026-11-10)
+
+- `docs/BUILDING.md`: a **macOS** section, whole on its own (rules for the agent; the
+  Mac; Xcode; the clone, the agent started there; Rust with `-y`; nextest; the build,
+  the run, the tests, all with `--locked` and their output in `~/devdeck-*.log`; a debug
+  build after a crash; updating; devdeck's files this round; troubleshooting), marked
+  "not yet run on a Mac". Today's toolchain, system packages, session environment and
+  install became the **Linux** section; build and run, tests and lints, the build folder
+  stay shared.
+- `docs/plans/macos-manual-test.md`, "Round 0": the three starts, the "not yet" table,
+  the tests expected to fail (names checked in the code) and the maybes, what to send
+  back.
+- `CLAUDE.md`: "Testing on a Mac?" at the top. `README.md`: the Mac line.
+- Every command in the macOS section comes from a page named beside it; the Xcode check
+  commands from ss64 (`xcode-select -p`, `xcrun --find`, `sw_vers -productVersion`).
+- Checked: the whole suite (837) and clippy on Linux; nothing compiled changed. The
+  guide itself is checked by round 0. Not pushed: 14 commits wait for the user's OK.
