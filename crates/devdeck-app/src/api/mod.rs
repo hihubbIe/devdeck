@@ -10,6 +10,7 @@
 pub mod audit;
 pub mod dispatch;
 pub mod events;
+pub mod gitports;
 pub mod handlers;
 pub mod identity;
 pub mod policy;

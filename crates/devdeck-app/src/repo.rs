@@ -354,6 +354,11 @@ impl Repo {
     }
 
     /// Whether it's still being opened (tests).
+    /// A read is in flight.
+    pub fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
     pub fn opening(&self) -> bool {
         self.opening.is_some()
     }

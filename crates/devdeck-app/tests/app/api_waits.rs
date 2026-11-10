@@ -135,3 +135,19 @@ fn waits_follow_the_reading_rules(cx: &mut TestAppContext) {
     let bad = waited(&ask(&agent(3), "run.wait", json!({"app": APP, "cmd": CMD, "until": {"output": "("}}), cx)).expect("at once");
     assert!(bad.is_err());
 }
+
+/// A one-off read that holds something (a port scan) counts among the caller's waits.
+#[gpui::test]
+fn one_off_reads_count_among_the_waits(cx: &mut TestAppContext) {
+    let shell = start(cx, "wait-reads");
+    started(&shell, cx);
+    let me = agent(3);
+    let waits: Vec<Slot> = (0..WAITS_PER_CALLER).map(|_| ask(&me, "run.wait", json!({"app": APP, "cmd": CMD, "until": "exit", "timeout": 1}), cx)).collect();
+    let busy = ask(&me, "port.list", json!({}), cx).borrow().clone().expect("at once");
+    assert_eq!(busy.unwrap_err().kind, ErrorKind::Busy);
+    advance(cx, Duration::from_secs(1) + TICK);
+    assert!(waits.iter().all(|w| waited(w).is_some()));
+    let ok = ask(&me, "port.list", json!({}), cx).borrow().clone().expect("the demo answers at once");
+    assert!(ok.is_ok(), "the places are free again, the read's too once answered");
+    assert!(ask(&me, "port.list", json!({}), cx).borrow().clone().unwrap().is_ok());
+}

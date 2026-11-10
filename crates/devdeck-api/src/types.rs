@@ -893,6 +893,8 @@ pub enum Topic {
     EditMode,
     /// A toast was shown: `{id, kind}` (`ui.toasts` gives its text).
     Toasts,
+    /// A port scan of the workspace found something else: `{}` (`port.list` says what).
+    Ports,
     #[serde(other)]
     Unknown,
 }
@@ -922,6 +924,134 @@ pub struct Event {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Lagged {
     pub seq: u64,
+}
+
+// ---- Git and ports, read (R13.1) ----
+
+/// A repository of the workspace's apps.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RepoInfo {
+    pub root: Untrusted,
+    /// The apps in it, by id.
+    pub apps: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Repos {
+    pub repos: Vec<RepoInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepoParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// A root `git.repos` gave.
+    pub root: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchesParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub root: String,
+    /// Remote branches too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<bool>,
+    /// 200 by default, 1000 at most.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// Where the repository is: on a branch, at a commit, or on a branch without commits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GitHead {
+    /// `branch`, `detached` or `unborn`.
+    pub kind: String,
+    /// The branch, or the commit when detached.
+    pub name: Untrusted,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GitUpstream {
+    pub name: Untrusted,
+    pub ahead: u32,
+    pub behind: u32,
+    /// Configured, but gone from the remote.
+    pub gone: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GitChange {
+    pub path: Untrusted,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Untrusted>,
+    /// `modified`, `added`, `deleted`, `renamed`…
+    pub kind: String,
+    pub staged: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GitStatus {
+    pub head: GitHead,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<GitUpstream>,
+    /// An operation under way (`rebasing`, `merging`…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doing: Option<String>,
+    pub changes: Vec<GitChange>,
+    /// More changes than one answer holds.
+    pub truncated: bool,
+    /// Changes not listed: files whose name says they may hold secrets.
+    pub hidden: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GitBranch {
+    pub name: Untrusted,
+    pub remote: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<Untrusted>,
+    pub commit: String,
+    pub subject: Untrusted,
+    /// The author's name (no address).
+    pub author: Untrusted,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Branches {
+    pub branches: Vec<GitBranch>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PortParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub port: u16,
+}
+
+/// A port of the workspace: one its runs listen on or its commands declare, and who holds
+/// it now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PortEntry {
+    pub port: u16,
+    /// Held by one of the workspace's runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+    /// Who holds it: the run's title, another program's name (never its arguments), or
+    /// none when it's free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<Untrusted>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PortList {
+    pub ports: Vec<PortEntry>,
 }
 
 #[cfg(test)]

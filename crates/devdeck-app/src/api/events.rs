@@ -74,6 +74,10 @@ pub struct Hub {
     shown: Option<String>,
     edit_mode: bool,
     toast: u64,
+    /// Each workspace's ports, and the scan kept going for those whose callers follow
+    /// `ports`.
+    ports: Vec<(String, Entity<crate::port_scan::Ports>)>,
+    scanning: HashMap<String, crate::port_scan::PortsInterest>,
 }
 
 impl ApiState {
@@ -151,8 +155,28 @@ impl ApiState {
             self.hub = None;
             self.pending.clear();
             self.flushing = None;
+            return;
         } else if self.hub.is_none() {
             self.hub = Some(hub(cx));
+        }
+        // Scans go on for the workspaces whose callers follow `ports`, only.
+        let following: std::collections::BTreeSet<String> = self
+            .connections
+            .values()
+            .filter(|c| c.topics.contains(&Topic::Ports))
+            .filter_map(|c| match &c.who {
+                Who::Terminal { workspace, .. } => Some(workspace.clone()),
+                Who::Outside { .. } => None,
+            })
+            .collect();
+        let Some(hub) = self.hub.as_mut() else { return };
+        hub.scanning.retain(|ws, _| following.contains(ws));
+        let models: Vec<_> = hub.ports.iter().filter(|(ws, _)| following.contains(ws) && !hub.scanning.contains_key(ws)).cloned().collect();
+        for (ws, ports) in models {
+            let interest = ports.update(cx, |p, cx| p.interest(Default::default(), cx));
+            if let Some(hub) = self.hub.as_mut() {
+                hub.scanning.insert(ws, interest);
+            }
         }
     }
 
@@ -251,6 +275,7 @@ fn hub(cx: &mut Context<ApiState>) -> Hub {
     let mut runs = HashMap::new();
     let mut notes = HashMap::new();
     let mut shown = None;
+    let mut ports = Vec::new();
     if let Some(shell) = crate::shell::try_shell(cx) {
         let s = shell.read(cx);
         shown = s.workspaces.get(s.active).map(|w| w.id.clone());
@@ -259,10 +284,15 @@ fn hub(cx: &mut Context<ApiState>) -> Hub {
             .iter()
             .map(|w| {
                 let services = w.services.read(cx);
-                (w.id.clone(), w.deck.clone(), services.runner.clone(), services.notes.clone())
+                (w.id.clone(), w.deck.clone(), services.runner.clone(), services.notes.clone(), services.ports.clone())
             })
             .collect();
-        for (ws, deck, runner, n) in list {
+        for (ws, deck, runner, n, p) in list {
+            let id = ws.clone();
+            subs.push(cx.observe(&p, move |this, _, cx| {
+                this.change(Topic::Ports, id.clone(), Change { workspace: Some(id.clone()), terminal: None, data: json!({}) }, cx);
+            }));
+            ports.push((ws.clone(), p));
             runs.insert(ws.clone(), runner.read(cx).runs().map(|(k, r)| (k.clone(), r.state)).collect());
             let nn = n.read(cx);
             notes.insert(ws.clone(), nn.all().iter().map(|m| (m.id.clone(), nn.revision(&m.id))).collect());
@@ -292,7 +322,7 @@ fn hub(cx: &mut Context<ApiState>) -> Hub {
     let toasts = devdeck_ui::toasts(cx);
     let toast = toasts.read(cx).queue.history.back().map_or(0, |t| t.id);
     subs.push(cx.observe(&toasts, |this, t, cx| this.toasts_changed(&t, cx)));
-    Hub { _subs: subs, runs, notes, shown, edit_mode: crate::edit_mode::is_on(cx), toast }
+    Hub { _subs: subs, runs, notes, shown, edit_mode: crate::edit_mode::is_on(cx), toast, ports, scanning: HashMap::new() }
 }
 
 /// `events.subscribe` / `events.unsubscribe` for the connection of the call.

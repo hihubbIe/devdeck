@@ -117,7 +117,17 @@ impl Client {
         self.next += 1;
         let mut line = serde_json::to_vec(&Request::new(id, method, params)).map_err(|e| ClientError::Protocol(e.to_string()))?;
         line.push(b'\n');
-        self.writer.write_all(&line)?;
+        if let Err(e) = self.writer.write_all(&line) {
+            // devdeck may have refused the connection and closed it, saying why first.
+            let mut buf = Vec::new();
+            if read_message(&mut self.reader, &mut buf).unwrap_or(false)
+                && let Ok(r) = serde_json::from_slice::<Response>(&buf)
+                && let Some(err) = r.error
+            {
+                return Err(ClientError::Api(err.into()));
+            }
+            return Err(e.into());
+        }
         let mut buf = Vec::new();
         loop {
             if !read_message(&mut self.reader, &mut buf)? {

@@ -5,10 +5,10 @@ R13.10, R13.11). API level 4 for the whole phase.
 
 ## Where we are (paused 2026-11-09)
 
-- Done: steps 1–6 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, step 6's commit);
-  each has an "as built" section at the end of this file.
-- Next: step 7 (interest handles), then 8 (methods), 9 (clients), then the phase's close
-  (diff review, perf, docs, the user's manual test).
+- Done: steps 1–7 (`cfe023d`, `02be73b`, `f50cf9b`, `aad09af`, `6d26748`, `5a49513`, step
+  7's commit); each has an "as built" section at the end of this file.
+- Next: step 8 (methods), then 9 (clients), then the phase's close (diff review, perf,
+  docs, the user's manual test).
 - Open points carried forward:
   - Linux: GPUI ignores `WindowOptions::focus`, so a window the API opens may take the
     keyboard; step 8 decides whether `window.detach` and a `layout.switch` that opens
@@ -460,3 +460,116 @@ Diff review (subagent), assessed:
    connection and an ended shell stop the watching. Left: the workspace, terminals,
    edit mode, settings and layout topics end to end, and `events.lagged` through a real
    connection (its queue logic has a unit test).
+
+## Step 7 plan (2026-11-10): interest handles, the observe methods that scan
+
+What runs today only while a view wants it (R1.3) runs for the API the same way: a
+handle held by a one-off read until it has its answer, or by an `events` subscription
+while it lasts. No new OS code (R11.6): the scans are the ones views use (git through
+core's runner, ports through `core::ports`, leftovers through `GroupLog`).
+
+Methods (class observe, API level 4, a terminal caller's own workspace):
+- `git.repos{workspace?}`: the repositories of the workspace's apps (roots only of known
+  apps, never above a workspace folder): `{root, apps}` by root. Finding roots stats
+  folders: done in the background (an answer that comes later).
+- `git.status{root}`: head (branch, detached at, unborn), upstream (name, ahead, behind,
+  gone), what's under way (rebase…), the changes (path, from, kind, staged; paths are
+  untrusted; at most 500, `truncated`). A one-off full read: `Repo::look` held until the
+  state is ready, 10 s at most (`unavailable` past it).
+- `git.branches{root, remote?}`: name, upstream, commit, subject and author (untrusted),
+  local first then remote ones when asked. `Repo::glance` held until ready.
+- `port.list{workspace?}`: `Services::ports` (port, holder, command, the run when ours),
+  by port. A one-off read starts a scan when none runs (`Ports::interest`) and answers
+  after the next scan, 5 s at most; the demo (no machine scan) answers at once.
+- `port.get{port}`: one port, its holder named even when it isn't ours (the port is
+  watched for the scan, as a port view's is).
+- `leftovers.list`: what a previous devdeck left running (`GroupLog::leftovers`, in the
+  background): label and pids. Stopping them stays the user's (P4, destructive).
+
+Interests:
+- `Ports::interest() -> PortsInterest` (an `Rc` token, as `Repo`'s `Looking`): scanning
+  is wanted while one lives; with ports to watch (`port.get`) they join the scan's.
+- Topics: `ports {}` when a scan's result changes (the subscription holds a
+  `PortsInterest` per workspace with subscribers); `git {root}` when a repository's state
+  changes — for repositories something already holds (a view, a one-off read): a
+  subscription doesn't start reading every repository.
+
+Tests (`tests/app/api_git_ports.rs`, a module of `tests/app/main.rs`): roots of the
+workspace's apps only; a status read of a throwaway repository (as the git panel's tests
+make one), branches with remote ones on demand; reads that end release their handle (no
+read or scan after); the demo's ports at once; a port interest starts a scan and its end
+lets scanning stop; leftovers on an empty log; a `ports` subscription keeps scanning, an
+unsubscribe stops it; another workspace's root is `not_found`.
+
+Out of scope: git writes, stopping a port's holder or leftovers (P4); cluster (P6).
+
+Plan review (subagent), assessed:
+1. `port.get` named any process with its full command line (tokens) and could probe any
+   port, another workspace's runs showing as foreign — taken: only ports the workspace's
+   runs listen on or its commands declare (else `not_found`); a holder that isn't one of
+   its runs is named by its program only, no pid, no arguments; untrusted.
+2. Leftovers have no workspace (one log for all) — taken: `leftovers.list` moves to P4
+   with `leftovers.stop`, once entries say whose they are.
+3. `git.status` would list untracked secret-named files (`.env.local`, `id_rsa`) —
+   taken: `file.read`'s secret rules hide them (counted in `hidden`); paths, branch
+   names and subjects are untrusted.
+4. A port interest with nothing to scan scans nothing, an unchanged scan wakes no one,
+   `ensure` isn't called — taken: an interest makes scanning wanted only with runs or
+   watched ports, calls `ensure`, and the read waits for the scan count to move.
+5. Watched ports keyed by view — taken: interests are tokens of their own (with their
+   ports), released when dropped (an answer, a hang-up, the end of a subscription).
+6. Reads that continue: a re-read after release, git's own time limit, no per-caller
+   bound — taken: one-off reads count against the caller's waits (4 at once); at most one
+   read after release and git's own 10 s limit stay (said in the as-built note).
+7. "Ready" — taken: a status waits for a full read with none in flight; an error or a
+   repository that can't be opened answers at once.
+8. Roots — taken: the folders `file.read` allows (no hidden app, canonical, never `/` or
+   home), and a root never above the app's workspace folder (an app outside every folder:
+   its own folder at most); `git.status` and `git.branches` take a root of that set only,
+   computed in the background; the demo has none; unknown and another workspace's root
+   are the same `not_found`.
+9. Branches unbounded — taken: `limit` (200, 1000 at most) and `truncated`; no worktree
+   paths; author names only, untrusted.
+10. The `git` topic needs repositories to say what changed (they only redraw) — taken:
+    the `git` topic moves to P4 with git writes; `ports` events are their workspace's.
+11. Slow reads — kept as observe answers that come later within their bound (10 s for git,
+    5 s for ports), no job; catalog entries at level 4.
+Tests left out: a foreign holder's name (the demo has no machine scan; the program-only
+rule has a unit test), an inactive-workspace subscription.
+
+## Step 7, as built (2026-11-10)
+
+No new OS code (R11.6). API level 4, class observe, the caller's own workspace.
+
+- `git.repos`, `git.status{root}`, `git.branches{root, remote?, limit?}`
+  (`api/gitports.rs`): roots found in the background from the folders `file.read`
+  allows, never above the app's workspace folder, never `/` or the home folder (a root
+  checked as well as the app's folder); a root not of that set is `not_found`. A status
+  holds `Repo::look` (a full read), branches `Repo::glance`, until the state is read and
+  no read is in flight, 10 s at most; a failed read answers at once, unless a new read is
+  in flight. Changes: 500 at most, secret-named paths counted in `hidden`; branches 200 by
+  default, 1000 at most, `truncated`; author names only; all of it untrusted.
+- `port.list`, `port.get{port}`: the ports the workspace's commands declare and its runs
+  listen on, by port, and who holds each: a run's title, another program by its name
+  only (`holder_name`). A read holds a `Ports::interest` with its ports watched and
+  answers after the next scan (the one after when a scan was under way), 5 s at most, or
+  at once when there's nothing to scan (the demo).
+- `Ports::interest(ports)`: scanning is wanted while one lives with something to scan;
+  watched ports join the scan's.
+- One-off reads count among the caller's 4 waits (`waits::hold`).
+- Topic `ports {}`: a workspace's scan changed; a follower keeps its workspace scanning
+  (while there's something to scan).
+- Not here (plan review): `leftovers.list` (P4), the `git` topic (P4).
+- Found in the full suite: the client failed with a broken pipe when devdeck refused a
+  connection before reading its request (a test, flaky under load); the client now reads
+  the refusal devdeck wrote before closing.
+
+Diff review (subagent), assessed:
+1. Promised tests missing — taken: the holder rule (unit), an interest scans its ports
+   while held and stops when dropped, one-off reads count among the waits. Left: a `ports`
+   follower keeping a real workspace scanning (the demo has no scan; the hub holds the
+   same `Ports::interest` the test covers).
+2. A root could be `/` or the home folder — taken: checked like the app's folder.
+3. A stale read error answered while a new read was in flight — taken.
+4. A scan under way could answer without the newly watched port's holder — taken: the
+   read waits for the scan after it.

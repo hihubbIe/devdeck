@@ -105,6 +105,11 @@ handlers! {
     JobList => typed super::waits::job_list,
     EventsSubscribe => typed super::events::subscribe,
     EventsUnsubscribe => typed super::events::unsubscribe,
+    GitRepos => later super::gitports::git_repos,
+    GitStatus_ => later super::gitports::git_status,
+    GitBranches => later super::gitports::git_branches,
+    PortList_ => later super::gitports::port_list,
+    PortGet => later super::gitports::port_get,
 }
 
 static HANDLERS: LazyLock<BTreeMap<&'static str, Handler>> = LazyLock::new(table);

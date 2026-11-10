@@ -746,7 +746,7 @@ pub fn note_read(cx: &CallCx, p: IdParams, app: &mut App) -> Result<NoteText, Ap
 
 /// Names of files never read through the API, whatever folder (secrets; Claude Code's
 /// own rules don't reach what devdeck reads for it).
-fn secret(path: &std::path::Path) -> bool {
+pub(super) fn secret(path: &std::path::Path) -> bool {
     let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let sample = [".example", ".sample", ".template", ".dist"].iter().any(|s| name.ends_with(s));
     let env = (name == ".env" || name.starts_with(".env.") || name.ends_with(".env") || name == ".envrc") && !sample;

@@ -82,7 +82,7 @@ struct JobBook {
 impl Global for JobBook {}
 
 /// A wait in progress, counted for its caller while it lives.
-struct Waiting(Rc<RefCell<HashMap<String, usize>>>, String);
+pub(super) struct Waiting(Rc<RefCell<HashMap<String, usize>>>, String);
 
 impl Drop for Waiting {
     fn drop(&mut self) {
@@ -94,6 +94,22 @@ impl Drop for Waiting {
             }
         }
     }
+}
+
+/// Counts a one-off read that holds something (a repository looked at, a port scan)
+/// among the caller's waits: refused past [`WAITS_PER_CALLER`].
+pub(super) fn hold(who: &Who, app: &mut App) -> Result<Waiting, ApiError> {
+    let me = owner(who);
+    let counter = app.default_global::<JobBook>().waiting.clone();
+    {
+        let mut w = counter.borrow_mut();
+        let n = w.entry(me.clone()).or_default();
+        if *n >= WAITS_PER_CALLER {
+            return Err(ApiError::new(ErrorKind::Busy, format!("{WAITS_PER_CALLER} waits at once at most")));
+        }
+        *n += 1;
+    }
+    Ok(Waiting(counter, me))
 }
 
 /// A caller's jobs belong to its shell instance: a new shell there isn't it.

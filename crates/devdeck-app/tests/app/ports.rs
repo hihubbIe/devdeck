@@ -351,3 +351,24 @@ fn a_terminal_listening_is_scanned_without_being_remembered(cx: &mut TestAppCont
     let memory = PortMemory::load(&s.state);
     assert!(memory.get(WS, "", "term/1").is_empty(), "not remembered: what a terminal runs changes");
 }
+
+/// The control API's interest (`port.list`, `port.get`, a `ports` follower): scans while
+/// held with something to scan, its ports watched; stops once dropped.
+#[gpui::test]
+fn an_interest_scans_its_ports_while_held(cx: &mut TestAppContext) {
+    let s = setup(cx, "interest", vec![command("a:serve", &[])]);
+    let scans = |cx: &TestAppContext| cx.read(|cx| (s.ports.read(cx).scanning(), s.ports.read(cx).scans()));
+    let idle = cx.update(|cx| s.ports.update(cx, |p, cx| p.interest(Default::default(), cx)));
+    advance(cx, SCAN_EVERY);
+    assert_eq!(scans(cx), (false, 0), "nothing to scan: no scan");
+    drop(idle);
+    let (_held, port) = bind();
+    let interest = cx.update(|cx| s.ports.update(cx, |p, cx| p.interest(std::collections::BTreeSet::from([port]), cx)));
+    cx.run_until_parked();
+    assert_eq!(scans(cx), (true, 1));
+    let held = cx.read(|cx| s.ports.read(cx).scan.held.get(&port).cloned());
+    assert!(matches!(held, Some(PortHolder::Process { pid, .. }) if pid == std::process::id()), "{held:?}");
+    drop(interest);
+    advance(cx, SCAN_EVERY * 3);
+    assert_eq!(scans(cx), (false, 1), "stops once the interest is gone");
+}

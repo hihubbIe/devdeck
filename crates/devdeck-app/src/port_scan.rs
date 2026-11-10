@@ -73,10 +73,13 @@ impl fmt::Display for PortHolder {
 }
 
 /// The program's file name in a command line (`/usr/bin/node x.js` → `node`).
-fn program(command: &str) -> Option<&str> {
+pub fn program(command: &str) -> Option<&str> {
     let first = command.split_whitespace().next()?;
     first.rsplit('/').next().filter(|n| !n.is_empty())
 }
+
+/// Held by the control API while it wants ports scanned ([`Ports::interest`]).
+pub struct PortsInterest(#[allow(dead_code)] std::rc::Rc<BTreeSet<u16>>);
 
 /// The scan and port memory of one workspace.
 pub struct Ports {
@@ -92,6 +95,8 @@ pub struct Ports {
     pub scan: PortScan,
     /// Port views on screen and the port each shows.
     shown: BTreeMap<EntityId, u16>,
+    /// The control API's readers and followers, with the ports they watch.
+    interests: Vec<std::rc::Weak<BTreeSet<u16>>>,
     scans: u64,
     task: Option<Task<()>>,
     _observe: Subscription,
@@ -121,6 +126,7 @@ impl Ports {
             seen: BTreeMap::new(),
             scan: PortScan::default(),
             shown: BTreeMap::new(),
+            interests: Vec::new(),
             scans: 0,
             task: None,
             _observe: cx.observe(&runner, |this: &mut Ports, _, cx| this.ensure(cx)),
@@ -188,7 +194,23 @@ impl Ports {
     }
 
     fn wanted(&self, cx: &App) -> bool {
-        self.state_dir.is_some() && (!self.shown.is_empty() || !self.runner.read(cx).pids().is_empty())
+        self.state_dir.is_some() && (!self.watched().is_empty() || !self.runner.read(cx).pids().is_empty())
+    }
+
+    /// The ports port views show and the API's interests watch.
+    fn watched(&self) -> BTreeSet<u16> {
+        let api = self.interests.iter().filter_map(std::rc::Weak::upgrade).flat_map(|p| p.iter().copied().collect::<Vec<_>>());
+        self.shown.values().copied().chain(api).collect()
+    }
+
+    /// Scans while the handle lives (the control API's reads and followers), `ports`
+    /// watched with them: only while there's something to scan (a run, a watched port).
+    pub fn interest(&mut self, ports: BTreeSet<u16>, cx: &mut Context<Self>) -> PortsInterest {
+        self.interests.retain(|w| w.strong_count() > 0);
+        let held = std::rc::Rc::new(ports);
+        self.interests.push(std::rc::Rc::downgrade(&held));
+        self.ensure(cx);
+        PortsInterest(held)
     }
 
     /// Starts scanning when there is something to scan; scanning ends by itself once
@@ -219,7 +241,8 @@ impl Ports {
             }
             return None;
         }
-        Some(Job { runs: self.runner.read(cx).pids(), watched: self.shown.values().copied().collect() })
+        self.interests.retain(|w| w.strong_count() > 0);
+        Some(Job { runs: self.runner.read(cx).pids(), watched: self.watched() })
     }
 
     fn apply(&mut self, found: Found, cx: &mut Context<Self>) {

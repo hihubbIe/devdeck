@@ -134,6 +134,16 @@ methods! {
         "Follows topics on this connection: devdeck sends `event` notifications saying what changed (never its content).", since 4;
     EventsUnsubscribe = "events.unsubscribe", Observe, TopicsParams => Subscribed,
         "Stops following topics.", since 4;
+    GitRepos = "git.repos", Observe, InWorkspace => Repos,
+        "The repositories of the workspace's apps.", since 4;
+    GitStatus_ = "git.status", Observe, RepoParams => GitStatus,
+        "A repository's branch, upstream, operation under way and changes (names that may hold secrets hidden).", since 4;
+    GitBranches = "git.branches", Observe, BranchesParams => Branches,
+        "A repository's branches, remote ones when asked.", since 4;
+    PortList_ = "port.list", Observe, InWorkspace => PortList,
+        "The workspace's ports: those its runs listen on and its commands declare, and who holds each.", since 4;
+    PortGet = "port.get", Observe, PortParams => PortEntry,
+        "One of the workspace's ports and who holds it.", since 4;
 }
 
 /// A method as the catalog lists it.
@@ -215,7 +225,7 @@ mod tests {
                 Class::Run => 2,
                 Class::Read if m.name.ends_with(".wait") || m.name.starts_with("job.") => 4,
                 Class::Read => 3,
-                _ if m.name.starts_with("events.") => 4,
+                _ if ["events.", "git.", "port."].iter().any(|d| m.name.starts_with(d)) => 4,
                 _ => 1,
             };
             assert_eq!(m.since, since, "{}", m.name);
