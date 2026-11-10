@@ -16,6 +16,8 @@
 //!   would otherwise hang forever.
 //! - A refusal (401, 403, a 400) is sent once and not retried; the pod gone (404) is
 //!   [`LogUpdate::Gone`]; a stream that ends on its own is [`LogUpdate::Ended`].
+//! - [`read_logs`] is the same code asked once for everything the node serves (no follow,
+//!   no tail): a transport failure ends it with its reason (no resume mid-read).
 
 use crate::Target;
 use crate::driver::{Backoff, WatchHandle, client, runtime, until_closed};
@@ -95,10 +97,30 @@ pub enum LogRefusal {
     Other(String),
 }
 
+/// What a request asks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ask {
+    /// Followed from `from`, or the run before the last restart read once (`previous`).
+    Stream { from: LogFrom, previous: bool },
+    /// Everything the node serves of the current run, read once: no follow, no tail.
+    Everything,
+}
+
 /// Streams `container`'s logs of `pod` in `target`'s namespace: followed unless `previous`
 /// (the run before the last restart, read once). Ends when the handle or the receiver is
 /// dropped.
 pub fn logs(target: &Target, pod: &str, container: &str, from: LogFrom, previous: bool) -> (async_channel::Receiver<LogUpdate>, WatchHandle) {
+    start(target, pod, container, Ask::Stream { from, previous })
+}
+
+/// Reads everything the node serves of `container`'s current run in `pod` once, with the
+/// same lines, batches and refusals as [`logs`], then [`LogUpdate::Ended`]. A transport
+/// failure ends it with [`LogRefusal::Other`] and its reason.
+pub fn read_logs(target: &Target, pod: &str, container: &str) -> (async_channel::Receiver<LogUpdate>, WatchHandle) {
+    start(target, pod, container, Ask::Everything)
+}
+
+fn start(target: &Target, pod: &str, container: &str, ask: Ask) -> (async_channel::Receiver<LogUpdate>, WatchHandle) {
     let (tx, rx) = async_channel::unbounded();
     let (target, pod, container) = (target.clone(), pod.to_owned(), container.to_owned());
     let sender = tx.clone();
@@ -108,13 +130,14 @@ pub fn logs(target: &Target, pod: &str, container: &str, from: LogFrom, previous
         let (client, _user) = loop {
             match client(&target).await {
                 Ok(client) => break client,
+                Err(e) if ask == Ask::Everything => return out.send(LogUpdate::Refused(LogRefusal::Other(describe(&e, &target, DOING)))),
                 Err(e) => {
                     out.problem(describe(&e, &target, DOING));
                     backoff.wait().await;
                 }
             }
         };
-        stream(client, &target, &pod, &container, from, previous, out).await;
+        stream(client, &target, &pod, &container, ask, out).await;
     }));
     (rx, WatchHandle { task: task.abort_handle() })
 }
@@ -140,20 +163,25 @@ enum End {
 
 /// Sends the logs of `container` in `pod` through `client` until it ends, the pod goes or
 /// it is refused.
-async fn stream(client: Client, target: &Target, pod: &str, container: &str, from: LogFrom, previous: bool, mut out: Out) {
+async fn stream(client: Client, target: &Target, pod: &str, container: &str, ask: Ask, mut out: Out) {
     let api: Api<core::Pod> = Api::namespaced(client, &target.namespace);
+    let (from, previous, once) = match ask {
+        Ask::Stream { from, previous } => (Some(from), previous, false),
+        Ask::Everything => (None, false, true),
+    };
     let (tail, cap, mut seen) = match from {
-        LogFrom::Tail(n) => (n, RESUME_CAP.max(n), None),
-        LogFrom::Since { at, seen, cap } => (cap, cap, Some(Seen { at, count: seen })),
+        Some(LogFrom::Tail(n)) => (n, RESUME_CAP.max(n), None),
+        Some(LogFrom::Since { at, seen, cap }) => (cap, cap, Some(Seen { at, count: seen })),
+        None => (0, 0, None),
     };
     let mut backoff = Backoff::new();
     loop {
         let params = LogParams {
             container: Some(container.to_owned()),
-            follow: !previous,
+            follow: !previous && !once,
             previous,
             timestamps: true,
-            tail_lines: Some(i64::from(if seen.is_some() { cap } else { tail })),
+            tail_lines: (!once).then(|| i64::from(if seen.is_some() { cap } else { tail })),
             since_time: seen.and_then(|s| Timestamp::from_second(s.at.div_euclid(NANOS)).ok()),
             ..LogParams::default()
         };
@@ -171,6 +199,9 @@ async fn stream(client: Client, target: &Target, pod: &str, container: &str, fro
             End::Eof => return out.send(LogUpdate::Ended),
             End::Gone => return out.send(LogUpdate::Gone),
             End::Refused(refusal) => return out.send(LogUpdate::Refused(refusal)),
+            // A read once isn't resumed mid-way: it ends with its reason.
+            End::Failed(problem) if once => return out.send(LogUpdate::Refused(LogRefusal::Other(problem))),
+            End::Idle if once => return out.send(LogUpdate::Refused(LogRefusal::Other(format!("{} ({}) sent nothing for {} minutes", target.cluster, target.env, IDLE.as_secs() / 60)))),
             End::Idle => {}
             End::Failed(problem) => {
                 out.problem(problem);

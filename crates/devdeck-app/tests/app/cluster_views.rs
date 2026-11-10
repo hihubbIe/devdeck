@@ -170,3 +170,21 @@ fn deploy_now(c: &Entity<Cluster>, cx: &mut gpui::App, env: &str, name: &str, ta
         c.deploy(env, name, &from, tag, false, cx)
     })
 }
+
+#[gpui::test]
+fn home_reads_the_demos_earlier_lines_back(cx: &mut TestAppContext) {
+    let shell = start(cx, "logs-earlier-demo");
+    let main = main_window(&shell, cx);
+    let v = open(&shell, cx, ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() }).downcast::<ServiceLogsView>().unwrap();
+    advance(cx, LOGS_TICK * 4);
+    let before = cx.read(|cx| v.read(cx).feed.buffer.len());
+    focus_view(&v, main, cx);
+    cx.simulate_keystrokes(main, "home");
+    cx.run_until_parked();
+    let after = cx.read(|cx| v.read(cx).feed.buffer.len());
+    assert!(after >= before + 2000, "every running pod's made-up older lines, above ({before} → {after})");
+    assert!(!cx.read(|cx| v.read(cx).follow), "reading back: not following");
+    assert_eq!(cx.read(|cx| v.read(cx).top_row()), "start of the logs the cluster serves");
+    let times: Vec<i64> = cx.read(|cx| v.read(cx).feed.buffer.entries().take(after - before).filter_map(|e| e.at).collect());
+    assert!(times.is_sorted(), "merged by time");
+}

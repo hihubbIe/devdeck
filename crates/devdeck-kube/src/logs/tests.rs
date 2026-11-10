@@ -67,6 +67,11 @@ impl Logs {
     /// The logs of container `api` of a pod of dev35 on km011gcp, as [`logs`] streams them,
     /// whose requests are answered with `replies`.
     fn start(replies: Vec<Reply>, from: LogFrom, previous: bool) -> Logs {
+        Logs::asking(replies, Ask::Stream { from, previous })
+    }
+
+    /// The same, asking `ask`.
+    fn asking(replies: Vec<Reply>, ask: Ask) -> Logs {
         let (opened_tx, opened) = async_channel::unbounded();
         let mock = Arc::new(Mock { replies: Mutex::new(replies), queries: Mutex::default(), opened: opened_tx });
         let m = mock.clone();
@@ -79,7 +84,7 @@ impl Logs {
         let out = Out::new(tx.clone());
         let task = tokio::spawn(until_closed(tx, async move {
             let target = Target::for_tests("dev35", "km011gcp");
-            stream(client, &target, "api-5d8f7c9b6-x2k4p", "api", from, previous, out).await;
+            stream(client, &target, "api-5d8f7c9b6-x2k4p", "api", ask, out).await;
         }));
         Logs { rx, handle: WatchHandle { task: task.abort_handle() }, mock, opened }
     }
@@ -333,4 +338,43 @@ async fn dropping_the_handle_ends_the_request() {
     assert!(body.send_data(Bytes::from(raw(2, 0, "nobody"))).await.is_err(), "the body is dropped");
     tokio::time::sleep(Duration::from_secs(600)).await;
     assert_eq!(l.mock.queries.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_logs_asks_everything_once_and_ends() {
+    let body = [raw(1, 0, "oldest"), raw(1, 0, "oldest"), "no timestamp\n".to_string(), raw(2, 0, "newest")].concat();
+    let l = Logs::asking(vec![Reply::Whole(body.into())], Ask::Everything);
+    let expected = vec![line(1, 0, "oldest"), line(1, 0, "oldest"), LogLine { at: None, text: "no timestamp".into(), level: Level::Plain }, line(2, 0, "newest")];
+    assert_eq!(l.next().await, LogUpdate::Lines(expected), "the same lines and batches as a stream");
+    assert_eq!(l.next().await, LogUpdate::Ended);
+    l.closed().await;
+    let query = &l.queries()[0];
+    assert!(query.contains("container=api") && query.contains("timestamps=true"), "{query}");
+    for part in ["follow", "tailLines", "sinceTime", "previous"] {
+        assert!(!query.contains(part), "no {part}: {query}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_logs_ends_with_the_reason_of_a_transport_failure() {
+    let l = Logs::asking(vec![Reply::Open], Ask::Everything);
+    let mut body = l.body().await;
+    send(&mut body, raw(1, 0, "a")).await;
+    assert_eq!(l.next().await, LogUpdate::Lines(vec![line(1, 0, "a")]));
+    body.abort(io::Error::new(io::ErrorKind::ConnectionReset, "connection reset by peer"));
+    assert_eq!(l.next().await, LogUpdate::Refused(LogRefusal::Other("can't reach km011gcp (dev35): connection reset by peer".into())), "no resume mid-read");
+    l.closed().await;
+    tokio::time::sleep(Duration::from_secs(100)).await;
+    assert_eq!(l.queries().len(), 1, "not asked again");
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_logs_ends_on_a_server_error_and_says_a_refusal() {
+    let l = Logs::asking(vec![Reply::Status(503, "the server is currently unable to handle the request")], Ask::Everything);
+    assert_eq!(l.next().await, LogUpdate::Refused(LogRefusal::Other("km011gcp (dev35): the server is currently unable to handle the request (503)".into())));
+    l.closed().await;
+    let forbidden = "pods \"api-5d8f7c9b6-x2k4p\" is forbidden: User \"x\" cannot get resource \"pods/log\"";
+    let l = Logs::asking(vec![Reply::Status(403, forbidden)], Ask::Everything);
+    assert_eq!(l.next().await, LogUpdate::Refused(LogRefusal::Forbidden("your account can't read logs in dev35".into())));
+    l.closed().await;
 }

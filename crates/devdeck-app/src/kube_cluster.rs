@@ -5,8 +5,9 @@
 //! changes: only envs whose target changed (another context, folder or file content, a
 //! rotated token) reconnect.
 //!
-//! Deployments, pods (for whoever wants them) and metrics are read, logs streamed, the
-//! main image set (deploys), and whether the account may is asked first.
+//! Deployments, pods (for whoever wants them) and metrics are read, logs streamed (and
+//! read back once), the main image set (deploys), and whether the account may is asked
+//! first.
 
 use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, ImageChange, LogFrom, LogStream, MetricsRead, PodScope};
 use devdeck_core::config::ClusterConfig;
@@ -128,6 +129,12 @@ impl ClusterDriver for KubeCluster {
     fn stream_logs(&self, env: &str, pod: &str, container: &str, from: LogFrom, previous: bool, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
         let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()))?;
         let (updates, handle) = devdeck_kube::logs(&target, pod, container, from, previous);
+        Ok(LogStream { updates, keep: Box::new(handle) })
+    }
+
+    fn read_logs(&self, env: &str, pod: &str, container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+        let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()))?;
+        let (updates, handle) = devdeck_kube::read_logs(&target, pod, container);
         Ok(LogStream { updates, keep: Box::new(handle) })
     }
 

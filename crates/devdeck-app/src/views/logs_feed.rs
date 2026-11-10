@@ -1,6 +1,7 @@
-//! What a logs view shows (R7.5): [`LogsBuffer`], the lines kept with what the filter and
-//! find show, kept up to date as lines come and go (nothing is recomputed per frame); and
-//! [`LogsFeed`], one stream per pod of the service while the view is on screen.
+//! What a logs view shows (R7.5): [`LogsBuffer`], the lines kept with what the level, the
+//! pod and the filter show, kept up to date as lines come and go (nothing is recomputed
+//! per frame); and [`LogsFeed`], one stream per pod of the service while the view is on
+//! screen.
 //!
 //! - Pods there when the first list comes show their last [`FIRST_LINES`]; a pod that
 //!   comes later (a rollout) joins with up to [`CATCH_UP`]; a pod that goes keeps its
@@ -18,10 +19,17 @@
 //! - The first lines of streams started together are merged by time (for at most
 //!   [`MERGE_WAIT`]); later lines show in the order they come. Updates are drained at
 //!   most once per [`DRAIN_EVERY`], one render for all.
-//! - Paused, lines go to a queue of their own (capped and counted) shown on resume.
+//! - Paused, or not following with the buffer full, lines wait in a queue of their own
+//!   (capped and counted), shown on resume or once following again: what's on screen
+//!   isn't pushed out while someone reads it.
+//! - Reading back ([`LogsFeed::earlier`]): one read of everything the node serves per pod,
+//!   cut where the oldest line shown is (its time and how many lines at that time are
+//!   shown), the older lines of every pod merged by time and put above
+//!   ([`LogsBuffer::prepend`]) within the caps. A pod read once is at its start until its
+//!   restarts or the generation change.
 
 use super::logs_view::{MinLevel, ServiceLogsView};
-use crate::cluster::{Cluster, LogFrom, LogLine, LogRefusal, LogUpdate};
+use crate::cluster::{Cluster, LogFrom, LogLine, LogRefusal, LogStream, LogUpdate};
 use devdeck_core::cluster::Pod;
 use devdeck_core::runs::Level;
 use gpui::{Context, Entity, SharedString, Task};
@@ -33,9 +41,11 @@ pub const FIRST_LINES: u32 = 200;
 /// Most lines a pod reads back when it joins or resumes.
 pub const CATCH_UP: u32 = 1000;
 /// Lines kept for the whole view.
-pub const MAX_LINES: usize = 10_000;
+pub const MAX_LINES: usize = 100_000;
 /// Bytes of text kept for the whole view.
-pub const MAX_BYTES: usize = 16 << 20;
+pub const MAX_BYTES: usize = 64 << 20;
+/// The absolute index of the first line: lines read back go above it, indices going down.
+pub const FIRST_INDEX: u64 = 1 << 40;
 /// How long a gone pod's stream may run to its end.
 pub const GONE_GRACE: Duration = Duration::from_secs(30);
 /// How long the first lines of streams started together wait for each other.
@@ -46,7 +56,18 @@ pub const DRAIN_EVERY: Duration = Duration::from_millis(16);
 /// still runs it's asked again: a server or proxy can end a stream cleanly.
 pub const ENDED_RETRY: Duration = Duration::from_secs(5);
 
-/// One line shown: a pod's, or a note of devdeck's ("pod … gone").
+/// What a row is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A line of a pod's current run.
+    Line,
+    /// A note of devdeck's ("pod … gone").
+    Note,
+    /// A line of a pod's run before its last restart.
+    Previous,
+}
+
+/// One line shown: a pod's, or a note of devdeck's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     /// The server's timestamp (epoch ns).
@@ -55,16 +76,24 @@ pub struct Entry {
     pub pod: SharedString,
     pub text: SharedString,
     pub level: Level,
-    pub note: bool,
+    pub kind: Kind,
 }
 
 impl Entry {
-    fn line(pod: &SharedString, l: LogLine) -> Self {
-        Self { at: l.at, pod: pod.clone(), text: l.text.into(), level: l.level, note: false }
+    pub fn line(pod: &SharedString, l: LogLine) -> Self {
+        Self { at: l.at, pod: pod.clone(), text: l.text.into(), level: l.level, kind: Kind::Line }
+    }
+
+    fn previous(pod: &SharedString, l: LogLine) -> Self {
+        Self { kind: Kind::Previous, ..Self::line(pod, l) }
     }
 
     fn note(pod: &SharedString, text: String) -> Self {
-        Self { at: None, pod: pod.clone(), text: text.into(), level: Level::Plain, note: true }
+        Self { at: None, pod: pod.clone(), text: text.into(), level: Level::Plain, kind: Kind::Note }
+    }
+
+    pub fn is_note(&self) -> bool {
+        self.kind == Kind::Note
     }
 }
 
@@ -73,34 +102,45 @@ pub fn short(pod: &str) -> &str {
     pod.rsplit('-').next().unwrap_or(pod)
 }
 
-/// The lines kept, by absolute index (the first line ever is 0), and what the filter,
-/// the pod picked and find show, kept up to date line by line.
+/// What [`LogsBuffer::prepend`] put above.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Prepended {
+    /// Lines put above.
+    pub lines: usize,
+    /// Of them, the lines shown (the first rows now).
+    pub rows: usize,
+    /// Some didn't fit (the oldest were left out).
+    pub full: bool,
+}
+
+/// The lines kept, by absolute index (the first line ever is [`FIRST_INDEX`], lines put
+/// above go down from it), and what the level, the pod picked and the filter show, kept up
+/// to date line by line.
 pub struct LogsBuffer {
     entries: VecDeque<Entry>,
-    /// Each entry's length in characters (finding the longest again costs no counting).
+    /// Each entry's length in characters (finding the longest again or wrapping costs no
+    /// counting).
     chars: VecDeque<usize>,
     /// The absolute index of `entries[0]`.
     first: u64,
-    /// Lines cleared on purpose (another container), not dropped for room.
-    cleared: u64,
+    /// Lines dropped for room.
+    dropped: u64,
     bytes: usize,
     min: MinLevel,
     pod: Option<SharedString>,
-    /// The find text's characters, lowercase; empty: no find.
+    /// The filter's characters, lowercase; empty: no filter.
     query: Vec<char>,
+    /// The filter is all ASCII (matched on bytes).
+    ascii: bool,
     /// Absolute indices of the lines shown, in order.
     rows: VecDeque<u64>,
-    /// Absolute indices of the shown lines holding the find text, and how many times each.
-    hits: VecDeque<u64>,
-    hit_counts: VecDeque<u32>,
-    /// Every match of the shown lines.
-    total: usize,
     /// The longest line shown, by characters.
     longest: Option<(u64, usize)>,
     max_lines: usize,
     max_bytes: usize,
-    /// Moves whenever what's shown changes (wrapping is worked out again then).
-    version: u64,
+    /// Moves when the rows shown change other than lines added at the end or dropped from
+    /// the front (a filter, lines put above): what's worked out per row starts again.
+    reshaped: u64,
 }
 
 impl Default for LogsBuffer {
@@ -114,49 +154,50 @@ impl LogsBuffer {
         Self {
             entries: VecDeque::new(),
             chars: VecDeque::new(),
-            first: 0,
-            cleared: 0,
+            first: FIRST_INDEX,
+            dropped: 0,
             bytes: 0,
             min: MinLevel::All,
             pod: None,
             query: Vec::new(),
+            ascii: true,
             rows: VecDeque::new(),
-            hits: VecDeque::new(),
-            hit_counts: VecDeque::new(),
-            total: 0,
             longest: None,
             max_lines: max_lines.max(1),
             max_bytes,
-            version: 0,
+            reshaped: 0,
         }
     }
 
     fn shows(&self, e: &Entry) -> bool {
         // A note about no pod in particular shows whatever pod is picked.
         let pod = e.pod.is_empty() || self.pod.as_ref().is_none_or(|p| *p == e.pod);
-        // The filter shows only the lines holding its text.
-        let filtered = self.query.is_empty() || self.hit(e) > 0;
-        pod && filtered && (e.note || super::logs_view::shown(e.level, self.min))
+        pod && (e.is_note() || super::logs_view::shown(e.level, self.min)) && self.holds(&e.text)
     }
 
-    /// How many times `e` holds the find text.
-    fn hit(&self, e: &Entry) -> usize {
-        if self.query.is_empty() { 0 } else { match_ranges(&e.text, &self.query).len() }
+    /// Whether `text` holds the filter (always without one).
+    fn holds(&self, text: &str) -> bool {
+        if self.query.is_empty() {
+            return true;
+        }
+        if self.ascii && text.is_ascii() {
+            let (t, n) = (text.as_bytes(), self.query.len());
+            return t.windows(n).any(|w| w.iter().zip(&self.query).all(|(b, q)| b.to_ascii_lowercase() == *q as u8));
+        }
+        holds(text, &self.query)
+    }
+
+    /// Whether `e` fits without pushing a line out.
+    pub fn fits(&self, e: &Entry) -> bool {
+        self.entries.is_empty() || (self.entries.len() < self.max_lines && self.bytes + e.text.len() <= self.max_bytes)
     }
 
     pub fn push(&mut self, e: Entry) {
-        self.version += 1;
         let abs = self.first + self.entries.len() as u64;
         self.bytes += e.text.len();
         let chars = e.text.chars().count();
         if self.shows(&e) {
             self.rows.push_back(abs);
-            let n = self.hit(&e);
-            if n > 0 {
-                self.hits.push_back(abs);
-                self.hit_counts.push_back(n as u32);
-                self.total += n;
-            }
             if self.longest.is_none_or(|(_, n)| chars > n) {
                 self.longest = Some((abs, chars));
             }
@@ -172,17 +213,60 @@ impl LogsBuffer {
                 lost_longest = true;
             }
             self.first += 1;
+            self.dropped += 1;
         }
         while self.rows.front().is_some_and(|i| *i < self.first) {
             self.rows.pop_front();
         }
-        while self.hits.front().is_some_and(|i| *i < self.first) {
-            self.hits.pop_front();
-            self.total -= self.hit_counts.pop_front().unwrap_or(0) as usize;
-        }
         if lost_longest {
             self.find_longest();
         }
+    }
+
+    /// Puts `lines` (oldest first) above the first line, as many as fit within the caps:
+    /// the newest of them, nothing pushed out.
+    pub fn prepend(&mut self, lines: Vec<Entry>) -> Prepended {
+        let mut room = (self.max_lines.saturating_sub(self.entries.len()), self.max_bytes.saturating_sub(self.bytes));
+        let mut from = lines.len();
+        while from > 0 {
+            let len = lines[from - 1].text.len();
+            if room.0 == 0 || len > room.1 {
+                break;
+            }
+            room = (room.0 - 1, room.1 - len);
+            from -= 1;
+        }
+        let full = from > 0;
+        let kept: Vec<Entry> = lines.into_iter().skip(from).collect();
+        if kept.is_empty() {
+            return Prepended { full, ..Default::default() };
+        }
+        let first = self.first - kept.len() as u64;
+        let mut shown = Vec::new();
+        let mut chars = Vec::with_capacity(kept.len());
+        for (i, e) in kept.iter().enumerate() {
+            let n = e.text.chars().count();
+            chars.push(n);
+            if self.shows(e) {
+                let abs = first + i as u64;
+                shown.push(abs);
+                if self.longest.is_none_or(|(_, m)| n > m) {
+                    self.longest = Some((abs, n));
+                }
+            }
+        }
+        let added = Prepended { lines: kept.len(), rows: shown.len(), full };
+        for (e, n) in kept.into_iter().zip(chars).rev() {
+            self.bytes += e.text.len();
+            self.entries.push_front(e);
+            self.chars.push_front(n);
+        }
+        for abs in shown.into_iter().rev() {
+            self.rows.push_front(abs);
+        }
+        self.first = first;
+        self.reshaped += 1;
+        added
     }
 
     fn find_longest(&mut self) {
@@ -190,24 +274,9 @@ impl LogsBuffer {
     }
 
     fn refilter(&mut self) {
-        self.version += 1;
+        self.reshaped += 1;
         self.rows = (0..self.entries.len()).filter(|i| self.shows(&self.entries[*i])).map(|i| self.first + i as u64).collect();
         self.find_longest();
-        self.refind();
-    }
-
-    fn refind(&mut self) {
-        self.hits.clear();
-        self.hit_counts.clear();
-        self.total = 0;
-        for i in self.rows.clone() {
-            let n = self.hit(&self.entries[(i - self.first) as usize]);
-            if n > 0 {
-                self.hits.push_back(i);
-                self.hit_counts.push_back(n as u32);
-                self.total += n;
-            }
-        }
     }
 
     pub fn set_min(&mut self, min: MinLevel) {
@@ -224,28 +293,27 @@ impl LogsBuffer {
         self.pod.as_ref()
     }
 
+    /// Shows only the lines holding `query`, ignoring case (empty: every line).
     pub fn set_query(&mut self, query: &str) {
         self.query = query.chars().flat_map(char::to_lowercase).collect();
+        self.ascii = self.query.iter().all(char::is_ascii);
         self.refilter();
     }
 
+    /// Every line goes (another container); not counted as dropped.
     pub fn clear(&mut self) {
-        self.version += 1;
+        self.reshaped += 1;
         self.first += self.entries.len() as u64;
-        self.cleared += self.entries.len() as u64;
         self.entries.clear();
         self.chars.clear();
         self.bytes = 0;
         self.rows.clear();
-        self.hits.clear();
-        self.hit_counts.clear();
-        self.total = 0;
         self.longest = None;
     }
 
-    /// What's shown changed when this did.
-    pub fn version(&self) -> u64 {
-        self.version
+    /// Moves when the rows shown changed other than at their ends (see the field).
+    pub fn reshaped(&self) -> u64 {
+        self.reshaped
     }
 
     /// Lines kept.
@@ -257,9 +325,24 @@ impl LogsBuffer {
         self.entries.is_empty()
     }
 
+    /// Whether no other line fits without pushing one out.
+    pub fn is_full(&self) -> bool {
+        self.entries.len() >= self.max_lines || self.bytes >= self.max_bytes
+    }
+
+    /// The most lines kept.
+    pub fn max_lines(&self) -> usize {
+        self.max_lines
+    }
+
     /// Lines dropped to stay within the caps.
     pub fn dropped(&self) -> u64 {
-        self.first - self.cleared
+        self.dropped
+    }
+
+    /// The absolute index of the first line kept.
+    pub fn first_line(&self) -> u64 {
+        self.first
     }
 
     /// Lines shown.
@@ -269,8 +352,7 @@ impl LogsBuffer {
 
     /// The line shown at `row`.
     pub fn row(&self, row: usize) -> Option<&Entry> {
-        let i = *self.rows.get(row)?;
-        self.entries.get((i - self.first) as usize)
+        self.line(*self.rows.get(row)?)
     }
 
     /// The absolute index of the line shown at `row`.
@@ -283,44 +365,30 @@ impl LogsBuffer {
         self.rows.binary_search(&abs).ok()
     }
 
+    /// The line `abs`, if it's kept.
+    pub fn line(&self, abs: u64) -> Option<&Entry> {
+        self.entries.get(usize::try_from(abs.checked_sub(self.first)?).ok()?)
+    }
+
+    /// The length in characters of the line `abs` (0 if it's not kept).
+    pub fn chars_of(&self, abs: u64) -> usize {
+        abs.checked_sub(self.first).and_then(|i| self.chars.get(i as usize)).copied().unwrap_or(0)
+    }
+
+    /// The lines shown after the line `after` (every one for `None`), in order.
+    pub fn rows_after(&self, after: Option<u64>) -> impl Iterator<Item = u64> + '_ {
+        let from = after.map_or(0, |a| self.rows.partition_point(|r| *r <= a));
+        self.rows.range(from..).copied()
+    }
+
     /// The row of the longest line shown (sizes the sideways scroll).
     pub fn longest_row(&self) -> Option<usize> {
         self.row_of(self.longest?.0)
     }
 
-    /// Absolute indices of the shown lines holding the find text, in order.
-    pub fn hits(&self) -> &VecDeque<u64> {
-        &self.hits
-    }
-
-    /// Every match of the find text in the shown lines.
-    pub fn matches(&self) -> usize {
-        self.total
-    }
-
-    /// The find text's characters, lowercase.
+    /// The filter's characters, lowercase.
     pub fn query(&self) -> &[char] {
         &self.query
-    }
-
-    /// The `index`th match (from 0): its line and which match of that line.
-    pub fn match_at(&self, index: usize) -> Option<(u64, usize)> {
-        let mut left = index;
-        for (line, n) in self.hits.iter().zip(&self.hit_counts) {
-            let n = *n as usize;
-            if left < n {
-                return Some((*line, left));
-            }
-            left -= n;
-        }
-        None
-    }
-
-    /// Where the `nth` match of `line` is among every match.
-    pub fn match_index(&self, line: u64, nth: usize) -> Option<usize> {
-        let at = self.hits.binary_search(&line).ok()?;
-        let before: usize = self.hit_counts.iter().take(at).map(|n| *n as usize).sum();
-        (nth < self.hit_counts[at] as usize).then_some(before + nth)
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &Entry> {
@@ -354,7 +422,51 @@ struct PodFeed {
     grace: Option<Task<()>>,
     /// Its previous run being read, and its lines so far (shown together at its end).
     previous: Option<(u64, Task<()>, Vec<Entry>)>,
+    /// Read back to its start with these restarts and this generation.
+    start: Option<(u32, (u64, u64))>,
 }
+
+impl PodFeed {
+    /// Its container runs or ran, and reading isn't refused.
+    fn readable(&self) -> bool {
+        !self.gone && self.refused.is_none() && (self.seen.1.starts_with("running") || self.seen.1.starts_with("terminated"))
+    }
+}
+
+/// A read back under way: what must still hold when it ends for its lines to be used.
+struct Reading {
+    id: u64,
+    _task: Task<()>,
+    container: Option<String>,
+    generation: (u64, u64),
+    /// Each pod read, its restarts when the read started, and its oldest line shown (its
+    /// time, how many lines at that time are shown).
+    pods: Vec<(SharedString, u32, (i64, u32))>,
+}
+
+/// How the last read back ended, when it says more than "load earlier lines".
+#[derive(Clone, Debug, PartialEq)]
+pub enum BackEnd {
+    /// Some lines didn't fit: the newest of them were kept.
+    Full,
+    /// These pods' lines couldn't be lined up with those shown (short names).
+    Unaligned(Vec<String>),
+    Failed(String),
+}
+
+/// What the top row says.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Back {
+    /// Earlier lines can be read.
+    Idle,
+    Reading,
+    /// Every pod was read to its start.
+    Start,
+    Ended(BackEnd),
+}
+
+/// What one pod's read back brought: its lines, or why not.
+pub type ReadResult = (SharedString, Result<Vec<LogLine>, String>);
 
 /// Lines held while the first lines of streams started together arrive.
 struct Merge {
@@ -384,10 +496,16 @@ pub struct LogsFeed {
     next_id: u64,
     pub buffer: LogsBuffer,
     pub paused: bool,
-    /// Lines that came while paused.
+    /// The view follows new lines: when not, a full buffer keeps what's shown and new
+    /// lines wait.
+    following: bool,
+    /// Lines that came while paused, or while not following with the buffer full.
     held: VecDeque<Entry>,
-    /// Lines that came while paused and didn't fit.
+    /// Lines that came meanwhile and didn't fit.
     held_dropped: u64,
+    reading: Option<Reading>,
+    /// How the last read back ended; forgotten when the lines go or the generation changes.
+    last: Option<BackEnd>,
 }
 
 impl LogsFeed {
@@ -407,8 +525,11 @@ impl LogsFeed {
             next_id: 0,
             buffer: LogsBuffer::default(),
             paused: false,
+            following: true,
             held: VecDeque::new(),
             held_dropped: 0,
+            reading: None,
+            last: None,
         }
     }
 
@@ -421,7 +542,7 @@ impl LogsFeed {
         self.visible
     }
 
-    /// Lines that came while paused, not shown yet.
+    /// Lines waiting to be shown (paused, or not following with the buffer full).
     pub fn held(&self) -> u64 {
         self.held.len() as u64 + self.held_dropped
     }
@@ -484,6 +605,8 @@ impl LogsFeed {
     }
 
     fn stop_all(&mut self) {
+        // Its result would be dropped anyway.
+        self.reading = None;
         for p in self.pods.values_mut() {
             p.stream = None;
             p.previous = None;
@@ -501,6 +624,8 @@ impl LogsFeed {
         self.held.clear();
         self.held_dropped = 0;
         self.merge = None;
+        self.reading = None;
+        self.last = None;
         for p in self.pods.values_mut() {
             *p = PodFeed { name: p.name.clone(), gone: p.gone, ..Default::default() };
         }
@@ -518,6 +643,8 @@ impl LogsFeed {
         if generation != self.generation {
             self.generation = generation;
             resume = true;
+            self.reading = None;
+            self.last = None;
             for p in self.pods.values_mut() {
                 p.refused = None;
             }
@@ -720,7 +847,7 @@ impl LogsFeed {
             // Held, then shown at once between its notes: live lines don't come in between.
             let end = match update {
                 LogUpdate::Lines(l) => {
-                    lines.extend(l.into_iter().map(|l| Entry::line(&pod, l)));
+                    lines.extend(l.into_iter().map(|l| Entry::previous(&pod, l)));
                     return;
                 }
                 LogUpdate::Problem(_) => return,
@@ -794,7 +921,8 @@ impl LogsFeed {
     }
 
     fn deliver(&mut self, e: Entry) {
-        if self.paused {
+        // Behind those already waiting; not pushing out what's read while not following.
+        if self.paused || !self.held.is_empty() || (!self.following && !self.buffer.fits(&e)) {
             self.held.push_back(e);
             if self.held.len() > MAX_LINES {
                 self.held.pop_front();
@@ -805,15 +933,254 @@ impl LogsFeed {
         }
     }
 
-    pub fn set_paused(&mut self, paused: bool) {
-        self.paused = paused;
-        if !paused {
-            for e in std::mem::take(&mut self.held) {
+    /// Shows the lines waiting that can be: all of them when following, else those that
+    /// fit; none while paused.
+    fn flush_held(&mut self) {
+        if self.paused {
+            return;
+        }
+        while let Some(e) = self.held.front() {
+            if !self.following && !self.buffer.fits(e) {
+                break;
+            }
+            if let Some(e) = self.held.pop_front() {
                 self.buffer.push(e);
             }
+        }
+        if self.held.is_empty() {
             self.held_dropped = 0;
         }
     }
+
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        self.flush_held();
+    }
+
+    /// Whether the view follows new lines (see [`LogsFeed::held`]).
+    pub fn set_following(&mut self, following: bool) {
+        self.following = following;
+        self.flush_held();
+    }
+
+    pub fn is_following(&self) -> bool {
+        self.following
+    }
+
+    fn at_start(&self, p: &PodFeed) -> bool {
+        p.start == Some((p.seen.0, self.generation))
+    }
+
+    /// What the top row says.
+    pub fn back(&self) -> Back {
+        if self.reading.is_some() {
+            return Back::Reading;
+        }
+        if let Some(end) = &self.last {
+            return Back::Ended(end.clone());
+        }
+        if self.pods.values().filter(|p| p.readable()).all(|p| self.at_start(p)) {
+            return Back::Start;
+        }
+        Back::Idle
+    }
+
+    /// Why earlier lines can't be read now, if they can't.
+    pub fn earlier_refusal(&self) -> Option<String> {
+        match self.back() {
+            Back::Idle | Back::Ended(BackEnd::Failed(_)) => None,
+            Back::Reading => Some("earlier lines are being read".into()),
+            Back::Ended(BackEnd::Full) => Some(format!("full: {} lines kept", thousands(self.buffer.max_lines()))),
+            Back::Start | Back::Ended(BackEnd::Unaligned(_)) => Some("these are the earliest lines the cluster serves".into()),
+        }
+    }
+
+    /// Each pod's oldest line shown, merging or waiting (notes and previous runs left out):
+    /// its time and how many of its lines have exactly that time.
+    fn oldest(&self) -> BTreeMap<SharedString, (i64, u32)> {
+        let mut out: BTreeMap<SharedString, (i64, u32)> = BTreeMap::new();
+        let merging = self.merge.iter().flat_map(|m| m.lines.iter());
+        for e in self.buffer.entries().chain(merging).chain(self.held.iter()) {
+            let (Kind::Line, Some(at)) = (e.kind, e.at) else { continue };
+            match out.get_mut(&e.pod) {
+                None => {
+                    out.insert(e.pod.clone(), (at, 1));
+                }
+                Some((t, c)) if at < *t => (*t, *c) = (at, 1),
+                Some((t, c)) if at == *t => *c += 1,
+                Some(_) => {}
+            }
+        }
+        out
+    }
+
+    /// Reads back, once, everything the cluster serves of each pod not at its start yet;
+    /// [`ServiceLogsView::read_back_done`] gets the lines. False when nothing was started
+    /// (a read under way, full, every pod at its start, hidden).
+    pub fn earlier(&mut self, cluster: &Entity<Cluster>, cx: &mut Context<ServiceLogsView>) -> bool {
+        if self.reading.is_some() || !self.visible || self.last == Some(BackEnd::Full) {
+            return false;
+        }
+        let oldest = self.oldest();
+        let generation = self.generation;
+        let mut pods = Vec::new();
+        for (name, feed) in &mut self.pods {
+            if !feed.readable() || feed.start == Some((feed.seen.0, generation)) {
+                continue;
+            }
+            match oldest.get(name) {
+                Some(o) => pods.push((name.clone(), feed.seen.0, *o)),
+                // Nothing of it shown: nothing to line earlier lines up with.
+                None => feed.start = Some((feed.seen.0, generation)),
+            }
+        }
+        if pods.is_empty() {
+            return false;
+        }
+        let (env, service) = (self.env.clone(), self.name.clone());
+        let mut streams: Vec<(SharedString, Result<LogStream, String>)> = Vec::new();
+        for (name, _, _) in &pods {
+            let container = cluster.read(cx).pods(&env, &service).iter().find(|p| p.name == name.as_ref()).and_then(|p| self.container_of(p));
+            let stream = match container {
+                Some(c) => cluster.update(cx, |cl, cx| cl.read_logs(&env, name, &c, cx)),
+                None => Err(format!("pod {} has no such container", short(name))),
+            };
+            streams.push((name.clone(), stream));
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        let task = cx.spawn(async move |this, cx| {
+            let mut results: Vec<ReadResult> = Vec::new();
+            for (pod, stream) in streams {
+                let result = match stream {
+                    Err(why) => Err(why),
+                    Ok(LogStream { updates, keep }) => {
+                        let _keep = keep;
+                        let mut lines = Vec::new();
+                        let mut end = Err("the read stopped".to_string());
+                        while let Ok(update) = updates.recv().await {
+                            match update {
+                                LogUpdate::Lines(l) => lines.extend(l),
+                                LogUpdate::Problem(_) => {}
+                                LogUpdate::Ended => {
+                                    end = Ok(());
+                                    break;
+                                }
+                                LogUpdate::Gone => {
+                                    end = Err(format!("pod {} is gone", short(&pod)));
+                                    break;
+                                }
+                                LogUpdate::Refused(r) => {
+                                    end = Err(refusal_text(&r));
+                                    break;
+                                }
+                            }
+                        }
+                        end.map(|()| lines)
+                    }
+                };
+                results.push((pod, result));
+            }
+            let _ = this.update(cx, |v, cx| v.read_back_done(id, results, cx));
+        });
+        self.last = None;
+        self.reading = Some(Reading { id, _task: task, container: self.container.clone(), generation, pods });
+        true
+    }
+
+    /// A read back ended: each pod's lines older than those shown, merged by time, go
+    /// above. `None`: not this read's, or dropped (the container, the generation or a
+    /// pod's restarts changed, or the view was hidden meanwhile).
+    pub fn finish_read(&mut self, id: u64, results: Vec<ReadResult>) -> Option<Prepended> {
+        let reading = self.reading.take_if(|r| r.id == id)?;
+        if !self.visible || reading.container != self.container || reading.generation != self.generation {
+            return None;
+        }
+        if reading.pods.iter().any(|(pod, restarts, _)| self.pods.get(pod).is_some_and(|f| f.seen.0 != *restarts)) {
+            return None;
+        }
+        let mut kept = Vec::new();
+        let mut unaligned = Vec::new();
+        let mut failed = None;
+        for (pod, result) in results {
+            let Some(&(_, restarts, oldest)) = reading.pods.iter().find(|(p, _, _)| *p == pod) else { continue };
+            match result {
+                Err(why) => {
+                    failed.get_or_insert(why);
+                    continue;
+                }
+                Ok(lines) => match cut(&lines, oldest) {
+                    Some(n) => kept.push(lines.into_iter().take(n).map(|l| Entry::line(&pod, l)).collect::<Vec<_>>()),
+                    None => unaligned.push(short(&pod).to_string()),
+                },
+            }
+            if let Some(f) = self.pods.get_mut(&pod) {
+                f.start = Some((restarts, self.generation));
+            }
+        }
+        let added = self.buffer.prepend(merge_by_time(kept));
+        self.last = match failed {
+            Some(why) => Some(BackEnd::Failed(why)),
+            None if added.full => Some(BackEnd::Full),
+            None if !unaligned.is_empty() => Some(BackEnd::Unaligned(unaligned)),
+            None => None,
+        };
+        Some(added)
+    }
+}
+
+/// How many of a pod's read lines (oldest first) are older than those shown, whose oldest
+/// is at `at` with `shown` lines at exactly that time: the lines before the first one at
+/// `at`, then those of that time not shown yet (the shown ones are its last; lines without
+/// a time stay where they are). `None`: no line at `at`, nothing to line up with.
+pub fn cut(lines: &[LogLine], (at, shown): (i64, u32)) -> Option<usize> {
+    let first = lines.iter().position(|l| l.at == Some(at))?;
+    let group = lines[first..].iter().take_while(|l| l.at.is_none_or(|t| t == at)).filter(|l| l.at == Some(at)).count();
+    let mut left = group.saturating_sub(shown as usize);
+    let mut keep = first;
+    for l in &lines[first..] {
+        if left == 0 {
+            break;
+        }
+        match l.at {
+            Some(t) if t == at => left -= 1,
+            Some(_) => break,
+            None => {}
+        }
+        keep += 1;
+    }
+    Some(keep)
+}
+
+/// Every pod's lines (each oldest first) in one list by time; a line without a time
+/// stays after its pod's line before it.
+fn merge_by_time(pods: Vec<Vec<Entry>>) -> Vec<Entry> {
+    let mut all: Vec<(i64, Entry)> = Vec::with_capacity(pods.iter().map(Vec::len).sum());
+    for lines in pods {
+        let mut last = i64::MIN;
+        for e in lines {
+            if let Some(at) = e.at {
+                last = at;
+            }
+            all.push((last, e));
+        }
+    }
+    // Stable: a pod's lines at one time keep their order.
+    all.sort_by_key(|(at, _)| *at);
+    all.into_iter().map(|(_, e)| e).collect()
+}
+
+/// `100000` → `100 000`.
+pub fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// A refusal in words.
@@ -836,6 +1203,27 @@ fn read(stream: crate::cluster::LogStream, pod: SharedString, id: u64, cx: &mut 
     })
 }
 
+/// Whether `text` holds `query` (lowercase characters), ignoring case, per character.
+fn holds(text: &str, query: &[char]) -> bool {
+    let mut starts = text.char_indices();
+    loop {
+        let mut rest = starts.as_str().chars();
+        if query.iter().all(|q| rest.next().is_some_and(|c| lower(c) == Some(*q))) {
+            return true;
+        }
+        if starts.next().is_none() {
+            return false;
+        }
+    }
+}
+
+/// `c` lowercase, when that's one character.
+fn lower(c: char) -> Option<char> {
+    let mut l = c.to_lowercase();
+    let first = l.next();
+    if l.next().is_none() { first } else { None }
+}
+
 /// Where `query` (lowercase characters) is in `text`, ignoring case, as byte ranges of
 /// `text`: every match, left to right, none overlapping.
 pub fn match_ranges(text: &str, query: &[char]) -> Vec<std::ops::Range<usize>> {
@@ -843,14 +1231,23 @@ pub fn match_ranges(text: &str, query: &[char]) -> Vec<std::ops::Range<usize>> {
     if query.is_empty() {
         return out;
     }
+    if text.is_ascii() && query.iter().all(char::is_ascii) {
+        let t = text.as_bytes();
+        let mut i = 0;
+        while i + query.len() <= t.len() {
+            if t[i..i + query.len()].iter().zip(query).all(|(b, q)| b.to_ascii_lowercase() == *q as u8) {
+                out.push(i..i + query.len());
+                i += query.len();
+            } else {
+                i += 1;
+            }
+        }
+        return out;
+    }
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut i = 0;
     while i + query.len() <= chars.len() {
-        let hit = query.iter().enumerate().all(|(k, q)| {
-            let mut lower = chars[i + k].1.to_lowercase();
-            lower.next() == Some(*q) && lower.next().is_none()
-        });
-        if hit {
+        if query.iter().enumerate().all(|(k, q)| lower(chars[i + k].1) == Some(*q)) {
             let end = chars.get(i + query.len()).map_or(text.len(), |(b, _)| *b);
             out.push(chars[i].0..end);
             i += query.len();

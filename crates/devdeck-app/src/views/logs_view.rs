@@ -1,15 +1,20 @@
 //! Service logs (`logs/<env>/<name>`, R7.5): every pod's lines with their time and pod,
-//! level filter, a pod and a container picked, pause, follow, find with n / shift+n, a
-//! crashed pod's previous run. What streams and what's kept: [`super::logs_feed`]; the
-//! streams run only while the view is on screen, and it holds its service's pods while
-//! open (their containers' states decide what streams).
-//! The toolbar keeps find (the free width), the level, wrap, pause, follow and a cog menu
-//! for the rest (pod, container, previous run, columns); a warning icon says what's wrong.
-//! Keys (`LogsView`): / find, n next, shift+n previous, p pause, 1–4 level filter, w wrap,
-//! c container, o pod, shift+p previous run.
+//! level filter, a text filter, a pod and a container picked, pause, follow, a crashed
+//! pod's previous run, and scrolling back as far as the cluster serves. What streams and
+//! what's kept: [`super::logs_feed`]; the streams run only while the view is on screen,
+//! and it holds its service's pods while open (their containers' states decide what
+//! streams).
+//! The toolbar keeps the filter (the free width), the level, wrap, pause, follow and a cog
+//! menu for the rest (pod, container, previous run, from the start, columns); a warning
+//! icon says what's wrong.
+//! Scrolling up stops following, scrolling down to the bottom follows again. The list's
+//! first row says where reading back stands; clicking it, scrolling up at the top, or the
+//! `logs.earlier` action reads earlier lines.
+//! Keys (`LogsView`): / filter, p pause, 1–4 level filter, w wrap, c container, o pod,
+//! shift+p previous run, home earlier lines.
 
 use super::ViewCx;
-use super::logs_feed::{LogsFeed, match_ranges, short};
+use super::logs_feed::{Back, BackEnd, Kind, LogsFeed, ReadResult, match_ranges, short, thousands};
 use crate::cluster::{Cluster, PodScope, PodsInterest};
 use devdeck_core::cluster::{Pod, Remote};
 use devdeck_core::runs::Level;
@@ -17,15 +22,16 @@ use devdeck_ui::{Count, Fold, Icon, InputEvent, MenuItem, MenuValue, TextInput, 
 use devdeck_ui::{Scrolls, ToastKind, scroll_list};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
-    ParentElement, Pixels, Render, SharedString, Styled, Subscription, UniformListScrollHandle,
-    Window, actions, canvas, div, prelude::*,
+    ParentElement, Pixels, Render, ScrollEvent, ScrollStrategy, SharedString, Styled, Subscription, UniformListScrollHandle,
+    Window, actions, canvas, div, point, prelude::*,
 };
+use std::collections::VecDeque;
 use std::cell::Cell;
 use std::rc::Rc;
 
 pub use crate::fake_cluster::LOGS_TICK;
 
-actions!(logs_view, [Find, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options, LevelMenu, ToggleTime, TogglePodColumn]);
+actions!(logs_view, [Find, TogglePause, OnlyErrors, WarnAndUp, InfoAndUp, Everything, PickContainer, PickPod, PreviousRun, ToggleWrap, Options, LevelMenu, ToggleTime, TogglePodColumn, Earlier]);
 
 /// Lowest level shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,9 +51,21 @@ pub fn shown(level: Level, min: MinLevel) -> bool {
     }
 }
 
-/// Wrapped rows: the width in characters and the buffer version they were made for, and
-/// each piece's shown row and first character.
-type Wrapped = (usize, u64, Vec<(usize, usize)>);
+/// Wrapped rows, kept by absolute line: added as lines come, dropped from the front as
+/// they go, worked out again only when the width or the rows shown change otherwise.
+struct Wrapped {
+    /// The width in characters.
+    cols: usize,
+    /// The buffer's [`super::logs_feed::LogsBuffer::reshaped`] they were made for.
+    reshaped: u64,
+    /// Each piece's line and the character it starts at.
+    pieces: VecDeque<(u64, usize)>,
+}
+
+/// Rows a line of `chars` characters takes at `cols` characters a row.
+fn pieces(chars: usize, cols: usize) -> usize {
+    chars.div_ceil(cols.max(1)).max(1)
+}
 
 /// What the service's pods looked like last: a change syncs the streams and renders.
 type Seen = (Option<Vec<Pod>>, (u64, u64), bool);
@@ -65,10 +83,12 @@ pub struct ServiceLogsView {
     pub wrap: bool,
     pub show_time: bool,
     pub show_pod: bool,
-    /// Wrapped rows: each a shown row and the character its piece starts at, for a width
-    /// in characters and a buffer version.
     wrapped: Option<Wrapped>,
     scroll: UniformListScrollHandle,
+    /// The list was scrolled to its top at the last frame (a wheel up then reads back).
+    at_top: bool,
+    /// The wheel went down since the last frame: at the bottom, follow again.
+    wheel_down: bool,
     /// Where the view is in its window.
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The toolbar's last form and its items' places (menus opened by key go under them).
@@ -80,7 +100,7 @@ pub struct ServiceLogsView {
 
 impl ServiceLogsView {
     pub fn new(env: String, name: String, ctx: ViewCx, cluster: Entity<Cluster>, cx: &mut Context<Self>) -> Self {
-        let find = cx.new(|cx| TextInput::new("find", cx));
+        let find = cx.new(|cx| TextInput::new("filter", cx));
         let mut subs = vec![
             cx.observe(&cluster, |this, _, cx| this.cluster_changed(cx)),
             cx.subscribe(&find, |this, _, e: &InputEvent, cx| match e {
@@ -97,6 +117,9 @@ impl ServiceLogsView {
                     this.find.update(cx, |f, cx| f.set_text("", cx));
                     this.feed.buffer.set_query("");
                     this.wrapped = None;
+                    if this.follow {
+                        this.scroll.scroll_to_bottom();
+                    }
                     cx.notify();
                 }
             }),
@@ -120,6 +143,8 @@ impl ServiceLogsView {
             show_pod: true,
             wrapped: None,
             scroll: UniformListScrollHandle::new(),
+            at_top: false,
+            wheel_down: false,
             bounds: Rc::default(),
             bar: ToolbarState::new(),
             seen: (None, (0, 0), false),
@@ -192,18 +217,110 @@ impl ServiceLogsView {
     }
 
     pub fn toggle_follow(&mut self, cx: &mut Context<Self>) {
-        self.follow = !self.follow;
-        if self.follow {
+        self.set_follow(!self.follow, cx);
+    }
+
+    /// Follows new lines (scrolled to the bottom) or not; the feed keeps what's shown
+    /// while not following.
+    pub fn set_follow(&mut self, follow: bool, cx: &mut Context<Self>) {
+        self.follow = follow;
+        self.feed.set_following(follow);
+        if follow {
             self.scroll.scroll_to_bottom();
         }
         cx.notify();
     }
 
-    /// Rows on screen's list: wrapped pieces when wrapping (as last drawn), else lines.
+    /// Rows of lines on screen's list (the top row left out): wrapped pieces when wrapping
+    /// (as last drawn), else lines.
     pub fn list_rows(&self) -> usize {
         match &self.wrapped {
-            Some((_, _, rows)) if self.wrap => rows.len(),
+            Some(w) if self.wrap => w.pieces.len(),
             _ => self.feed.buffer.row_count(),
+        }
+    }
+
+    /// The wrapped pieces as last drawn: the width in characters, and each piece's line and
+    /// the character it starts at.
+    pub fn wrapped_pieces(&self) -> Option<(usize, Vec<(u64, usize)>)> {
+        self.wrapped.as_ref().filter(|_| self.wrap).map(|w| (w.cols, w.pieces.iter().copied().collect()))
+    }
+
+    /// How far the list is scrolled down from its top.
+    pub fn scroll_top(&self) -> Pixels {
+        -self.scroll.0.borrow().base_handle.offset().y
+    }
+
+    /// Where the view is in its window, as last drawn.
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
+    }
+
+    /// What the list's first row says.
+    pub fn top_row(&self) -> String {
+        match self.feed.back() {
+            Back::Idle => "load earlier lines".into(),
+            Back::Reading => "loading earlier lines…".into(),
+            Back::Start => "start of the logs the cluster serves".into(),
+            Back::Ended(BackEnd::Full) => format!("full: {} lines kept", thousands(self.feed.buffer.max_lines())),
+            Back::Ended(BackEnd::Failed(why)) => format!("couldn't read earlier lines: {why}"),
+            Back::Ended(BackEnd::Unaligned(pods)) => format!("earlier lines of {} don't line up with those shown: none added", pods.join(", ")),
+        }
+    }
+
+    /// Reads earlier lines (the top row, or the wheel up at the top).
+    pub fn read_earlier(&mut self, cx: &mut Context<Self>) {
+        let cluster = self.cluster.clone();
+        if self.feed.earlier(&cluster, cx) {
+            cx.notify();
+        }
+    }
+
+    /// The action (a key, "from the start"): to the top, not following, earlier lines read.
+    pub fn earlier(&mut self, cx: &mut Context<Self>) {
+        if let Some(why) = self.feed.earlier_refusal() {
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, format!("Earlier lines: {why}."), vec![], cx));
+            return;
+        }
+        self.set_follow(false, cx);
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.read_earlier(cx);
+    }
+
+    /// A read back ended: its lines go above, the rows in sight stay where they were.
+    pub(crate) fn read_back_done(&mut self, id: u64, results: Vec<ReadResult>, cx: &mut Context<Self>) {
+        if let Some(added) = self.feed.finish_read(id, results)
+            && added.rows > 0
+        {
+            let rows = match &self.wrapped {
+                Some(w) if self.wrap => (0..added.rows).filter_map(|r| self.feed.buffer.row_line(r)).map(|abs| pieces(self.feed.buffer.chars_of(abs), w.cols)).sum(),
+                _ => added.rows,
+            };
+            let row_h = theme(cx).line_height;
+            let handle = &self.scroll.0.borrow().base_handle;
+            let offset = handle.offset();
+            handle.set_offset(point(offset.x, offset.y - row_h * rows as f32));
+            if self.follow {
+                self.scroll.scroll_to_bottom();
+            }
+        }
+        cx.notify();
+    }
+
+    /// The wheel: up stops following, and at the top reads earlier lines; down to the
+    /// bottom follows again (seen at the next frame, once the list moved).
+    fn wheel(&mut self, e: &ScrollEvent, cx: &mut Context<Self>) {
+        let dy = e.delta.pixel_delta(theme(cx).line_height).y;
+        if dy > Pixels::ZERO {
+            if self.at_top {
+                self.read_earlier(cx);
+            }
+            if self.follow {
+                self.set_follow(false, cx);
+            }
+        } else if dy < Pixels::ZERO {
+            self.wheel_down = true;
+            cx.notify();
         }
     }
 
@@ -331,28 +448,50 @@ impl ServiceLogsView {
             Ok(_) => previous,
             Err(why) => previous.disabled(why),
         });
+        let me = this.clone();
+        let start = MenuItem::new("from the start", move |_, cx| me.update(cx, |v, cx| v.earlier(cx)));
+        items.push(match v.feed.earlier_refusal() {
+            None => start,
+            Some(why) => start.disabled(why),
+        });
         items.push(MenuItem::separator());
         items.push(MenuItem::new("show the time", toggle(|v| v.show_time = !v.show_time)).checked(v.show_time));
         items.push(MenuItem::new("show the pod", toggle(|v| v.show_pod = !v.show_pod)).checked(v.show_pod));
         items
     }
 
-    /// Wrapped rows for `cols` characters of text: worked out again only when the width or
-    /// what's shown changed.
+    /// Wrapped rows for `cols` characters of text: pieces of lines gone dropped from the
+    /// front, of new lines added at the end; worked out again only when the width changed
+    /// or the rows shown changed otherwise.
     fn wrap_rows(&mut self, cols: usize) -> usize {
-        let version = self.feed.buffer.version();
-        let fresh = self.wrapped.as_ref().is_some_and(|(c, v, _)| *c == cols && *v == version);
-        if !fresh {
-            let b = &self.feed.buffer;
-            let mut rows = Vec::with_capacity(b.row_count());
-            for r in 0..b.row_count() {
-                let chars = b.row(r).map_or(0, |e| e.text.chars().count());
-                let pieces = chars.div_ceil(cols).max(1);
-                rows.extend((0..pieces).map(|p| (r, p * cols)));
+        let b = &self.feed.buffer;
+        let add = |w: &mut Wrapped, abs: u64| {
+            let n = pieces(b.chars_of(abs), cols);
+            w.pieces.extend((0..n).map(|p| (abs, p * cols)));
+        };
+        let w = match self.wrapped.take() {
+            Some(mut w) if w.cols == cols && w.reshaped == b.reshaped() => {
+                let first = b.row_line(0);
+                while w.pieces.front().is_some_and(|(abs, _)| first.is_none_or(|f| *abs < f)) {
+                    w.pieces.pop_front();
+                }
+                let last = w.pieces.back().map(|(abs, _)| *abs);
+                for abs in b.rows_after(last) {
+                    add(&mut w, abs);
+                }
+                w
             }
-            self.wrapped = Some((cols, version, rows));
-        }
-        self.wrapped.as_ref().map_or(0, |(_, _, rows)| rows.len())
+            _ => {
+                let mut w = Wrapped { cols, reshaped: b.reshaped(), pieces: VecDeque::with_capacity(b.row_count()) };
+                for abs in b.rows_after(None) {
+                    add(&mut w, abs);
+                }
+                w
+            }
+        };
+        let n = w.pieces.len();
+        self.wrapped = Some(w);
+        n
     }
 
     /// The toolbar (R9.9): find, what's wrong, the level, wrap, pause, follow, and "more"
@@ -376,6 +515,9 @@ impl ServiceLogsView {
         };
         let held = self.feed.held();
         let paused = self.feed.paused;
+        // Lines waiting: on pause while paused, else on follow (they show once following).
+        let waiting = (held > 0).then(|| Count::new(format!("{} new", if held > 999 { "999+".to_string() } else { held.to_string() }), 8, t.warn));
+        let (pause_count, follow_count) = if paused { (waiting, None) } else { (None, waiting) };
         let mut bar = Toolbar::new("logs-toolbar", self.bar.clone()).item(ToolItem::Field {
             id: "logs.find".into(),
             label: label("logs.find", "filter").into(),
@@ -414,11 +556,11 @@ impl ServiceLogsView {
                     .icon(if paused { Icon::Run } else { Icon::Pause })
                     .toggle(paused)
                     .state_shown(paused)
-                    .count((paused && held > 0).then(|| Count::new(format!("{} new", if held > 999 { "999+".to_string() } else { held.to_string() }), 8, t.warn)))
+                    .count(pause_count)
                     .fold(Fold::Order(1)),
             ))
             .item(ToolItem::Action(
-                ToolAction::new("pane.follow", "follow", run(|v, cx| v.toggle_follow(cx))).icon(Icon::Follow).toggle(self.follow).state_shown(!self.follow).fold(Fold::Order(4)),
+                ToolAction::new("pane.follow", "follow", run(|v, cx| v.toggle_follow(cx))).icon(Icon::Follow).toggle(self.follow).state_shown(!self.follow).count(follow_count).fold(Fold::Order(4)),
             ));
         let c = self.cluster.read(cx);
         let pods = c.pods(&self.env, &self.name).len();
@@ -493,6 +635,7 @@ impl super::KeepsState for ServiceLogsView {
         };
         self.set_min_level(level, cx);
         self.follow = state["follow"].as_bool().unwrap_or(true);
+        self.feed.set_following(self.follow);
         self.wrap = state["wrap"].as_bool().unwrap_or(true);
         self.show_time = state["time"].as_bool().unwrap_or(true);
         self.show_pod = state["pod"].as_bool().unwrap_or(true);
@@ -522,6 +665,15 @@ fn clock(at: Option<i64>) -> SharedString {
 impl Render for ServiceLogsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
+        // Where the wheel left the list (moved before this frame, clamped at its prepaint).
+        let (offset, max) = {
+            let s = self.scroll.0.borrow();
+            (s.base_handle.offset().y, s.base_handle.max_offset().y)
+        };
+        if std::mem::take(&mut self.wheel_down) && -offset >= max && !self.follow {
+            self.set_follow(true, cx);
+        }
+        self.at_top = max > Pixels::ZERO && offset >= Pixels::ZERO;
         let c = self.cluster.read(cx);
         let pods_state = match c.pods_state(&self.env, &self.name) {
             Remote::Ready(p) => Remote::Ready(p.len()),
@@ -558,25 +710,42 @@ impl Render for ServiceLogsView {
                     } else {
                         0
                     };
-                    let items = if wrap { self.wrap_rows(cols) } else { count };
+                    let items = 1 + if wrap { self.wrap_rows(cols) } else { count };
+                    let top = self.top_row();
                     let list = scroll_list(
                         "logs-lines",
                         items,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _window, _cx| {
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                             let b = &this.feed.buffer;
-                            let hits = b.hits();
                             let query = b.query();
                             range
                                 .filter_map(|i| {
-                                    let (row, start) = match &this.wrapped {
-                                        Some((_, _, rows)) if wrap => *rows.get(i)?,
-                                        _ => (i, 0),
+                                    if i == 0 {
+                                        // Where reading back stands; a click reads earlier lines.
+                                        return Some(
+                                            div()
+                                                .id("logs-earlier")
+                                                .h(row_h)
+                                                .px_3()
+                                                .flex()
+                                                .items_center()
+                                                .whitespace_nowrap()
+                                                .overflow_hidden()
+                                                .text_color(dim)
+                                                .cursor_pointer()
+                                                .hover(move |s| s.text_color(mute))
+                                                .child(label(top.clone()))
+                                                .on_click(cx.listener(|this, _, _, cx| this.read_earlier(cx)))
+                                                .into_any_element(),
+                                        );
+                                    }
+                                    let (line, start) = match &this.wrapped {
+                                        Some(w) if wrap => *w.pieces.get(i - 1)?,
+                                        _ => (b.row_line(i - 1)?, 0),
                                     };
-                                    Some((b.row_line(row)?, b.row(row)?, start))
-                                })
-                                .map(|(line, e, start)| {
-                                    let color = match (e.note, e.level) {
-                                        (true, _) => dim,
+                                    let e = b.line(line)?;
+                                    let color = match (e.kind, e.level) {
+                                        (Kind::Note, _) => dim,
                                         (_, Level::Error) => err,
                                         (_, Level::Warn) => warn,
                                         (_, Level::Debug) => mute,
@@ -588,40 +757,40 @@ impl Render for ServiceLogsView {
                                     let (b0, b1) = if wrap {
                                         let mut ix = e.text.char_indices().map(|(i, _)| i).skip(start);
                                         let b0 = ix.next().unwrap_or(e.text.len());
-                                        let b1 = e.text.char_indices().map(|(i, _)| i).nth(start + cols).unwrap_or(e.text.len());
+                                        let b1 = ix.nth(cols.saturating_sub(1)).unwrap_or(e.text.len());
                                         (b0, b1)
                                     } else {
                                         (0, e.text.len())
                                     };
                                     let text: SharedString = if wrap { e.text[b0..b1].to_string().into() } else { e.text.clone() };
-                                    let marks: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> = if hits.binary_search(&line).is_ok() {
-                                        match_ranges(&e.text, query)
-                                            .into_iter()
-                                            .enumerate()
-                                            .filter(|(_, r)| r.start < b1 && r.end > b0)
-                                            .map(|(_, r)| (r.start.max(b0) - b0..r.end.min(b1) - b0, hit_style))
-                                            .collect()
-                                    } else {
+                                    // With a filter every row shown holds it: what matched, tinted.
+                                    let marks: Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> = if query.is_empty() {
                                         Vec::new()
+                                    } else {
+                                        match_ranges(&e.text, query).into_iter().filter(|r| r.start < b1 && r.end > b0).map(|r| (r.start.max(b0) - b0..r.end.min(b1) - b0, hit_style)).collect()
                                     };
-                                    div()
-                                        .h(row_h)
-                                        .px_3()
-                                        .flex()
-                                        .gap_2()
-                                        .whitespace_nowrap()
-                                        .when(show_time, |d| d.child(div().flex_none().w(time_w).text_color(mute).child(if first { clock(e.at) } else { SharedString::default() })))
-                                        .when(show_pod, |d| d.child(div().flex_none().w(pod_w).overflow_hidden().text_color(mute).child(if first { SharedString::from(short(&e.pod).to_string()) } else { SharedString::default() })))
-                                        .child(div().flex_none().text_color(color).child(gpui::StyledText::new(text).with_highlights(marks)))
+                                    Some(
+                                        div()
+                                            .h(row_h)
+                                            .px_3()
+                                            .flex()
+                                            .gap_2()
+                                            .whitespace_nowrap()
+                                            .when(show_time, |d| d.child(div().flex_none().w(time_w).text_color(mute).child(if first { clock(e.at) } else { SharedString::default() })))
+                                            .when(show_pod, |d| d.child(div().flex_none().w(pod_w).overflow_hidden().text_color(mute).child(if first { SharedString::from(short(&e.pod).to_string()) } else { SharedString::default() })))
+                                            .child(div().flex_none().text_color(color).child(gpui::StyledText::new(text).with_highlights(marks)))
+                                            .into_any_element(),
+                                    )
                                 })
                                 .collect()
                         }),
                     )
+                    .on_scroll(cx.listener(|this, e: &ScrollEvent, _, cx| this.wheel(e, cx)))
                     .track_scroll(&self.scroll);
                     let list = if wrap {
                         list
                     } else {
-                        list.scroll_xy().with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).with_width_from_item(self.feed.buffer.longest_row())
+                        list.scroll_xy().with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).with_width_from_item(self.feed.buffer.longest_row().map(|r| r + 1))
                     };
                     list.flex_1().min_h_0().into_any_element()
                 }
@@ -660,6 +829,7 @@ impl Render for ServiceLogsView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &PreviousRun, _, cx| this.previous_run(cx)))
+            .on_action(cx.listener(|this, _: &Earlier, _, cx| this.earlier(cx)))
             .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().size_full())
             .child(toolbar)
             .child(body)

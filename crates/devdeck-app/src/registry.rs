@@ -200,6 +200,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("logs.container", "pick the container", "Logs", Some("LogsView && !TextInput"), ["c"], lv::PickContainer),
         spec!("logs.pod", "pick the pod", "Logs", Some("LogsView && !TextInput"), ["o"], lv::PickPod),
         spec!("logs.previous", "previous run of a pod", "Logs", Some("LogsView && !TextInput"), ["shift-p"], lv::PreviousRun),
+        spec!("logs.earlier", "earlier lines", "Logs", Some("LogsView && !TextInput"), ["home"], lv::Earlier),
         // Matrix
         spec!("matrix.clear", "clear highlight", "Branch matrix", Some("MatrixView"), ["escape"], mv::ClearHighlight),
         // Palette

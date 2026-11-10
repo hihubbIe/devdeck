@@ -1845,3 +1845,22 @@ The filter was built first (committed on its own); the scroll-back reads as revi
     scrolls to the bottom when following, R7.5 says filter, a filter set never folds.
 12. Tests. **Accepted** as listed, but the 100k timing check (a test of time is flaky):
     measured by hand instead.
+
+### Filter and scroll-back outcome (2026-11-10)
+
+The filter committed first; the scroll-back by a builder, checked by the lead (whole suite
+and clippy, snapshots `90-logs-earlier-loading`, `90-logs-earlier-start`).
+- `devdeck_kube::read_logs` goes through the same stream code (no follow, no tail); a
+  failure ends it with its reason. The fake makes up older lines.
+- Scrolling up stops following, reaching the bottom follows again; `home` and "from the
+  start" also scroll to the top; a wheel up at the top or a click on the top row reads.
+  One read at a time, dropped when the container, the generation, a pod's restarts
+  changed or the view was hidden.
+- Lines read back are cut at each pod's oldest shown line (notes and previous runs left
+  out), merged by time, put above (indices going down from 1<<40), the rows in sight kept
+  where they were; caps 100 000 lines / 64 MB, the newest part of a read kept when full.
+- Wrapped pieces are kept by line (appended, dropped, rebuilt only on width, level, pod,
+  filter or lines put above); the filter matches without allocating on ASCII.
+- Limits: pods with no line shown aren't read; whether the kubelet serves rotated files is
+  unverified ("the logs the cluster serves"); the click on the top row shares the wheel's
+  code but has no test of its own.

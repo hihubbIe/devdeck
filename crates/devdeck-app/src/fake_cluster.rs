@@ -3,7 +3,8 @@
 //! `devdeck_core::demo`, every pod of an env at once; its metrics walk; rollouts are the
 //! entity's follow-up of what this driver sends, as from a watch: one replica of the new
 //! version per [`ROLLOUT_STEP`]; a tag containing `broken` can't be pulled and keeps
-//! failing. Logs are made up, one line per stream every [`LOGS_TICK`].
+//! failing. Logs are made up, one line per stream every [`LOGS_TICK`]; a read back finds
+//! older made-up lines.
 
 use crate::cluster::{Cluster, ClusterDriver, EnvUpdate, ImageChange, LogFrom, LogLine, LogStream, LogUpdate, METRICS_TICK, ROLLOUT_STEP};
 use devdeck_core::cluster::{Deployment, Image, PodPhase, Progress};
@@ -16,6 +17,8 @@ use std::time::Duration;
 pub const LOGS_TICK: Duration = Duration::from_millis(500);
 /// Lines a fake stream has to show at once (its tail).
 const FAKE_BACKLOG: u32 = 3;
+/// Lines a fake read back finds before a stream's first.
+const FAKE_EARLIER: u32 = 2000;
 
 /// How long the fake API takes to list an env.
 pub const LOAD_DELAY: Duration = Duration::from_millis(300);
@@ -177,6 +180,28 @@ impl ClusterDriver for FakeCluster {
             }
         });
         Ok(LogStream { updates, keep: Box::new(task) })
+    }
+
+    /// [`FAKE_EARLIER`] made-up lines older than a stream's first, then that stream's
+    /// first lines (what's shown lines up with them), then the end.
+    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+        let (tx, updates) = async_channel::unbounded();
+        let service = pod.rsplitn(3, '-').nth(2).unwrap_or(pod).to_string();
+        let seed = demo::hash(pod);
+        let tick = LOGS_TICK.as_nanos() as i64;
+        // A stream's first line is the one after `seed`, at `now - tick * (backlog - 1)`.
+        let first = demo::NOW_S as i64 * 1_000_000_000 - tick * i64::from(FAKE_BACKLOG - 1);
+        let lines: Vec<LogLine> = (0..FAKE_EARLIER + FAKE_BACKLOG)
+            .map(|i| {
+                let back = i64::from(FAKE_EARLIER) - i64::from(i);
+                let n = seed.wrapping_add(1).wrapping_add_signed(-back);
+                let text = fake_line(&service, n);
+                LogLine { at: Some(first - tick * back), level: log_level(&text), text }
+            })
+            .collect();
+        let _ = tx.try_send(LogUpdate::Lines(lines));
+        let _ = tx.try_send(LogUpdate::Ended);
+        Ok(LogStream { updates, keep: Box::new(()) })
     }
 }
 

@@ -782,10 +782,19 @@ fn logs_find(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
 
 /// As the kube driver, for logs: the demo's pods of a service, the last one waiting on its
 /// image; each running pod's stream answers JSON lines (levels in them), or every stream is
-/// refused (`forbid`).
+/// refused (`forbid`). A read back finds older lines, or never answers (`hang`).
 struct LogsLike {
     forbid: bool,
+    hang: bool,
 }
+
+/// The time of the first line of `pod`'s stream on [`LogsLike`].
+fn logs_like_base(pod: &str) -> i64 {
+    let seed = devdeck_core::demo::hash(pod) % 1000;
+    (devdeck_core::demo::NOW_S as i64 - 120) * 1_000_000_000 + seed as i64 * 1_000_000
+}
+
+const LOGS_LIKE_FIRST: &str = r#"{"level":"info","msg":"GET /v1/graph/entities 200","ms":12}"#;
 
 impl ClusterDriver for LogsLike {
     fn watch(&self, _env: &str, _cx: &mut gpui::Context<Cluster>) -> Option<gpui::Task<()>> {
@@ -823,10 +832,9 @@ impl ClusterDriver for LogsLike {
         if self.forbid {
             let _ = tx.try_send(LogUpdate::Refused(LogRefusal::Forbidden(format!("your account can't read logs in {env}"))));
         } else {
-            let seed = devdeck_core::demo::hash(pod) % 1000;
-            let base = (devdeck_core::demo::NOW_S as i64 - 120) * 1_000_000_000 + seed as i64 * 1_000_000;
+            let base = logs_like_base(pod);
             let texts = [
-                r#"{"level":"info","msg":"GET /v1/graph/entities 200","ms":12}"#.to_string(),
+                LOGS_LIKE_FIRST.to_string(),
                 r#"{"level":"warn","msg":"slow query entities.find","ms":840}"#.to_string(),
                 r#"{"level":30,"msg":"rabbitmq connected","host":"rabbitmq-0.rabbitmq"}"#.to_string(),
                 r#"{"level":"error","msg":"publish failed: channel closed","exchange":"graph.events","retry":3}"#.to_string(),
@@ -842,16 +850,33 @@ impl ClusterDriver for LogsLike {
         }
         Ok(LogStream { updates, keep: Box::new(tx) })
     }
+    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _cx: &mut gpui::Context<Cluster>) -> Result<LogStream, String> {
+        let (tx, updates) = async_channel::unbounded();
+        if !self.hang {
+            let base = logs_like_base(pod);
+            let older = [r#"{"level":"info","msg":"starting graphservice","version":"main-4f2a"}"#, r#"{"level":"info","msg":"rabbitmq connecting","host":"rabbitmq-0.rabbitmq"}"#, "plain text line from before the first one shown"];
+            let mut lines: Vec<LogLine> = older.iter().enumerate().map(|(i, t)| LogLine { at: Some(base - (3 - i as i64) * 5_000_000_000), level: devdeck_core::runs::log_level(t), text: t.to_string() }).collect();
+            lines.push(LogLine { at: Some(base), level: devdeck_core::runs::log_level(LOGS_LIKE_FIRST), text: LOGS_LIKE_FIRST.into() });
+            let _ = tx.try_send(LogUpdate::Lines(lines));
+            let _ = tx.try_send(LogUpdate::Ended);
+        }
+        Ok(LogStream { updates, keep: Box::new(tx) })
+    }
 }
 
 /// A service's logs on a kube-like driver: two pods' JSON lines merged by time, levels
 /// read from them, a pod waiting on its image; or every stream refused (`forbid`).
 fn logs_kube_like(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, forbid: bool) {
+    logs_kube_like_reading(cx, shell, forbid, false);
+}
+
+/// The same, a read back never answering when `hang`.
+fn logs_kube_like_reading(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, forbid: bool, hang: bool) {
     let c = work_cluster(cx, shell);
     cx.update(|cx| c.update(cx, |c, cx| c.want("dev35", cx)));
     cx.advance_clock(Duration::from_millis(400));
     cx.run_until_parked();
-    cx.update(|cx| c.update(cx, |c, cx| c.set_driver(c.envs.clone(), std::rc::Rc::new(LogsLike { forbid }), cx)));
+    cx.update(|cx| c.update(cx, |c, cx| c.set_driver(c.envs.clone(), std::rc::Rc::new(LogsLike { forbid, hang }), cx)));
     open_view(cx, shell, ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() });
     maximize_focused(cx, shell);
     cx.advance_clock(Duration::from_secs(3));
@@ -901,6 +926,24 @@ fn logs_narrow(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<
 
 fn logs_json(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     logs_kube_like(cx, shell, false);
+}
+
+/// Earlier lines read with `logs.earlier`: loading (`hang`), else read to the start.
+fn logs_earlier(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, hang: bool) {
+    logs_kube_like_reading(cx, shell, false, hang);
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let addr = ViewAddr::Logs { env: "dev35".into(), name: "graphservice".into() };
+    let v = cx.update(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<devdeck_app::views::logs_view::ServiceLogsView>().unwrap());
+    cx.update(|cx| v.update(cx, |v, cx| v.earlier(cx)));
+    cx.run_until_parked();
+}
+
+fn logs_earlier_loading(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    logs_earlier(cx, shell, true);
+}
+
+fn logs_earlier_start(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    logs_earlier(cx, shell, false);
 }
 
 fn logs_refused(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -1273,6 +1316,8 @@ fn states() -> Vec<State> {
         w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),
         w("88-svc-forbidden-narrow", "work", 1.0, Some(svc_forbidden_narrow)),
         w("89-svc-ready-150", "work", 1.5, Some(svc_ready)),
+        w("90-logs-earlier-loading", "work", 1.0, Some(logs_earlier_loading)),
+        w("90-logs-earlier-start", "work", 1.0, Some(logs_earlier_start)),
         w("90-logs-filter-find", "work", 1.0, Some(logs_find)),
         w("90-logs-json", "work", 1.0, Some(logs_json)),
         w("90-logs-medium", "work", 1.0, Some(logs_medium)),

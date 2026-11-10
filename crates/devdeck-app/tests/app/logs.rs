@@ -1,12 +1,12 @@
 //! M3 step 4: real pod logs (R7.5, R7.8, R1.3). The logs view over a scripted driver whose
 //! streams the test feeds: first tails merged by time, pods coming and going, streams only
 //! while visible and resumed from the last line, waiting and ended containers, refusals,
-//! the container and pod picked, a previous run; the buffer's caps. Nothing here reaches a
-//! cluster.
+//! the container and pod picked, a previous run; the buffer's caps; following and reading
+//! earlier lines back. Nothing here reaches a cluster.
 
 use devdeck_app::cluster::{Cluster, ClusterDriver, LOAD_DELAY, LogFrom, LogLine, LogRefusal, LogStream, LogUpdate, PodScope, PodUpdate};
 use devdeck_app::shell::Shell;
-use devdeck_app::views::logs_feed::{CATCH_UP, DRAIN_EVERY, ENDED_RETRY, Entry, FIRST_LINES, LogsBuffer, MAX_LINES, MERGE_WAIT, match_ranges};
+use devdeck_app::views::logs_feed::{CATCH_UP, DRAIN_EVERY, ENDED_RETRY, Entry, FIRST_INDEX, FIRST_LINES, Kind, LogsBuffer, MAX_LINES, MERGE_WAIT, cut, match_ranges};
 use devdeck_app::views::logs_view::{MinLevel, ServiceLogsView};
 use devdeck_core::cluster::{ContainerStatus, Pod, PodPhase};
 use devdeck_core::runs::Level;
@@ -28,11 +28,18 @@ struct Asked {
     tx: async_channel::Sender<LogUpdate>,
 }
 
-/// Pods come from the test (`apply_pods`); each log stream asked is recorded with its
-/// sender. `refuse` answers every stream with a refusal.
+/// A read back asked, and the sender that answers it.
+struct Read {
+    pod: String,
+    tx: async_channel::Sender<LogUpdate>,
+}
+
+/// Pods come from the test (`apply_pods`); each log stream and read back asked is recorded
+/// with its sender. `refuse` answers every stream with a refusal.
 #[derive(Default)]
 struct Scripted {
     asked: RefCell<Vec<Asked>>,
+    reads: RefCell<Vec<Read>>,
     refuse: RefCell<Option<LogRefusal>>,
 }
 
@@ -57,6 +64,11 @@ impl ClusterDriver for Scripted {
         self.asked.borrow_mut().push(Asked { pod: pod.into(), container: container.into(), from, previous, tx });
         Ok(LogStream { updates, keep: Box::new(()) })
     }
+    fn read_logs(&self, _env: &str, pod: &str, _container: &str, _cx: &mut Context<Cluster>) -> Result<LogStream, String> {
+        let (tx, updates) = async_channel::unbounded();
+        self.reads.borrow_mut().push(Read { pod: pod.into(), tx });
+        Ok(LogStream { updates, keep: Box::new(()) })
+    }
 }
 
 impl Scripted {
@@ -71,6 +83,21 @@ impl Scripted {
         let a = asked.iter().rev().find(|a| a.pod == pod && !a.previous).expect("a stream");
         let lines = lines.iter().map(|(s, t)| LogLine { at: Some((s * 1e9) as i64), text: t.to_string(), level: devdeck_core::runs::log_level(t) }).collect();
         a.tx.try_send(LogUpdate::Lines(lines)).unwrap();
+    }
+
+    /// Read backs asked for `pod`.
+    fn reads_of(&self, pod: &str) -> usize {
+        self.reads.borrow().iter().filter(|r| r.pod == pod).count()
+    }
+
+    /// Answers the last read back of `pod` with `lines` (a time in seconds or none, text),
+    /// then `end`.
+    fn answer(&self, pod: &str, lines: &[(Option<f64>, &str)], end: LogUpdate) {
+        let reads = self.reads.borrow();
+        let r = reads.iter().rev().find(|r| r.pod == pod).expect("a read back");
+        let lines = lines.iter().map(|(s, t)| LogLine { at: s.map(|s| (s * 1e9) as i64), text: t.to_string(), level: devdeck_core::runs::log_level(t) }).collect();
+        let _ = r.tx.try_send(LogUpdate::Lines(lines));
+        let _ = r.tx.try_send(end);
     }
 
     fn end(&self, pod: &str, update: LogUpdate) {
@@ -538,7 +565,7 @@ fn the_filter_shows_matching_lines_and_clearing_shows_all(cx: &mut TestAppContex
 }
 
 fn entry(text: &str, level: Level) -> Entry {
-    Entry { at: None, pod: "p".into(), text: text.into(), level, note: false }
+    Entry { at: None, pod: "p".into(), text: text.into(), level, kind: Kind::Line }
 }
 
 #[test]
@@ -563,4 +590,355 @@ fn the_buffer_keeps_its_caps_and_what_it_shows() {
     small.push(entry("123456", Level::Info));
     small.push(entry("789012", Level::Info));
     assert_eq!(small.len(), 1, "over the byte budget: the oldest goes");
+}
+
+#[test]
+fn a_cut_keeps_what_is_older_than_the_oldest_shown() {
+    let l = |at: Option<i64>, text: &str| LogLine { at, text: text.into(), level: Level::Plain };
+    let read = [l(Some(1), "a"), l(Some(2), "same"), l(None, "between"), l(Some(2), "same"), l(Some(2), "same"), l(Some(3), "b")];
+    assert_eq!(cut(&read, (2, 1)), Some(4), "before the group, then 2 of its 3 lines (1 shown), the line between them kept");
+    assert_eq!(cut(&read, (2, 3)), Some(1), "all of the group shown");
+    assert_eq!(cut(&read, (2, 9)), Some(1), "more shown than read: none of the group");
+    assert_eq!(cut(&read, (5, 1)), None, "no line at that time: nothing to line up with");
+}
+
+#[test]
+fn lines_put_above_go_down_from_the_first_index_within_the_caps() {
+    use devdeck_app::views::logs_feed::Prepended;
+    let mut b = LogsBuffer::new(5, 1 << 20);
+    b.push(entry("c", Level::Info));
+    b.push(entry("d", Level::Info));
+    assert_eq!(b.first_line(), FIRST_INDEX);
+    let added = b.prepend(vec![entry("x1", Level::Info), entry("x2 the longest line", Level::Info), entry("a", Level::Error), entry("b", Level::Info)]);
+    assert_eq!(added, Prepended { lines: 3, rows: 3, full: true }, "the newest that fit");
+    let all = |b: &LogsBuffer| (0..b.row_count()).filter_map(|r| b.row(r)).map(|e| e.text.to_string()).collect::<Vec<_>>();
+    assert_eq!(all(&b), ["x2 the longest line", "a", "b", "c", "d"]);
+    assert_eq!((b.first_line(), b.row_line(0)), (FIRST_INDEX - 3, Some(FIRST_INDEX - 3)), "indices going down");
+    assert_eq!(b.longest_row(), Some(0));
+    assert_eq!(b.dropped(), 0, "nothing pushed out");
+    b.set_min(MinLevel::Error);
+    assert_eq!(all(&b), ["a"], "the level holds for lines put above");
+    b.set_min(MinLevel::All);
+    b.push(entry("e", Level::Info));
+    assert_eq!((b.len(), b.dropped()), (5, 1), "dropped for room: counted");
+    assert_eq!(b.row(b.longest_row().unwrap()).unwrap().text.len(), 1, "the longest went with it");
+}
+
+/// One frame of the window.
+fn draw(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.refresh_windows());
+    cx.run_until_parked();
+}
+
+/// The `logs.earlier` action.
+fn earlier(v: &Entity<ServiceLogsView>, cx: &mut TestAppContext) {
+    cx.update(|cx| v.update(cx, |v, cx| v.earlier(cx)));
+    cx.run_until_parked();
+}
+
+fn top_row(v: &Entity<ServiceLogsView>, cx: &TestAppContext) -> String {
+    cx.read(|cx| v.read(cx).top_row())
+}
+
+fn follows(v: &Entity<ServiceLogsView>, cx: &TestAppContext) -> bool {
+    cx.read(|cx| v.read(cx).follow)
+}
+
+/// The wrapped pieces as drawn are those of the rows shown now.
+fn assert_pieces_right(v: &Entity<ServiceLogsView>, cx: &TestAppContext) {
+    cx.read(|cx| {
+        let v = v.read(cx);
+        let (cols, pieces) = v.wrapped_pieces().expect("wrapped");
+        let b = &v.feed.buffer;
+        let mut expected = Vec::new();
+        for r in 0..b.row_count() {
+            let n = b.row(r).unwrap().text.chars().count().div_ceil(cols).max(1);
+            expected.extend((0..n).map(|p| (b.row_line(r).unwrap(), p * cols)));
+        }
+        assert_eq!(pieces, expected);
+    });
+}
+
+/// `n` lines of `pod` from `from` seconds, one a second.
+fn send_many(t: &T, pod: &str, from: f64, n: usize, cx: &mut TestAppContext) {
+    let many: Vec<(f64, String)> = (0..n).map(|i| (from + i as f64, format!("line {i}"))).collect();
+    let refs: Vec<(f64, &str)> = many.iter().map(|(a, t)| (*a, t.as_str())).collect();
+    t.driver.send(pod, &refs);
+    advance(cx, DRAIN_EVERY);
+}
+
+#[gpui::test]
+fn scrolling_up_stops_following_and_the_bottom_follows_again(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, VisualTestContext, point};
+    let t = start(cx, "logs-wheel");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    send_many(&t, &name("aaaaa"), 10.0, 300, cx);
+    draw(cx);
+    let w = cx.read(|cx| cx.windows()[0]);
+    let mut vcx = VisualTestContext::from_window(w, cx);
+    vcx.run_until_parked();
+    let at = vcx.read(|cx| v.read(cx).bounds()).center();
+    let wheel = |vcx: &mut VisualTestContext, lines: f32| {
+        vcx.simulate_event(ScrollEvent { position: at, delta: ScrollDelta::Lines(point(0., lines)), modifiers: Modifiers::none(), touch_phase: TouchPhase::Moved, source: ScrollSource::Pointer });
+        vcx.run_until_parked();
+    };
+    assert!(follows(&v, cx));
+    wheel(&mut vcx, 3.);
+    assert!(!follows(&v, cx), "scrolling up stops following");
+    wheel(&mut vcx, -10_000.);
+    assert!(follows(&v, cx), "down to the bottom: following again");
+    wheel(&mut vcx, 10_000.);
+    assert!(!follows(&v, cx));
+    assert_eq!(t.driver.reads_of(&name("aaaaa")), 0, "reaching the top reads nothing yet");
+    wheel(&mut vcx, 1.);
+    assert_eq!(t.driver.reads_of(&name("aaaaa")), 1, "scrolling up at the top reads earlier lines");
+}
+
+#[gpui::test]
+fn earlier_lines_are_cut_at_the_oldest_shown_and_merged_by_time(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0), pod("bbbbb", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "same"), (12.0, "a2")]);
+    t.driver.send(&name("bbbbb"), &[(11.0, "b1")]);
+    advance(cx, DRAIN_EVERY);
+    assert_eq!(top_row(&v, cx), "load earlier lines");
+    earlier(&v, cx);
+    assert!(!follows(&v, cx), "reading back: not following");
+    assert_eq!((t.driver.reads_of(&name("aaaaa")), t.driver.reads_of(&name("bbbbb"))), (1, 1), "every pod read once");
+    assert_eq!(top_row(&v, cx), "loading earlier lines…");
+    let a = [(Some(8.0), "a0"), (Some(10.0), "same"), (Some(10.0), "same"), (Some(12.0), "a2"), (Some(13.0), "a3")];
+    t.driver.answer(&name("aaaaa"), &a, LogUpdate::Ended);
+    t.driver.answer(&name("bbbbb"), &[(Some(9.0), "b0"), (Some(11.0), "b1")], LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["a0", "b0", "same", "same", "b1", "a2"], "both pods' older lines by time, the identical line not shown yet kept");
+    assert_eq!(top_row(&v, cx), "start of the logs the cluster serves");
+    earlier(&v, cx);
+    cx.update(|cx| v.update(cx, |v, cx| v.read_earlier(cx)));
+    assert_eq!(t.driver.reads_of(&name("aaaaa")), 1, "at its start: not read again");
+    // A restart: its run is new, it can be read again.
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 1), pod("bbbbb", "running", 0)]);
+    assert_eq!(top_row(&v, cx), "load earlier lines");
+}
+
+#[gpui::test]
+fn a_second_trigger_while_reading_is_ignored(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-once");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "x")]);
+    advance(cx, DRAIN_EVERY);
+    earlier(&v, cx);
+    earlier(&v, cx);
+    cx.update(|cx| v.update(cx, |v, cx| v.read_earlier(cx)));
+    assert_eq!(t.driver.reads_of(&name("aaaaa")), 1);
+}
+
+#[gpui::test]
+fn rows_in_sight_stay_where_they_were(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-sight");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    send_many(&t, &name("aaaaa"), 100.0, 300, cx);
+    draw(cx);
+    earlier(&v, cx);
+    draw(cx);
+    assert_eq!(cx.read(|cx| v.read(cx).scroll_top()), gpui::Pixels::ZERO, "at the top");
+    let long = "x".repeat(2000);
+    let read = [(Some(50.0), "e0"), (Some(51.0), "e1"), (Some(52.0), long.as_str()), (Some(53.0), "e3"), (Some(54.0), "e4"), (Some(100.0), "line 0")];
+    t.driver.answer(&name("aaaaa"), &read, LogUpdate::Ended);
+    cx.run_until_parked();
+    let (cols, _) = cx.read(|cx| v.read(cx).wrapped_pieces()).unwrap();
+    let rows = 4 + 2000usize.div_ceil(cols);
+    let row_h = cx.read(|cx| devdeck_ui::theme(cx).line_height);
+    assert_eq!(cx.read(|cx| v.read(cx).scroll_top()), row_h * rows as f32, "moved down by the rows put above, the long line's pieces counted");
+    draw(cx);
+    assert_eq!(cx.read(|cx| v.read(cx).scroll_top()), row_h * rows as f32, "still after a frame");
+    assert_pieces_right(&v, cx);
+}
+
+#[gpui::test]
+fn a_read_back_is_dropped_when_things_changed_meanwhile(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-dropped");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "a1")]);
+    advance(cx, DRAIN_EVERY);
+    let older = [(Some(5.0), "older"), (Some(10.0), "a1")];
+    // The env's target changed.
+    earlier(&v, cx);
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.restart([ENV.to_string()], cx)));
+    cx.run_until_parked();
+    t.driver.answer(&name("aaaaa"), &older, LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["a1"], "another generation");
+    assert_eq!(top_row(&v, cx), "load earlier lines");
+    // The container restarted.
+    earlier(&v, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 1)]);
+    t.driver.answer(&name("aaaaa"), &older, LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["a1"], "another run");
+    // Hidden meanwhile.
+    earlier(&v, cx);
+    show_logs(&t, cx, false);
+    show_logs(&t, cx, true);
+    t.driver.answer(&name("aaaaa"), &older, LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["a1"], "hidden");
+    // Another container.
+    earlier(&v, cx);
+    assert_eq!(t.driver.reads_of(&name("aaaaa")), 4);
+    cx.update(|cx| v.update(cx, |v, cx| v.set_container(Some("migrate".into()), cx)));
+    cx.run_until_parked();
+    t.driver.answer(&name("aaaaa"), &older, LogUpdate::Ended);
+    cx.run_until_parked();
+    assert!(texts(&v, cx).is_empty(), "another container");
+}
+
+#[gpui::test]
+fn a_read_back_lines_up_with_lines_merging_or_waiting(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-held");
+    let v = open(&t, cx);
+    // The merge window open: a's first lines wait for b's.
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0), pod("bbbbb", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "a1")]);
+    advance(cx, DRAIN_EVERY);
+    assert!(texts(&v, cx).is_empty());
+    earlier(&v, cx);
+    assert_eq!(t.driver.reads_of(&name("bbbbb")), 0, "nothing of b shown: nothing to line up with");
+    t.driver.answer(&name("aaaaa"), &[(Some(5.0), "a0"), (Some(10.0), "a1")], LogUpdate::Ended);
+    cx.run_until_parked();
+    t.driver.send(&name("bbbbb"), &[(11.0, "b1")]);
+    advance(cx, DRAIN_EVERY);
+    assert_eq!(texts(&v, cx), ["a0", "a1", "b1"]);
+    // Paused: a pod that joins has its lines only in the queue.
+    let t = start(cx, "logs-earlier-paused");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "a1")]);
+    advance(cx, DRAIN_EVERY);
+    cx.update(|cx| v.update(cx, |v, cx| v.toggle_pause(cx)));
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0), pod("ccccc", "running", 0)]);
+    t.driver.send(&name("ccccc"), &[(20.0, "c1")]);
+    advance(cx, DRAIN_EVERY);
+    assert_eq!(cx.read(|cx| v.read(cx).feed.held()), 1);
+    earlier(&v, cx);
+    t.driver.answer(&name("aaaaa"), &[(Some(5.0), "a0"), (Some(10.0), "a1")], LogUpdate::Ended);
+    t.driver.answer(&name("ccccc"), &[(Some(15.0), "c0"), (Some(20.0), "c1")], LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["a0", "c0", "a1"]);
+    cx.update(|cx| v.update(cx, |v, cx| v.toggle_pause(cx)));
+    assert_eq!(texts(&v, cx), ["a0", "c0", "a1", "c1"], "nothing doubled once resumed");
+}
+
+#[gpui::test]
+fn lines_without_a_time_stay_where_they_are(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-untimed");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "x")]);
+    advance(cx, DRAIN_EVERY);
+    earlier(&v, cx);
+    t.driver.answer(&name("aaaaa"), &[(None, "banner"), (Some(5.0), "panic: old"), (None, "  at trace"), (Some(10.0), "x")], LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["banner", "panic: old", "  at trace", "x"]);
+}
+
+#[gpui::test]
+fn notes_and_previous_runs_dont_count_as_the_oldest(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-previous");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 1)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "live")]);
+    advance(cx, DRAIN_EVERY);
+    cx.update(|cx| v.update(cx, |v, cx| v.previous_run(cx)));
+    {
+        let asked = t.driver.asked.borrow();
+        let a = asked.iter().find(|a| a.previous).unwrap();
+        a.tx.try_send(LogUpdate::Lines(vec![LogLine { at: Some(1_000_000_000), text: "before".into(), level: Level::Plain }])).unwrap();
+        a.tx.try_send(LogUpdate::Ended).unwrap();
+    }
+    advance(cx, DRAIN_EVERY);
+    earlier(&v, cx);
+    t.driver.answer(&name("aaaaa"), &[(Some(5.0), "older"), (Some(10.0), "live")], LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx)[..2], ["older", "live"], "lined up with the live line, not the previous run's");
+    assert_eq!(top_row(&v, cx), "start of the logs the cluster serves");
+}
+
+#[gpui::test]
+fn a_read_back_that_doesnt_line_up_or_fails_says_so(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-unaligned");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "x")]);
+    advance(cx, DRAIN_EVERY);
+    earlier(&v, cx);
+    t.driver.answer(&name("aaaaa"), &[(Some(1.0), "boom"), (Some(2.0), "bang")], LogUpdate::Refused(LogRefusal::Other("km011gcp (dev35): stream reset".into())));
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["x"]);
+    assert_eq!(top_row(&v, cx), "couldn't read earlier lines: km011gcp (dev35): stream reset");
+    earlier(&v, cx);
+    assert_eq!(t.driver.reads_of(&name("aaaaa")), 2, "a failed read can be tried again");
+    t.driver.answer(&name("aaaaa"), &[(Some(5.0), "a"), (Some(7.0), "b")], LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["x"], "nothing to line up with: nothing kept");
+    assert_eq!(top_row(&v, cx), "earlier lines of aaaaa don't line up with those shown: none added");
+}
+
+#[gpui::test]
+fn the_filter_holds_for_lines_read_back(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-filter");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(10.0, "keep 1"), (11.0, "drop 1")]);
+    advance(cx, DRAIN_EVERY);
+    cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("KEEP", cx))));
+    cx.run_until_parked();
+    earlier(&v, cx);
+    t.driver.answer(&name("aaaaa"), &[(Some(5.0), "keep 0"), (Some(6.0), "drop 0"), (Some(10.0), "keep 1")], LogUpdate::Ended);
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["keep 0", "keep 1"]);
+    cx.update(|cx| v.update(cx, |v, cx| v.find.update(cx, |f, cx| f.set_text("", cx))));
+    cx.run_until_parked();
+    assert_eq!(texts(&v, cx), ["keep 0", "drop 0", "keep 1", "drop 1"]);
+}
+
+#[gpui::test]
+fn a_full_buffer_keeps_what_is_read_and_new_lines_wait_until_following(cx: &mut TestAppContext) {
+    let t = start(cx, "logs-earlier-full");
+    let v = open(&t, cx);
+    set_pods(&t, cx, vec![pod("aaaaa", "running", 0)]);
+    t.driver.send(&name("aaaaa"), &[(1_000_000.0, "now")]);
+    advance(cx, DRAIN_EVERY);
+    earlier(&v, cx);
+    let old: Vec<String> = (0..MAX_LINES + 5).map(|i| format!("old {i}")).collect();
+    let mut read: Vec<(Option<f64>, &str)> = old.iter().enumerate().map(|(i, t)| (Some(i as f64), t.as_str())).collect();
+    read.push((Some(1_000_000.0), "now"));
+    t.driver.answer(&name("aaaaa"), &read, LogUpdate::Ended);
+    cx.run_until_parked();
+    let (len, first, dropped) = cx.read(|cx| {
+        let b = &v.read(cx).feed.buffer;
+        (b.len(), b.row(0).unwrap().text.to_string(), b.dropped())
+    });
+    assert_eq!((len, first.as_str(), dropped), (MAX_LINES, "old 6", 0), "the newest that fit, nothing pushed out");
+    assert_eq!(top_row(&v, cx), "full: 100 000 lines kept");
+    draw(cx);
+    assert_pieces_right(&v, cx);
+    // Scrolled back and full: new lines wait.
+    t.driver.send(&name("aaaaa"), &[(1_000_001.0, "new 1")]);
+    advance(cx, DRAIN_EVERY);
+    assert_eq!(cx.read(|cx| v.read(cx).feed.held()), 1, "counted (N new)");
+    assert_eq!(texts(&v, cx).last().map(String::as_str), Some("now"), "what's read isn't pushed out");
+    cx.update(|cx| v.update(cx, |v, cx| v.set_follow(true, cx)));
+    assert_eq!(cx.read(|cx| v.read(cx).feed.held()), 0);
+    let (last, first, dropped) = cx.read(|cx| {
+        let b = &v.read(cx).feed.buffer;
+        (b.row(b.row_count() - 1).unwrap().text.to_string(), b.row(0).unwrap().text.to_string(), b.dropped())
+    });
+    assert_eq!((last.as_str(), first.as_str(), dropped), ("new 1", "old 7", 1), "following: shown, the oldest dropped for room");
+    draw(cx);
+    assert_pieces_right(&v, cx);
 }
