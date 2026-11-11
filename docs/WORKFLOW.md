@@ -3,7 +3,8 @@
 ## A step, start to finish
 
 1. **Plan.** Write the step's plan in `docs/plans/<milestone>-<step>.md`: goal, the
-   requirement ids it covers, files touched, the states to check visually, the tests
+   requirement ids it covers, files touched, the one or two snapshots to look at (or
+   none), the tests
    to add, what is out of scope, and whether it touches the OS (R11.6). If it does, the
    plan names the `devdeck-sys` capability and, per OS, a backend or "unsupported" with
    its reason (`docs/PLATFORMS.md` §4).
@@ -13,9 +14,10 @@
 3. **Assess.** Accept or reject each review point, with a one-line reason, appended to
    the plan file.
 4. **Build.** Implement. Tests come with the code, not after.
-5. **Check visually.** Run the app and look at every state listed in the plan (empty,
-   loading, error, missing tool, protected env, collapsed, detached, narrow pane…).
-   Fix what doesn't match the design before moving on.
+5. **Check visually.** One or two snapshots of the part that changed, at most (the
+   snapshot tool's name filter); a step that changes nothing on screen renders none.
+   Rendering and reading them is slow and costly (user, 2026-11-11); the states the plan
+   lists are covered by tests. Fix what doesn't match the design before moving on.
 6. **Test.** `cargo nextest run --workspace` must pass. `cargo clippy --workspace
    --all-targets -- -D warnings` must pass. New features ship with unit tests; bugs ship
    with a regression test.
@@ -64,11 +66,12 @@ example in a doc comment is not tested, so a test goes in a test file.
   repeats the work, and a test build already reports every compile error except the
   binary's (`crates/devdeck/src/main.rs`, which only clippy and `cargo build` compile):
   after changing an API it uses, run clippy.
-- **Before the commit:** the whole suite and clippy (step 6), and the snapshots of the
-  states the step adds or touches (the snapshot tool takes a name filter:
+- **Before the commit:** the whole suite and clippy (step 6), and at most one or two
+  snapshots of what changed (step 5; the snapshot tool takes a name filter:
   `-- <out-dir> 01-,20-`).
-- **End of the milestone only:** every snapshot, release builds, measurements, stress and
-  leak runs, then `cargo clean` (see "A milestone").
+- **End of the milestone only:** one or two snapshots of what the milestone changed most
+  (the user's manual test covers the rest), release builds, measurements, stress and leak
+  runs, then `cargo clean` (see "A milestone").
 - **Reviews:** the plan is reviewed before any code, by a reviewer who reads the GPUI source
   where the behaviour depends on it; then one review of the diff. Reviewers run in the
   same turn as the build, so one approval covers the step: build, review, fixing what the
