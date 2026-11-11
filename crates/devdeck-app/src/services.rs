@@ -131,6 +131,7 @@ impl Services {
         }
         let ports = Ports::new(workspace, runner.clone(), None, cx);
         let agents = crate::agents::new(workspace, runner.clone(), None, cx);
+        agents.update(cx, |a, cx| a.set_catalog(catalog.clone(), cx));
         cx.new(|cx| {
             cx.observe(&agents, |_, _, cx| cx.notify()).detach();
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
@@ -179,6 +180,7 @@ impl Services {
         });
         let cluster = kube.as_ref().map(|(c, _)| c.clone());
         let agents = crate::agents::new(&config.id, runner.clone(), history.clone(), cx);
+        agents.update(cx, |a, cx| a.set_catalog(catalog.clone(), cx));
         cx.new(|cx| {
             cx.observe(&agents, |_, _, cx| cx.notify()).detach();
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
@@ -376,7 +378,8 @@ impl Services {
         self.unusable = unusable(&catalog);
         self.env = catalog.pick_env(self.env.clone());
         self.catalog = catalog.clone();
-        self.runner.update(cx, |r, cx| r.set_catalog(catalog, cx));
+        self.runner.update(cx, |r, cx| r.set_catalog(catalog.clone(), cx));
+        self.agents.update(cx, |a, cx| a.set_catalog(catalog, cx));
         cx.notify();
     }
 

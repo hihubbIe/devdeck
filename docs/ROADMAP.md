@@ -131,8 +131,9 @@ list, which can also open as a tab in a pulse. One activity at a time.
    list knows, 5b the page — done 2026-11-11. Manual test now.
 6. Agents ([plans/agents-view.md](plans/agents-view.md)): 6a sessions from `machine.toml`'s
    agents, the Agents full view, "<agent> here", a process only while shown or busy
-   (R6.14) — built 2026-11-11, not committed. 6b reports from the agent through the
-   control API, a split of sessions in the view.
+   (R6.14) — done 2026-11-11. 6b reports from the agent (`devdeck-ctl report`), the
+   overview dashboard, the needs-you count and toasts, the quit guard — built 2026-11-11,
+   not committed. Later: a split of sessions in the view.
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,

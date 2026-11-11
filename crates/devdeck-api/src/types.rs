@@ -1230,6 +1230,23 @@ pub enum NoticeKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct AgentReportParams {
+    /// `started`, `working`, `needs_you`, `your_turn`, `ended` or `status`.
+    pub event: String,
+    /// The agent's own JSON (a hook's input, its status line's); which fields say what is
+    /// devdeck's config.
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentReported {
+    /// A line for the agent's status line: its model, context and cost as devdeck knows them.
+    pub line: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NotifyParams {
     /// One line, 200 characters at most (cut beyond).
     pub text: String,

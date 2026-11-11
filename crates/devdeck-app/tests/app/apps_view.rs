@@ -286,14 +286,12 @@ fn the_details_header_holds_the_views_icons(cx: &mut TestAppContext) {
     let shell = start(cx, "apps-header");
     select(&shell, cx, "entityservice");
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    let terminal = vcx.debug_bounds("details-action-app_view.terminal").expect("the app view's own icon, in the one header");
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let actions = cx.read(|cx| deck.read(cx).view_actions(&ViewAddr::App { app: "entityservice".into() }.to_ref(), cx));
+    assert!(actions.is_empty(), "nothing of its own in the header: start here is its menu's (R9.11)");
     assert!(vcx.debug_bounds("app-facts").is_some(), "the view keeps its facts, not a second header");
     // Its parts in panels, the ones that have something to say.
     for name in ["app-commands", "app-notes", "app-terminals", "app-tools"] {
         assert!(vcx.debug_bounds(name).is_some(), "{name}");
     }
-    vcx.simulate_click(terminal.center(), Modifiers::none());
-    vcx.run_until_parked();
-    let top = details(&shell, cx).and_then(|s| s.last().cloned()).expect("drilled");
-    assert!(matches!(ViewAddr::parse(&top), ViewAddr::Terminal { .. }), "a terminal in its folder, over it");
 }

@@ -140,11 +140,12 @@ fn an_env_row_shows_that_env_and_the_header_goes_to_its_app(cx: &mut TestAppCont
     vcx.run_until_parked();
     assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some(other), "the list on that env");
     assert_eq!(details(&shell, cx), Some(vec![svc(other, "graphservice")]), "its page there");
-    // Its app, from the header.
+    // Its app, from its facts (not its header, R9.11).
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    let app = vcx.debug_bounds("details-action-svc.app").expect("its app's icon");
+    assert!(vcx.debug_bounds("tool-svc.app").is_none(), "no icon in the header");
+    let app = vcx.debug_bounds("svc-app").expect("its app, among its facts");
     vcx.simulate_click(app.center(), Modifiers::none());
     vcx.run_until_parked();
     assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Apps);

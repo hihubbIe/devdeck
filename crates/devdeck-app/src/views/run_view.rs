@@ -18,13 +18,13 @@
 //! views show one run, the one focused last sizes its terminal. Output redraws at most
 //! every [`OUTPUT_FRAME`], except right after typing, so echo shows at once.
 
-use super::{ViewCx, run_mark};
+use super::ViewCx;
 use crate::context_menu::{self, Content, Origin};
 use crate::runner::{RunKey, RunnerEvent};
 use devdeck_core::runs::RunState;
 use devdeck_core::terminal::{Mods, TermSize, Wheel, paste_bytes, wheel_input};
 use devdeck_ui::terminal::{self, Frame, Geometry, Scrollback};
-use devdeck_ui::{Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, action_button, icon, icon_text, label, open_menu, theme, tip, toasts, toggle_button};
+use devdeck_ui::{Icon, InputEvent, MenuItem, TextInput, Theme, ToastKind, icon, label, open_menu, theme, tip, toasts};
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EntityId, FocusHandle, Focusable, Global, HitboxBehavior, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent,
@@ -87,7 +87,8 @@ impl RunView {
         let runner = ctx.services.read(cx).runner.clone();
         let key = RunKey::new(&app, &cmd);
         let me = cx.entity_id();
-        let subs = vec![
+        let agents = ctx.services.read(cx).agents.clone();
+        let mut subs = vec![
             cx.observe(&runner, |this, _, cx| {
                 this.start_if_restoring(cx);
                 cx.notify();
@@ -101,6 +102,10 @@ impl RunView {
             }),
             cx.on_release(move |this, cx| this.give_up_sizing(me, cx)),
         ];
+        // An agent session's header follows its state (R6.14, R9.11).
+        if key.is_terminal() {
+            subs.push(cx.observe(&agents, |_, _, cx| cx.notify()));
+        }
         // A hidden view no longer paints: another view of the run must be able to size it.
         let subs = subs.into_iter().chain(ctx.on_visibility(cx, move |this, visible, cx| {
             if !visible {
@@ -160,7 +165,7 @@ impl RunView {
         items.push(MenuItem::new("new arguments…", move |window, cx| {
             let _ = typing.update(cx, |v, cx| v.type_args(window, cx));
         }));
-        let at = self.args_bounds.get().map_or_else(|| window.bounds().center(), |b| b.bottom_left());
+        let at = self.args_bounds.get().map_or_else(|| window.mouse_position(), |b| b.bottom_left());
         open_menu(at, items, window, cx);
     }
 
@@ -527,6 +532,108 @@ impl super::KeepsState for RunView {
     }
 }
 
+/// The agent session this terminal is, if it is one (R6.14).
+fn session_of(key: &RunKey, services: &crate::services::Services, cx: &App) -> Option<String> {
+    let n = key.terminal_number()?;
+    services.agents.read(cx).of_terminal(n).map(|s| s.id.clone())
+}
+
+/// Its one header says what it is, how it is and what it does (R9.11): the run's title
+/// (an agent session's name), its state in a few words, then run or stop, restart, its
+/// arguments (a command's) and follow.
+impl super::Live for RunView {
+    fn title(&self, cx: &App) -> Option<String> {
+        let services = self.ctx.services.read(cx);
+        if let Some(id) = session_of(&self.key, services, cx) {
+            return Some(services.agents.read(cx).label(&id, cx));
+        }
+        Some(services.runner.read(cx).title(&self.key))
+    }
+
+    fn status(&self, cx: &App) -> Option<super::ViewStatus> {
+        use super::{Tone, ViewStatus};
+        use devdeck_core::agents::Status;
+        let services = self.ctx.services.read(cx);
+        let runner = services.runner.read(cx);
+        let run = runner.run(&self.key);
+        let state = run.map(|r| r.state);
+        if let Some(id) = session_of(&self.key, services, cx) {
+            let agents = services.agents.read(cx);
+            let status = agents.status(&id, cx);
+            let facts = agents.session(&id).map(|s| s.facts.line()).unwrap_or_default();
+            let text = if facts.is_empty() { status.label().to_string() } else { format!("{} · {facts}", status.label()) };
+            let tone = match status {
+                Status::Working => Tone::Ok,
+                Status::NeedsYou => Tone::Warn,
+                _ => Tone::Dim,
+            };
+            return Some(ViewStatus::new(text, tone));
+        }
+        if self.key.is_terminal() {
+            return Some(match (runner.terminal_program(&self.key), state) {
+                (Some(program), _) => ViewStatus::new(program, Tone::Ok),
+                (None, Some(s)) if s.is_running() => ViewStatus::new("idle", Tone::Dim),
+                (None, Some(_)) => ViewStatus::new("ended", Tone::Dim),
+                (None, None) => ViewStatus::new("not started", Tone::Dim),
+            });
+        }
+        if let Some(why) = runner.refusal(&self.key).filter(|r| r != "already running") {
+            return Some(ViewStatus::new(format!("can't run: {why}"), Tone::Warn));
+        }
+        let env = run.and_then(|r| r.env.clone()).or(services.env.clone()).map(|e| format!("@{e} · ")).unwrap_or_default();
+        let (text, tone) = match state {
+            None => ("not started".to_string(), Tone::Dim),
+            Some(RunState::Running) => {
+                let up = runner.running_for(&self.key, cx.background_executor().now()).map(super::app_view::lasted);
+                (up.map_or_else(|| "running".to_string(), |u| format!("running {u}")), Tone::Ok)
+            }
+            Some(RunState::Stopping) => ("stopping…".into(), Tone::Dim),
+            Some(RunState::Stopped) => ("stopped".into(), Tone::Dim),
+            Some(RunState::Exited(0)) => (run.and_then(|r| r.took).map_or("succeeded".into(), |d| format!("succeeded in {}", devdeck_core::runs::took(d))), Tone::Ok),
+            Some(RunState::Exited(code)) => (format!("exited {code}"), Tone::Err),
+            Some(RunState::Killed(signal)) => (format!("killed by signal {signal}"), Tone::Err),
+            Some(RunState::NotStarted) => ("couldn't start".into(), Tone::Err),
+        };
+        Some(ViewStatus::new(format!("{env}{text}"), tone))
+    }
+
+    fn actions(&self, cx: &App) -> Vec<super::ViewAction> {
+        use super::ViewAction;
+        let services = self.ctx.services.read(cx);
+        let runner = services.runner.read(cx);
+        let agent = session_of(&self.key, services, cx).is_some();
+        let running = runner.state(&self.key) == Some(RunState::Running);
+        let can_run = runner.refusal(&self.key).is_none();
+        let mut actions = Vec::new();
+        if running {
+            actions.push(ViewAction { id: "run.stop", icon: Icon::Stop, on: false });
+            // An agent session resumes on its own when shown: no restart to offer.
+            if !agent {
+                actions.push(ViewAction { id: "run.restart", icon: Icon::Restart, on: false });
+            }
+        } else if can_run {
+            actions.push(ViewAction { id: "run.run", icon: Icon::Run, on: false });
+        }
+        if !self.key.is_terminal() {
+            let args = !runner.args(&self.key).is_empty();
+            actions.push(ViewAction { id: "run.args", icon: Icon::Arguments, on: args });
+        }
+        actions.push(ViewAction { id: "pane.follow", icon: Icon::Follow, on: self.follow });
+        actions
+    }
+
+    fn run(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match id {
+            "run.run" => self.act("run", cx),
+            "run.stop" => self.act("stop", cx),
+            "run.restart" => self.act("restart", cx),
+            "run.args" => self.choose_args(window, cx),
+            "pane.follow" => self.toggle_follow(cx),
+            _ => {}
+        }
+    }
+}
+
 /// A terminal's tab gives its keys to the shell; a run's to its toolbar keys first.
 impl Focusable for RunView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -544,20 +651,23 @@ impl Render for RunView {
         let run = runner.run(&self.key);
         let state = run.map(|r| r.state);
         let refusal = runner.refusal(&self.key).filter(|r| r != "already running");
-        let env = run.and_then(|r| r.env.clone()).or(services.env.clone());
-        let line = runner.line(&self.key, env.as_deref()).unwrap_or_default();
-        let state_text = match state {
-            None => "not started".to_string(),
-            Some(RunState::Running) => "running".into(),
-            Some(RunState::Stopping) => "stopping…".into(),
-            Some(RunState::Stopped) => "stopped".into(),
-            Some(RunState::Exited(0)) => run.and_then(|r| r.took).map_or("succeeded".into(), |d| format!("succeeded in {}", devdeck_core::runs::took(d))),
-            Some(RunState::Exited(code)) => format!("exited {code}"),
-            Some(RunState::Killed(signal)) => format!("killed by signal {signal}"),
-            Some(RunState::NotStarted) => "couldn't start".into(),
-        };
         let running = state == Some(RunState::Running);
         let follow = self.follow;
+        // Its title, state and actions are its header's (R9.11); a row of its own only
+        // while arguments are typed (a field needs the room).
+        let toolbar = self.args_input.is_some().then(|| {
+            div()
+                .flex_none()
+                .h(t.toolbar_h)
+                .px_3()
+                .flex()
+                .items_center()
+                .gap_2()
+                .border_b_1()
+                .border_color(t.line_soft)
+                .child(div().flex_none().text_color(t.mute).child("arguments"))
+                .child(args_field)
+        });
         // A selection belongs to one start of the run at one size (rows renumber on a resize);
         // a new start is a new terminal, whose rows count from 0 again.
         let stamp = run.map(|r| (r.runs, r.terminal.size()));
@@ -569,58 +679,6 @@ impl Render for RunView {
             }
             self.selected_in = stamp;
         }
-
-        let button = |id: &'static str, i: Icon, enabled: bool, tooltip: String| {
-            action_button(id, i, t.icon, enabled, tooltip, &t).debug_selector(move || format!("run-{id}"))
-        };
-        // What the run is takes the room left and shrinks (the line first, then the
-        // arguments and the name; the state stays whole); the actions always stay visible.
-        let info = div()
-            .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(run_mark(state, "run-state", t.icon, &t))
-            .child(div().id("title").min_w_0().tooltip(tip(runner.title(&self.key))).child(label(runner.title(&self.key)).text_color(t.hi)))
-            .when_some(env.filter(|_| !self.key.is_terminal()), |d, e| d.child(div().flex_none().text_color(t.env).child(format!("@{e}"))))
-            .when(!self.key.is_terminal(), |d| {
-                d.child(div().id("line").flex_1().min_w_0().tooltip(tip(line.clone())).child(label(line).text_color(t.dim))).child(args_field)
-            })
-            .when(self.key.is_terminal(), |d| d.child(div().flex_1()))
-            .child(
-                div()
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_color(if state.and_then(|s| s.failed()).is_some() { t.err } else { t.mute })
-                    .child(state_text),
-            )
-            .when_some(refusal.clone(), |d, r| d.child(icon_text(Icon::Warning, t.warn, r, &t)));
-        let toolbar = div()
-            .flex_none()
-            .h(t.toolbar_h)
-            .px_3()
-            .flex()
-            .items_center()
-            .gap_2()
-            .border_b_1()
-            .border_color(t.line_soft)
-            .child(info)
-            .child(
-                button("start", Icon::Run, !running && refusal.is_none(), refusal.clone().map_or("run".into(), |r| format!("can't run: {r}")))
-                    .when(!running && refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("run", cx)))),
-            )
-            .child(button("stop", Icon::Stop, running, "stop".into()).when(running, |d| d.on_click(cx.listener(|this, _, _, cx| this.act("stop", cx)))))
-            .child(
-                button("restart", Icon::Restart, refusal.is_none(), "restart".into())
-                    .when(refusal.is_none(), |d| d.on_click(cx.listener(|this, _, _, cx| this.act("restart", cx)))),
-            )
-            .child(
-                toggle_button("follow", "follow", follow, &t)
-                    .tooltip(tip("follow the output"))
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_follow(cx))),
-            );
 
         let body = if run.is_none() {
             div()
@@ -799,7 +857,7 @@ impl Render for RunView {
             .on_action(cx.listener(|this, _: &Restart, _, cx| this.act("restart", cx)))
             .on_action(cx.listener(|this, _: &ChooseArgs, window, cx| this.choose_args(window, cx)))
             .on_action(cx.listener(|this, _: &FocusTerminal, window, cx| this.focus_terminal(window, cx)))
-            .child(toolbar)
+            .children(toolbar)
             .child(body)
     }
 }

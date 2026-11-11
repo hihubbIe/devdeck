@@ -123,6 +123,17 @@ impl Focusable for MatrixView {
     }
 }
 
+/// Its one header (R9.11): its name, and the tag it highlights.
+impl super::Live for MatrixView {
+    fn title(&self, _cx: &App) -> Option<String> {
+        Some("branch matrix".into())
+    }
+
+    fn status(&self, _cx: &App) -> Option<super::ViewStatus> {
+        self.highlight.as_ref().map(|h| super::ViewStatus::new(format!("highlighting {h}"), super::Tone::Dim))
+    }
+}
+
 impl Render for MatrixView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
@@ -173,26 +184,12 @@ impl Render for MatrixView {
                 this.highlight = None;
                 cx.notify();
             }))
-            .child(
-                div()
-                    .flex_none()
-                    .h(t.toolbar_h)
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(t.line_soft)
-                    .child(div().text_color(t.hi).child("branch matrix"))
-                    .child(label(match &self.highlight {
-                        Some(h) => format!("highlighting {h}"),
-                        None => "click a tag to highlight it everywhere · double-click opens the service".into(),
-                    })
-                    .text_color(t.mute)),
-            )
+            // Its name and what it highlights are its header's (R9.11); how to use it, a
+            // tooltip.
             .child(
                 div()
                     .id("matrix-scroll")
+                    .tooltip(tip("click a tag to highlight it everywhere · double-click opens the service"))
                     .flex_1()
                     .min_h_0()
                     .scroll_x()

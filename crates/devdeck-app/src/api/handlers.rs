@@ -129,7 +129,7 @@ pub fn view(a: ViewAddr) -> View {
         ViewAddr::Git { root } => View::Git { root: root.into() },
         ViewAddr::File { path } => View::File { path: path.into() },
         ViewAddr::Note { id } => View::Note { id },
-        a @ ViewAddr::Agent { .. } => View::Other { reference: a.to_ref().as_str().into() },
+        a @ (ViewAddr::Agent { .. } | ViewAddr::Agents) => View::Other { reference: a.to_ref().as_str().into() },
         ViewAddr::Other(r) => View::Other { reference: r.into() },
     }
 }

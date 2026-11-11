@@ -15,7 +15,7 @@ use crate::settings_view::SettingsView;
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
-use devdeck_ui::{APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
+use devdeck_ui::{Scrolls, APP_ICON, APP_NAME, DragGhost, Empty, Icon, MenuItem, Theme, apply_window_scale, button, button_icon, icon, icon_button, label, labeled_button, logical, open_menu, theme, tip};
 use devdeck_core::layout::{Axis, Direction, Drop, Edge, Layout, MAIN_WINDOW, Metrics, Moved, Node, PaneId, Rect, SplitId, ViewRef, WindowId};
 use gpui::{
     Animation, AnimationExt, AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Decorations, Div, DragMoveEvent, Entity, EntityId, ExternalPaths,
@@ -93,6 +93,11 @@ pub struct WindowView {
     remembered: HashMap<EntityId, (WeakFocusHandle, Option<Held>)>,
     /// While a tab is dragged over a tab strip: the pane and the place it would land at.
     tab_insert: Rc<Cell<Option<(PaneId, usize)>>>,
+    /// Each tab strip's scroll, and the tab it last showed active: a tab made active from
+    /// elsewhere (a key, a reveal, an open) is scrolled into view, one clicked isn't (R9.10).
+    tab_scrolls: HashMap<PaneId, (gpui::ScrollHandle, Option<ViewRef>)>,
+    /// The pane whose tab was just clicked.
+    tab_clicked: Rc<Cell<Option<PaneId>>>,
     /// While a tab, a pane or a list item is dragged over the panes: the drop under the
     /// pointer and the rectangle it lands in (R3.13).
     drop_hint: Rc<Cell<Option<(Drop, Rect)>>>,
@@ -202,8 +207,14 @@ struct Frame<'a> {
     labels: &'a HashMap<ViewRef, views::TabLabel>,
     /// What each pane's active view offers now (R12.4), for its header.
     actions: &'a HashMap<PaneId, Vec<views::ViewAction>>,
+    /// Each pane's active view's state (R9.11).
+    statuses: &'a HashMap<PaneId, views::ViewStatus>,
     t: &'a Theme,
     tab_insert: &'a Rc<Cell<Option<(PaneId, usize)>>>,
+    tab_scrolls: &'a HashMap<PaneId, (gpui::ScrollHandle, Option<ViewRef>)>,
+    tab_clicked: &'a Rc<Cell<Option<PaneId>>>,
+    /// Panes with a tab that offers actions: their strip keeps a slot for them (R9.11).
+    acting: &'a std::collections::HashSet<PaneId>,
     /// The tab flashing after a reveal, if one is.
     flash: Option<&'a Flash>,
     /// The flash is drawn still, not fading ([`App::reduce_motion`]).
@@ -297,6 +308,8 @@ impl WindowView {
             badge,
             remembered: HashMap::new(),
             tab_insert: Rc::default(),
+            tab_scrolls: HashMap::new(),
+            tab_clicked: Rc::default(),
             drop_hint: Rc::default(),
             before_cover: None,
             deck_sub,
@@ -802,7 +815,7 @@ impl Render for WindowView {
             let d = self.deck.read(cx);
             layout.panes.keys().map(|p| (*p, d.view_focus(*p).unwrap_or_else(|| self.panes_focus.clone()))).collect()
         };
-        let (titles, labels, actions) = {
+        let (titles, labels, actions, statuses) = {
             let d = self.deck.read(cx);
             let titles: HashMap<ViewRef, SharedString> = layout.panes.values().flat_map(|p| p.tabs.iter()).map(|r| (r.clone(), d.title(r, cx).into())).collect();
             let services = d.services();
@@ -810,9 +823,27 @@ impl Render for WindowView {
             let labels: HashMap<ViewRef, views::TabLabel> = layout.panes.values().flat_map(|p| p.tabs.iter()).map(|r| (r.clone(), views::tab_label(r, s, cx))).collect();
             let actions: HashMap<PaneId, Vec<views::ViewAction>> =
                 layout.panes.iter().filter_map(|(id, p)| p.active_view().map(|r| (*id, d.view_actions(r, cx)))).filter(|(_, a)| !a.is_empty()).collect();
-            (titles, labels, actions)
+            let statuses: HashMap<PaneId, views::ViewStatus> = layout.panes.iter().filter_map(|(id, p)| Some((*id, d.view_status(p.active_view()?, cx)?))).collect();
+            (titles, labels, actions, statuses)
         };
         let flash = self.deck.read(cx).flash.clone();
+        // Tab strips: a handle each; a tab made active from elsewhere scrolls into view.
+        let clicked = self.tab_clicked.take();
+        self.tab_scrolls.retain(|p, _| layout.panes.get(p).is_some_and(|p| p.tabs.len() > 1));
+        for (id, p) in layout.panes.iter().filter(|(_, p)| p.tabs.len() > 1) {
+            let entry = self.tab_scrolls.entry(*id).or_insert_with(|| (gpui::ScrollHandle::new(), None));
+            let active = p.active_view().cloned();
+            if entry.1 != active {
+                if clicked != Some(*id) {
+                    entry.0.scroll_to_item(p.active);
+                }
+                entry.1 = active;
+            }
+        }
+        let acting: std::collections::HashSet<PaneId> = {
+            let d = self.deck.read(cx);
+            layout.panes.iter().filter(|(_, p)| p.tabs.iter().any(|r| d.lively(r).is_some())).map(|(id, _)| *id).collect()
+        };
         let frame = Frame {
             flash: flash.as_ref(),
             still: cx.reduce_motion(),
@@ -825,8 +856,12 @@ impl Render for WindowView {
             titles: &titles,
             labels: &labels,
             actions: &actions,
+            statuses: &statuses,
             t: &t,
             tab_insert: &self.tab_insert,
+            tab_scrolls: &self.tab_scrolls,
+            tab_clicked: &self.tab_clicked,
+            acting: &acting,
         };
         let deck_id = self.deck.entity_id();
         let workspace = self.deck.read(cx).workspace.clone();
@@ -1090,7 +1125,7 @@ impl Render for WindowView {
                             shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
                             window.refresh();
                         })
-                        .child(if full { details(&self.deck, matrix.then(|| sidebar.clone()), sidebar.read(cx).activity().pick(), &t, cx) } else { panes.into_any_element() })
+                        .child(if full { details(&self.deck, &sidebar, matrix, sidebar.read(cx).activity().pick(), &t, cx) } else { panes.into_any_element() })
                         .into_any_element()
                 }
                 None => panes.into_any_element(),
@@ -1185,7 +1220,8 @@ impl Render for WindowView {
 /// A full view's details (Apps): a header saying where they are (each part goes back to
 /// it, the back icon to the one before), then the view on top; a word with nothing
 /// selected.
-fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, pick: &'static str, t: &Theme, cx: &App) -> AnyElement {
+fn details(deck: &Entity<Deck>, sidebar: &Entity<Sidebar>, matrix: bool, pick: &'static str, t: &Theme, cx: &App) -> AnyElement {
+    let matrix_of = matrix.then(|| sidebar.clone());
     let d = deck.read(cx);
     let stack = d.outside().unwrap_or_default();
     let Some(top) = stack.last() else {
@@ -1214,7 +1250,21 @@ fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, pick: &'stat
         .px_2()
         .bg(t.bar)
         .border_b_1()
-        .border_color(t.line);
+        .border_color(t.line)
+        // Its item's menu, as its row's in the list (R5.2).
+        .on_mouse_down(MouseButton::Right, {
+            let sidebar = sidebar.clone();
+            move |e, window, cx| {
+                let s = sidebar.read(cx);
+                let Some(key) = s.selected.clone() else { return };
+                let pinned = s.state.pins.get(s.activity().list_id()).is_some_and(|p| p.contains(&key));
+                let items = Sidebar::item_menu(&sidebar, &key, pinned, cx);
+                if !items.is_empty() {
+                    cx.stop_propagation();
+                    open_menu(e.position, items, window, cx);
+                }
+            }
+        });
     // The matrix shown alone: the list comes back from here.
     if let Some(s) = matrix_of {
         head = head.child(
@@ -1234,7 +1284,7 @@ fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, pick: &'stat
             head = head.child(div().flex_none().text_color(t.dim).child("›"));
         }
         head = head.child(if i + 1 == stack.len() {
-            div().id(("crumb", i)).flex_auto().min_w_0().truncate().text_color(t.fg).child(title)
+            div().id(("crumb", i)).flex_initial().min_w_0().truncate().text_color(t.fg).child(title)
         } else {
             let back = deck.clone();
             div()
@@ -1250,21 +1300,19 @@ fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, pick: &'stat
                 .on_click(move |_, _, cx| back.update(cx, |d, cx| d.back_to(i, cx)))
         });
     }
-    // What the view on top offers (R12.4), as a pane header shows it; then into a pulse.
-    for (i, a) in d.view_actions(top, cx).into_iter().enumerate() {
-        let Some(spec) = crate::registry::by_id(a.id) else { continue };
-        let (owner, view, id) = (deck.clone(), top.clone(), a.id);
-        head = head.child(
-            icon_button(("details-action", i), a.icon, spec.label, t)
-                .debug_selector(move || format!("details-action-{id}"))
-                .when(a.on, |b| b.bg(t.selected))
-                .on_click(move |_, window, cx| {
-                    if let Some(l) = owner.read(cx).lively(&view) {
-                        l.run(id, window, cx);
-                    }
-                }),
-        );
-    }
+    // The view on top's state and what it offers (R9.11, R12.4), as a pane header shows
+    // them; then into a pulse.
+    let (status, actions) = (d.view_status(top, cx), d.view_actions(top, cx));
+    let owner = deck.clone();
+    let tools = view_tools("details-tools", status.as_ref(), &actions, t, move |id| {
+        let (owner, view) = (owner.clone(), top.clone());
+        std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+            if let Some(l) = owner.read(cx).lively(&view) {
+                l.run(id, window, cx);
+            }
+        })
+    });
+    head = head.child(div().flex_1().min_w_0().h_full().children(tools));
     let (pick, view) = (deck.clone(), top.clone());
     head = head.child(
         devdeck_ui::go_action("details-pulse", Icon::Layouts, "open in pulse…", t)
@@ -1290,9 +1338,30 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
     let s = sidebar.read(cx);
     let (current, visible) = (s.activity(), s.state.visible);
     let mut bar = div().flex_none().w(t.activity_w).h_full().flex().flex_col().items_center().pt_1().gap_1().bg(t.bar).border_r_1().border_color(t.line);
+    let needing = s.agents_needing(cx);
     for a in s.activities(cx) {
         let on = visible && a == current;
         let hover = t.hover;
+        // Agent sessions waiting on you: a count over the icon's corner, drawn over it so
+        // nothing moves (R9.10).
+        let badge = (a == Activity::Agents && needing > 0).then(|| {
+            div()
+                .debug_selector(|| "activity-agents-badge".into())
+                .absolute()
+                .top(t.size(4.))
+                .right(t.size(4.))
+                .min_w(t.size(14.))
+                .h(t.size(14.))
+                .px(t.size(3.))
+                .rounded_full()
+                .bg(t.warn)
+                .text_color(t.bg)
+                .text_size(t.text_small)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(needing.to_string())
+        });
         bar = bar.child(
             div()
                 .id(("activity", a as u64))
@@ -1328,7 +1397,8 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                         open_menu(e.position, items, window, cx);
                     }
                 })
-                .child(icon(a.icon(), if on { t.hi } else { t.mute }, t).size(t.size(18.)).debug_selector(move || format!("activity-icon-{}", a.id()))),
+                .child(icon(a.icon(), if on { t.hi } else { t.mute }, t).size(t.size(18.)).debug_selector(move || format!("activity-icon-{}", a.id())))
+                .children(badge),
         );
     }
     bar
@@ -1627,12 +1697,48 @@ fn open_terminal_items(deck: &Entity<Deck>, pane: PaneId, window: WindowId, view
     items
 }
 
+/// What a header shows of its view after the title (R9.11): its state in a few words,
+/// then its actions as icons, right-aligned; what doesn't fit folds into "more" at the end
+/// (the toolbar's rule, R9.9), the last action first. `None` when it has neither.
+fn view_tools(
+    id: impl Into<SharedString>,
+    status: Option<&views::ViewStatus>,
+    actions: &[views::ViewAction],
+    t: &Theme,
+    run: impl Fn(&'static str) -> devdeck_ui::toolbar::ToolRun,
+) -> Option<devdeck_ui::toolbar::Toolbar> {
+    use devdeck_ui::toolbar::{Fold, ToolAction, ToolItem, Toolbar, ToolbarState};
+    if status.is_none() && actions.is_empty() {
+        return None;
+    }
+    let mut bar = Toolbar::new(id, ToolbarState::new()).embedded();
+    if let Some(s) = status {
+        bar = bar.item(ToolItem::Text { text: s.text.clone().into(), color: s.color(t) });
+    }
+    bar = bar.item(ToolItem::Spacer);
+    let n = actions.len();
+    for (i, a) in actions.iter().enumerate() {
+        let Some(spec) = crate::registry::by_id(a.id) else { continue };
+        let go = run(a.id);
+        let mut action = ToolAction::new(a.id, spec.label, move |window, cx| go(window, cx)).icon(a.icon).fold(Fold::Order((n - i).min(255) as u8));
+        // On: drawn as a toggle that is on (it never folds, R9.9).
+        if a.on {
+            action = action.toggle(true);
+        }
+        bar = bar.item(ToolItem::Action(action));
+    }
+    Some(bar)
+}
+
 /// What a tab does by mouse, on the strip and as a header's title (R3.12): a click
 /// activates it (two maximize), middle-click closes, right-click opens its menu, it drags.
 fn tab_handlers(el: Stateful<Div>, f: &Frame, pane: PaneId, i: usize, title: &SharedString) -> Stateful<Div> {
     let (d_click, d_mid, d_menu) = (f.deck.clone(), f.deck.clone(), f.deck.clone());
     let (deck_id, window_id) = (f.deck.entity_id(), f.window);
+    let clicked = f.tab_clicked.clone();
     el.on_click(move |e, _, cx| {
+        // Clicked: it shows already, nothing scrolls to it (R9.10).
+        clicked.set(Some(pane));
         let double = e.click_count() == 2;
         apply_on(&d_click, cx, |l| {
             l.activate(pane, i)?;
@@ -1789,6 +1895,20 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             .child(icon(Icon::Grip, t.dim, t)),
     );
 
+    // The active view's state and actions (R9.11, R12.4): after a header's title, or after
+    // the tabs (whose labels say enough).
+    let pane_actions: Vec<views::ViewAction> = f.actions.get(&pane).cloned().unwrap_or_default();
+    let run_on = |deck: Entity<Deck>| {
+        move |id: &'static str| -> devdeck_ui::toolbar::ToolRun {
+            let deck = deck.clone();
+            std::rc::Rc::new(move |window: &mut Window, cx: &mut App| run_view_action(&deck, pane, None, id, window, cx))
+        }
+    };
+    let header_tools = header.then(|| view_tools(format!("pane-tools-{}", pane.0), f.statuses.get(&pane), &pane_actions, t, run_on(f.deck.clone()))).flatten();
+    let strip_tools = (!header).then(|| view_tools(format!("pane-tools-{}", pane.0), None, &pane_actions, t, run_on(f.deck.clone()))).flatten();
+    // As wide as the most a view offers, whichever tab is active and whatever state its
+    // run is in, so selecting a tab never moves the others (R9.10).
+    let strip_slot = (!header && f.acting.contains(&pane)).then(|| devdeck_ui::toolbar::Toolbar::embedded_width(views::MAX_HEADER_ACTIONS, t));
     // Tabs (or the title) keep priority over the pane buttons when the pane is narrow.
     // A header's title gives way after the pane buttons (they shrink far faster), never ×.
     if header {
@@ -1797,6 +1917,8 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .debug_selector(move || format!("tab-{}-0", pane.0))
                 .flex()
                 .flex_auto()
+                // Its state and actions take the rest, right after it.
+                .when(header_tools.is_some(), |d| d.flex_initial())
                 .min_w_0()
                 .h_full()
                 .px_2()
@@ -1810,12 +1932,19 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                 .into_any_element(),
             None => div().flex_1().into_any_element(),
         });
+        strip = strip.children(header_tools.map(|tools| div().flex_1().min_w_0().h_full().child(tools)));
     } else {
+        // At least their minimum each, then the strip scrolls sideways (the wheel too), a
+        // thin bar over its bottom edge.
+        let scroll = f.tab_scrolls.get(&pane).map(|(h, _)| h.clone()).unwrap_or_default();
         let mut tabs = div()
+            .id(("pane-tabs", pane.0))
             .flex()
             .flex_1()
             .min_w(t.tabs_min_w)
-            .overflow_hidden()
+            .h_full()
+            .scroll_strip()
+            .track_scroll(&scroll)
             .debug_selector(move || format!("pane-tabs-{}", pane.0));
         for (i, title) in titles.iter().enumerate() {
             let active = i == p.active;
@@ -1892,7 +2021,21 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
                     .when_some(flash.filter(|_| active), |d, n| d.child(flash_overlay("flash-tab", n, f.still, t))),
             );
         }
-        strip = strip.child(tabs);
+        strip = strip.child(
+            div()
+                .relative()
+                .flex()
+                .flex_1()
+                .min_w(t.tabs_min_w)
+                .h_full()
+                .child(tabs)
+                .child(devdeck_ui::scrollbar_x(("pane-tabs-bar", pane.0), &scroll)),
+        );
+        // The active tab's actions (its state is in its tab): as wide as they need, folding
+        // into "more" when the tabs need the room.
+        if let Some(w) = strip_slot {
+            strip = strip.child(div().debug_selector(move || format!("pane-tools-slot-{}", pane.0)).flex_none().flex_shrink(10.).min_w(t.button_h + t.size(8.)).w(w).h_full().children(strip_tools));
+        }
     }
 
     // Pane buttons.
@@ -1910,19 +2053,6 @@ fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElemen
             .items_center()
             .gap_1()
             .px_1()
-            // What the view offers now (R12.4), before the pane's own buttons.
-            .children(f.actions.get(&pane).into_iter().flatten().enumerate().filter_map(|(i, a)| {
-                let spec = crate::registry::by_id(a.id)?;
-                let (deck, id) = (f.deck.clone(), a.id);
-                let button = icon_button(eid("view-action", pane.0, i), a.icon, spec.label, t)
-                    .debug_selector(move || format!("view-action-{}-{id}", pane.0))
-                    .when(a.on, |b| b.bg(t.selected))
-                    .on_click(move |_, window, cx| {
-                        cx.stop_propagation();
-                        run_view_action(&deck, pane, None, id, window, cx);
-                    });
-                Some(button)
-            }))
             .when(!is_detached, |d| {
                 d.child(
                     icon_button(("collapse", pane.0), if p.collapsed { Icon::Open } else { Icon::Collapse }, "collapse or expand", t)

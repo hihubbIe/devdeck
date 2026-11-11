@@ -117,6 +117,8 @@ icons! {
     Pause => "pause",
     /// Keep the newest line in view. From gpui-kit-assets' Lucide set.
     Follow => "chevrons-down",
+    /// A command's arguments.
+    Arguments => "text-cursor-input",
     // Toolbars.
     /// A toolbar's "more" menu (never the settings cog). From gpui-kit-assets' Lucide set.
     More => "ellipsis",

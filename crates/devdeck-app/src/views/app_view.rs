@@ -17,10 +17,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
 };
 
-actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote, OpenTerminal]);
-
-/// Its header's action (a tab's, the Apps view's details'): the registry's id.
-pub const OPEN_TERMINAL: &str = "app_view.terminal";
+actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote]);
 
 /// A selected note is `note:<id>` in [`AppView::selected`] (commands are `source:name`).
 const NOTE_KEY: &str = "note:";
@@ -90,13 +87,6 @@ impl AppView {
             cx.new(|cx| super::git_view::GitView::new(root, r, ctx, cx))
         });
         Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, git, tick: None, scroll: gpui::ScrollHandle::new(), _subs: subs }
-    }
-
-    /// A new terminal in its folder, opened as its other views are.
-    pub fn open_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some(dir) = self.ctx.services.read(cx).catalog.app(&self.app).map(|a| a.dir.display().to_string()) else { return };
-        let Some(n) = self.ctx.deck.upgrade().map(|d| d.read(cx).next_terminal(cx)) else { return };
-        self.ctx.open(ViewAddr::Terminal { n, dir }, cx);
     }
 
     /// Where the workspace's cluster runs it, one row per env: the tag, its pods. An app
@@ -208,6 +198,74 @@ impl AppView {
             .filter(|(_, tabs)| matches!(ViewAddr::parse(&tabs.view), ViewAddr::Terminal { dir: d, .. } if d == dir))
             .map(|(n, _)| n)
             .collect()
+    }
+
+    /// Its agent sessions (R6.14): each one's state, a row going to it in Agents; a new one
+    /// from the panel's +. None without agents or sessions.
+    fn agents_block(&self, app: &devdeck_core::apps::App, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        use devdeck_core::agents::Status;
+        let kinds = crate::environment::agent_kinds(cx);
+        let services = self.ctx.services.read(cx);
+        let workspace = services.workspace.clone();
+        let agents = services.agents.read(cx);
+        let mut mine: Vec<(String, String, Status)> =
+            agents.sessions().iter().filter(|s| s.project.as_deref() == Some(app.id.as_str())).map(|s| (s.id.clone(), agents.label(&s.id, cx), agents.status(&s.id, cx))).collect();
+        if kinds.is_empty() && mine.is_empty() {
+            return None;
+        }
+        mine.sort_by_key(|(_, label, _)| label.to_lowercase());
+        let title = format!("Agents · {}", mine.len());
+        let mut block = div().flex().flex_col();
+        if mine.is_empty() {
+            block = block.child(div().px_2().h(t.row_h).flex().items_center().text_color(t.dim).child("no session yet"));
+        }
+        for (i, (id, name, status)) in mine.into_iter().enumerate() {
+            let (color, filled) = match status {
+                Status::Working => (t.ok, true),
+                Status::NeedsYou => (t.warn, true),
+                Status::Done => (t.accent, true),
+                Status::Ready => (t.ok, false),
+                Status::Off => (t.dim, false),
+            };
+            let (ws, ws2, id2) = (workspace.clone(), workspace.clone(), id.clone());
+            block = block.child(
+                div()
+                    .id(("agent", i))
+                    .debug_selector(move || format!("app-agent-{i}"))
+                    .h(t.row_h)
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(t.radius_s)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.hover))
+                    .on_click(move |_, _, cx| crate::agents::show_session(&ws, &id, cx))
+                    .child(devdeck_ui::dot(color, filled, t))
+                    .child(label(name).flex_1().min_w_0())
+                    .child(div().flex_none().text_color(t.mute).child(status.label()))
+                    .child(devdeck_ui::go_action(("agent-go", i), Icon::Agents, "the session in Agents", t).on_click(move |_, _, cx| crate::agents::show_session(&ws2, &id2, cx))),
+            );
+        }
+        let (deck, dir) = (self.ctx.deck.clone(), app.dir.clone());
+        let new = icon_action("app-new-session", Icon::Plus, "new agent session in its folder", !kinds.is_empty(), t).debug_selector(|| "app-new-session".into()).on_click(move |e, window, cx| {
+            let Some(deck) = deck.upgrade() else { return };
+            match kinds.as_slice() {
+                [] => {}
+                [one] => crate::sidebar::new_agent_session(&deck, &one.id, &dir, cx),
+                many => {
+                    let items = many
+                        .iter()
+                        .map(|k| {
+                            let (deck, id, dir) = (deck.clone(), k.id.clone(), dir.clone());
+                            devdeck_ui::MenuItem::new(k.name.clone(), move |_, cx| crate::sidebar::new_agent_session(&deck, &id, &dir, cx))
+                        })
+                        .collect();
+                    devdeck_ui::open_menu(e.position(), items, window, cx);
+                }
+            }
+        });
+        Some(devdeck_ui::panel("app-agents", title, vec![new.into_any_element()], block, t))
     }
 
     /// The shells in its folder and what they run; a row goes to it in Terminals.
@@ -359,18 +417,19 @@ impl AppView {
         ]
     }
 
-    /// The menu of a command row (right-click, shift+F10).
-    pub fn command_menu(this: &gpui::Entity<Self>, cmd: &str) -> Vec<devdeck_ui::MenuItem> {
+    /// The menu of a command row (right-click, shift+F10): what applies now (run, or stop
+    /// and restart), then its output.
+    pub fn command_menu(this: &gpui::Entity<Self>, cmd: &str, cx: &App) -> Vec<devdeck_ui::MenuItem> {
         let item = |label: &'static str, f: fn(&mut Self, &str, &mut Context<Self>)| {
             let (me, cmd) = (this.clone(), cmd.to_string());
             devdeck_ui::MenuItem::new(label, move |_, cx| me.update(cx, |v, cx| f(v, &cmd, cx)))
         };
-        vec![
-            item("Run", Self::run),
-            item("Stop", Self::stop),
-            item("Restart", Self::restart),
-            item("Output", Self::open_output),
-        ]
+        let key = this.read(cx).key(cmd);
+        let running = this.read(cx).ctx.services.read(cx).runner.read(cx).state(&key).is_some_and(|s| s.is_running());
+        let mut items = if running { vec![item("Stop", Self::stop), item("Restart", Self::restart)] } else { vec![item("Run", Self::run)] };
+        items.push(devdeck_ui::MenuItem::separator());
+        items.push(item("Output", Self::open_output));
+        items
     }
 }
 
@@ -453,18 +512,9 @@ struct Deployed {
     problems: Vec<(String, String)>,
 }
 
-/// Its header's icon: a terminal in its folder (its git is in it).
-impl super::Live for AppView {
-    fn actions(&self, _cx: &App) -> Vec<super::ViewAction> {
-        vec![super::ViewAction { id: OPEN_TERMINAL, icon: Icon::Terminals, on: false }]
-    }
-
-    fn run(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
-        if id == OPEN_TERMINAL {
-            self.open_terminal(cx);
-        }
-    }
-}
+/// Its header offers nothing of its own (R9.11): a terminal or a session in its folder
+/// is its tab's menu's ("start here"), its parts are on its page.
+impl super::Live for AppView {}
 
 impl Focusable for AppView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -572,7 +622,7 @@ impl Render for AppView {
                                     v.selected = Some(id.clone());
                                     cx.notify();
                                 });
-                                devdeck_ui::open_menu(e.position, AppView::command_menu(&me, &id), window, cx);
+                                devdeck_ui::open_menu(e.position, AppView::command_menu(&me, &id, cx), window, cx);
                             }
                         })
                         .on_click(cx.listener(move |this, e: &gpui::ClickEvent, _, cx| {
@@ -692,6 +742,7 @@ impl Render for AppView {
             .gap_3()
             .when_some(self.deployments_block(&t, cx), |d, b| d.child(b))
             .child(self.terminals_block(&app, &t, cx))
+            .when_some(self.agents_block(&app, &t, cx), |d, b| d.child(b))
             .when_some(tools_block(&app, &tools, &t), |d, b| d.child(b));
         let body = div()
             .id("app-body")
@@ -726,14 +777,13 @@ impl Render for AppView {
                     let at = this.origin.get() + gpui::point(theme(cx).size(140.), theme(cx).size(96.));
                     let items = match note_of(&sel) {
                         Some(id) => AppView::note_menu(&cx.entity(), id, cx),
-                        None => AppView::command_menu(&cx.entity(), &sel),
+                        None => AppView::command_menu(&cx.entity(), &sel, cx),
                     };
                     devdeck_ui::open_menu(at, items, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &OpenGit, _, cx| this.open_git(cx)))
-            .on_action(cx.listener(|this, _: &OpenTerminal, _, cx| this.open_terminal(cx)))
             .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
                 this.show_hidden = !this.show_hidden;
                 cx.notify();

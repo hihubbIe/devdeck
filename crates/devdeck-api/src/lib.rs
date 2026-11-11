@@ -24,8 +24,9 @@ pub use types::{Caller, Class, Policy, Untrusted, View};
 /// subscription naming it is refused, as for any unknown topic. 6: layouts are pulses
 /// (the user's name for them): `layout.*` became `pulse.*`, the `layout` topic `pulse`,
 /// every `layout` field `pulse`, and the `layouts` list `pulses` (R13.2). 7: `ui.get`
-/// (and every answer that is a `Ui`) says the main window's `activity` (R4.10).
-pub const API_LEVEL: u32 = 7;
+/// (and every answer that is a `Ui`) says the main window's `activity` (R4.10). 8:
+/// `agent.report`, an agent session telling devdeck about itself (R6.14).
+pub const API_LEVEL: u32 = 8;
 
 /// Set in a devdeck shell: the socket of the devdeck that started it.
 pub const SOCKET_ENV: &str = "DEVDECK_SOCKET";

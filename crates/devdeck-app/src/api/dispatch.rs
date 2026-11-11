@@ -125,6 +125,7 @@ handlers! {
     PulseSwitch => typed super::present::pulse_switch,
     SettingsSet => typed super::present::settings_set,
     WorkspaceRescan => typed super::present::workspace_rescan,
+    AgentReport => typed super::present::agent_report,
     UiNotify => typed super::present::ui_notify,
     UiToasts => typed super::present::ui_toasts,
     TerminalOpen => typed super::organize::terminal_open,

@@ -399,7 +399,7 @@ fn arguments_used_are_offered_again(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_arguments_field_offers_recent_ones_and_takes_new_ones(cx: &mut TestAppContext) {
+fn the_arguments_action_offers_recent_ones_and_takes_new_ones(cx: &mut TestAppContext) {
     use gpui::{Focusable, Modifiers, VisualTestContext};
     let shell = start(cx, "args-field");
     let addr = ViewAddr::Run { app: "eventservice".into(), cmd: "go:run".into() };
@@ -410,8 +410,10 @@ fn the_arguments_field_offers_recent_ones_and_takes_new_ones(cx: &mut TestAppCon
     let runner = runner_of(&shell, cx);
     let key = RunKey::new("eventservice", "go:run");
     let mut vcx = VisualTestContext::from_window(main, cx);
-    let field = vcx.debug_bounds("run-args").expect("drawn");
-    vcx.simulate_click(field.center(), Modifiers::none());
+    // An icon in its one header (R9.11); its row only while arguments are typed.
+    assert!(vcx.debug_bounds("run-args").is_none(), "no row of its own");
+    let action = vcx.debug_bounds("tool-run.args").expect("in the header");
+    vcx.simulate_click(action.center(), Modifiers::none());
     assert!(vcx.update(|_, cx| devdeck_ui::overlay::layer_state(main, cx).0), "a click opens the menu");
     vcx.simulate_keystrokes("down enter");
     assert!(vcx.debug_bounds("run-args-input").is_some(), "new arguments: the field is an input");
@@ -421,7 +423,7 @@ fn the_arguments_field_offers_recent_ones_and_takes_new_ones(cx: &mut TestAppCon
     assert_eq!(vcx.read(|cx| runner.read(cx).state(&key)), Some(RunState::Running), "they start it");
     let header = vcx.read(|cx| runner.read(cx).run(&key).unwrap().terminal.lines()).into_iter().find(|l| l.starts_with("── run 1")).unwrap();
     assert!(header.contains("serve -p 9"), "{header}");
-    assert!(vcx.debug_bounds("run-args-input").is_none(), "back to the field");
+    assert!(vcx.debug_bounds("run-args-input").is_none(), "the row goes once they're taken");
     // The key opens the menu too; the tab keeps its arguments.
     vcx.update(|window, cx| view.read(cx).focus_handle(cx).focus(window, cx));
     vcx.simulate_keystrokes("a");
@@ -552,4 +554,39 @@ fn the_runs_terminal_follows_its_view_window_scale_and_detach(cx: &mut TestAppCo
     cx.run_until_parked();
     let detached = size(cx);
     assert_ne!(detached, scaled, "sized by its new window");
+}
+
+#[gpui::test]
+fn a_runs_header_says_its_state_and_offers_what_it_can_do(cx: &mut TestAppContext) {
+    let shell = start(cx, "run-header");
+    let addr = ViewAddr::Run { app: "eventservice".into(), cmd: "go:run".into() };
+    open(&shell, cx, addr.clone());
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let r = addr.to_ref();
+    let said = |cx: &mut TestAppContext| cx.read(|cx| (deck.read(cx).view_status(&r, cx).map(|s| s.text), deck.read(cx).view_actions(&r, cx).iter().map(|a| a.id).collect::<Vec<_>>()));
+    let (status, actions) = said(cx);
+    assert!(status.as_deref().is_some_and(|s| s.ends_with("not started")), "{status:?}");
+    assert_eq!(actions, ["run.run", "run.args", "pane.follow"]);
+    let runner = runner_of(&shell, cx);
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("eventservice", "go:run"), None, cx))).unwrap();
+    cx.run_until_parked();
+    let (status, actions) = said(cx);
+    assert!(status.as_deref().is_some_and(|s| s.contains("running")), "{status:?}");
+    assert_eq!(actions, ["run.stop", "run.restart", "run.args", "pane.follow"]);
+}
+
+#[gpui::test]
+fn a_command_rows_menu_offers_what_applies(cx: &mut TestAppContext) {
+    use devdeck_app::views::app_view::AppView;
+    let shell = start(cx, "command-menu");
+    let addr = ViewAddr::App { app: "eventservice".into() };
+    open(&shell, cx, addr.clone());
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let view = cx.read(|cx| deck.read(cx).view(&addr.to_ref()).unwrap().downcast::<AppView>().unwrap());
+    let menu = |cx: &mut TestAppContext| cx.update(|cx| AppView::command_menu(&view, "go:run", cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
+    assert_eq!(menu(cx), ["Run", "", "Output"]);
+    let runner = runner_of(&shell, cx);
+    cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("eventservice", "go:run"), None, cx))).unwrap();
+    cx.run_until_parked();
+    assert_eq!(menu(cx), ["Stop", "Restart", "", "Output"]);
 }

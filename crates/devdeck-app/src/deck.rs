@@ -71,7 +71,7 @@ pub struct TerminalTabs {
 }
 
 /// What a live view said last: its title and its actions.
-type Said = (Option<String>, Vec<views::ViewAction>);
+type Said = (Option<String>, Vec<views::ViewAction>, Option<views::ViewStatus>);
 
 pub struct Deck {
     /// Read through [`Deck::layout`]; every change goes through [`Deck::apply`].
@@ -521,6 +521,11 @@ impl Deck {
         views::title(r)
     }
 
+    /// What a view says of its state now, for its one header (R9.11).
+    pub fn view_status(&self, r: &ViewRef, cx: &App) -> Option<views::ViewStatus> {
+        self.lives.get(r).and_then(|(l, _)| l.status(cx))
+    }
+
     /// What a view offers now (R12.4), for its header and its tab's menu.
     pub fn view_actions(&self, r: &ViewRef, cx: &App) -> Vec<views::ViewAction> {
         self.lives.get(r).map(|(l, _)| l.actions(cx)).unwrap_or_default()
@@ -906,7 +911,7 @@ impl Deck {
                     self.savers.insert(r.clone(), s);
                 }
                 if let Some(l) = built.live {
-                    let said = (l.title(cx), l.actions(cx));
+                    let said = (l.title(cx), l.actions(cx), l.status(cx));
                     self.lives.insert(r.clone(), (l, said));
                 }
                 if built.missing {
@@ -968,7 +973,7 @@ impl Deck {
     pub fn view_changed(&mut self, r: &ViewRef, cx: &mut Context<Self>) {
         // Its title or header may have changed.
         if let Some((l, said)) = self.lives.get_mut(r) {
-            let now = (l.title(cx), l.actions(cx));
+            let now = (l.title(cx), l.actions(cx), l.status(cx));
             if *said != now {
                 *said = now;
                 cx.notify();

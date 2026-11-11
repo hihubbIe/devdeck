@@ -33,10 +33,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*,
 };
 
-actions!(service_view, [SaveTag, OpenLogs, Redeploy, NotifyMenu, ConfirmModal, OpenApp]);
-
-/// Its header's action (a tab's, Cluster's details): the registry's id.
-pub const OPEN_APP: &str = "svc.app";
+actions!(service_view, [SaveTag, OpenLogs, Redeploy, NotifyMenu, ConfirmModal]);
 
 pub struct ServiceView {
     pub env: String,
@@ -548,18 +545,8 @@ const PART_COLS: [Column; 4] = [Column::rest("APP"), Column::fixed("TAG", 170.),
 const ENV_COLS: [Column; 3] = [Column::rest("ENV"), Column::fixed("TAG", 130.), Column::fixed("PODS", 90.)];
 const HISTORY_COLS: [Column; 3] = [Column::fixed("WHEN", 56.), Column::fixed("WHO", 110.), Column::rest("CHANGE")];
 
-/// Its header's icon: its app in Apps, once linked.
-impl super::Live for ServiceView {
-    fn actions(&self, _cx: &App) -> Vec<super::ViewAction> {
-        self.app.as_ref().map(|_| super::ViewAction { id: OPEN_APP, icon: Icon::Apps, on: false }).into_iter().collect()
-    }
-
-    fn run(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
-        if id == OPEN_APP {
-            self.open_app(cx);
-        }
-    }
-}
+/// Its header offers nothing of its own (R9.11): its app is a link among its facts.
+impl super::Live for ServiceView {}
 
 impl Render for ServiceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -583,7 +570,6 @@ impl Render for ServiceView {
             }))
             .on_action(cx.listener(|this, _: &OpenLogs, _, cx| this.open_logs(cx)))
             .on_action(cx.listener(|this, _: &Redeploy, _, cx| this.redeploy(cx)))
-            .on_action(cx.listener(|this, _: &OpenApp, _, cx| this.open_app(cx)))
             .on_action(cx.listener(|this, _: &NotifyMenu, window, cx| this.open_notify(window, cx)));
         let message = |text: String, color: Hsla| div().flex_1().flex().items_center().justify_center().text_color(color).child(label(text));
         let d = match (&state, c.deployment(&self.env, &self.name)) {
@@ -619,6 +605,12 @@ impl Render for ServiceView {
             ("Tag".into(), label(d.tag()).text_color(t.fg).into_any_element()),
             ("Pods".into(), devdeck_ui::pods_bar("svc-pods", &marks, &t).into_any_element()),
         ];
+        // Its app, going there (in its content, not its header: R9.11).
+        if let Some(id) = self.app.clone() {
+            let name = self.ctx.services.read(cx).catalog.app(&id).map_or_else(|| id.clone(), |a| a.name.clone());
+            let go = devdeck_ui::go_action("svc-app", Icon::Apps, format!("{name} in Apps"), &t).debug_selector(|| "svc-app".into()).on_click(cx.listener(|this, _, _, cx| this.open_app(cx)));
+            facts.insert(2, ("App".into(), row().child(label(name).text_color(t.fg)).child(go).into_any_element()));
+        }
         // When it got this version, and who changed it last (devdeck's own record).
         if let Some(since) = c.since(&self.env, &d) {
             let by = history.iter().rev().find(|r| r.to == d.tag()).map(|r| r.by.clone()).filter(|b| !b.is_empty() && b != "seen");

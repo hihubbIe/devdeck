@@ -6,6 +6,8 @@
 //! or hiding it moves nothing (R9.10).
 //!
 //! Put it right after the container, in a `relative` parent: [`with_scrollbar`] does.
+//! [`scrollbar_x`] is the same along a container's bottom edge (a tab strip): thinner, and
+//! a press on it never reaches what's under it.
 
 use crate::theme::theme;
 use gpui::{
@@ -18,7 +20,13 @@ use std::rc::Rc;
 
 /// The scrollbar of the container tracking `handle`.
 pub fn scrollbar(id: impl Into<ElementId>, handle: &ScrollHandle) -> Scrollbar {
-    Scrollbar { id: id.into(), handle: handle.clone() }
+    Scrollbar { id: id.into(), handle: handle.clone(), across: false }
+}
+
+/// The scrollbar along the bottom edge of the container tracking `handle` (scrolling
+/// sideways).
+pub fn scrollbar_x(id: impl Into<ElementId>, handle: &ScrollHandle) -> Scrollbar {
+    Scrollbar { id: id.into(), handle: handle.clone(), across: true }
 }
 
 /// A list's ([`crate::scroll_list`]) handle as [`scrollbar`] reads it.
@@ -35,6 +43,18 @@ pub fn with_scrollbar(id: impl Into<ElementId>, scroller: impl IntoElement, hand
 pub struct Scrollbar {
     id: ElementId,
     handle: ScrollHandle,
+    /// Along the bottom edge, for sideways scrolling.
+    across: bool,
+}
+
+/// `b` with its axes swapped: the sideways bar works out its thumb as the upright one.
+fn swap(b: Bounds<Pixels>) -> Bounds<Pixels> {
+    Bounds { origin: point(b.origin.y, b.origin.x), size: size(b.size.height, b.size.width) }
+}
+
+/// A point's coordinate along the bar.
+fn along(p: gpui::Point<Pixels>, across: bool) -> Pixels {
+    if across { p.x } else { p.y }
 }
 
 /// Where a drag holds the thumb: the pointer's distance from its top.
@@ -83,24 +103,42 @@ impl Element for Scrollbar {
     fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
         let t = theme(cx);
         let mut style = Style { position: Position::Absolute, ..Style::default() };
-        style.inset.top = Pixels::ZERO.into();
         style.inset.bottom = Pixels::ZERO.into();
         style.inset.right = Pixels::ZERO.into();
-        style.size.width = t.size(10.).into();
-        style.size.height = relative(1.).into();
+        if self.across {
+            style.inset.left = Pixels::ZERO.into();
+            style.size.width = relative(1.).into();
+            style.size.height = t.size(5.).into();
+        } else {
+            style.inset.top = Pixels::ZERO.into();
+            style.size.width = t.size(10.).into();
+            style.size.height = relative(1.).into();
+        }
         (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, _: &mut App) -> Option<Hitbox> {
+        if self.across {
+            // A press on it never reaches the tab under it.
+            return (self.handle.max_offset().x > Pixels::ZERO).then(|| window.insert_hitbox(bounds, HitboxBehavior::BlockMouse));
+        }
         (self.handle.max_offset().y > Pixels::ZERO).then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(&mut self, id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), hitbox: &mut Option<Hitbox>, window: &mut Window, cx: &mut App) {
         let Some(hitbox) = hitbox.clone() else { return };
         let t = theme(cx).clone();
-        let (viewport, max, offset) = (self.handle.bounds().size.height, self.handle.max_offset().y, self.handle.offset().y);
+        let across = self.across;
+        let pick = move |p: gpui::Point<Pixels>| along(p, across);
+        let (viewport, max, offset) = if across {
+            (self.handle.bounds().size.width, self.handle.max_offset().x, self.handle.offset().x)
+        } else {
+            (self.handle.bounds().size.height, self.handle.max_offset().y, self.handle.offset().y)
+        };
         let pad = t.size(2.);
-        let track = Bounds { origin: point(bounds.left(), bounds.top() + pad), size: size(bounds.size.width, bounds.size.height - pad * 2.) };
+        // Worked out upright; the sideways bar swaps its axes in and out.
+        let upright = if across { swap(bounds) } else { bounds };
+        let track = Bounds { origin: point(upright.left(), upright.top() + pad), size: size(upright.size.width, upright.size.height - pad * 2.) };
         let (top, h) = thumb(track, viewport, max, offset, t.size(24.));
         // One drag state across frames: the listeners of the next frame see a drag begun now.
         let drag = id
@@ -112,8 +150,13 @@ impl Element for Scrollbar {
             })
             .unwrap_or_default();
         let hovered = hitbox.is_hovered(window) || drag.0.get().is_some();
-        let width = if hovered { t.size(7.) } else { t.size(5.) };
-        let shape = Bounds { origin: point(bounds.right() - width - pad, top), size: size(width, h) };
+        let width = match (across, hovered) {
+            (true, _) => t.size(3.),
+            (false, true) => t.size(7.),
+            (false, false) => t.size(5.),
+        };
+        let shape = Bounds { origin: point(upright.right() - width - if across { t.size(1.) } else { pad }, top), size: size(width, h) };
+        let shape = if across { swap(shape) } else { shape };
         let color = if hovered { t.mute.opacity(0.6) } else { t.scrollbar };
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_quad(fill(shape, color).corner_radii(Corners::all(width / 2.)));
@@ -122,17 +165,27 @@ impl Element for Scrollbar {
 
         let handle = self.handle.clone();
         let (down, hb) = (drag.clone(), hitbox.clone());
-        window.on_mouse_event(move |e: &MouseDownEvent, phase, window, _| {
+        let set = move |handle: &ScrollHandle, at: Pixels| {
+            if across {
+                handle.set_offset(point(offset_for(track, h, handle.max_offset().x, at), handle.offset().y));
+            } else {
+                handle.set_offset(point(handle.offset().x, offset_for(track, h, handle.max_offset().y, at)));
+            }
+        };
+        window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
             if !phase.bubble() || e.button != MouseButton::Left || !hb.is_hovered(window) {
                 return;
             }
-            let y = e.position.y;
+            let y = pick(e.position);
             // On the thumb: held where it was taken; on the track: the thumb comes there.
             let grab = if y >= top && y <= top + h { y - top } else { h / 2. };
             if !(y >= top && y <= top + h) {
-                handle.set_offset(point(handle.offset().x, offset_for(track, h, handle.max_offset().y, y - grab)));
+                set(&handle, y - grab);
             }
             down.0.set(Some(grab));
+            if across {
+                cx.stop_propagation();
+            }
             window.refresh();
         });
         let (handle, moving) = (self.handle.clone(), drag.clone());
@@ -142,7 +195,7 @@ impl Element for Scrollbar {
                 moving.0.set(None);
                 return;
             }
-            handle.set_offset(point(handle.offset().x, offset_for(track, h, handle.max_offset().y, e.position.y - grab)));
+            set(&handle, pick(e.position) - grab);
             window.refresh();
         });
         window.on_mouse_event(move |_: &MouseUpEvent, _, window, _| {

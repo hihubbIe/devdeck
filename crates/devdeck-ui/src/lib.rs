@@ -17,13 +17,13 @@ pub mod text_input;
 pub mod theme;
 pub mod toolbar;
 
-pub use bars::{PodMark, pod_square, pods_bar, usage_bar};
+pub use bars::{PodMark, activity_bars, pod_square, pods_bar, usage_bar};
 pub use code::{Code, CodeEvent, MenuOpener, Rendered};
 pub use components::*;
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};
 pub use picker::{OnPick, PickGroup, PickOption, Picker, PickerSpec, open_picker};
 pub use scroll::{Scrolls, scroll_list};
-pub use scrollbar::{list_handle, scrollbar, with_scrollbar};
+pub use scrollbar::{list_handle, scrollbar, scrollbar_x, with_scrollbar};
 pub use table::{Column, table_head, table_more, table_row};
 pub use overlay::{MenuItem, ModalFocus, NewToast, Note, NoteAction, ToastKind, modal_frame, open_menu, pop_modal, push_modal, render_layer, toasts};
 pub use text_input::{InputEvent, TextInput};

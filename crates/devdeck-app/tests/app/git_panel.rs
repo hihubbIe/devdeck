@@ -284,5 +284,5 @@ fn an_app_view_holds_its_git_panel(cx: &mut TestAppContext) {
     assert!(vcx.debug_bounds("app-git").is_some(), "a Git panel");
     assert!(vcx.debug_bounds("git-head-line").is_some(), "the git panel's own branch line, in it");
     assert!(vcx.debug_bounds("git-filter").is_some(), "its branches, filtered");
-    assert!(vcx.debug_bounds("details-action-app_view.git").is_none(), "no icon to open it elsewhere");
+    assert!(vcx.debug_bounds("tool-app_view.git").is_none(), "no icon to open it elsewhere");
 }

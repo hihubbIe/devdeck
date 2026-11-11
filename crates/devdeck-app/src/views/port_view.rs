@@ -17,15 +17,10 @@ use crate::sidebar::Activity;
 use devdeck_ui::{Column, Icon, Scrolls, ToastKind, dot, icon_text, label, table_head, table_row, theme, tip, toasts};
 use gpui::{
     App, ClipboardItem, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Task, Window, actions, div, prelude::*,
+    Styled, Subscription, Task, Window, div, prelude::*,
 };
 use std::time::Duration;
 
-actions!(port_view, [OpenApp, OpenTerminal]);
-
-/// Its header's actions (a tab's, Ports' details): the registry's ids.
-pub const OPEN_APP: &str = "port.app";
-pub const OPEN_TERMINAL: &str = "port.terminal";
 
 /// How often a shown page asks its port for an HTTP answer.
 pub const PROBE_EVERY: Duration = Duration::from_secs(3);
@@ -163,28 +158,8 @@ pub fn status_line(answer: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-/// Its header's icons: its app in Apps (a run's), its terminal in Terminals.
-impl super::Live for PortView {
-    fn actions(&self, cx: &App) -> Vec<super::ViewAction> {
-        let held = self.holder(cx);
-        let mut out = Vec::new();
-        if held.as_ref().is_some_and(|h| h.run.is_some()) {
-            out.push(super::ViewAction { id: OPEN_APP, icon: Icon::Apps, on: false });
-        }
-        if held.as_ref().is_some_and(|h| h.terminal.is_some()) {
-            out.push(super::ViewAction { id: OPEN_TERMINAL, icon: Icon::Terminals, on: false });
-        }
-        out
-    }
-
-    fn run(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
-        match id {
-            OPEN_APP => self.open_app(cx),
-            OPEN_TERMINAL => self.open_terminal(cx),
-            _ => {}
-        }
-    }
-}
+/// Its header offers nothing of its own (R9.11): who holds it links there from its facts.
+impl super::Live for PortView {}
 
 impl Focusable for PortView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -201,9 +176,7 @@ impl Render for PortView {
             .track_focus(&self.focus)
             .size_full()
             .flex()
-            .flex_col()
-            .on_action(cx.listener(|this, _: &OpenApp, _, cx| this.open_app(cx)))
-            .on_action(cx.listener(|this, _: &OpenTerminal, _, cx| this.open_terminal(cx)));
+            .flex_col();
         let Some(row) = self.row(cx) else {
             return root.child(div().flex_1().flex().items_center().justify_center().text_color(t.mute).child(label(format!("Nothing listens on :{} now.", self.port))));
         };
@@ -222,7 +195,15 @@ impl Render for PortView {
             }
             Some(held) => {
                 facts.push(("State".into(), div().flex().items_center().gap_1().text_color(t.ok).child(dot(t.ok, true, &t)).child("listening").into_any_element()));
-                facts.push(("Held by".into(), value(held.holder.clone())));
+                // Who holds it, going there: its run's app, or its terminal.
+                let go = if held.run.is_some() {
+                    Some(devdeck_ui::go_action("port-holder-app", Icon::Apps, "its app in Apps", &t).debug_selector(|| "port-holder-app".into()).on_click(cx.listener(|this, _, _, cx| this.open_app(cx))))
+                } else if held.terminal.is_some() {
+                    Some(devdeck_ui::go_action("port-holder-terminal", Icon::Terminals, "its terminal in Terminals", &t).debug_selector(|| "port-holder-terminal".into()).on_click(cx.listener(|this, _, _, cx| this.open_terminal(cx))))
+                } else {
+                    None
+                };
+                facts.push(("Held by".into(), div().flex().items_center().gap_1().min_w_0().child(label(held.holder.clone())).children(go).into_any_element()));
                 if let Some(p) = &row.process {
                     facts.push(("PID".into(), value(p.pid.to_string())));
                 }

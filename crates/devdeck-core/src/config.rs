@@ -39,6 +39,12 @@
 //!   start = ["--session-id", "{id}"]      # a new session; {id} is its id (a UUID)
 //!   resume = ["--resume", "{id}"]         # a session that ran before
 //!   idle_stop = 60                        # seconds off screen and quiet before it stops
+//!   [agents.claude.fields]                # what it reports (`devdeck-ctl report <event>`
+//!   model = "/model/display_name"         # from its hooks or status line): JSON pointers
+//!   context = "/context_window/used_percentage"   # per fact (agents::FACTS)
+//!   [agents.claude.limits."5 hours"]      # a usage limit it reports
+//!   used = "/rate_limits/five_hour/used_percentage"
+//!   resets = "/rate_limits/five_hour/resets_at"
 //!   ```
 //!
 //! Rules: `~` expands to the home folder; unknown keys are errors (a typo in an
@@ -362,6 +368,11 @@ fn load_machine_with(config_dir: &Path, home: Option<&Path>) -> (MachineConfig, 
                         errors.push(ConfigError { file: path.clone(), line: None, message: format!("agents.{id}: command is empty") });
                         return None;
                     }
+                    if let Some(f) = a.fields.keys().find(|f| !crate::agents::FACTS.contains(&f.as_str())) {
+                        let message = format!("agents.{id}.fields: {f} isn't one of {}", crate::agents::FACTS.join(", "));
+                        errors.push(ConfigError { file: path.clone(), line: None, message });
+                        return None;
+                    }
                     Some(crate::agents::AgentKind {
                         name: a.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| id.clone()),
                         id,
@@ -370,6 +381,8 @@ fn load_machine_with(config_dir: &Path, home: Option<&Path>) -> (MachineConfig, 
                         start: a.start,
                         resume: a.resume,
                         idle_stop: a.idle_stop.map_or(crate::agents::IDLE_STOP, std::time::Duration::from_secs),
+                        fields: a.fields,
+                        limits: a.limits.into_iter().map(|(name, l)| crate::agents::LimitSpec { name, used: l.used, resets: l.resets }).collect(),
                     })
                 })
                 .collect();
@@ -483,6 +496,17 @@ struct RawAgent {
     #[serde(default)]
     resume: Vec<String>,
     idle_stop: Option<u64>,
+    #[serde(default)]
+    fields: BTreeMap<String, String>,
+    #[serde(default)]
+    limits: BTreeMap<String, RawLimit>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLimit {
+    used: String,
+    resets: Option<String>,
 }
 
 impl From<RawApp> for AppOverride {
@@ -777,6 +801,14 @@ env = { file = "config/local.yml" }
         let (m, e) = machine("machine-agent-empty", Some("[agents.x]\ncommand = \" \"\n"));
         assert!(m.agents.is_empty());
         assert_eq!(only_error(&e).2, "agents.x: command is empty");
+        let text = "[agents.x]\ncommand = \"x\"\n[agents.x.fields]\nmodel = \"/m\"\n[agents.x.limits.week]\nused = \"/w/u\"\n";
+        let (m, e) = machine("machine-agent-fields", Some(text));
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!(m.agents[0].fields.get("model").map(String::as_str), Some("/m"));
+        assert_eq!(m.agents[0].limits, [crate::agents::LimitSpec { name: "week".into(), used: "/w/u".into(), resets: None }]);
+        let (m, e) = machine("machine-agent-fact", Some("[agents.x]\ncommand = \"x\"\n[agents.x.fields]\nmood = \"/m\"\n"));
+        assert!(m.agents.is_empty());
+        assert!(only_error(&e).2.starts_with("agents.x.fields: mood isn't one of"), "{e:?}");
     }
 
     #[test]

@@ -303,6 +303,8 @@ impl Sidebar {
     fn follow(&mut self, cx: &mut Context<Self>) {
         let base = self.activity().full_view().then(|| match self.activity() {
             Activity::Cluster if self.matrix => Some(ViewAddr::Matrix.to_ref()),
+            // Nothing selected: the overview of every session.
+            Activity::Agents if self.selected.is_none() => Some(ViewAddr::Agents.to_ref()),
             _ => self.selected.as_deref().filter(|k| !k.ends_with('/')).and_then(|k| self.view_ref(k, cx)),
         });
         self.deck.update(cx, |d, cx| match base {
@@ -491,7 +493,7 @@ impl Sidebar {
 
     /// Whether `list` shows `node`: an item (its key or its path), or a folder of its tree.
     pub fn knows(&self, list: Activity, node: &str, cx: &App) -> bool {
-        let items = if list == Activity::Notes { self.notes_tree(cx).items } else { self.items_in(list, cx) };
+        let items = self.project_tree(list, cx).map_or_else(|| self.items_in(list, cx), |t| t.items);
         let folder = format!("{node}/");
         items.iter().any(|i| i.key == node || i.path.as_ref().is_some_and(|p| p == node || p.starts_with(&folder)))
     }
@@ -625,25 +627,54 @@ impl Sidebar {
                     .collect()
             }
             Activity::Notes => self.notes_tree(cx).items,
-            Activity::Agents => {
-                // Every session (R6.14), running or not: its state, then its folder.
-                let agents = s.agents.read(cx);
-                agents
-                    .sessions()
-                    .iter()
-                    .map(|a| {
-                        let status = agents.status(&a.id, cx);
-                        let folder = devdeck_core::config::shown(&a.dir);
-                        ListItem::new(a.id.clone(), agents.label(&a.id, cx))
-                            .detail(status.label())
-                            .hint(Some(format!("{} · {} · {folder}", agents.label(&a.id, cx), status.label())))
-                            .running(status != devdeck_core::agents::Status::Off)
-                            .busy(status == devdeck_core::agents::Status::Working)
-                            .warning((status == devdeck_core::agents::Status::NeedsYou).then(|| "needs you".to_string()))
-                    })
-                    .collect()
-            }
+            Activity::Agents => self.agents_tree(cx).items,
         }
+    }
+
+    /// A list shown as a tree of projects (Notes, Agents): its items under their project's
+    /// node, with each node's name, hint, and whether its app went away.
+    pub fn project_tree(&self, list: Activity, cx: &App) -> Option<devdeck_core::notes::Tree> {
+        match list {
+            Activity::Notes => Some(self.notes_tree(cx)),
+            Activity::Agents => Some(self.agents_tree(cx)),
+            _ => None,
+        }
+    }
+
+    /// The Agents list (R6.14): every session, running or not, under its project (named by
+    /// its app, dim once gone); a session in no app's folder at the top.
+    pub fn agents_tree(&self, cx: &App) -> devdeck_core::notes::Tree {
+        use devdeck_core::agents::Status;
+        let s = self.services.read(cx);
+        let agents = s.agents.read(cx);
+        let mut tree = devdeck_core::notes::Tree::default();
+        for a in agents.sessions() {
+            let status = agents.status(&a.id, cx);
+            let label = agents.label(&a.id, cx);
+            let item = ListItem::new(a.id.clone(), label.clone())
+                .detail(status.label())
+                .running(status != Status::Off)
+                .busy(status == Status::Working)
+                .warning((status == Status::NeedsYou).then(|| "needs you".to_string()));
+            let item = match &a.project {
+                Some(p) => {
+                    let node = devdeck_core::notes::project_node(p);
+                    if !tree.names.contains_key(&node) {
+                        let (name, found) = agents.project_name(p);
+                        if !found {
+                            tree.gone.insert(node.clone());
+                        }
+                        tree.hints.insert(node.clone(), if found { p.clone() } else { format!("{p} · project not found") });
+                        tree.names.insert(node.clone(), name);
+                    }
+                    let project = &tree.names[&node];
+                    item.hint(Some(format!("{project} · {label} · {}", status.label()))).path(format!("{node}/{}", a.id))
+                }
+                None => item.hint(Some(format!("{label} · {} · {}", status.label(), devdeck_core::config::shown(&a.dir)))),
+            };
+            tree.items.push(item);
+        }
+        tree
     }
 
     /// The Notes list: notes by project (named by its app, or its id once gone).
@@ -666,6 +697,41 @@ impl Sidebar {
         crate::views::note_view::ask_note(notes, app, open, window, cx);
     }
 
+    /// "Start here" for a view's folder (R6.13, R6.14): a shell there, a session of each
+    /// agent; from a full view, opening in a pulse shows Pulses first.
+    fn start_here(this: &Entity<Self>, deck: &Entity<Deck>, view: &ViewRef, cx: &App) -> Vec<MenuItem> {
+        let dir = deck.read(cx).folder_of(Some(view), cx);
+        Sidebar::start_here_in(this, deck, &dir, cx)
+    }
+
+    fn start_here_in(this: &Entity<Self>, deck: &Entity<Deck>, dir: &std::path::Path, cx: &App) -> Vec<MenuItem> {
+        let focused = deck.read(cx).layout().main().focused;
+        let pulses = this.read(cx).activity().full_view().then(|| this.downgrade());
+        let (folder, then) = (dir.to_path_buf(), pulses.clone());
+        let mut items = vec![
+            MenuItem::separator(),
+            places::item("Open terminal here", Place::Pane(focused), MAIN_WINDOW, deck, None, cx, move |d, place, cx| {
+                if let Some(s) = then.clone() {
+                    cx.defer(move |cx| {
+                        let _ = s.update(cx, |s, cx| s.show_pulses(cx));
+                    });
+                }
+                d.open_terminal(&folder, place, cx)
+            }),
+        ];
+        items.extend(places::agent_items(MAIN_WINDOW, deck, dir, pulses, cx));
+        items
+    }
+
+    /// A project row's menu in the Agents list: a new session of each agent in its folder.
+    fn agents_project_menu(this: &Entity<Self>, node: &str, cx: &App) -> Vec<MenuItem> {
+        let s = this.read(cx);
+        let app = devdeck_core::notes::project_of_node(node);
+        let Some(dir) = s.services.read(cx).catalog.app(&app).map(|a| a.dir.clone()) else { return Vec::new() };
+        // Without their leading separator: the menu is theirs alone.
+        places::agent_items(MAIN_WINDOW, &s.deck, &dir, Some(this.downgrade()), cx).into_iter().skip(1).collect()
+    }
+
     /// A project row's menu in the Notes list.
     fn project_menu(this: &Entity<Self>, node: &str) -> Vec<MenuItem> {
         let (me, app) = (this.clone(), devdeck_core::notes::project_of_node(node));
@@ -686,12 +752,11 @@ impl Sidebar {
     }
 
     pub fn rows(&self, cx: &App) -> (Vec<ListItem>, Vec<Row>) {
-        let notes = self.activity() == Activity::Notes;
-        let (items, names) = if notes {
-            let t = self.notes_tree(cx);
-            (t.items, t.names)
-        } else {
-            (self.items(cx), Default::default())
+        let tree = self.project_tree(self.activity(), cx);
+        let projects = tree.is_some();
+        let (items, names) = match tree {
+            Some(t) => (t.items, t.names),
+            None => (self.items(cx), Default::default()),
         };
         let id = self.activity().list_id();
         let (none, no_groups) = (std::collections::BTreeSet::new(), Groups::default());
@@ -700,8 +765,8 @@ impl Sidebar {
             groups: self.groups().unwrap_or(&no_groups),
             folded: self.state.collapsed.get(id).unwrap_or(&none),
             names: &names,
-            // Projects, then the notes without one.
-            folders_first: notes,
+            // Projects, then the notes or sessions without one.
+            folders_first: projects,
         };
         let rows = list::rows(&items, &self.pins(), self.filter.read(cx).text(), self.running_only(), shape);
         (items, rows)
@@ -1148,6 +1213,18 @@ impl Sidebar {
         true
     }
 
+    /// Agent sessions of the workspace waiting on you (the Agents icon's count).
+    pub fn agents_needing(&self, cx: &App) -> usize {
+        self.services.read(cx).agents.read(cx).needing(cx)
+    }
+
+    /// Agents: the overview of every session (none selected).
+    pub fn show_overview(&mut self, cx: &mut Context<Self>) {
+        self.show(Activity::Agents, cx);
+        self.selected = None;
+        cx.notify();
+    }
+
     /// Cluster: the branch matrix the whole width, or the list and its selection again.
     pub fn toggle_matrix(&mut self, cx: &mut Context<Self>) {
         self.matrix = !self.matrix;
@@ -1280,6 +1357,7 @@ impl Sidebar {
                 items.push(MenuItem::separator());
             }
             items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
+            items.extend(Sidebar::start_here(this, &deck, &view, cx));
             return items;
         }
         if this.read(cx).activity() == Activity::Layouts {
@@ -1310,6 +1388,10 @@ impl Sidebar {
         let (open, pin) = (this.clone(), this.clone());
         let (k1, k2) = (key.to_string(), key.to_string());
         if this.read(cx).activity() == Activity::Agents {
+            // A project's row (the menu key on a selected folder).
+            if let Some(node) = key.strip_suffix('/') {
+                return Sidebar::agents_project_menu(this, node, cx);
+            }
             let agents = this.read(cx).services.read(cx).agents.clone();
             let running = agents.read(cx).running(key, cx);
             let (a1, a2, a3) = (agents.clone(), agents.clone(), agents);
@@ -1326,6 +1408,10 @@ impl Sidebar {
             if let Some(view) = this.read(cx).view_ref(key, cx) {
                 items.push(MenuItem::separator());
                 items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
+            }
+            // Its folder: a shell there, or another session.
+            if let Some(dir) = this.read(cx).services.read(cx).agents.read(cx).session(key).map(|s| s.dir.clone()) {
+                items.extend(Sidebar::start_here_in(this, &deck, &dir, cx));
             }
             return items;
         }
@@ -1365,26 +1451,12 @@ impl Sidebar {
                 Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
             ]
         };
-        // An app's shell, in its folder (not a folder row's).
+        // An app's shell and sessions, in its folder (not a folder row's).
         if this.read(cx).activity() == Activity::Apps
             && this.read(cx).services.read(cx).catalog.app(key).is_some()
             && let Some(view) = this.read(cx).view_ref(key, cx)
         {
-            let d = deck.read(cx);
-            let (folder, focused) = (d.folder_of(Some(&view), cx), d.layout().main().focused);
-            items.push(MenuItem::separator());
-            // From a full view it opens in the pulse, shown first.
-            let pulses = full.then(|| this.downgrade());
-            let agents = places::agent_items(MAIN_WINDOW, &deck, &folder, pulses.clone(), cx);
-            items.push(places::item("Open terminal here", Place::Pane(focused), MAIN_WINDOW, &deck, None, cx, move |d, place, cx| {
-                if let Some(s) = pulses.clone() {
-                    cx.defer(move |cx| {
-                        let _ = s.update(cx, |s, cx| s.show_pulses(cx));
-                    });
-                }
-                d.open_terminal(&folder, place, cx)
-            }));
-            items.extend(agents);
+            items.extend(Sidebar::start_here(this, &deck, &view, cx));
         }
         items
     }
@@ -1522,30 +1594,18 @@ impl Render for Sidebar {
             })
             .when(activity == Activity::Agents, |d| {
                 d.child(
+                    devdeck_ui::button("agents-overview", "overview", &t)
+                        .debug_selector(|| "sidebar-agents-overview".into())
+                        .tooltip(tip("every session at a glance"))
+                        .on_click(cx.listener(|this, _, _, cx| this.show_overview(cx))),
+                )
+                .child(
                     devdeck_ui::button("new-session", "new session", &t)
                         .debug_selector(|| "sidebar-new-session".into())
-                        .tooltip(tip("a session of an agent, in the folder of the pulse's focused tab"))
+                        .tooltip(tip("a session of an agent, in one of the workspace's projects"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             let deck = this.deck.clone();
-                            let dir = deck.read(cx).terminal_folder(None, cx);
-                            let kinds = crate::environment::agent_kinds(cx);
-                            let at = window.mouse_position();
-                            match kinds.as_slice() {
-                                [] => {
-                                    toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, "No agent is configured: add one to machine.toml ([agents.<id>]).", vec![], cx));
-                                }
-                                [one] => new_agent_session(&deck, &one.id, &dir, cx),
-                                many => {
-                                    let items = many
-                                        .iter()
-                                        .map(|k| {
-                                            let (deck, id, dir) = (deck.clone(), k.id.clone(), dir.clone());
-                                            MenuItem::new(k.name.clone(), move |_, cx| new_agent_session(&deck, &id, &dir, cx))
-                                        })
-                                        .collect();
-                                    open_menu(at, items, window, cx);
-                                }
-                            }
+                            window.defer(cx, move |window, cx| pick_new_session(&deck, window, cx));
                         })),
                 )
             })
@@ -1568,7 +1628,7 @@ impl Render for Sidebar {
                 let focused = this.list_focus.is_focused(window);
                 let me = cx.entity();
                 let quiet_warning = this.activity() == Activity::Apps;
-                let notes = (this.activity() == Activity::Notes).then(|| this.notes_tree(cx));
+                let notes = this.project_tree(this.activity(), cx);
                 let look = Look { filter: filter.clone(), running_only: this.running_only(), focused, status, groups: this.groups_allowed(), quiet_warning, notes, t };
                 range
                     .filter_map(|i| rows.get(i).map(|r| (i, r.clone())))
@@ -1765,9 +1825,10 @@ fn render_row(
                         s.selected = Some(k_menu.clone());
                         cx.notify();
                     });
-                    let notes = m_menu.read(cx).activity() == Activity::Notes;
+                    let list = m_menu.read(cx).activity();
                     let items = match group_of_row(&menu_path) {
-                        None if notes => Sidebar::project_menu(&m_menu, &menu_path),
+                        None if list == Activity::Notes => Sidebar::project_menu(&m_menu, &menu_path),
+                        None if list == Activity::Agents => Sidebar::agents_project_menu(&m_menu, &menu_path, cx),
                         Some(g) => Sidebar::group_menu(&m_menu, g, cx),
                         None if m_menu.read(cx).groups_allowed() => vec![Sidebar::move_menu(&m_menu, Moving::Node(menu_path.clone()), cx)],
                         None => Vec::new(),
@@ -1894,8 +1955,11 @@ pub fn new_agent_session(deck: &Entity<Deck>, agent: &str, dir: &std::path::Path
     let agents = services.read(cx).agents.clone();
     let id = agents.update(cx, |a, cx| a.create(agent, dir, n, cx));
     let sidebar = crate::shell::try_shell(cx).and_then(|s| s.read(cx).workspaces.iter().find(|w| w.deck == *deck).map(|w| w.sidebar.clone()));
+    // Once the caller is done: it may be the sidebar itself (its new session button).
     if let Some(sidebar) = sidebar {
-        sidebar.update(cx, |s, cx| s.show_item(Activity::Agents, &id, cx));
+        cx.defer(move |cx| {
+            sidebar.update(cx, |s, cx| s.show_item(Activity::Agents, &id, cx));
+        });
     }
 }
 
@@ -1907,4 +1971,45 @@ fn rename_session(agents: Entity<crate::agents::Agents>, id: String, window: &mu
         Ok(())
     });
     crate::name_prompt::open("Rename session", &name, "session-name", submit, window, cx);
+}
+
+/// Picks a project of the workspace, then the agent when there are several, and makes a
+/// session there (R6.14).
+pub fn pick_new_session(deck: &Entity<Deck>, window: &mut Window, cx: &mut App) {
+    use devdeck_ui::picker::{PickGroup, PickOption, PickerSpec, open_picker};
+    let kinds = crate::environment::agent_kinds(cx);
+    if kinds.is_empty() {
+        toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, "No agent is configured: add one to machine.toml ([agents.<id>]).", vec![], cx));
+        return;
+    }
+    let Some(services) = deck.read(cx).services() else { return };
+    let mut apps: Vec<(String, String, std::path::PathBuf)> = services.read(cx).catalog.apps.iter().map(|a| (a.name.clone(), a.folder.clone(), a.dir.clone())).collect();
+    apps.sort_by_key(|(name, ..)| name.to_lowercase());
+    let options = apps.into_iter().map(|(name, folder, dir)| {
+        let mut o = PickOption::new(dir.display().to_string()).detail(folder);
+        o.label = name.into();
+        o
+    });
+    let deck = deck.clone();
+    let on_pick: devdeck_ui::picker::OnPick = std::rc::Rc::new(move |dir, window, cx| {
+        let dir = std::path::PathBuf::from(dir);
+        match kinds.as_slice() {
+            [one] => new_agent_session(&deck, &one.id, &dir, cx),
+            many => {
+                let deck = deck.clone();
+                let options = many.iter().map(|k| {
+                    let mut o = PickOption::new(k.id.clone()).detail(k.command.clone());
+                    o.label = k.name.clone().into();
+                    o
+                });
+                let on_agent: devdeck_ui::picker::OnPick = std::rc::Rc::new(move |agent, _, cx| new_agent_session(&deck, &agent, &dir, cx));
+                let spec = PickerSpec { title: "New session · agent".into(), placeholder: "agent".into(), kinds: Vec::new(), groups: vec![PickGroup { label: "Agents".into(), options: options.collect() }], typed: None, on_pick: on_agent };
+                window.defer(cx, move |window, cx| {
+                    open_picker(spec, window, cx);
+                });
+            }
+        }
+    });
+    let spec = PickerSpec { title: "New session · project".into(), placeholder: "project".into(), kinds: Vec::new(), groups: vec![PickGroup { label: "Projects".into(), options: options.collect() }], typed: None, on_pick };
+    open_picker(spec, window, cx);
 }

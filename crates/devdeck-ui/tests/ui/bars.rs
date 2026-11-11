@@ -34,6 +34,25 @@ fn a_usage_bar_past_its_limit_stays_its_width(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn activity_bars_stand_as_tall_as_their_share_and_as_wide_as_each_other(cx: &mut TestAppContext) {
+    use devdeck_ui::activity_bars;
+    let shares = [0.0, 0.5, 1.0, 2.0];
+    let window = host(cx, move |_, cx| activity_bars("a", &shares, "worked", devdeck_ui::theme(cx)).into_any_element());
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let strip = vcx.debug_bounds("a").expect("drawn");
+    let cols: Vec<_> = ["a-0", "a-1", "a-2", "a-3"].into_iter().map(|n| vcx.debug_bounds(n).expect("drawn")).collect();
+    let fills: Vec<_> = ["a-0-fill", "a-1-fill", "a-2-fill", "a-3-fill"].into_iter().map(|n| vcx.debug_bounds(n).expect("drawn")).collect();
+    assert!(cols.iter().all(|c| c.size.width == cols[0].size.width), "the same width whatever the share (R9.10)");
+    assert!(cols.windows(2).all(|w| w[0].origin.x < w[1].origin.x), "oldest first, left to right");
+    let full = f32::from(strip.size.height);
+    assert!(near(f32::from(fills[1].size.height), full * 0.5), "half");
+    assert!(near(f32::from(fills[2].size.height), full), "all");
+    assert!(near(f32::from(fills[3].size.height), full), "never taller than the strip");
+    assert!(f32::from(fills[0].size.height) > 0.0 && f32::from(fills[0].size.height) < full * 0.2, "idle: a faint baseline");
+    assert!(fills.iter().all(|f| f.origin.y + f.size.height == strip.origin.y + strip.size.height), "standing on the bottom");
+}
+
+#[gpui::test]
 fn a_pods_bar_draws_one_square_per_pod_in_order(cx: &mut TestAppContext) {
     use devdeck_ui::{PodMark, pods_bar};
     let pods = [PodMark::Ready, PodMark::Starting, PodMark::Failing, PodMark::Old];

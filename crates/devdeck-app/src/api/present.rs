@@ -448,6 +448,17 @@ pub(super) fn one_line(text: &str, max: usize) -> String {
     }
 }
 
+/// An agent session's report (R6.14): only from inside one of the caller's workspace's
+/// sessions, which is the one it's about.
+pub fn agent_report(cx: &CallCx, p: devdeck_api::types::AgentReportParams, app: &mut App) -> Result<devdeck_api::types::AgentReported, ApiError> {
+    let event = devdeck_core::agents::Event::parse(&p.event).ok_or_else(|| ApiError::invalid(format!("event: {} isn't one of started, working, needs_you, your_turn, ended, status", p.event)))?;
+    let super::Who::Terminal { workspace, n, .. } = cx.who else { return Err(ApiError::invalid("only from inside an agent session")) };
+    let shell = crate::shell::try_shell(app).ok_or_else(|| ApiError::not_found("no workspace"))?;
+    let agents = shell.read(app).workspaces.iter().find(|w| &w.id == workspace).map(|w| w.services.read(app).agents.clone()).ok_or_else(|| ApiError::not_found("no workspace"))?;
+    let line = agents.update(app, |a, cx| a.report(*n, event, &p.data, cx)).ok_or_else(|| ApiError::invalid("only from inside an agent session"))?;
+    Ok(devdeck_api::types::AgentReported { line })
+}
+
 pub fn ui_notify(cx: &CallCx, p: NotifyParams, app: &mut App) -> Result<Notified, ApiError> {
     let text = one_line(&p.text, NOTIFY_CHARS);
     if text.is_empty() {

@@ -46,11 +46,38 @@ resume = ["--resume", "{id}"]
 idle_stop = 60                     # seconds off screen and quiet before it stops
 ```
 
-## Out of scope (6b, later)
+## 6b (2026-11-11, the user: "fix the bugs, then make cool, useful stuff, data viz")
 
-Reports from the agent through the control API (`agent.report` from its hooks: exact
-states, title, last message), a split of sessions inside the Agents view, sessions made
-outside devdeck, OS notifications.
+- **Fix:** quitting asks while a session works or waits on you (the quit guard counted
+  an agent's terminal as an idle shell: its program is the terminal's own process).
+- **Reports:** `devdeck-ctl report <event>` (from the agent's hooks and status line,
+  its JSON on stdin) calls `agent.report` (API level 8, class Present). Only from inside
+  one of devdeck's terminals; it says nothing, always succeeds (a failing hook can block
+  the agent), and a status line gets back a line (model · context · cost). Events:
+  started, working, needs_you, your_turn, ended, status. What the JSON says is the
+  agent's config: `[agents.<id>.fields]` (session, title, model, context, cost, added,
+  removed, message, prompt, asks, pr: JSON pointers) and `[agents.<id>.limits.<name>]`
+  (used, resets). Reported states win over the terminal's signs: a working session is
+  never stopped, however quiet. A `started` with another id (`/clear`, `/resume`
+  inside) makes the session resume that conversation.
+- **Facts** kept with the record; **history**: seconds worked per minute, the last hour.
+- **Overview** (`agents`, the Agents view with nothing selected, "overview" in its
+  header; also a tab): Now (counts by state, cost, the last hour of all sessions as
+  activity bars), Waiting on you (what each asks), Usage (each limit, a bar with a tick
+  at 80 %, when it resets), Sessions (state, name, agent and folder, context bar, cost,
+  +/− lines, the last hour, last active; a row goes there), Latest answers.
+- **Attention:** a count of sessions waiting on you over the Agents icon (drawn over
+  it, R9.10); a toast with "Go there" when a session off screen needs you or is done.
+- New component: `devdeck_ui::activity_bars`.
+- Claude's side, all config: `~/.config/devdeck/claude-agent.json` (passed with
+  `--settings`: the bell, hooks and a status line calling `devdeck-ctl report`; hooks
+  from several settings add up, per Claude's hooks docs).
+
+## Out of scope (later)
+
+A split of sessions inside the Agents view, starting a session with a task from where
+the problem is (a failed run, logs, the git panel), sessions per app in the app view,
+a worktree per session, sessions made outside devdeck, OS notifications.
 
 ## Files
 

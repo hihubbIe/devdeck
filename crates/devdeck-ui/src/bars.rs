@@ -70,3 +70,39 @@ pub fn pod_square(mark: PodMark, t: &Theme) -> gpui::Div {
         PodMark::Old => square.bg(t.dim),
     }
 }
+
+/// How busy something was over time: one thin column per period (a minute), oldest
+/// first, its height the share of that period spent working (0 to 1), on a faint
+/// baseline so idle periods still show. Every column has the same width whatever its
+/// value (R9.10); `tooltip` says it in words.
+pub fn activity_bars(name: &str, shares: &[f32], tooltip: impl Into<SharedString>, t: &Theme) -> gpui::Stateful<gpui::Div> {
+    let h = t.size(16.);
+    let mut row = div()
+        .id(SharedString::from(format!("{name}-activity")))
+        .debug_selector({
+            let name = name.to_string();
+            move || name
+        })
+        .flex_none()
+        .h(h)
+        .flex()
+        .items_end()
+        .gap(t.hairline)
+        .tooltip(crate::tip(tooltip));
+    for (i, share) in shares.iter().enumerate() {
+        let share = share.clamp(0.0, 1.0);
+        let (col, fill) = (format!("{name}-{i}"), format!("{name}-{i}-fill"));
+        let color = if share > 0.0 { t.ok } else { t.line };
+        row = row.child(
+            div()
+                .debug_selector(move || col)
+                .flex_none()
+                .w(t.size(3.))
+                .h_full()
+                .flex()
+                .items_end()
+                .child(div().debug_selector(move || fill).w_full().h(relative(share.max(0.08))).rounded(t.hairline).bg(color)),
+        );
+    }
+    row
+}

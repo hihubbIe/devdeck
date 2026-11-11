@@ -180,11 +180,11 @@ fn the_terminals_list_has_every_shell_shown_or_not(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| r.read(cx).run(&RunKey::terminal(n)).map(|run| run.runs)), Some(1));
     // Stop: its shell ends, it stays listed ("other" shows it).
     let menu = |cx: &mut TestAppContext| cx.update(|cx| Sidebar::item_menu(&sidebar, &n.to_string(), false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu(cx), ["Stop", "", "Open in pulse"]);
+    assert_eq!(menu(cx), ["Stop", "", "Open in pulse", "", "Open terminal here"], "then start here, in its folder");
     cx.update(|cx| sidebar.update(cx, |s, cx| s.stop_terminal(n, cx)));
     settle(cx);
     assert_eq!(listed(cx), [(n.to_string(), "ended · in other".to_string())]);
-    assert_eq!(menu(cx), ["Open in pulse"], "nothing to stop");
+    assert_eq!(menu(cx), ["Open in pulse", "", "Open terminal here"], "nothing to stop");
 }
 
 #[gpui::test]
@@ -263,7 +263,8 @@ fn after_a_restart_a_hidden_layouts_terminal_is_listed_and_opens(cx: &mut TestAp
     cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Terminals, cx)));
     let listed = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().map(|i| (i.key, i.detail)).collect::<Vec<_>>());
     assert_eq!(listed, [("7".to_string(), "not started · in other".to_string())]);
-    assert_eq!(cx.update(|cx| Sidebar::item_menu(&sidebar, "7", false, cx).len()), 1, "Open in pulse, nothing to stop");
+    let menu = cx.update(|cx| Sidebar::item_menu(&sidebar, "7", false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
+    assert_eq!(menu, ["Open in pulse", "", "Open terminal here"], "nothing to stop");
     cx.update(|cx| sidebar.update(cx, |s, cx| s.open("7", cx)));
     settle(cx);
     let deck = deck(&shell, cx);
@@ -373,9 +374,10 @@ fn open_terminal_here_from_a_tab_and_in_a_new_window(cx: &mut TestAppContext) {
         vcx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
         vcx.run_until_parked();
     };
-    // The tab's menu; "Open terminal here" is its last item: a click (⏎) opens it in this pane.
+    // The tab's menu; "Open terminal here" is its last item (↑ selects the first, ↑ again
+    // wraps to the last): a click (⏎) opens it in this pane.
     tab_menu(cx, &app);
-    cx.simulate_keystrokes(main, "up enter");
+    cx.simulate_keystrokes(main, "up up enter");
     cx.run_until_parked();
     let tabs = terminal_tabs(&deck, cx);
     assert_eq!(tabs.len(), 1);

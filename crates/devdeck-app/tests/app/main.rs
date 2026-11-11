@@ -42,6 +42,7 @@ mod settings;
 mod sidebar;
 mod sidebar_groups;
 mod tab_labels;
+mod tab_strip;
 mod terminal;
 mod terminals;
 mod watcher;

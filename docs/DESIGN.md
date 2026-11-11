@@ -484,6 +484,40 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 - Caps everywhere a caller could grow something: waits, connections, shells, notes,
   pulses, pins, groups, toasts, a rate for changes.
 
+## One header (R9.11, user 2026-11-11)
+
+- A view says what it is through `views::Live`: its title, its state (`ViewStatus`: a
+  few words and a tone) and its actions (`ViewAction`, registry ids). Its host draws them:
+  the pane header (one tab), the tab strip (the active tab's actions; the tab says the
+  name), the details header (full views). A view draws no title or state row.
+- The state and actions are one embedded `Toolbar` (`Toolbar::embedded`: as tall as the
+  header, no line under it, icons without labels): the state is its text, a spacer, then
+  the actions; what doesn't fit folds into "more" at its end, the last action first,
+  exactly as R9.9 says. In a tab strip its slot is `Toolbar::embedded_width` wide and
+  gives way to the tabs.
+- Restraint: one short state; the view's own few verbs (a run: run or stop, restart, its
+  arguments, follow; an agent session: stop, follow; a file or note: source or rendered).
+  Never "start here" (the tab's menu) nor a way elsewhere: the app page has no header
+  action, the service page's app is a link among its facts (App), the port page's holder
+  links from its "Held by" fact. A test checks every view's header actions. A field is a
+  row only while used (a run's arguments, typed).
+
+## Menus and tabs (user 2026-11-11, `docs/plans/menus-and-tabs.md`)
+
+- Every menu keeps the same groups in the same order, each item only when it applies:
+  its own verbs (the view's actions, Rename…, Delete… with "…" only before a
+  confirmation), where to see it (Open in pulse), start here (Open terminal here,
+  "<agent> here", on what has a real folder: tabs, panes, app, terminal, agent session
+  and project rows), the list's own (Pin, Move to group). Tabs and panes keep their
+  layout items. No Copy group; "go there" stays in views and headers, not in menus. A
+  full view's details header has its item's menu.
+- Tabs: at least `tab_min_w` (120 px scaled), the strip scrolls sideways past that
+  (`Scrolls::scroll_strip`: the plain wheel too), `scrollbar_x` over its bottom edge
+  (thin, a press on it never reaches the tab). Each strip's handle and last active tab
+  live on `WindowView`: a tab made active from elsewhere is scrolled to, a clicked one
+  isn't. The active view's actions slot is `embedded_width(MAX_HEADER_ACTIONS)` wide in
+  any pane holding a view with actions, so tabs never move with the selection.
+
 ## Toolbars (R9.9)
 
 - One component, `devdeck_ui::Toolbar`, a custom element: it picks its form in prepaint
@@ -817,8 +851,9 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   a table's header), the value in the text's color; a panel's title in the text's color.
 - 2026-11-11 (user) Terminals and Notes are full views with no view of their own: the list,
   then the selected terminal or note itself (the same view and shell a pulse's tab shows;
-  selecting one adds no tab). Their row menus: Stop (a running shell), Rename, Delete,
-  Pin as before, and "Open in pulse". A note made from the Notes list is selected there.
+  selecting one adds no tab). Their row menus: a note's Pin, Rename, Delete…; a
+  terminal's Stop (a running shell); both "Open in pulse" (2026-11-11: terminals have no
+  rename, delete or pin; the earlier line said otherwise). A note made from the Notes list is selected there.
   A service page's Envs list only the envs it's deployed on. Each workspace opens on
   Pulses, whatever it showed last; every list keeps its selection.
 - 2026-11-11 (user) Ports is a full view (`docs/plans/ports-view.md`). The list: every port

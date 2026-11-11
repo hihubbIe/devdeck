@@ -17,6 +17,14 @@ pub trait Scrolls: InteractiveElement + Sized {
         self.scrolls(true, false)
     }
 
+    /// A strip (tabs): sideways only, and the plain wheel scrolls it sideways too.
+    fn scroll_strip(mut self) -> Self {
+        let style = &mut self.interactivity().base_style;
+        style.overflow.x = Some(Overflow::Scroll);
+        style.restrict_scroll_to_axis = Some(false);
+        self
+    }
+
     /// Scrolls both ways, one axis per gesture.
     fn scroll_xy(self) -> Self {
         self.scrolls(true, true)

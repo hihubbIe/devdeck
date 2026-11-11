@@ -23,7 +23,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: devdeck-ctl [--socket PATH] [--json] (whoami | describe [METHOD] | call METHOD [PARAMS-JSON] | watch TOPIC...)";
+const USAGE: &str = "usage: devdeck-ctl [--socket PATH] [--json] (whoami | describe [METHOD] | call METHOD [PARAMS-JSON] | watch TOPIC... | report EVENT)";
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -31,6 +31,8 @@ enum Command {
     Describe(Option<String>),
     Call(String, Value),
     Watch(Vec<String>),
+    /// From an agent's hook or status line: the event, its JSON on stdin (R6.14).
+    Report(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -64,6 +66,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let command = match (rest.next().as_deref(), rest.next(), rest.next()) {
         (Some("whoami"), None, None) => Command::Whoami,
         (Some("describe"), method, None) => Command::Describe(method),
+        (Some("report"), Some(event), None) => Command::Report(event),
         (Some("call"), Some(method), params) => {
             let params = match params {
                 Some(p) => serde_json::from_str(&p).map_err(|e| format!("params: {e}"))?,
@@ -120,7 +123,7 @@ fn plain(command: &Command, v: &Value) -> String {
             }
             Err(_) => pretty(v),
         },
-        Command::Call(..) | Command::Watch(_) => pretty(v),
+        Command::Call(..) | Command::Watch(_) | Command::Report(_) => pretty(v),
     }
 }
 
@@ -157,6 +160,27 @@ fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default() + "\n"
 }
 
+/// An agent's report: never in its way. Its hooks and status line run this, so it says
+/// nothing and succeeds whatever happens (a hook's failure can block the agent); a status
+/// line gets the line devdeck answers.
+fn report(client: &mut Client, event: &str) -> ExitCode {
+    let mut text = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text);
+    let data = report_data(&text);
+    if let Ok(v) = client.call_raw("agent.report", serde_json::json!({ "event": event, "data": data }))
+        && event == "status"
+        && let Some(line) = v["line"].as_str()
+    {
+        println!("{line}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// What a report's stdin holds: JSON, else its text.
+fn report_data(text: &str) -> Value {
+    serde_json::from_str(text).unwrap_or_else(|_| if text.trim().is_empty() { Value::Null } else { Value::String(text.trim().to_string()) })
+}
+
 fn main() -> ExitCode {
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
@@ -168,8 +192,15 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // A report outside devdeck (an agent run elsewhere) is nobody's business: silent.
+    let reporting = matches!(args.command, Command::Report(_));
+    // Only from inside one of devdeck's terminals: never a question to the user.
+    if reporting && std::env::var_os(devdeck_api::TERMINAL_ENV).is_none() {
+        return ExitCode::SUCCESS;
+    }
     let socket = match args.socket.clone().map_or_else(|| default_socket(|k| std::env::var(k).ok()), Ok) {
         Ok(s) => s,
+        Err(_) if reporting => return ExitCode::SUCCESS,
         Err(why) => {
             eprintln!("devdeck-ctl: no socket ({why}): set DEVDECK_SOCKET or pass --socket");
             return ExitCode::from(2);
@@ -177,6 +208,7 @@ fn main() -> ExitCode {
     };
     let mut client = match Client::connect(&socket) {
         Ok(c) => c,
+        Err(_) if reporting => return ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("devdeck-ctl: {}: {e} (is devdeck running?)", socket.display());
             return ExitCode::from(2);
@@ -185,11 +217,14 @@ fn main() -> ExitCode {
     if let Command::Watch(topics) = &args.command {
         return watch(&mut client, topics, args.json);
     }
+    if let Command::Report(event) = &args.command {
+        return report(&mut client, event);
+    }
     let (method, params) = match &args.command {
         Command::Whoami => ("session.whoami".to_string(), Value::Object(Default::default())),
         Command::Describe(m) => ("api.describe".to_string(), m.as_ref().map_or_else(|| serde_json::json!({}), |m| serde_json::json!({ "method": m }))),
         Command::Call(m, p) => (m.clone(), p.clone()),
-        Command::Watch(_) => unreachable!("watched above"),
+        Command::Watch(_) | Command::Report(_) => unreachable!("done above"),
     };
     match client.call_raw(&method, params) {
         Ok(v) => {
@@ -224,6 +259,11 @@ mod tests {
         assert_eq!(a.command, Command::Call("run.get".into(), serde_json::json!({ "app": "a", "cmd": "c" })));
         assert_eq!(p(&["call", "app.list"]).unwrap().command, Command::Call("app.list".into(), serde_json::json!({})));
         assert!(p(&["call"]).is_err());
+        assert_eq!(p(&["report", "working"]).unwrap().command, Command::Report("working".into()));
+        assert!(p(&["report"]).is_err());
+        assert_eq!(report_data(r#"{"a":1}"#), serde_json::json!({"a": 1}));
+        assert_eq!(report_data(" hi \n"), serde_json::json!("hi"));
+        assert_eq!(report_data(""), Value::Null);
         assert!(p(&["call", "x", "{bad"]).unwrap_err().starts_with("params"));
         assert!(p(&["call", "x", "[1]"]).unwrap_err().starts_with("params"), "an object only");
         assert!(p(&["whoami", "extra"]).is_err());

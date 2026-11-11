@@ -229,7 +229,7 @@ fn markdown_switches_from_the_header_the_menu_and_a_key(cx: &mut TestAppContext)
     assert!(actions[0].on);
 
     // The header's button.
-    let button = vcx.debug_bounds(Box::leak(format!("view-action-{}-view.toggle_rendered", pane.0).into_boxed_str())).expect("in the header");
+    let button = vcx.debug_bounds("tool-view.toggle_rendered").expect("in the header");
     vcx.simulate_click(button.center(), Modifiers::none());
     vcx.run_until_parked();
     assert!(!rendered(&mut vcx), "the button shows the source");

@@ -338,3 +338,58 @@ fn items_show_their_tooltip_on_hover(cx: &mut TestAppContext) {
         vcx.run_until_parked();
     }
 }
+
+/// A header's tools (R9.11): a state (or none), a spacer, three actions, embedded in a
+/// header-high row `w` wide.
+fn header_tools(cx: &mut TestAppContext, w: f32, state: bool) -> VisualTestContext {
+    let window = host(cx, move |_, cx| {
+        let t = theme(cx).clone();
+        let mut bar = Toolbar::new("hdr", ToolbarState::new()).embedded();
+        if state {
+            bar = bar.item(ToolItem::Text { text: "running 4m".into(), color: t.mute });
+        }
+        let bar = bar
+            .item(ToolItem::Spacer)
+            .item(ToolItem::Action(ToolAction::new("stop", "stop", |_, _| {}).icon(Icon::Stop).fold(Fold::Order(3))))
+            .item(ToolItem::Action(ToolAction::new("restart", "restart", |_, _| {}).icon(Icon::Restart).fold(Fold::Order(2))))
+            .item(ToolItem::Action(ToolAction::new("follow", "follow", |_, _| {}).icon(Icon::Follow).toggle(true).fold(Fold::Order(1))));
+        div().w(logical(w)).h(t.tab_h).debug_selector(|| "hdr-row".into()).child(bar).into_any_element()
+    });
+    let vcx = VisualTestContext::from_window(window, cx);
+    vcx.run_until_parked();
+    vcx
+}
+
+#[gpui::test]
+fn a_headers_tools_are_icons_and_fold_into_more_when_the_room_runs_out(cx: &mut TestAppContext) {
+    let mut vcx = header_tools(cx, 600., true);
+    let t = the_theme(cx);
+    let row = vcx.debug_bounds("hdr-row").expect("drawn");
+    for id in ["tool-stop", "tool-restart", "tool-follow"] {
+        let b = vcx.debug_bounds(id).expect(id);
+        assert_eq!(b.size.width, t.button_h, "{id}: an icon, no label, however wide");
+        assert!(b.origin.y >= row.origin.y && b.origin.y + b.size.height <= row.origin.y + row.size.height, "{id}: inside the header");
+    }
+    assert!(vcx.debug_bounds("tool-more").is_none(), "all fit: no more");
+    assert!(vcx.debug_bounds("tool-text-0").is_some(), "its state");
+    // Narrower: the actions fold into "more" at the end, the last one first (R9.9).
+    let room = f32::from(Toolbar::embedded_width(3, &t)) - 1.;
+    let mut vcx = header_tools(cx, room, false);
+    assert!(vcx.debug_bounds("tool-more").is_some(), "more");
+    assert!(vcx.debug_bounds("tool-follow").is_none(), "the last folds first");
+    let mut vcx = header_tools(cx, 40., true);
+    assert!(vcx.debug_bounds("tool-more").is_some());
+    assert!(["tool-stop", "tool-restart", "tool-follow"].iter().all(|id| vcx.debug_bounds(id).is_none()), "all in more");
+}
+
+#[gpui::test]
+fn an_embedded_toolbar_is_as_wide_as_it_says(cx: &mut TestAppContext) {
+    // The host sets the theme: a first one to read it from.
+    let _ = header_tools(cx, 100., false);
+    let t = the_theme(cx);
+    let w = f32::from(Toolbar::embedded_width(3, &t));
+    let mut vcx = header_tools(cx, w, false);
+    for id in ["tool-stop", "tool-restart", "tool-follow"] {
+        assert!(vcx.debug_bounds(id).is_some(), "{id} shown at the width it said");
+    }
+}

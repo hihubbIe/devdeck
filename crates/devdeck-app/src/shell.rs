@@ -328,7 +328,15 @@ impl Shell {
     pub fn running(&self, cx: &App) -> Vec<(String, Vec<String>)> {
         self.workspaces
             .iter()
-            .map(|w| (w.name.clone(), w.services.read(cx).runner.read(cx).running()))
+            .map(|w| {
+                let s = w.services.read(cx);
+                // An agent session is its terminal's own process: busy while it works or
+                // waits on you (R6.14), whatever runs in its terminal.
+                let mut running = s.runner.read(cx).running();
+                running.extend(s.agents.read(cx).busy(cx));
+                running.sort();
+                (w.name.clone(), running)
+            })
             .filter(|(_, r)| !r.is_empty())
             .collect()
     }

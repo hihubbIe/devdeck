@@ -7,6 +7,7 @@
 //! keeping across a restart (scroll, filters, a run that was running) implement
 //! [`KeepsState`]: they come back as they were when the workspace reopens.
 
+pub mod agents_view;
 pub mod app_view;
 pub mod demo;
 pub mod file_view;
@@ -124,11 +125,50 @@ pub struct ViewAction {
     pub on: bool,
 }
 
+/// The most actions a view offers in its header (R9.11): a tab strip keeps room for this
+/// many whichever tab is active.
+pub const MAX_HEADER_ACTIONS: usize = 4;
+
+/// What a view says of its state in its one header (R9.11): a few words after its title,
+/// dim unless its tone says otherwise ("running 4m", "exited 1", "working · context 42%").
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewStatus {
+    pub text: String,
+    pub tone: Tone,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Dim,
+    Ok,
+    Warn,
+    Err,
+}
+
+impl ViewStatus {
+    pub fn new(text: impl Into<String>, tone: Tone) -> Self {
+        Self { text: text.into(), tone }
+    }
+
+    pub fn color(&self, t: &Theme) -> gpui::Hsla {
+        match self.tone {
+            Tone::Dim => t.mute,
+            Tone::Ok => t.ok,
+            Tone::Warn => t.warn,
+            Tone::Err => t.err,
+        }
+    }
+}
+
 /// A view that says more about itself than its address: its tab's title when the
-/// address can't say it (a note's name), and the actions it offers now. Whenever the
-/// view changes its deck redraws, so the title and the header follow.
+/// address can't say it (a note's name), its state, and the actions it offers now. Its
+/// host draws them in its one header (R9.11): the view draws no title or state of its
+/// own. Whenever the view changes its deck redraws, so the title and the header follow.
 pub trait Live: Render {
     fn title(&self, _cx: &App) -> Option<String> {
+        None
+    }
+    fn status(&self, _cx: &App) -> Option<ViewStatus> {
         None
     }
     fn actions(&self, _cx: &App) -> Vec<ViewAction> {
@@ -139,6 +179,7 @@ pub trait Live: Render {
 }
 
 type TitleFn = std::rc::Rc<dyn Fn(&App) -> Option<String>>;
+type StatusFn = std::rc::Rc<dyn Fn(&App) -> Option<ViewStatus>>;
 type ActionsFn = std::rc::Rc<dyn Fn(&App) -> Vec<ViewAction>>;
 type RunFn = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
@@ -146,6 +187,7 @@ type RunFn = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 #[derive(Clone)]
 pub struct Lively {
     title: TitleFn,
+    status: StatusFn,
     actions: ActionsFn,
     run: RunFn,
 }
@@ -153,6 +195,9 @@ pub struct Lively {
 impl Lively {
     pub fn title(&self, cx: &App) -> Option<String> {
         (self.title)(cx)
+    }
+    pub fn status(&self, cx: &App) -> Option<ViewStatus> {
+        (self.status)(cx)
     }
     pub fn actions(&self, cx: &App) -> Vec<ViewAction> {
         (self.actions)(cx)
@@ -172,9 +217,10 @@ fn live<V: Live>(mut built: Built, view: &Entity<V>, ctx: &ViewCx, cx: &mut App)
         })
         .detach();
     }
-    let (t, a, run) = (view.downgrade(), view.downgrade(), view.downgrade());
+    let (t, s, a, run) = (view.downgrade(), view.downgrade(), view.downgrade(), view.downgrade());
     built.live = Some(Lively {
         title: std::rc::Rc::new(move |cx| t.upgrade().and_then(|v| v.read(cx).title(cx))),
+        status: std::rc::Rc::new(move |cx| s.upgrade().and_then(|v| v.read(cx).status(cx))),
         actions: std::rc::Rc::new(move |cx| a.upgrade().map(|v| v.read(cx).actions(cx)).unwrap_or_default()),
         run: std::rc::Rc::new(move |id, window, cx| {
             let _ = run.update(cx, |v, cx| v.run(id, window, cx));
@@ -238,7 +284,12 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             };
             let key = runner.update(cx, |r, cx| r.open_shell(n, std::path::Path::new(&dir), env, crate::runner::Starter::User, cx));
             let v = cx.new(|cx| run_view::RunView::new(key.app, key.cmd, ctx.clone(), cx));
-            keeping(v, saved, ctx, cx)
+            let built = keeping(v.clone(), saved, ctx, cx);
+            live(built, &v, ctx, cx)
+        }
+        (ViewAddr::Agents, Some(ctx)) => {
+            let v = cx.new(|cx| agents_view::AgentsView::new(ctx.clone(), cx));
+            focusable(v, cx)
         }
         (ViewAddr::Agent { id }, Some(ctx)) => {
             // The session's terminal; its process is the sessions' to start (when shown).
@@ -247,7 +298,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             };
             let key = crate::runner::RunKey::terminal(n);
             let v = cx.new(|cx| run_view::RunView::new(key.app, key.cmd, ctx.clone(), cx));
-            keeping(v, saved, ctx, cx)
+            let built = keeping(v.clone(), saved, ctx, cx);
+            live(built, &v, ctx, cx)
         }
         (ViewAddr::Run { app, cmd }, Some(ctx)) => {
             let known = ctx.services.read(cx).catalog.app(&app).is_some_and(|a| a.command(&cmd).is_some());
@@ -255,7 +307,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 return message(format!("{app} has no command {cmd}."), cx);
             }
             let v = cx.new(|cx| run_view::RunView::new(app, cmd, ctx.clone(), cx));
-            keeping(v, saved, ctx, cx)
+            let built = keeping(v.clone(), saved, ctx, cx);
+            live(built, &v, ctx, cx)
         }
         (ViewAddr::Svc { env, name }, Some(ctx)) => {
             let Some(cluster) = ctx.services.read(cx).cluster.clone() else {
@@ -283,7 +336,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             None => message("This workspace has no cluster.".into(), cx),
             Some(cluster) => {
                 let v = cx.new(|cx| matrix_view::MatrixView::new(ctx.clone(), cluster, cx));
-                focusable(v, cx)
+                let built = focusable(v.clone(), cx);
+                live(built, &v, ctx, cx)
             }
         },
         (ViewAddr::Port { port }, Some(ctx)) => {
@@ -366,6 +420,7 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::Git { root } => format!("{} · git", root.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Terminal { dir, .. } => format!("terminal · {}", terminal_name(&dir)),
         ViewAddr::Agent { .. } => "agent session".into(),
+        ViewAddr::Agents => "agents".into(),
         ViewAddr::Other(_) => demo::title(r),
     }
 }
@@ -426,6 +481,7 @@ pub fn tab_label(r: &ViewRef, services: Option<&Services>, cx: &App) -> TabLabel
         }
         ViewAddr::Git { root } => plain(Icon::Git, last(&root)),
         ViewAddr::Terminal { dir, .. } => plain(Icon::Output, terminal_name(&dir)),
+        ViewAddr::Agents => plain(Icon::Agents, "agents".into()),
         ViewAddr::Agent { id } => plain(Icon::Agents, services.map_or_else(|| "agent".into(), |s| s.agents.read(cx).label(&id, cx))),
         ViewAddr::Other(_) => plain(Icon::File, demo::title(r)),
     }

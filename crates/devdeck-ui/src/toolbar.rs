@@ -511,11 +511,26 @@ pub struct Toolbar {
     more: Option<MenuItems>,
     figures: Option<SharedString>,
     state: Rc<ToolbarState>,
+    /// Inside a header (a view's state and actions, R9.11): as tall as its parent, no line
+    /// under it, icons without labels (a required label stays).
+    embedded: bool,
 }
 
 impl Toolbar {
     pub fn new(id: impl Into<SharedString>, state: Rc<ToolbarState>) -> Self {
-        Self { id: id.into(), items: Vec::new(), more: None, figures: None, state }
+        Self { id: id.into(), items: Vec::new(), more: None, figures: None, state, embedded: false }
+    }
+
+    /// The width an [`embedded`](Toolbar::embedded) toolbar of `icons` actions needs to show
+    /// them all (its edges, a spacer, each icon and the gaps).
+    pub fn embedded_width(icons: usize, t: &Theme) -> Pixels {
+        t.size(EDGE_START + EDGE_END) + (t.button_h + t.size(GAP)) * icons as f32
+    }
+
+    /// Drawn inside a header rather than as a row of its own (R9.11).
+    pub fn embedded(mut self) -> Self {
+        self.embedded = true;
+        self
     }
 
     pub fn item(mut self, item: ToolItem) -> Self {
@@ -888,7 +903,7 @@ impl Element for Toolbar {
         let t = theme(cx);
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = t.toolbar_h.into();
+        style.size.height = if self.embedded { relative(1.).into() } else { t.toolbar_h.into() };
         style.flex_shrink = 0.;
         (window.request_layout(style, [], cx), ())
     }
@@ -896,10 +911,21 @@ impl Element for Toolbar {
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let t = theme(cx).clone();
         let m = Metrics::new(window, &t);
-        let plans: Vec<Plan> = self.items.iter().map(|i| plan(i, &m, window, &t, cx)).collect();
+        let mut plans: Vec<Plan> = self.items.iter().map(|i| plan(i, &m, window, &t, cx)).collect();
+        if self.embedded {
+            // A header's actions are icons: never wider than compact.
+            for p in &mut plans {
+                p.fit.wide = p.fit.compact;
+            }
+        }
         let more_items = self.more.as_ref().is_some_and(|f| !f(cx).is_empty());
         let input = FitInput { items: plans.iter().map(|p| p.fit.clone()).collect(), gap: m.gap, edges: m.edge_start + m.edge_end, more: m.square, more_items };
-        let form = fit(&input, bounds.size.width);
+        let mut form = fit(&input, bounds.size.width);
+        if self.embedded {
+            for s in form.items.iter_mut().filter(|s| **s == Shown::Wide) {
+                *s = Shown::Compact;
+            }
+        }
 
         let state = self.state.clone();
         state.bounds.borrow_mut().clear();
@@ -916,8 +942,7 @@ impl Element for Toolbar {
             .pl(m.edge_start)
             .pr(m.edge_end)
             .overflow_hidden()
-            .border_b_1()
-            .border_color(t.line_soft)
+            .when(!self.embedded, |d| d.border_b_1().border_color(t.line_soft))
             .font_family(t.font.clone())
             .text_size(t.text)
             .whitespace_nowrap();

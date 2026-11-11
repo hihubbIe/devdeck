@@ -174,6 +174,8 @@ methods! {
         "Sets the UI scale or the theme.", since 4;
     WorkspaceRescan = "workspace.rescan", Present, InWorkspace => Done,
         "Finds the workspace's apps again.", since 4;
+    AgentReport = "agent.report", Present, AgentReportParams => AgentReported,
+        "From inside an agent session (its hooks, its status line): what happened and what it says of itself; devdeck shows it.", since 8;
     UiNotify = "ui.notify", Present, NotifyParams => Notified,
         "Shows the user a one-line toast, labelled with the caller.", since 4;
     UiToasts = "ui.toasts", Read, NoParams => Toasts,
@@ -295,6 +297,7 @@ mod tests {
             assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read | Class::Present | Class::Organize) && m.escalates_to.is_empty(), "{}", m.name);
             let since = match m.class {
                 _ if m.name.starts_with("pulse.") => 6,
+                _ if m.name.starts_with("agent.") => 8,
                 Class::Run if ["terminal.", "env."].iter().any(|d| m.name.starts_with(d)) => 4,
                 Class::Run => 2,
                 Class::Organize => 4,
