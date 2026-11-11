@@ -234,8 +234,10 @@ impl Deck {
             _ => None,
         };
         let in_layouts = std::iter::once(&self.layout).chain(self.book.layouts.values().filter_map(|n| n.layout.as_ref())).flat_map(|l| l.views()).filter_map(|r| number(&r));
-        let in_runner = self.services.iter().flat_map(|s| s.read(cx).runner.read(cx).terminals()).filter_map(|(k, _)| k.terminal_number());
-        in_layouts.chain(in_runner).max().map_or(1, |n: u32| n + 1)
+        let in_runner = self.services.iter().flat_map(|s| s.read(cx).runner.read(cx).terminal_numbers());
+        // An agent session keeps its number while its process comes and goes.
+        let in_agents = self.services.iter().filter_map(|s| s.read(cx).agents.read(cx).max_terminal());
+        in_layouts.chain(in_runner).chain(in_agents).max().map_or(1, |n: u32| n + 1)
     }
 
     /// Every terminal the layouts or the runner know, by number (R6.12): the tab to show
@@ -283,6 +285,15 @@ impl Deck {
             ViewAddr::Terminal { n, .. } => Some(n),
             _ => None,
         }));
+        // An agent session's terminal, while a tab or the Agents view shows it: ended, it
+        // stays with its tabs (⏎ resumes it).
+        let agents = services.read(cx).agents.read(cx);
+        let layouts = std::iter::once(&self.layout).chain(self.book.layouts.values().filter_map(|n| n.layout.as_ref()));
+        let refs = layouts.flat_map(|l| l.views()).chain(self.outside.iter().flatten().cloned());
+        shown.extend(refs.filter_map(|r| match ViewAddr::parse(&r) {
+            ViewAddr::Agent { id } => agents.session(&id).map(|s| s.n),
+            _ => None,
+        }));
         let runner = services.read(cx).runner.clone();
         runner.update(cx, |r, cx| r.set_shown_terminals(shown, cx));
     }
@@ -291,6 +302,16 @@ impl Deck {
     pub fn open_terminal(&mut self, dir: &std::path::Path, place: Place, cx: &mut Context<Self>) -> Option<PaneId> {
         let addr = ViewAddr::Terminal { n: self.next_terminal(cx), dir: dir.display().to_string() };
         self.apply(cx, |l| places::open(l, addr.to_ref(), place))
+    }
+
+    /// A new session of agent `agent` in `dir` (R6.14), shown at `place`. Returns the
+    /// pane showing it.
+    pub fn open_agent(&mut self, agent: &str, dir: &std::path::Path, place: Place, cx: &mut Context<Self>) -> Option<PaneId> {
+        let services = self.services.clone()?;
+        let n = self.next_terminal(cx);
+        let agents = services.read(cx).agents.clone();
+        let id = agents.update(cx, |a, cx| a.create(agent, dir, n, cx));
+        self.apply(cx, |l| places::open(l, ViewAddr::Agent { id }.to_ref(), place))
     }
 
     /// Where a new terminal starts for `pane`: the folder of its active tab (see
@@ -398,7 +419,24 @@ impl Deck {
         let shown: Vec<ViewRef> = now.difference(&self.visible).cloned().collect();
         let hidden: Vec<ViewRef> = self.visible.difference(&now).cloned().collect();
         self.visible = now;
+        self.report_agents(cx);
         cx.emit(DeckEvent::Visibility { shown, hidden });
+    }
+
+    /// Tells the agent sessions which of them are on screen (R6.14): a session runs
+    /// while one is.
+    fn report_agents(&self, cx: &mut Context<Self>) {
+        let Some(services) = &self.services else { return };
+        let ids: std::collections::BTreeSet<String> = self
+            .visible
+            .iter()
+            .filter_map(|r| match ViewAddr::parse(r) {
+                ViewAddr::Agent { id } => Some(id),
+                _ => None,
+            })
+            .collect();
+        let agents = services.read(cx).agents.clone();
+        cx.defer(move |cx| agents.update(cx, |a, cx| a.set_shown(ids, cx)));
     }
 
     /// The main window covers its panes (Settings) or shows them again.
@@ -474,7 +512,13 @@ impl Deck {
 
     /// A tab's title: what its view says, else what its address says.
     pub fn title(&self, r: &ViewRef, cx: &App) -> String {
-        self.lives.get(r).and_then(|(l, _)| l.title(cx)).unwrap_or_else(|| views::title(r))
+        if let Some(t) = self.lives.get(r).and_then(|(l, _)| l.title(cx)) {
+            return t;
+        }
+        if let (ViewAddr::Agent { id }, Some(s)) = (ViewAddr::parse(r), &self.services) {
+            return s.read(cx).agents.read(cx).label(&id, cx);
+        }
+        views::title(r)
     }
 
     /// What a view offers now (R12.4), for its header and its tab's menu.

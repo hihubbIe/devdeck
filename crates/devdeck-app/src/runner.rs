@@ -154,6 +154,8 @@ pub struct Run {
     /// How long its stop sequence takes, from its command when it started (the command
     /// may change or disappear while it runs).
     stop: std::time::Duration,
+    /// Writes of typed input so far (an agent session's keys answer its bell).
+    pub inputs: u64,
 }
 
 /// Why a start was refused, so the UI can act on it.
@@ -206,13 +208,16 @@ pub struct Runner {
     shown: std::collections::BTreeSet<u32>,
     /// Shells to start once the tools are known: the env and who asked first.
     waiting_shells: BTreeMap<RunKey, (Option<String>, Starter)>,
+    /// Terminals running a program instead of a shell (agent sessions, R6.14): listed
+    /// with their sessions, not with the shells.
+    programs: std::collections::BTreeSet<RunKey>,
 }
 
 impl EventEmitter<RunnerEvent> for Runner {}
 
 impl Runner {
     pub fn new(workspace: String, catalog: Rc<Catalog>, driver: Rc<dyn RunDriver>) -> Self {
-        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), shown: Default::default(), waiting_shells: BTreeMap::new() }
+        Self { workspace, catalog, runs: BTreeMap::new(), driver, stopped_to_quit: Default::default(), ports: None, args: BTreeMap::new(), recent: None, terminals: BTreeMap::new(), shown: Default::default(), waiting_shells: BTreeMap::new(), programs: Default::default() }
     }
 
     /// Makes terminal `n` known, a shell in `dir`, and returns its key; starting it is
@@ -246,6 +251,28 @@ impl Runner {
             self.terminals.insert(key.clone(), (app, cmd, uuid::Uuid::new_v4().to_string()));
         }
         key
+    }
+
+    /// Makes terminal `n` known running `line` in `dir` instead of a shell (an agent
+    /// session), or gives a known one that line for its next start. Starting it is the
+    /// caller's.
+    pub fn open_program(&mut self, n: u32, dir: &std::path::Path, line: &str) -> RunKey {
+        let key = self.open_terminal(n, dir);
+        if let Some((_, cmd, _)) = self.terminals.get_mut(&key) {
+            cmd.line = line.into();
+        }
+        self.programs.insert(key.clone());
+        key
+    }
+
+    /// The line terminal `key` runs at its next start.
+    pub fn terminal_line(&self, key: &RunKey) -> Option<&str> {
+        self.terminals.get(key).map(|(_, cmd, _)| cmd.line.as_str())
+    }
+
+    /// Whether terminal `key` runs a program rather than a shell.
+    pub fn is_program(&self, key: &RunKey) -> bool {
+        self.programs.contains(key)
     }
 
     /// Opens terminal `n` in `dir` and starts its shell as `starter` with `env`, now or
@@ -293,9 +320,14 @@ impl Runner {
         }
     }
 
-    /// Every terminal of the workspace with its folder, by number.
+    /// Every shell of the workspace with its folder, by number (not the programs).
     pub fn terminals(&self) -> Vec<(RunKey, std::path::PathBuf)> {
-        self.terminals.iter().map(|(k, (a, ..))| (k.clone(), a.dir.clone())).collect()
+        self.terminals.iter().filter(|(k, _)| !self.programs.contains(*k)).map(|(k, (a, ..))| (k.clone(), a.dir.clone())).collect()
+    }
+
+    /// The numbers of every terminal, programs included (a new one takes another).
+    pub fn terminal_numbers(&self) -> Vec<u32> {
+        self.terminals.keys().filter_map(RunKey::terminal_number).collect()
     }
 
     /// A terminal's uid (the control API names terminals by number and uid).
@@ -313,6 +345,7 @@ impl Runner {
             for k in gone {
                 self.terminals.remove(&k);
                 self.runs.remove(&k);
+                self.programs.remove(&k);
             }
             cx.notify();
         }
@@ -527,6 +560,7 @@ impl Runner {
                 _task: None,
                 restart_after_stop: None,
                 stop: Default::default(),
+                inputs: 0,
             }),
         };
         run.runs += 1;
@@ -660,9 +694,22 @@ impl Runner {
 
     /// Input typed into a run's terminal.
     pub fn write(&mut self, key: &RunKey, bytes: &[u8]) {
-        if let Some(c) = self.runs.get(key).and_then(|r| r.control.as_ref()) {
+        if let Some(r) = self.runs.get_mut(key)
+            && let Some(c) = &r.control
+        {
             c.write(bytes);
+            r.inputs += 1;
         }
+    }
+
+    /// Whether a run's process rang the bell since the last call.
+    pub fn take_bell(&mut self, key: &RunKey) -> bool {
+        self.runs.get_mut(key).is_some_and(|r| r.terminal.take_bell())
+    }
+
+    /// The title a run's process gave its terminal.
+    pub fn terminal_title(&self, key: &RunKey) -> Option<String> {
+        self.runs.get(key)?.terminal.title()
     }
 
     /// The size a view shows a run's terminal at.
@@ -718,7 +765,9 @@ impl Runner {
         run.state = state;
         // A shell's exit status is its last command's: nothing to announce.
         let terminal = id.key.is_terminal();
-        note(&mut run.terminal, if terminal && state != RunState::NotStarted { "shell ended" } else { &text });
+        let ended = if self.programs.contains(&id.key) { "session ended" } else { "shell ended" };
+        let run = self.runs.get_mut(&id.key).expect("checked above");
+        note(&mut run.terminal, if terminal && state != RunState::NotStarted { ended } else { &text });
         let again = run.restart_after_stop.take().map(|s| (run.env.clone(), s));
         if let Some(code) = state.failed().filter(|_| !terminal) {
             cx.emit(RunnerEvent::Failed { key: id.key.clone(), code });
@@ -731,6 +780,7 @@ impl Runner {
         if terminal && again.is_none() && self.forgettable(&id.key) {
             self.terminals.remove(&id.key);
             self.runs.remove(&id.key);
+            self.programs.remove(&id.key);
             cx.notify();
             return;
         }

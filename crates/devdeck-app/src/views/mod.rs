@@ -240,6 +240,15 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
             let v = cx.new(|cx| run_view::RunView::new(key.app, key.cmd, ctx.clone(), cx));
             keeping(v, saved, ctx, cx)
         }
+        (ViewAddr::Agent { id }, Some(ctx)) => {
+            // The session's terminal; its process is the sessions' to start (when shown).
+            let Some(n) = ctx.services.read(cx).agents.read(cx).session(&id).map(|s| s.n) else {
+                return message("This agent session was removed.".into(), cx);
+            };
+            let key = crate::runner::RunKey::terminal(n);
+            let v = cx.new(|cx| run_view::RunView::new(key.app, key.cmd, ctx.clone(), cx));
+            keeping(v, saved, ctx, cx)
+        }
         (ViewAddr::Run { app, cmd }, Some(ctx)) => {
             let known = ctx.services.read(cx).catalog.app(&app).is_some_and(|a| a.command(&cmd).is_some());
             if !known {
@@ -356,6 +365,7 @@ pub fn title(r: &ViewRef) -> String {
         ViewAddr::File { path } => path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/").to_string(),
         ViewAddr::Git { root } => format!("{} · git", root.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/")),
         ViewAddr::Terminal { dir, .. } => format!("terminal · {}", terminal_name(&dir)),
+        ViewAddr::Agent { .. } => "agent session".into(),
         ViewAddr::Other(_) => demo::title(r),
     }
 }
@@ -416,6 +426,7 @@ pub fn tab_label(r: &ViewRef, services: Option<&Services>, cx: &App) -> TabLabel
         }
         ViewAddr::Git { root } => plain(Icon::Git, last(&root)),
         ViewAddr::Terminal { dir, .. } => plain(Icon::Output, terminal_name(&dir)),
+        ViewAddr::Agent { id } => plain(Icon::Agents, services.map_or_else(|| "agent".into(), |s| s.agents.read(cx).label(&id, cx))),
         ViewAddr::Other(_) => plain(Icon::File, demo::title(r)),
     }
 }

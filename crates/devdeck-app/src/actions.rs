@@ -52,6 +52,7 @@ actions!(
         ShowLayouts,
         ShowTerminals,
         ShowNotes,
+        ShowAgents,
         NewLayout,
         SaveLayoutAs,
     ]

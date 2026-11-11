@@ -31,6 +31,14 @@
 //!   ```toml
 //!   node_dirs = ["~/.nvm/versions/node"]  # where `.nvmrc` versions are looked up
 //!   path = ["~/go/bin"]                   # added in front of the login shell's PATH
+//!
+//!   [agents.claude]                       # an agent (R6.14); the key is its id
+//!   name = "Claude Code"                  # as menus say it (the id when not given)
+//!   command = "claude"
+//!   args = ["--settings", "{\"preferredNotifChannel\": \"terminal_bell\"}"]  # every start
+//!   start = ["--session-id", "{id}"]      # a new session; {id} is its id (a UUID)
+//!   resume = ["--resume", "{id}"]         # a session that ran before
+//!   idle_stop = 60                        # seconds off screen and quiet before it stops
 //!   ```
 //!
 //! Rules: `~` expands to the home folder; unknown keys are errors (a typo in an
@@ -112,6 +120,8 @@ pub struct MachineConfig {
     pub node_dirs: Vec<PathBuf>,
     /// Added in front of the login shell's PATH.
     pub path: Vec<PathBuf>,
+    /// The machine's agents, by id (R6.14).
+    pub agents: Vec<crate::agents::AgentKind>,
 }
 
 /// A problem in a config file, shown to the user.
@@ -343,7 +353,27 @@ fn load_machine_with(config_dir: &Path, home: Option<&Path>) -> (MachineConfig, 
     match toml::from_str::<RawMachine>(&text) {
         Ok(m) => {
             let expand = |v: &[String]| v.iter().map(|p| expand_home(p, home)).collect();
-            (MachineConfig { node_dirs: expand(&m.node_dirs), path: expand(&m.path) }, Vec::new())
+            let mut errors = Vec::new();
+            let agents = m
+                .agents
+                .into_iter()
+                .filter_map(|(id, a)| {
+                    if a.command.trim().is_empty() {
+                        errors.push(ConfigError { file: path.clone(), line: None, message: format!("agents.{id}: command is empty") });
+                        return None;
+                    }
+                    Some(crate::agents::AgentKind {
+                        name: a.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| id.clone()),
+                        id,
+                        command: a.command,
+                        args: a.args,
+                        start: a.start,
+                        resume: a.resume,
+                        idle_stop: a.idle_stop.map_or(crate::agents::IDLE_STOP, std::time::Duration::from_secs),
+                    })
+                })
+                .collect();
+            (MachineConfig { node_dirs: expand(&m.node_dirs), path: expand(&m.path), agents }, errors)
         }
         Err(e) => {
             let (line, message) = toml_problem(&text, &e);
@@ -437,6 +467,22 @@ struct RawMachine {
     node_dirs: Vec<String>,
     #[serde(default)]
     path: Vec<String>,
+    #[serde(default)]
+    agents: BTreeMap<String, RawAgent>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAgent {
+    name: Option<String>,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    start: Vec<String>,
+    #[serde(default)]
+    resume: Vec<String>,
+    idle_stop: Option<u64>,
 }
 
 impl From<RawApp> for AppOverride {
@@ -710,6 +756,27 @@ env = { file = "config/local.yml" }
         assert_eq!(machine("machine-nofile", None), (MachineConfig::default(), vec![]));
         assert_eq!(machine("machine-empty", Some("")), (MachineConfig::default(), vec![]));
         assert_eq!(machine("machine-partial", Some("path = [\"/x\"]\n")).0.path, [PathBuf::from("/x")]);
+    }
+
+    #[test]
+    fn agents_come_from_the_machine_file() {
+        let text = "[agents.claude]\nname = \"Claude Code\"\ncommand = \"claude\"\nstart = [\"--session-id\", \"{id}\"]\nresume = [\"--resume\", \"{id}\"]\nidle_stop = 30\n[agents.aider]\ncommand = \"aider\"\n";
+        let (m, e) = machine("machine-agents", Some(text));
+        assert!(e.is_empty(), "{e:?}");
+        let ids: Vec<&str> = m.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["aider", "claude"], "by id");
+        let claude = &m.agents[1];
+        assert_eq!((claude.name.as_str(), claude.command.as_str()), ("Claude Code", "claude"));
+        assert_eq!(claude.resume, ["--resume", "{id}"]);
+        assert_eq!(claude.idle_stop, std::time::Duration::from_secs(30));
+        assert_eq!((m.agents[0].name.as_str(), m.agents[0].idle_stop), ("aider", crate::agents::IDLE_STOP), "defaults");
+
+        let (m, e) = machine("machine-agent-typo", Some("[agents.x]\ncommand = \"x\"\nresum = []\n"));
+        assert!(m.agents.is_empty());
+        assert!(only_error(&e).2.contains("resum"), "{e:?}");
+        let (m, e) = machine("machine-agent-empty", Some("[agents.x]\ncommand = \" \"\n"));
+        assert!(m.agents.is_empty());
+        assert_eq!(only_error(&e).2, "agents.x: command is empty");
     }
 
     #[test]

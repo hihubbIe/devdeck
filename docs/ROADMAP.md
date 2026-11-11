@@ -128,7 +128,11 @@ list, which can also open as a tab in a pulse. One activity at a time.
    Manual test now.
 5. The others: Terminals and Notes as full views (the list, then the terminal or the note
    itself) — done 2026-11-11; Ports ([plans/ports-view.md](plans/ports-view.md)): 5a what the
-   list knows, 5b the page — done 2026-11-11. Manual test now. Then Agents.
+   list knows, 5b the page — done 2026-11-11. Manual test now.
+6. Agents ([plans/agents-view.md](plans/agents-view.md)): 6a sessions from `machine.toml`'s
+   agents, the Agents full view, "<agent> here", a process only while shown or busy
+   (R6.14) — built 2026-11-11, not committed. 6b reports from the agent through the
+   control API, a split of sessions in the view.
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,

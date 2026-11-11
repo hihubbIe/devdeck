@@ -40,6 +40,8 @@ impl RunControl for FakeControl {
 impl RunDriver for FakeDriver {
     fn spawn(&self, launch: Launch, cx: &mut Context<Runner>) -> Result<Started, String> {
         let (lines, exit) = script(&launch);
+        // An agent session (a terminal running a program, R6.14) says one line, then waits.
+        let quiet = launch.cmd.source() == "shell" && launch.cmd.line != crate::runner::SHELL_LINE;
         let crashes = launch.id.key.app == "boardservice" && exit.is_none();
         let rate = std::env::var("DEVDECK_FAKE_RATE").ok().and_then(|s| s.parse::<u32>().ok()).filter(|r| *r > 0);
         let (tx, rx) = async_channel::bounded(1);
@@ -53,6 +55,10 @@ impl RunDriver for FakeDriver {
             }
             if let Some(code) = exit {
                 out.exit(Exit::Code(code), cx);
+                return;
+            }
+            if quiet {
+                while !out.wait(SERVER_TICK, cx).await {}
                 return;
             }
             if crashes {
@@ -162,6 +168,9 @@ fn script(launch: &Launch) -> (Vec<String>, Option<i32>) {
     let port = cmd.ports.first().copied().unwrap_or(0);
     let server = cmd.tier == Tier::Primary;
     // The demo has no machine to run a shell on: its terminals say so and stay open.
+    if cmd.source() == "shell" && cmd.line != crate::runner::SHELL_LINE {
+        return (vec!["The demo has no agent: sessions run in a workspace from your config.".into()], None);
+    }
     if cmd.source() == "shell" {
         return (vec!["The demo has no shell: terminals run in a workspace from your config.".into()], None);
     }

@@ -2,6 +2,7 @@
 //! snapshot tool used for visual checks).
 
 pub mod actions;
+pub mod agents;
 pub mod api;
 pub mod app_settings;
 pub mod cheat_sheet;

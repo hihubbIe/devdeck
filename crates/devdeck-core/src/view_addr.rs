@@ -24,6 +24,8 @@ pub enum ViewAddr {
     File { path: String },
     /// A note of the workspace (R12.3), by id.
     Note { id: String },
+    /// An agent session of the workspace (R6.14), by id.
+    Agent { id: String },
     /// Anything else (demo views, refs from older versions).
     Other(String),
 }
@@ -52,6 +54,7 @@ impl ViewAddr {
             ViewAddr::Git { root } => format!("git/{}", esc(root)),
             ViewAddr::File { path } => format!("file/{}", esc(path)),
             ViewAddr::Note { id } => format!("note/{}", esc(id)),
+            ViewAddr::Agent { id } => format!("agent/{}", esc(id)),
             ViewAddr::Other(s) => s.clone(),
         })
     }
@@ -73,6 +76,7 @@ impl ViewAddr {
             ["git", root] => ViewAddr::Git { root: root.to_string() },
             ["file", path] => ViewAddr::File { path: path.to_string() },
             ["note", id] => ViewAddr::Note { id: id.to_string() },
+            ["agent", id] => ViewAddr::Agent { id: id.to_string() },
             ["term", n, dir] if n.parse::<u32>().is_ok() => ViewAddr::Terminal { n: n.parse().unwrap_or_default(), dir: dir.to_string() },
             _ => ViewAddr::Other(s.to_string()),
         }
@@ -99,6 +103,7 @@ mod tests {
             ViewAddr::Port { port: "5800".into() },
             ViewAddr::Other("demo/logs".into()),
             ViewAddr::Terminal { n: 3, dir: "/home/me/repos/a b%/c".into() },
+            ViewAddr::Agent { id: "0d4b-4c59".into() },
         ];
         for a in all {
             assert_eq!(ViewAddr::parse(&a.to_ref()), a, "{:?}", a.to_ref());

@@ -2,6 +2,7 @@
 //! file in `tests/` (docs/WORKFLOW.md). One area: `cargo nextest run --workspace deck::`.
 
 mod actions;
+mod agents;
 mod api;
 mod api_events;
 mod api_git_ports;

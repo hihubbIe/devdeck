@@ -244,7 +244,7 @@ mod tests {
     fn toolbox(node_dirs: &[&Path], path: &[&Path]) -> Toolbox {
         let node_dirs: Vec<PathBuf> = node_dirs.iter().map(|d| d.to_path_buf()).collect();
         let vars = vec![("PATH".to_string(), path.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(":"))];
-        let config = crate::config::MachineConfig { node_dirs, path: vec![] };
+        let config = crate::config::MachineConfig { node_dirs, path: vec![], agents: vec![] };
         let machine = Machine::load(&config, None, &path_of(&vars));
         Toolbox { vars, machine }
     }

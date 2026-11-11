@@ -35,6 +35,8 @@ pub struct Services {
     pub runner: Entity<Runner>,
     /// The workspace's notes (R12.3).
     pub notes: Entity<crate::notes::Notes>,
+    /// The workspace's agent sessions (R6.14).
+    pub agents: Entity<crate::agents::Agents>,
     /// `None` without `[cluster]` (no Cluster activity, R2.3).
     pub cluster: Option<Entity<Cluster>>,
     /// A config workspace's cluster and its driver, kept while `[cluster]` is gone: the
@@ -128,7 +130,9 @@ impl Services {
             c.update(cx, |c, _| c.workspace = Some(workspace.to_string()));
         }
         let ports = Ports::new(workspace, runner.clone(), None, cx);
+        let agents = crate::agents::new(workspace, runner.clone(), None, cx);
         cx.new(|cx| {
+            cx.observe(&agents, |_, _, cx| cx.notify()).detach();
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
             cx.observe(&ports, |_, _, cx| cx.notify()).detach();
             if let Some(c) = &cluster {
@@ -137,7 +141,7 @@ impl Services {
             let unusable = unusable(&catalog);
             // The demo's notes stay in memory.
             let notes = cx.new(|cx| crate::notes::Notes::new(None, cx));
-            Services { workspace: workspace.into(), catalog, env, runner, notes, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable, history: None }
+            Services { workspace: workspace.into(), catalog, env, runner, notes, agents, cluster, kube: None, repos: BTreeMap::new(), files: BTreeMap::new(), config: None, problems: Vec::new(), watch: Vec::new(), ports, scan: None, unusable, history: None }
         })
     }
 
@@ -174,7 +178,9 @@ impl Services {
             (cluster, driver)
         });
         let cluster = kube.as_ref().map(|(c, _)| c.clone());
+        let agents = crate::agents::new(&config.id, runner.clone(), history.clone(), cx);
         cx.new(|cx| {
+            cx.observe(&agents, |_, _, cx| cx.notify()).detach();
             cx.observe(&runner, |_, _, cx| cx.notify()).detach();
             cx.observe(&ports, |_, _, cx| cx.notify()).detach();
             if let Some(c) = &cluster {
@@ -189,7 +195,7 @@ impl Services {
             // Notes are kept with what the user writes (R10.1), when devdeck keeps state.
             let store = keeps_notes.then(|| devdeck_core::notes::NotesStore::new(devdeck_core::notes::notes_dir(&devdeck_core::notes::default_data_dir(), &config.id)));
             let notes = cx.new(|cx| crate::notes::Notes::new(store, cx));
-            Services { workspace: config.id.clone(), catalog, env, runner, notes, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable, history }
+            Services { workspace: config.id.clone(), catalog, env, runner, notes, agents, cluster, kube, repos: BTreeMap::new(), files: BTreeMap::new(), config: Some(config), problems, watch, ports, scan: None, unusable, history }
         })
     }
 

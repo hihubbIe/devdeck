@@ -46,6 +46,8 @@ icons! {
     /// Pulses: a heartbeat. From gpui-kit-assets' Lucide set.
     Layouts => "activity",
     Terminals => "square-terminal",
+    /// Agent sessions (R6.14).
+    Agents => "sparkles",
     /// A group the user made in a list.
     Group => "folder",
     // Runs.

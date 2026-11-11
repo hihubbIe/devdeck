@@ -1,6 +1,7 @@
 //! devdeck logic that has no UI. Everything here is plain data and pure functions so it
 //! can be unit tested without a GPU.
 
+pub mod agents;
 pub mod apps;
 pub mod catalog;
 pub mod cluster;

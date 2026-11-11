@@ -131,6 +131,49 @@ pub fn item(
     cx: &App,
     open: impl Fn(&mut Deck, Place, &mut gpui::Context<Deck>) -> Option<PaneId> + 'static,
 ) -> MenuItem {
+    item_or(label, Err(default), here, deck, view, cx, open)
+}
+
+/// "<agent> here" for each agent of the machine (R6.14), after a separator; none
+/// without agents. A click makes a session of it in `dir` and shows it in the Agents
+/// view; its submenu opens one in a pulse's pane instead (from a full view, `pulses`
+/// shows Pulses first).
+pub fn agent_items(here: WindowId, deck: &Entity<Deck>, dir: &std::path::Path, pulses: Option<gpui::WeakEntity<crate::sidebar::Sidebar>>, cx: &App) -> Vec<MenuItem> {
+    let kinds = crate::environment::agent_kinds(cx);
+    if kinds.is_empty() {
+        return Vec::new();
+    }
+    let mut items = vec![MenuItem::separator()];
+    for kind in kinds {
+        let (d, id, deck2, dir2) = (dir.to_path_buf(), kind.id.clone(), deck.clone(), dir.to_path_buf());
+        let agent = kind.id.clone();
+        let click: Click = Rc::new(move |_, cx| crate::sidebar::new_agent_session(&deck2, &agent, &dir2, cx));
+        let pulses = pulses.clone();
+        items.push(item_or(&format!("{} here", kind.name), Ok(click), here, deck, None, cx, move |deck, place, cx| {
+            if let Some(s) = pulses.clone() {
+                cx.defer(move |cx| {
+                    let _ = s.update(cx, |s, cx| s.show_pulses(cx));
+                });
+            }
+            deck.open_agent(&id, &d, place, cx)
+        }));
+    }
+    items
+}
+
+/// What an item does on a click when it isn't opening at a place.
+type Click = Rc<dyn Fn(&mut gpui::Window, &mut App)>;
+
+/// [`item`], its click either opening at a place (`Err`) or its own (`Ok`).
+fn item_or(
+    label: &str,
+    click: std::result::Result<Click, Place>,
+    here: WindowId,
+    deck: &Entity<Deck>,
+    view: Option<&ViewRef>,
+    cx: &App,
+    open: impl Fn(&mut Deck, Place, &mut gpui::Context<Deck>) -> Option<PaneId> + 'static,
+) -> MenuItem {
     let open = Rc::new(open);
     let at = |place: Place| {
         let (deck, open) = (deck.clone(), open.clone());
@@ -158,7 +201,10 @@ pub fn item(
     places.push(MenuItem::separator());
     places.push(disabled(MenuItem::new("new window", at(Place::NewWindow)), Place::NewWindow));
     // The item itself is never refused: at its default place, an open one shows.
-    MenuItem::new(label.to_string(), at(default)).submenu(places)
+    match click {
+        Err(default) => MenuItem::new(label.to_string(), at(default)).submenu(places),
+        Ok(click) => MenuItem::new(label.to_string(), move |window, cx| click(window, cx)).submenu(places),
+    }
 }
 
 #[cfg(test)]

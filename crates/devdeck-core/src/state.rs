@@ -249,6 +249,30 @@ impl StateStore {
         write_atomic(&self.deploys_path(workspace), &serde_json::to_string_pretty(deploys).map_err(|e| e.to_string())?)
     }
 
+    fn agents_path(&self, workspace: &str) -> PathBuf {
+        self.dir.join("workspaces").join(safe_id(workspace)).join("agents.json")
+    }
+
+    /// The workspace's agent sessions (R6.14).
+    pub fn load_agents(&self, workspace: &str) -> Loaded<crate::agents::AgentSessions> {
+        let path = self.agents_path(workspace);
+        match read(&path) {
+            Loaded::Ok(t) => match serde_json::from_str(&t) {
+                Ok(d) => Loaded::Ok(d),
+                Err(e) => {
+                    set_aside(&path);
+                    Loaded::Broken(format!("{}: {e} (kept as agents.json.bad)", path.display()))
+                }
+            },
+            Loaded::Missing => Loaded::Missing,
+            Loaded::Broken(e) => Loaded::Broken(e),
+        }
+    }
+
+    pub fn save_agents(&self, workspace: &str, agents: &crate::agents::AgentSessions) -> Result<(), String> {
+        write_atomic(&self.agents_path(workspace), &serde_json::to_string_pretty(agents).map_err(|e| e.to_string())?)
+    }
+
     fn views_path(&self, workspace: &str) -> PathBuf {
         self.dir.join("workspaces").join(safe_id(workspace)).join("views.json")
     }

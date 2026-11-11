@@ -1137,6 +1137,7 @@ impl Render for WindowView {
                     .on_action(cx.listener(|this, _: &ShowLayouts, w, cx| this.show_activity(Activity::Layouts, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowTerminals, w, cx| this.show_activity(Activity::Terminals, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowNotes, w, cx| this.show_activity(Activity::Notes, w, cx)))
+                    .on_action(cx.listener(|this, _: &ShowAgents, w, cx| this.show_activity(Activity::Agents, w, cx)))
                     .on_action(cx.listener(|this, _: &NewLayout, w, cx| crate::layouts::open_new(this.deck.clone(), w, cx)))
                     .on_action(cx.listener(|this, _: &SaveLayoutAs, w, cx| crate::layouts::open_save_as(this.deck.clone(), w, cx)))
                     .on_action(cx.listener(|this, _: &ToggleSidebar, w, cx| {
@@ -1569,7 +1570,7 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
     let d = |deck: &Entity<Deck>| deck.clone();
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
     let (v1, v2) = (view.clone(), view.clone());
-    let terminal = open_terminal_item(deck, pane, window, Some(&view), cx);
+    let terminal = open_terminal_items(deck, pane, window, Some(&view), cx);
     // What the view offers now (R12.4), first.
     let mut items: Vec<MenuItem> = deck
         .read(cx)
@@ -1606,20 +1607,24 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
         MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized),
         MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))),
         MenuItem::separator(),
-        terminal,
     ]);
+    items.extend(terminal);
     items
 }
 
 /// "Open terminal here": a shell in the folder of `view` (the pane's active tab when
-/// `None`), in `pane` on a click, elsewhere from its submenu.
-fn open_terminal_item(deck: &Entity<Deck>, pane: PaneId, window: WindowId, view: Option<&ViewRef>, cx: &App) -> MenuItem {
+/// `None`), in `pane` on a click, elsewhere from its submenu; then "<agent> here" for
+/// each agent (R6.14).
+fn open_terminal_items(deck: &Entity<Deck>, pane: PaneId, window: WindowId, view: Option<&ViewRef>, cx: &App) -> Vec<MenuItem> {
     let d = deck.read(cx);
     let folder = match view {
         Some(v) => d.folder_of(Some(v), cx),
         None => d.terminal_folder(Some(pane), cx),
     };
-    places::item("Open terminal here", Place::Pane(pane), window, deck, None, cx, move |d, place, cx| d.open_terminal(&folder, place, cx))
+    let agents = places::agent_items(window, deck, &folder, None, cx);
+    let mut items = vec![places::item("Open terminal here", Place::Pane(pane), window, deck, None, cx, move |d, place, cx| d.open_terminal(&folder, place, cx))];
+    items.extend(agents);
+    items
 }
 
 /// What a tab does by mouse, on the strip and as a header's title (R3.12): a click
@@ -1651,7 +1656,7 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Ve
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
     let split = |item: MenuItem| if tabs < 2 { item.disabled("needs two tabs") } else { item };
     let some = |item: MenuItem| if tabs == 0 { item.disabled("no tabs") } else { item };
-    vec![
+    let mut items = vec![
         split(MenuItem::new("Split right", move |_, cx| apply_on(&d1, cx, |l| split_active(l, pane, Edge::Right)))),
         split(MenuItem::new("Split down", move |_, cx| apply_on(&d2, cx, |l| split_active(l, pane, Edge::Bottom)))),
         MenuItem::separator(),
@@ -1659,7 +1664,9 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Ve
         MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))),
         some(MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx))),
         MenuItem::separator(),
-        open_terminal_item(deck, pane, layout.window_of(pane).unwrap_or(MAIN_WINDOW), None, cx),
+    ];
+    items.extend(open_terminal_items(deck, pane, layout.window_of(pane).unwrap_or(MAIN_WINDOW), None, cx));
+    items.extend([
         MenuItem::separator(),
         some(MenuItem::new("Close pane", move |_, cx| {
             apply_on(&d6, cx, |l| {
@@ -1670,7 +1677,8 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Ve
                 Ok(())
             })
         })),
-    ]
+    ]);
+    items
 }
 
 fn render_pane_inner(f: &Frame, pane: PaneId, parent: Option<Axis>) -> AnyElement {

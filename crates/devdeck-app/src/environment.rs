@@ -20,13 +20,15 @@ pub struct Environment {
     pub config_problems: Vec<String>,
     /// The login shell's, as of the last load.
     pub shell_problems: Vec<String>,
+    /// The machine's agents (R6.14), as of the last load.
+    pub agents: Vec<devdeck_core::agents::AgentKind>,
     /// Loads asked so far: a load's result is kept only if it's the last one asked.
     loads: u64,
 }
 
 impl Environment {
     pub fn new(state: EnvState) -> Self {
-        Self { state, config_problems: Vec::new(), shell_problems: Vec::new(), loads: 0 }
+        Self { state, config_problems: Vec::new(), shell_problems: Vec::new(), agents: Vec::new(), loads: 0 }
     }
 
     /// Machine-wide problems, listed with each workspace's own in the problems view.
@@ -63,11 +65,21 @@ pub fn environment(cx: &mut App) -> Entity<Environment> {
     e
 }
 
-/// Asks the login shell in the background (it can take a moment: rc files run).
+/// The machine's agents (none before the environment exists).
+pub fn agent_kinds(cx: &App) -> Vec<devdeck_core::agents::AgentKind> {
+    cx.try_global::<EnvHandle>().map(|h| h.0.read(cx).agents.clone()).unwrap_or_default()
+}
+
+/// Asks the login shell in the background (it can take a moment: rc files run). The
+/// agents are the machine file's at once.
 pub fn load(machine: MachineConfig, cx: &mut App) -> Entity<Environment> {
     let env = environment(cx);
-    let n = env.update(cx, |e, _| {
+    let n = env.update(cx, |e, cx| {
         e.loads += 1;
+        if e.agents != machine.agents {
+            e.agents = machine.agents.clone();
+            cx.notify();
+        }
         e.loads
     });
     let target = env.clone();

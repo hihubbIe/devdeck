@@ -63,11 +63,13 @@ pub enum Activity {
     Terminals,
     /// The workspace's notes, by project.
     Notes,
+    /// The workspace's agent sessions (R6.14).
+    Agents,
 }
 
 impl Activity {
     /// In the activity bar's order; the first is where a workspace lands.
-    pub const ALL: [Activity; 6] = [Activity::Layouts, Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Terminals, Activity::Notes];
+    pub const ALL: [Activity; 7] = [Activity::Layouts, Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Terminals, Activity::Notes, Activity::Agents];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -77,14 +79,15 @@ impl Activity {
             Activity::Layouts => "pulses",
             Activity::Terminals => "terminals",
             Activity::Notes => "notes",
+            Activity::Agents => "agents",
         }
     }
 
     /// Whether it shows as a full view: its list, then its selection's details instead
     /// of the pulse's panes (Pulses: its list beside the panes).
-    /// Terminals and Notes show the terminal or the note itself.
+    /// Terminals, Notes and Agents show the terminal, the note or the session itself.
     pub fn full_view(self) -> bool {
-        matches!(self, Activity::Apps | Activity::Cluster | Activity::Ports | Activity::Terminals | Activity::Notes)
+        matches!(self, Activity::Apps | Activity::Cluster | Activity::Ports | Activity::Terminals | Activity::Notes | Activity::Agents)
     }
 
     /// What a full view's details say while nothing is selected.
@@ -94,6 +97,7 @@ impl Activity {
             Activity::Terminals => "pick a terminal",
             Activity::Notes => "pick a note",
             Activity::Ports => "pick a port",
+            Activity::Agents => "pick a session",
             _ => "pick an app",
         }
     }
@@ -111,6 +115,7 @@ impl Activity {
             Activity::Layouts => "layouts",
             Activity::Terminals => "terminals",
             Activity::Notes => "notes",
+            Activity::Agents => "agents",
         }
     }
 
@@ -122,6 +127,7 @@ impl Activity {
             Activity::Layouts => "Pulses",
             Activity::Terminals => "Terminals",
             Activity::Notes => "Notes",
+            Activity::Agents => "Agents",
         }
     }
 
@@ -133,6 +139,7 @@ impl Activity {
             Activity::Layouts => Icon::Layouts,
             Activity::Terminals => Icon::Terminals,
             Activity::Notes => Icon::Note,
+            Activity::Agents => Icon::Agents,
         }
     }
 }
@@ -618,6 +625,24 @@ impl Sidebar {
                     .collect()
             }
             Activity::Notes => self.notes_tree(cx).items,
+            Activity::Agents => {
+                // Every session (R6.14), running or not: its state, then its folder.
+                let agents = s.agents.read(cx);
+                agents
+                    .sessions()
+                    .iter()
+                    .map(|a| {
+                        let status = agents.status(&a.id, cx);
+                        let folder = devdeck_core::config::shown(&a.dir);
+                        ListItem::new(a.id.clone(), agents.label(&a.id, cx))
+                            .detail(status.label())
+                            .hint(Some(format!("{} · {} · {folder}", agents.label(&a.id, cx), status.label())))
+                            .running(status != devdeck_core::agents::Status::Off)
+                            .busy(status == devdeck_core::agents::Status::Working)
+                            .warning((status == devdeck_core::agents::Status::NeedsYou).then(|| "needs you".to_string()))
+                    })
+                    .collect()
+            }
         }
     }
 
@@ -690,7 +715,7 @@ impl Sidebar {
 
     /// Whether `list` has groups: terminals come and go, notes go by project.
     pub fn groups_allowed_in(list: Activity) -> bool {
-        !matches!(list, Activity::Terminals | Activity::Notes)
+        !matches!(list, Activity::Terminals | Activity::Notes | Activity::Agents)
     }
 
     /// The shown list's groups.
@@ -1025,6 +1050,7 @@ impl Sidebar {
             // The tab a layout shows it by, so opening it never adds a second one.
             Activity::Terminals => return self.deck.read(cx).terminals(cx).remove(&key.parse().ok()?).map(|t| t.view),
             Activity::Notes => ViewAddr::Note { id: key.into() },
+            Activity::Agents => ViewAddr::Agent { id: key.into() },
         }
         .to_ref())
     }
@@ -1283,6 +1309,26 @@ impl Sidebar {
         }
         let (open, pin) = (this.clone(), this.clone());
         let (k1, k2) = (key.to_string(), key.to_string());
+        if this.read(cx).activity() == Activity::Agents {
+            let agents = this.read(cx).services.read(cx).agents.clone();
+            let running = agents.read(cx).running(key, cx);
+            let (a1, a2, a3) = (agents.clone(), agents.clone(), agents);
+            let (k3, k4, k5) = (key.to_string(), key.to_string(), key.to_string());
+            let mut items = vec![
+                MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
+                MenuItem::new("Rename…", move |window, cx| rename_session(a1.clone(), k3.clone(), window, cx)),
+            ];
+            if running {
+                items.push(MenuItem::new("Stop", move |_, cx| a2.update(cx, |a, cx| a.stop(&k4, cx))));
+            }
+            // The agent keeps the conversation: only devdeck's record goes.
+            items.push(MenuItem::new("Remove", move |_, cx| a3.update(cx, |a, cx| a.remove(&k5, cx))));
+            if let Some(view) = this.read(cx).view_ref(key, cx) {
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
+            }
+            return items;
+        }
         if this.read(cx).activity() == Activity::Notes {
             // A project's row (the menu key on a selected folder).
             if let Some(node) = key.strip_suffix('/') {
@@ -1329,6 +1375,7 @@ impl Sidebar {
             items.push(MenuItem::separator());
             // From a full view it opens in the pulse, shown first.
             let pulses = full.then(|| this.downgrade());
+            let agents = places::agent_items(MAIN_WINDOW, &deck, &folder, pulses.clone(), cx);
             items.push(places::item("Open terminal here", Place::Pane(focused), MAIN_WINDOW, &deck, None, cx, move |d, place, cx| {
                 if let Some(s) = pulses.clone() {
                     cx.defer(move |cx| {
@@ -1337,6 +1384,7 @@ impl Sidebar {
                 }
                 d.open_terminal(&folder, place, cx)
             }));
+            items.extend(agents);
         }
         items
     }
@@ -1469,6 +1517,35 @@ impl Render for Sidebar {
                         .on_click(cx.listener(|_, _, window, cx| {
                             let me = cx.entity();
                             window.defer(cx, move |window, cx| Sidebar::new_note(&me, "", window, cx));
+                        })),
+                )
+            })
+            .when(activity == Activity::Agents, |d| {
+                d.child(
+                    devdeck_ui::button("new-session", "new session", &t)
+                        .debug_selector(|| "sidebar-new-session".into())
+                        .tooltip(tip("a session of an agent, in the folder of the pulse's focused tab"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let deck = this.deck.clone();
+                            let dir = deck.read(cx).terminal_folder(None, cx);
+                            let kinds = crate::environment::agent_kinds(cx);
+                            let at = window.mouse_position();
+                            match kinds.as_slice() {
+                                [] => {
+                                    toasts(cx).update(cx, |t, cx| t.push(ToastKind::Info, "No agent is configured: add one to machine.toml ([agents.<id>]).", vec![], cx));
+                                }
+                                [one] => new_agent_session(&deck, &one.id, &dir, cx),
+                                many => {
+                                    let items = many
+                                        .iter()
+                                        .map(|k| {
+                                            let (deck, id, dir) = (deck.clone(), k.id.clone(), dir.clone());
+                                            MenuItem::new(k.name.clone(), move |_, cx| new_agent_session(&deck, &id, &dir, cx))
+                                        })
+                                        .collect();
+                                    open_menu(at, items, window, cx);
+                                }
+                            }
                         })),
                 )
             })
@@ -1808,4 +1885,26 @@ fn holds(kids: Kids, t: &Theme) -> gpui::Div {
         .when(kids.running, |d| d.child(dot(t.ok, true, t)))
         .when(kids.warning, |d| d.child(icon(Icon::Warning, t.warn, t)))
         .child(div().text_color(t.dim).child(kids.count.to_string()))
+}
+
+/// A new session of agent `agent` in `dir` (R6.14), shown in its workspace's Agents view.
+pub fn new_agent_session(deck: &Entity<Deck>, agent: &str, dir: &std::path::Path, cx: &mut App) {
+    let Some(services) = deck.read(cx).services() else { return };
+    let n = deck.read(cx).next_terminal(cx);
+    let agents = services.read(cx).agents.clone();
+    let id = agents.update(cx, |a, cx| a.create(agent, dir, n, cx));
+    let sidebar = crate::shell::try_shell(cx).and_then(|s| s.read(cx).workspaces.iter().find(|w| w.deck == *deck).map(|w| w.sidebar.clone()));
+    if let Some(sidebar) = sidebar {
+        sidebar.update(cx, |s, cx| s.show_item(Activity::Agents, &id, cx));
+    }
+}
+
+/// Asks a session's name (empty: its agent's title again).
+fn rename_session(agents: Entity<crate::agents::Agents>, id: String, window: &mut Window, cx: &mut App) {
+    let name = agents.read(cx).session(&id).and_then(|s| s.name.clone()).unwrap_or_else(|| agents.read(cx).label(&id, cx));
+    let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |to, cx| {
+        agents.update(cx, |a, cx| a.rename(&id, to, cx));
+        Ok(())
+    });
+    crate::name_prompt::open("Rename session", &name, "session-name", submit, window, cx);
 }

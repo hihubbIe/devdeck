@@ -198,9 +198,16 @@ enum Reply {
     Size(Arc<dyn Fn(WindowSize) -> String + Send + Sync>),
 }
 
-/// Collects what the emulator must send back to the process.
+/// Collects what the emulator must send back to the process, and what the process
+/// said of itself: a bell, its title.
 #[derive(Clone, Default)]
-struct Replies(Rc<RefCell<Vec<Reply>>>);
+struct Replies(Rc<RefCell<Vec<Reply>>>, Rc<RefCell<Said>>);
+
+#[derive(Default)]
+struct Said {
+    bell: bool,
+    title: Option<String>,
+}
 
 impl EventListener for Replies {
     fn send_event(&self, event: Event) {
@@ -208,6 +215,9 @@ impl EventListener for Replies {
             Event::PtyWrite(text) => Reply::Text(text),
             Event::ColorRequest(i, format) => Reply::Color(i, format),
             Event::TextAreaSizeRequest(format) => Reply::Size(format),
+            Event::Bell => return self.1.borrow_mut().bell = true,
+            Event::Title(title) => return self.1.borrow_mut().title = Some(title),
+            Event::ResetTitle => return self.1.borrow_mut().title = None,
             _ => return,
         };
         self.0.borrow_mut().push(reply);
@@ -456,6 +466,16 @@ impl Terminal {
             }
         }
         row
+    }
+
+    /// Whether the process rang the bell since the last call.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.replies.1.borrow_mut().bell)
+    }
+
+    /// The title the process set (OSC 0 or 2), if it set one.
+    pub fn title(&self) -> Option<String> {
+        self.replies.1.borrow().title.clone()
     }
 
     /// True when the cursor is at the start of a line (output ended with a newline).
@@ -1031,6 +1051,20 @@ mod tests {
         // One column left: the next wide one goes to the next row whole.
         t.feed("家".as_bytes());
         assert_eq!(t.lines(), ["a家b", "家"]);
+    }
+
+    #[test]
+    fn the_bell_and_the_title_are_kept_for_the_caller() {
+        let mut t = term(20, 3);
+        assert!(!t.take_bell());
+        assert_eq!(t.title(), None);
+        t.feed(b"a\x07b\x1b]2;Fix the build\x07");
+        assert!(t.take_bell(), "rung");
+        assert!(!t.take_bell(), "taken");
+        assert_eq!(t.title().as_deref(), Some("Fix the build"));
+        assert_eq!(t.lines(), ["ab"], "neither shows");
+        t.feed(b"\x1b]0;other\x1b\\");
+        assert_eq!(t.title().as_deref(), Some("other"));
     }
 
     #[test]
