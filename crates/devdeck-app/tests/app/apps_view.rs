@@ -148,7 +148,7 @@ fn the_app_view_names_the_tools_its_commands_need(cx: &mut TestAppContext) {
     assert!(vcx.debug_bounds("tool-docker").is_some(), "docker, missing: what it blocks");
     select(&shell, cx, "entityservice");
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    assert!(vcx.debug_bounds("tool-go").is_some());
+    assert!(vcx.debug_bounds("tools-found").is_some(), "what's there, on one line");
     assert!(vcx.debug_bounds("tool-docker").is_none(), "only what its commands need");
 }
 
@@ -247,4 +247,48 @@ fn the_title_bar_has_no_pulse_menu(cx: &mut TestAppContext) {
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
     assert!(vcx.debug_bounds("search-button").is_some());
     assert!(vcx.debug_bounds("layout-button").is_none(), "Pulses is ctrl+1, its list says which is current");
+}
+
+// ------------------------------------------------------------------ after the first look
+
+#[gpui::test]
+fn coming_back_to_apps_shows_the_app_left(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-back");
+    select(&shell, cx, "graphservice");
+    let s = sidebar(&shell, cx);
+    for away in [Activity::Cluster, Activity::Layouts] {
+        cx.update(|cx| s.update(cx, |s, cx| s.show(away, cx)));
+        cx.run_until_parked();
+        assert_eq!(details(&shell, cx), None);
+        cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
+        cx.run_until_parked();
+        assert_eq!(details(&shell, cx), Some(vec![app("graphservice")]), "back from {away:?}: where it was");
+    }
+}
+
+#[gpui::test]
+fn deployments_say_reading_until_every_env_is_read(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-reading");
+    select(&shell, cx, "front-end/mastertadaapp");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    assert!(vcx.debug_bounds("deployments-reading").is_some(), "not read yet: it says so");
+    assert!(vcx.debug_bounds("deployments-none").is_none(), "never \"not deployed\" before");
+    cx.executor().advance_clock(devdeck_app::cluster::LOAD_DELAY);
+    cx.run_until_parked();
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    assert!(vcx.debug_bounds("deployments-reading").is_none());
+    assert!(vcx.debug_bounds("deployments-none").is_some(), "every env read, no deployment of it or of front-end");
+}
+
+#[gpui::test]
+fn the_details_header_holds_the_views_icons(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-header");
+    select(&shell, cx, "entityservice");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    let terminal = vcx.debug_bounds("details-action-app_view.terminal").expect("the app view's own icon, in the one header");
+    assert!(vcx.debug_bounds("app-facts").is_some(), "the view keeps its facts, not a second header");
+    vcx.simulate_click(terminal.center(), Modifiers::none());
+    vcx.run_until_parked();
+    let top = details(&shell, cx).and_then(|s| s.last().cloned()).expect("drilled");
+    assert!(matches!(ViewAddr::parse(&top), ViewAddr::Terminal { .. }), "a terminal in its folder, over it");
 }

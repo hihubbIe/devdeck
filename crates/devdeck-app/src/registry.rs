@@ -157,6 +157,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("app_view.output", "output", "App view", Some("AppView && !TextInput"), ["o"], av::OpenOutput),
         spec!("app_view.hidden", "hidden commands", "App view", Some("AppView && !TextInput"), ["h"], av::ToggleHidden),
         spec!("app_view.git", "git panel", "App view", Some("AppView && !TextInput"), ["g"], av::OpenGit),
+        spec!("app_view.terminal", "terminal in its folder", "App view", Some("AppView && !TextInput"), [], av::OpenTerminal),
         spec!("app_view.new_note", "new note", "App view", Some("AppView && !TextInput"), ["n"], av::NewNote),
         // Run view
         spec!("run.run", "run", "Run output", Some("RunView && !TextInput"), ["enter", "ctrl-shift-enter"], rv::RunAgain),

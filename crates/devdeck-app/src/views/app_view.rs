@@ -17,7 +17,11 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
 };
 
-actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote]);
+actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote, OpenTerminal]);
+
+/// Its header's actions (a tab's, the Apps view's details'): the registry's ids.
+pub const OPEN_TERMINAL: &str = "app_view.terminal";
+pub const OPEN_GIT: &str = "app_view.git";
 
 /// A selected note is `note:<id>` in [`AppView::selected`] (commands are `source:name`).
 const NOTE_KEY: &str = "note:";
@@ -37,8 +41,13 @@ pub struct AppView {
     /// Its repository, when it's in one (read while the view is visible).
     repo: Option<gpui::Entity<crate::repo::Repo>>,
     looking: Option<crate::repo::Looking>,
+    /// While on screen: redraws now and then, so how long a run has run moves.
+    tick: Option<gpui::Task<()>>,
     _subs: Vec<Subscription>,
 }
+
+/// How often a shown app view redraws while one of its commands runs (its "12 min").
+pub const RAN_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl AppView {
     pub fn new(app: String, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
@@ -56,8 +65,23 @@ impl AppView {
         }
         subs.extend(ctx.on_visibility(cx, |this: &mut Self, visible, cx| {
             this.looking = visible.then(|| this.repo.as_ref().map(|r| r.update(cx, |r, cx| r.glance(cx)))).flatten();
+            this.tick = visible.then(|| {
+                cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(RAN_TICK).await;
+                        let Ok(()) = this.update(cx, |v, cx| {
+                            let runner = v.ctx.services.read(cx).runner.clone();
+                            if runner.read(cx).app_running(&v.app) {
+                                cx.notify();
+                            }
+                        }) else {
+                            return;
+                        };
+                    }
+                })
+            });
         }));
-        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, _subs: subs }
+        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, tick: None, _subs: subs }
     }
 
     /// A new terminal in its folder, opened as its other views are.
@@ -103,8 +127,7 @@ impl AppView {
             .child(icon_action("app-fetch", Icon::Fetch, "fetch", true, t).on_click(cx.listener(|this, _, _, cx| this.fetch(cx))))
             .child(icon_action("app-pull", Icon::Pull, "pull…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::Pull, cx))))
             .child(icon_action("app-push", Icon::Push, "push…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::Push, cx))))
-            .child(icon_action("app-new-branch", Icon::NewBranch, "new branch…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::NewBranch, cx))))
-            .child(icon_action("app-git-panel", Icon::Git, "branches, changes: the git panel", true, t).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))));
+            .child(icon_action("app-new-branch", Icon::NewBranch, "new branch…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::NewBranch, cx))));
         let branch_row = div()
             .id("app-branch")
             .h(t.row_h)
@@ -119,6 +142,9 @@ impl AppView {
             .child(icon(Icon::Git, t.mute, t).size(t.icon_small))
             .child(label(head.unwrap_or_else(|| "reading…".into())).flex_1().min_w_0())
             .child(match current.as_ref().and_then(|b| b.upstream.clone().map(|u| (b, u))) {
+                Some((b, upstream)) if b.ahead == 0 && b.behind == 0 => {
+                    div().flex_none().text_color(t.dim).debug_selector(|| "app-up-to-date".into()).child(format!("up to date with {upstream}")).into_any_element()
+                }
                 Some((b, upstream)) => div()
                     .flex_none()
                     .flex()
@@ -132,28 +158,48 @@ impl AppView {
         Some(div().flex().flex_col().child(section("Git", t).flex().items_center().justify_between().child(actions)).child(branch_row))
     }
 
-    /// Where the workspace's cluster runs it, one row per env: the tag, its pods. A row
-    /// goes to it in Cluster, where it's deployed, its logs and history are. `None`
-    /// without a cluster.
+    /// Where the workspace's cluster runs it, one row per env: the tag, its pods. An app
+    /// deployed as nothing of its own shows its project's (a monorepo served as one,
+    /// [`devdeck_core::links::project_of`]). A row goes to it in Cluster, where it's
+    /// deployed, its logs and history are. Envs still read say so, and envs that can't
+    /// be read say why: "not deployed" only when every env was read. `None` without a
+    /// cluster.
     fn deployments_block(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let services = self.ctx.services.read(cx);
         let cluster = services.cluster.clone()?;
         let all = services.catalog.apps.clone();
         let c = cluster.read(cx);
-        let mut rows: Vec<(devdeck_core::catalog::Env, devdeck_core::cluster::Deployment)> = Vec::new();
+        let (mut own, mut project) = (Vec::new(), Vec::new());
+        let (mut reading, mut problems) = (Vec::new(), Vec::new());
+        let project_name = devdeck_core::links::project_of(&self.app);
         for env in &c.envs {
-            let Some(deps) = c.state(&env.name).and_then(|s| s.deployments.as_ref()) else { continue };
+            let state = c.state(&env.name);
+            if let Some(p) = state.and_then(|s| s.problem.clone()) {
+                problems.push((env.name.clone(), p));
+            }
+            let Some(deps) = state.and_then(|s| s.deployments.as_ref()) else {
+                if state.is_none_or(|s| s.problem.is_none()) {
+                    reading.push(env.name.clone());
+                }
+                continue;
+            };
             for d in deps.values() {
-                if devdeck_core::links::app_for(&d.name, d.main().image.short_name(), &all).ok().flatten().as_deref() == Some(self.app.as_str()) {
-                    rows.push((env.clone(), d.clone()));
+                let image = d.main().image.short_name();
+                if devdeck_core::links::app_for(&d.name, image, &all).ok().flatten().as_deref() == Some(self.app.as_str()) {
+                    own.push((env.clone(), d.clone()));
+                } else if project_name.is_some_and(|p| devdeck_core::links::deploys_as(&d.name, image, p)) {
+                    project.push((env.clone(), d.clone()));
                 }
             }
         }
-        let mut block = div().flex().flex_col().child(section(format!("Deployments · {}", rows.len()), t));
-        if rows.is_empty() {
-            return Some(block.child(div().px_2().h(t.row_h).flex().items_center().text_color(t.dim).child("not deployed")));
-        }
-        for (i, (env, d)) in rows.into_iter().enumerate() {
+        let (rows, via) = if own.is_empty() { (project, project_name) } else { (own, None) };
+        let heading = match via {
+            Some(p) if !rows.is_empty() => format!("Deployments · {} · as {p}", rows.len()),
+            _ => format!("Deployments · {}", rows.len()),
+        };
+        let mut block = div().flex().flex_col().child(section(heading, t));
+        let note = |text: String, color: gpui::Hsla| div().px_2().h(t.row_h).flex().items_center().min_w_0().child(label(text).text_color(color));
+        for (i, (env, d)) in rows.iter().enumerate() {
             let (ctx, name, env_name) = (self.ctx.clone(), d.name.clone(), env.name.clone());
             let (ctx2, name2, env2) = (ctx.clone(), name.clone(), env_name.clone());
             let progress = d.progress.label();
@@ -176,13 +222,22 @@ impl AppView {
                     .child(div().flex_none().w(t.size(64.)).truncate().text_color(if env.protected { t.err } else { t.env }).child(format!("@{}", env.name)))
                     .when(env.protected, |r| r.child(icon(Icon::Protected, t.err, t).size(t.icon_small)))
                     .child(label(d.tag()).flex_1().min_w_0())
-                    .child(devdeck_ui::pods_bar(&format!("pods-{}", env.name), &pod_marks(&d), t))
+                    .child(devdeck_ui::pods_bar(&format!("pods-{}", env.name), &pod_marks(d), t))
                     .when_some(progress, |r, p| r.child(div().flex_none().text_color(t.warn).child(p.to_string())))
                     .child(
                         devdeck_ui::go_action(("deployment-go", i), Icon::Cluster, format!("{} on {} in Cluster", d.name, env.name), t)
                             .on_click(move |_, _, cx| ctx2.pivot(Activity::Cluster, name2.clone(), Some(env2.clone()), cx)),
                     ),
             );
+        }
+        if !reading.is_empty() {
+            block = block.child(note(format!("reading {}…", reading.join(", ")), t.dim).debug_selector(|| "deployments-reading".into()));
+        }
+        for (env, why) in problems {
+            block = block.child(note(format!("@{env}: {why}"), t.warn));
+        }
+        if rows.is_empty() && reading.is_empty() {
+            block = block.child(note("not deployed".into(), t.dim).debug_selector(|| "deployments-none".into()));
         }
         Some(block)
     }
@@ -398,24 +453,46 @@ fn tools_block(app: &devdeck_core::apps::App, tools: &devdeck_core::apps::Tools,
     let mut needed: Vec<&str> = app.commands.iter().flat_map(|c| c.tools.iter().map(String::as_str)).collect();
     needed.sort_unstable();
     needed.dedup();
+    let blocked = |tool: &str| -> Vec<&str> {
+        app.commands.iter().filter(|c| c.tools.iter().any(|x| x == tool) && tools.missing(app, c).is_some_and(|m| m.starts_with(tool))).map(|c| c.name()).collect()
+    };
+    let (found, missing): (Vec<&str>, Vec<&str>) = needed.iter().partition(|tool| blocked(tool).is_empty());
+    let row = || div().h(t.row_h).px_2().flex().items_center().gap_2().min_w_0();
     let mut block = div().flex().flex_col().child(section(format!("Tools · {}", needed.len()), t));
-    for tool in needed {
-        let blocked: Vec<&str> = app.commands.iter().filter(|c| c.tools.iter().any(|x| x == tool) && tools.missing(app, c).is_some_and(|m| m.starts_with(tool))).map(|c| c.name()).collect();
-        let found = blocked.is_empty();
+    // What's there, on one line; each missing one with what it blocks.
+    if !found.is_empty() {
+        block = block.child(row().debug_selector(|| "tools-found".into()).child(icon(Icon::Check, t.ok, t).size(t.icon_small)).child(label(found.join(" · ")).flex_1().min_w_0()));
+    }
+    for tool in missing {
+        let what = blocked(tool);
         block = block.child(
-            div()
-                .h(t.row_h)
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_2()
+            row()
                 .debug_selector(move || format!("tool-{tool}"))
-                .child(if found { icon(Icon::Check, t.ok, t).size(t.icon_small) } else { icon(Icon::Warning, t.warn, t).size(t.icon_small) })
-                .child(div().flex_none().w(t.size(140.)).truncate().text_color(if found { t.fg } else { t.warn }).child(tool.to_string()))
-                .child(label(if found { "found".to_string() } else { format!("not found: {} can't run", blocked.join(", ")) }).flex_1().min_w_0().text_color(t.mute)),
+                .child(icon(Icon::Warning, t.warn, t).size(t.icon_small))
+                .child(div().flex_none().text_color(t.warn).child(tool.to_string()))
+                .child(label(format!("not found: {} can't run", what.join(", "))).flex_1().min_w_0().text_color(t.mute)),
         );
     }
     block
+}
+
+/// Its header's icons: a terminal in its folder, its git panel (in a repository).
+impl super::Live for AppView {
+    fn actions(&self, _cx: &App) -> Vec<super::ViewAction> {
+        let mut out = vec![super::ViewAction { id: OPEN_TERMINAL, icon: Icon::Terminals, on: false }];
+        if self.repo.is_some() {
+            out.push(super::ViewAction { id: OPEN_GIT, icon: Icon::Git, on: false });
+        }
+        out
+    }
+
+    fn run(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        match id {
+            OPEN_TERMINAL => self.open_terminal(cx),
+            OPEN_GIT => self.open_git(cx),
+            _ => {}
+        }
+    }
 }
 
 impl Focusable for AppView {
@@ -436,40 +513,32 @@ impl Render for AppView {
         let env = services.env.clone();
         let focused = self.focus.contains_focused(window, cx);
 
-        let env_line = match &env {
-            Some(e) => div()
-                .flex()
-                .gap_2()
-                .child(label(format!("@{e}")).text_color(if services.protected_env() { t.err } else { t.env }))
-                .child(label(format!("· {}", app.env.describe(e))).text_color(t.mute)),
-            None => div().child(label(format!("no env · {}", app.env.describe("-"))).text_color(t.mute)),
-        };
-        let header = div()
+        // Its name is the header's (a tab's, the Apps view's): here, the facts, on one line.
+        let facts = div()
             .flex_none()
             .px_3()
-            .py_2()
+            .h(t.row_h)
+            .mt_1()
             .flex()
-            .flex_col()
-            .gap_1()
-            .border_b_1()
-            .border_color(t.line_soft)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .min_w_0()
-                    .child(div().flex_none().text_color(t.hi).child(app.name.clone()))
-                    .child(div().flex_none().text_color(t.dim).child(app.kind.clone()))
-                    .child(label(app.folder.clone()).text_color(t.dim).flex_1().min_w_0())
-                    .child(icon_action("app-terminal", Icon::Terminals, "a terminal in its folder", true, &t).on_click(cx.listener(|this, _, _, cx| this.open_terminal(cx))))
-                    .when(self.repo.is_some(), |d| d.child(icon_action("app-git", Icon::Git, "its git panel", true, &t).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))),
-            )
-            .child(env_line);
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .debug_selector(|| "app-facts".into())
+            .child(div().flex_none().text_color(t.dim).child(app.kind.clone()))
+            .child(match &env {
+                Some(e) => div().flex_none().text_color(if services.protected_env() { t.err } else { t.env }).child(format!("@{e}")),
+                None => div().flex_none().text_color(t.mute).child("no env"),
+            })
+            .child(div().flex_none().text_color(t.mute).child(app.env.describe(env.as_deref().unwrap_or("-"))))
+            .child(label(app.folder.clone()).text_color(t.dim).flex_1().min_w_0());
 
         // Left: what it runs, its repository, its notes. Right: what it needs. Side by side
         // when there's room, else one under the other.
         let mut commands = div().flex().flex_col();
+        // The names' column fits the longest (monospaced: about 0.6 of the text size a
+        // character), within reason; a longer one truncates.
+        let longest = app.commands.iter().map(|c| c.name().chars().count()).max().unwrap_or(0).clamp(8, 28);
+        let name_w = t.text * (0.62 * longest as f32) + t.size(4.);
         let now = cx.background_executor().now();
         for tier in Tier::ALL {
             let cmds = app.tier(tier);
@@ -539,7 +608,7 @@ impl Render for AppView {
                             Some(_) => icon(Icon::Warning, t.warn, &t).size(t.icon_small).into_any_element(),
                             None => run_mark(state, ("cmd-state", n), t.icon_small, &t),
                         }))
-                        .child(div().flex_none().w(t.size(110.)).truncate().text_color(if refusal.is_some() { t.dim } else { t.fg }).child(row_label))
+                        .child(div().flex_none().w(name_w).truncate().text_color(if refusal.is_some() { t.dim } else { t.fg }).child(row_label))
                         // How long it has run, while it runs: the dot says it runs.
                         .child(div().flex_none().w(t.size(56.)).truncate().text_color(t.mute).debug_selector(move || format!("cmd-ran-{r6}")).children(ran))
                         .child(label(c.line.clone()).flex_1().min_w_0().text_color(t.dim))
@@ -621,8 +690,10 @@ impl Render for AppView {
             );
         }
 
+        // The commands want the room: 3 to the right column's 2.
         let left = div()
-            .flex_1()
+            .flex_grow(3.)
+            .flex_basis(gpui::relative(0.))
             .min_w(t.size(380.))
             .flex()
             .flex_col()
@@ -630,7 +701,8 @@ impl Render for AppView {
             .when_some(self.git_block(&t, cx), |d, g| d.child(g))
             .child(notes_block);
         let right = div()
-            .flex_1()
+            .flex_grow(2.)
+            .flex_basis(gpui::relative(0.))
             .min_w(t.size(300.))
             .flex()
             .flex_col()
@@ -668,6 +740,7 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &OpenGit, _, cx| this.open_git(cx)))
+            .on_action(cx.listener(|this, _: &OpenTerminal, _, cx| this.open_terminal(cx)))
             .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
                 this.show_hidden = !this.show_hidden;
                 cx.notify();
@@ -676,7 +749,7 @@ impl Render for AppView {
                 let origin = self.origin.clone();
                 gpui::canvas(move |b, _, _| origin.set(b.origin), |_, _, _, _| {}).absolute().size_full()
             })
-            .child(header)
+            .child(facts)
             .child(body)
             .into_any_element()
     }

@@ -52,7 +52,7 @@ actions!(
     ]
 );
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Activity {
     Apps,
     Cluster,
@@ -190,6 +190,8 @@ pub struct Sidebar {
     pub filter: Entity<TextInput>,
     pub list_focus: FocusHandle,
     pub selected: Option<String>,
+    /// Each list's selection while another shows: back to it, it's where it was.
+    left: std::collections::HashMap<Activity, String>,
     scroll: UniformListScrollHandle,
     save_failed: bool,
     /// The list env's pods, while the Cluster list shows with **watch** on.
@@ -258,6 +260,7 @@ impl Sidebar {
             filter,
             list_focus: cx.focus_handle(),
             selected: None,
+            left: Default::default(),
             scroll: UniformListScrollHandle::new(),
             save_failed: false,
             pods: None,
@@ -863,7 +866,12 @@ impl Sidebar {
         rows.iter().position(|r| row_key(items, r).as_deref() == Some(key))
     }
 
+    /// A selection the list no longer shows goes, except on a full view: its details
+    /// stay, whatever a closed folder or the filter hides.
     fn drop_hidden_selection(&mut self, cx: &App) {
+        if self.activity().full_view() && self.selected.as_ref().is_some_and(|k| self.view_ref(k, cx).is_some()) {
+            return;
+        }
         let (items, rows) = self.rows(cx);
         if self.selected_row(&items, &rows).is_none() {
             self.selected = None;
@@ -1078,8 +1086,11 @@ impl Sidebar {
             return false;
         }
         if self.activity() != activity {
+            if let Some(key) = self.selected.take() {
+                self.left.insert(self.activity(), key);
+            }
             self.state.activity = activity.id().into();
-            self.selected = None;
+            self.selected = self.left.remove(&activity);
             self.filter.update(cx, |f, cx| f.set_text("", cx));
         }
         self.state.visible = true;

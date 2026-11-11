@@ -1239,7 +1239,21 @@ fn details(deck: &Entity<Deck>, t: &Theme, cx: &App) -> AnyElement {
                 .on_click(move |_, _, cx| back.update(cx, |d, cx| d.back_to(i, cx)))
         });
     }
-    // What's on top, into a pulse.
+    // What the view on top offers (R12.4), as a pane header shows it; then into a pulse.
+    for (i, a) in d.view_actions(top, cx).into_iter().enumerate() {
+        let Some(spec) = crate::registry::by_id(a.id) else { continue };
+        let (owner, view, id) = (deck.clone(), top.clone(), a.id);
+        head = head.child(
+            icon_button(("details-action", i), a.icon, spec.label, t)
+                .debug_selector(move || format!("details-action-{id}"))
+                .when(a.on, |b| b.bg(t.selected))
+                .on_click(move |_, window, cx| {
+                    if let Some(l) = owner.read(cx).lively(&view) {
+                        l.run(id, window, cx);
+                    }
+                }),
+        );
+    }
     let (pick, view) = (deck.clone(), top.clone());
     head = head.child(
         devdeck_ui::go_action("details-pulse", Icon::Layouts, "open in pulse…", t)

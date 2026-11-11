@@ -228,7 +228,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 return message(format!("{app} isn't an app of this workspace."), cx);
             }
             let v = cx.new(|cx| app_view::AppView::new(app, ctx.clone(), cx));
-            keeping(v, saved, ctx, cx)
+            let built = keeping(v.clone(), saved, ctx, cx);
+            live(built, &v, ctx, cx)
         }
         (ViewAddr::Terminal { n, dir }, Some(ctx)) => {
             let (runner, env) = {

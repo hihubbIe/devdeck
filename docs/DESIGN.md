@@ -744,6 +744,19 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   header and a row's menu): the view joins the first pane of the chosen pulse's main
   window, the live one or a saved one in its book. The title bar's pulse menu is gone.
   API level 7: a `Ui` says the main window's `activity`.
+- 2026-11-11 (user, first look at Apps) One header: the app view draws none of its own;
+  its icons (a terminal in its folder, its git panel) are its view actions, drawn by the
+  pane header as a tab and by the details header in the Apps view (which draws the top
+  view's actions, then open in pulse); the view starts with its facts on one line. An app
+  deployed as nothing of its own shows its project's deployments ("as front-end": the
+  first folder of its id, `links::project_of`; one rule for now, to be refined). The
+  deployments say "reading…" until every env is read and name an env that can't be;
+  "not deployed" only then. Each list keeps its selection while another shows, and a
+  full view keeps one hidden by a closed folder or the filter. Fetch has its own icon
+  (cloud-download). The branch is "up to date with …" when even with its upstream. The
+  commands take 3/5 of the width, their names a column as wide as the longest; how long
+  a run has run is redrawn every 30 s while the view shows and something runs. Found
+  tools on one line, each missing one with what it blocks.
 
 ## Open questions
 

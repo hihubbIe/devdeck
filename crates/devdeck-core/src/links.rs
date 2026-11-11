@@ -30,6 +30,21 @@ pub fn app_for(deployment: &str, image: &str, apps: &[App]) -> Result<Option<Str
     }
 }
 
+/// The project an app sits in, deployed as one when its apps aren't on their own: the
+/// first folder of its id (`front-end` for `front-end/packages/mf/entities-graph`);
+/// `None` for an app that is a project. For now the one rule (user, 2026-11-11: a
+/// monorepo served by one deployment).
+pub fn project_of(app_id: &str) -> Option<&str> {
+    app_id.split_once('/').map(|(project, _)| project)
+}
+
+/// Whether a deployment (or its image's short name) is named `name`, compared as
+/// [`app_for`] does.
+pub fn deploys_as(deployment: &str, image: &str, name: &str) -> bool {
+    let name = normal(name);
+    !name.is_empty() && (normal(deployment) == name || normal(short(image)) == name)
+}
+
 /// An image's own name: without its registry path, tag or digest.
 fn short(image: &str) -> &str {
     let name = image.rsplit('/').next().unwrap_or(image);
@@ -48,6 +63,15 @@ mod tests {
     use crate::apps::EnvApply;
     use crate::config::{AppOverride, apply_overrides};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_monorepos_apps_deploy_as_their_project() {
+        assert_eq!(project_of("front-end/packages/mf/entities-graph"), Some("front-end"));
+        assert_eq!(project_of("graphservice"), None);
+        assert!(deploys_as("front-end", "registry.example/web/front-end:1.2.0", "front-end"));
+        assert!(deploys_as("web", "registry.example/front-end:1.2.0", "front-end"), "by its image");
+        assert!(!deploys_as("graphservice", "graphservice:1.0", "front-end"));
+    }
 
     fn app(id: &str, images: &[&str]) -> App {
         App {

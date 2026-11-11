@@ -100,7 +100,9 @@ icons! {
     /// A code file.
     FileCode => "file-code",
     // The git panel's buttons.
-    Fetch => "download",
+    /// Fetch: from the remote, nothing changed here (not to be taken for a pull). From
+    /// gpui-kit-assets' Lucide set.
+    Fetch => "cloud-download",
     Pull => "arrow-down-to-line",
     Push => "arrow-up-from-line",
     NewBranch => "git-branch-plus",
