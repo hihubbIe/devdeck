@@ -58,6 +58,12 @@ pub fn command(pid: u32) -> Option<String> {
     imp::command(pid)
 }
 
+/// When `pid` started, in seconds since the epoch; None when it can't be read (or this OS
+/// can't say).
+pub fn started(pid: u32) -> Option<u64> {
+    imp::started(pid)
+}
+
 /// Whether `pid` still runs and is the process that started at `start`.
 pub fn alive(pid: u32, start: u64) -> bool {
     get(pid).is_some_and(|p| p.start == start && !p.ended)

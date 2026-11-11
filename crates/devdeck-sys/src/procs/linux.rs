@@ -24,6 +24,20 @@ pub fn command(pid: u32) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
+/// Boot time (`btime` in `/proc/stat`) plus its start, in clock ticks since boot.
+pub fn started(pid: u32) -> Option<u64> {
+    let ticks = get(pid)?.start;
+    let boot = boot_time(&std::fs::read_to_string("/proc/stat").ok()?)?;
+    // SAFETY: sysconf reads a constant of the system; no memory is handed over.
+    let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok().filter(|h| *h > 0)?;
+    Some(boot + ticks / hz)
+}
+
+/// `btime N` of a `/proc/stat` text: boot time, in seconds since the epoch.
+fn boot_time(stat: &str) -> Option<u64> {
+    stat.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())
+}
+
 /// A `stat` line. The command name is in parentheses and may hold spaces or parentheses
 /// itself, so fields are counted after the last `)`: state is field 3, parent 4, session
 /// 6, start time 22.
@@ -39,6 +53,15 @@ fn parse_stat(text: &str) -> Option<Proc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_time_is_read_and_a_process_started_after_it() {
+        assert_eq!(boot_time("cpu  1 2 3\nbtime 1762500000\nprocesses 9\n"), Some(1_762_500_000));
+        assert_eq!(boot_time("cpu 1\n"), None);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let me = started(std::process::id()).expect("this process");
+        assert!(me <= now && now - me < 3600, "started {me}, now {now}");
+    }
 
     #[test]
     fn stat_fields_survive_odd_command_names() {

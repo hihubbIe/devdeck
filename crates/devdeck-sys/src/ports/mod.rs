@@ -2,6 +2,7 @@
 //! port before a start.
 
 use crate::{SysError, Support};
+use std::net::IpAddr;
 
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(not(target_os = "linux"), path = "unsupported.rs")]
@@ -13,6 +14,16 @@ pub const SUPPORT: Support = imp::SUPPORT;
 pub struct Listening {
     pub port: u16,
     pub pid: u32,
+    /// Where it listens: `127.0.0.1` (this machine only), `0.0.0.0` (every interface)…
+    pub addr: IpAddr,
+}
+
+/// A listening socket of the machine and who holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listener {
+    pub port: u16,
+    pub addr: IpAddr,
+    pub holder: Holder,
 }
 
 /// Who holds a port.
@@ -27,6 +38,14 @@ pub enum Holder {
 /// The ports `pids` listen on (TCP, IPv4 and IPv6). Only those pids are looked at.
 pub fn listening(pids: &[u32]) -> Result<Vec<Listening>, SysError> {
     imp::listening(pids)
+}
+
+/// Everything listening on this machine (TCP, IPv4 and IPv6, our network namespace), by
+/// port, each with its holder: the topmost of the processes sharing its socket, or
+/// [`Holder::Unknown`] when none can be read. Reads every process's descriptors: on
+/// demand (the Ports list asking for the whole machine), never per frame.
+pub fn all() -> Result<Vec<Listener>, SysError> {
+    imp::all()
 }
 
 /// Who listens on `port` now, if anyone. Looks through every readable process (on
@@ -57,7 +76,12 @@ mod conformance {
     fn found_as_this_process(l: &TcpListener) {
         let port = l.local_addr().unwrap().port();
         let me = std::process::id();
-        assert!(listening(&[me]).unwrap().contains(&Listening { port, pid: me }), "port {port} found for this process");
+        let addr = l.local_addr().unwrap().ip();
+        assert!(listening(&[me]).unwrap().contains(&Listening { port, pid: me, addr }), "port {port} found for this process, on {addr}");
+        let all = all().unwrap();
+        let found = all.iter().find(|x| x.port == port).unwrap_or_else(|| panic!("{port} in every listener"));
+        assert_eq!(found.addr, addr);
+        assert!(matches!(&found.holder, Holder::Process { pid, .. } if *pid == me), "{found:?}");
         match holder(port).unwrap() {
             Some(Holder::Process { pid, command }) => {
                 assert_eq!(pid, me);

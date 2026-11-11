@@ -87,6 +87,32 @@ pub struct PortInfo {
     pub run: Option<RunKey>,
     /// Another process listening, when we can see it (stopped after a confirmation).
     pub pid: Option<u32>,
+    /// The terminal it runs in, for a process started in one of ours (stopping it stops
+    /// that process, never the shell).
+    pub terminal: Option<RunKey>,
+}
+
+/// A row of the Ports list: a port held now, or one the workspace knows that's free.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortRow {
+    pub port: u16,
+    /// Who holds it (`None`: free).
+    pub held: Option<PortInfo>,
+    /// Where it listens, when the scan says (`127.0.0.1`, `0.0.0.0`…).
+    pub addr: Option<std::net::IpAddr>,
+    /// The process listening, when it can be read.
+    pub process: Option<crate::port_scan::ProcInfo>,
+    /// The commands declaring it, then those seen on it.
+    pub wants: Vec<Want>,
+    /// Held by something devdeck didn't start and the catalog doesn't name.
+    pub foreign: bool,
+}
+
+/// A command that wants a port: it declares it, or it was seen listening on it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Want {
+    pub key: RunKey,
+    pub declared: bool,
 }
 
 impl Services {
@@ -368,7 +394,7 @@ impl Services {
             .catalog
             .ports
             .iter()
-            .map(|p| PortInfo { port: p.port, holder: p.holder.clone(), command: p.command.clone(), run: None, pid: None })
+            .map(|p| PortInfo { port: p.port, holder: p.holder.clone(), command: p.command.clone(), run: None, pid: None, terminal: None })
             .collect();
         let runner = self.runner.read(cx);
         let line = |key: &RunKey| self.catalog.app(&key.app).and_then(|a| a.command(&key.cmd)).map(|c| c.line.clone()).unwrap_or_default();
@@ -377,13 +403,22 @@ impl Services {
         // Runs without a process (the demo's fake ones): the ports their command declares.
         for (key, port) in runner.running_ports() {
             if !real.contains(&key) {
-                out.push(PortInfo { port, holder: runner.title(&key), command: line(&key), run: Some(key), pid: None });
+                out.push(PortInfo { port, holder: runner.title(&key), command: line(&key), run: Some(key), pid: None, terminal: None });
             }
         }
         let scan = &self.ports.read(cx).scan;
         for (key, ports) in scan.listening.iter().filter(|(k, _)| real.contains(*k)) {
             for &port in ports {
-                out.push(PortInfo { port, holder: runner.title(key), command: line(key), run: Some(key.clone()), pid: None });
+                out.push(PortInfo { port, holder: runner.title(key), command: line(key), run: Some(key.clone()), pid: None, terminal: None });
+            }
+        }
+        // A program started in one of our terminals: its own process holds the port.
+        for (key, ports) in scan.listening.iter().filter(|(k, _)| k.is_terminal()) {
+            for &port in ports {
+                let Some(p) = scan.procs.get(&port) else { continue };
+                let name = crate::port_scan::program(&p.command).unwrap_or("a process");
+                let holder = format!("{name} in {}", runner.title(key));
+                out.push(PortInfo { port, holder, command: p.command.clone(), run: None, pid: Some(p.pid), terminal: Some(key.clone()) });
             }
         }
         // Ports a port view shows, held by something else.
@@ -392,13 +427,62 @@ impl Services {
                 continue;
             }
             out.push(match holder {
-                PortHolder::Run { key, title } => PortInfo { port, holder: title.clone(), command: line(key), run: Some(key.clone()), pid: None },
-                PortHolder::Process { pid, command } => PortInfo { port, holder: holder.to_string(), command: command.clone(), run: None, pid: Some(*pid) },
-                PortHolder::Unknown => PortInfo { port, holder: holder.to_string(), command: String::new(), run: None, pid: None },
+                PortHolder::Run { key, title } => PortInfo { port, holder: title.clone(), command: line(key), run: Some(key.clone()), pid: None, terminal: None },
+                PortHolder::Process { pid, command } => PortInfo { port, holder: holder.to_string(), command: command.clone(), run: None, pid: Some(*pid), terminal: None },
+                PortHolder::Unknown => PortInfo { port, holder: holder.to_string(), command: String::new(), run: None, pid: None, terminal: None },
             });
         }
         out.sort_by_key(|p| p.port);
         out
+    }
+
+    /// The Ports list (nothing is read here: the last scan): every port held by a run, a
+    /// terminal's program or a holder the catalog names, and every port the workspace
+    /// knows (a command declares it or was seen on it) even free; with `machine`, every
+    /// other listener of the machine too. By number.
+    pub fn port_rows(&self, machine: bool, cx: &App) -> Vec<PortRow> {
+        let ports = self.ports.read(cx);
+        let scan = &ports.scan;
+        let mut held = self.ports(cx);
+        if machine {
+            for (&port, h) in &scan.machine {
+                if held.iter().any(|p| p.port == port) {
+                    continue;
+                }
+                held.push(match h {
+                    PortHolder::Run { key, title } => PortInfo { port, holder: title.clone(), command: String::new(), run: Some(key.clone()), pid: None, terminal: None },
+                    PortHolder::Process { pid, command } => PortInfo { port, holder: h.to_string(), command: command.clone(), run: None, pid: Some(*pid), terminal: None },
+                    PortHolder::Unknown => PortInfo { port, holder: h.to_string(), command: String::new(), run: None, pid: None, terminal: None },
+                });
+            }
+        }
+        // Who wants each port: declared first, then seen.
+        let mut wants: BTreeMap<u16, Vec<Want>> = BTreeMap::new();
+        for app in &self.catalog.apps {
+            for c in &app.commands {
+                for &port in &c.ports {
+                    wants.entry(port).or_default().push(Want { key: RunKey::new(&app.id, &c.id), declared: true });
+                }
+            }
+        }
+        for (key, seen) in ports.known_now() {
+            for &port in seen {
+                let w = wants.entry(port).or_default();
+                if !w.iter().any(|x| x.key == *key) {
+                    w.push(Want { key: key.clone(), declared: false });
+                }
+            }
+        }
+        let numbers: BTreeSet<u16> = held.iter().map(|p| p.port).chain(wants.keys().copied()).collect();
+        numbers
+            .into_iter()
+            .map(|port| {
+                let held = held.iter().find(|p| p.port == port).cloned();
+                let named = self.catalog.ports.iter().any(|p| p.port == port);
+                let foreign = held.as_ref().is_some_and(|h| h.run.is_none() && h.terminal.is_none()) && !named;
+                PortRow { port, held, addr: scan.addrs.get(&port).copied(), process: scan.procs.get(&port).cloned(), wants: wants.remove(&port).unwrap_or_default(), foreign }
+            })
+            .collect()
     }
 }
 

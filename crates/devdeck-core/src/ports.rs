@@ -59,9 +59,77 @@ impl PortMemory {
     }
 }
 
+/// A `kubectl port-forward` command line, read: what it forwards and where.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Forward {
+    /// `-n`/`--namespace`, when given.
+    pub namespace: Option<String>,
+    /// `svc/graphservice`, `pod/x`, `deployment/y` (a bare name is a pod).
+    pub target: String,
+    pub local: u16,
+    pub remote: u16,
+}
+
+impl Forward {
+    /// The deployment or service it reaches, by name (`svc/graphservice` → `graphservice`).
+    pub fn service(&self) -> Option<&str> {
+        let (kind, name) = self.target.split_once('/')?;
+        matches!(kind, "svc" | "service" | "services" | "deploy" | "deployment" | "deployments").then_some(name)
+    }
+}
+
+/// Reads `command` as `kubectl … port-forward <target> <local>:<remote>` (or `<port>`,
+/// both the same); `None` for anything else. The first port pair is the one shown.
+pub fn port_forward(command: &str) -> Option<Forward> {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let program = words.first()?.rsplit('/').next()?;
+    if program != "kubectl" {
+        return None;
+    }
+    let at = words.iter().position(|w| *w == "port-forward")?;
+    let mut namespace = None;
+    let mut rest = Vec::new();
+    let mut i = 1;
+    while i < words.len() {
+        let w = words[i];
+        match w {
+            "-n" | "--namespace" => {
+                namespace = words.get(i + 1).map(|n| n.to_string());
+                i += 2;
+                continue;
+            }
+            _ if w.starts_with("--namespace=") => namespace = Some(w["--namespace=".len()..].to_string()),
+            _ if i > at && !w.starts_with('-') => rest.push(w),
+            _ => {}
+        }
+        i += 1;
+    }
+    let target = rest.first()?.to_string();
+    let (local, remote) = match rest.get(1)?.split_once(':') {
+        Some((l, r)) => (if l.is_empty() { 0 } else { l.parse().ok()? }, r.parse().ok()?),
+        None => {
+            let p = rest[1].parse().ok()?;
+            (p, p)
+        }
+    };
+    Some(Forward { namespace, target, local, remote })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_port_forward_is_read_and_anything_else_isnt() {
+        let f = port_forward("kubectl -n dev35 port-forward svc/graphservice 5900:80").unwrap();
+        assert_eq!(f, Forward { namespace: Some("dev35".into()), target: "svc/graphservice".into(), local: 5900, remote: 80 });
+        assert_eq!(f.service(), Some("graphservice"));
+        let f = port_forward("/usr/local/bin/kubectl port-forward --namespace=dev33 pod/api-7f9 8080").unwrap();
+        assert_eq!((f.namespace.as_deref(), f.local, f.remote, f.service()), (Some("dev33"), 8080, 8080, None));
+        assert_eq!(port_forward("kubectl get pods"), None);
+        assert_eq!(port_forward("ssh -L 5900:localhost:80 host"), None);
+        assert_eq!(port_forward("kubectl port-forward svc/x"), None, "no port");
+    }
 
     fn temp_dir(tag: &str) -> crate::testing::TempDir {
         crate::testing::TempDir::new(tag)

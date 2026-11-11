@@ -20,3 +20,7 @@ pub fn name(_pid: u32) -> Option<String> {
 pub fn command(_pid: u32) -> Option<String> {
     None
 }
+
+pub fn started(_pid: u32) -> Option<u64> {
+    None
+}

@@ -267,9 +267,9 @@ mod tests {
 
     #[test]
     fn another_programs_holder_is_its_name_only() {
-        let foreign = PortInfo { port: 5432, holder: "node (pid 77)".into(), command: "/usr/bin/node server.js --token=s3cret".into(), run: None, pid: Some(77) };
+        let foreign = PortInfo { port: 5432, holder: "node (pid 77)".into(), command: "/usr/bin/node server.js --token=s3cret".into(), run: None, pid: Some(77), terminal: None };
         assert_eq!(holder_name(&foreign), "node");
-        let ours = PortInfo { port: 3000, holder: "web · dev".into(), command: "pnpm dev".into(), run: Some(RunKey::new("web", "dev")), pid: None };
+        let ours = PortInfo { port: 3000, holder: "web · dev".into(), command: "pnpm dev".into(), run: Some(RunKey::new("web", "dev")), pid: None, terminal: None };
         assert_eq!(holder_name(&ours), "web · dev");
     }
 }

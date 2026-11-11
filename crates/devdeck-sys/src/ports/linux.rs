@@ -4,7 +4,7 @@
 //! scan is thousands of reads). A holder we can't read (another user, docker-proxy as
 //! root) is named as such.
 
-use super::{Holder, Listening};
+use super::{Holder, Listener, Listening};
 use crate::{SysError, Support, procs};
 use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -77,16 +77,52 @@ fn parse_socket_link(link: &str) -> Option<u64> {
 }
 
 pub fn listening(pids: &[u32]) -> Result<Vec<Listening>, SysError> {
-    let ports: HashMap<u64, u16> = listen_sockets()?.into_iter().map(|s| (s.inode, s.port)).collect();
+    let ports: HashMap<u64, (u16, IpAddr)> = listen_sockets()?.into_iter().map(|s| (s.inode, (s.port, s.addr))).collect();
     if ports.is_empty() {
         return Ok(Vec::new());
     }
     let ports = &ports;
     let found: BTreeSet<Listening> = pids
         .iter()
-        .flat_map(|&pid| socket_inodes(pid).unwrap_or_default().into_iter().filter_map(move |i| Some(Listening { port: *ports.get(&i)?, pid })))
+        .flat_map(|&pid| {
+            socket_inodes(pid).unwrap_or_default().into_iter().filter_map(move |i| {
+                let (port, addr) = *ports.get(&i)?;
+                Some(Listening { port, pid, addr })
+            })
+        })
         .collect();
     Ok(found.into_iter().collect())
+}
+
+/// The topmost of `pids` (none of whose parents is among them): the one to stop.
+fn topmost(pids: &BTreeSet<u32>) -> Option<u32> {
+    pids.iter().find(|&&pid| procs::parent_of(pid).is_none_or(|p| !pids.contains(&p))).or(pids.first()).copied()
+}
+
+fn process(pid: u32) -> Holder {
+    Holder::Process { pid, command: procs::command(pid).or_else(|| procs::name(pid)).unwrap_or_default() }
+}
+
+pub fn all() -> Result<Vec<Listener>, SysError> {
+    let sockets = listen_sockets()?;
+    let wanted: BTreeSet<u64> = sockets.iter().map(|s| s.inode).collect();
+    // Who holds each socket: every readable process's descriptors, once.
+    let mut holders: HashMap<u64, BTreeSet<u32>> = HashMap::new();
+    if !wanted.is_empty()
+        && let Ok(dir) = std::fs::read_dir("/proc")
+    {
+        for pid in dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok()) {
+            for inode in socket_inodes(pid).unwrap_or_default().into_iter().filter(|i| wanted.contains(i)) {
+                holders.entry(inode).or_default().insert(pid);
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    Ok(sockets
+        .into_iter()
+        .filter(|s| seen.insert((s.port, s.addr)))
+        .map(|s| Listener { port: s.port, addr: s.addr, holder: holders.get(&s.inode).and_then(topmost).map_or(Holder::Unknown, process) })
+        .collect())
 }
 
 pub fn holder(port: u16) -> Result<Option<Holder>, SysError> {
@@ -99,8 +135,7 @@ pub fn holder(port: u16) -> Result<Option<Holder>, SysError> {
         .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
         .filter(|&pid| socket_inodes(pid).is_some_and(|own| own.iter().any(|i| inodes.contains(i))))
         .collect();
-    let top = holders.iter().find(|&&pid| procs::parent_of(pid).is_none_or(|p| !holders.contains(&p))).or(holders.first());
-    Ok(Some(top.map_or(Holder::Unknown, |&pid| Holder::Process { pid, command: procs::command(pid).or_else(|| procs::name(pid)).unwrap_or_default() })))
+    Ok(Some(topmost(&holders).map_or(Holder::Unknown, process)))
 }
 
 #[cfg(test)]

@@ -52,11 +52,14 @@ pub struct SidebarState {
     /// The env the Cluster list shows when it isn't the workspace's (user, 2026-11-09);
     /// `None`: it follows the workspace's env (synced).
     pub cluster_env: Option<String>,
+    /// The Ports list shows every listener of the machine, not only the workspace's (off
+    /// by default).
+    pub ports_machine: bool,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { activity: "pulses".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new(), cluster_env: None }
+        Self { activity: "pulses".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new(), cluster_env: None, ports_machine: false }
     }
 }
 

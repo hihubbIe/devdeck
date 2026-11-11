@@ -12,7 +12,11 @@
 //!   with "port 5720 is held by …"; the toast offers "Stop holder": our own run stops at
 //!   once; another process is stopped (SIGTERM) only after a confirmation that names it
 //!   ([`stop_process`], a dangerous action, R5.6).
-//! - `Services::ports` reads this cache (plus the demo's fake holders).
+//! - Asked for the whole machine (the Ports list's "machine"), a scan also reads every
+//!   listener and its holder ([`devdeck_sys::ports::all`]): a walk of every process, only
+//!   while someone holds a [`MachineInterest`].
+//! - `Services::ports` and `Services::port_rows` read this cache (plus the demo's fake
+//!   holders).
 //!
 //! The demo has no machine scan, no memory and no conflicts: its runs are fake.
 
@@ -20,7 +24,7 @@ use crate::danger::{self, Confirmed, DangerModal};
 use crate::runner::{RunKey, RunRefusal, Runner};
 use devdeck_core::ports::PortMemory;
 use devdeck_sys::SysError;
-use devdeck_sys::ports::{Holder, holder, listening};
+use devdeck_sys::ports::{Holder, Listener, all, holder, listening};
 use devdeck_sys::procs;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, theme, toasts};
@@ -30,6 +34,7 @@ use gpui::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -45,6 +50,27 @@ pub struct PortScan {
     pub listening: BTreeMap<RunKey, Vec<u16>>,
     /// Who holds the ports port views show, whoever it is.
     pub held: BTreeMap<u16, PortHolder>,
+    /// Where each port found listens (`127.0.0.1`, `0.0.0.0`…).
+    pub addrs: BTreeMap<u16, IpAddr>,
+    /// Everything else listening on the machine, while asked for: its holder.
+    pub machine: BTreeMap<u16, PortHolder>,
+    /// The process listening on each port found, when it can be read.
+    pub procs: BTreeMap<u16, ProcInfo>,
+}
+
+/// A listening process, as a port's page shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcInfo {
+    pub pid: u32,
+    pub command: String,
+    /// When it started (epoch seconds), when the OS says.
+    pub started: Option<u64>,
+}
+
+impl ProcInfo {
+    fn read(pid: u32) -> ProcInfo {
+        ProcInfo { pid, command: procs::command(pid).or_else(|| procs::name(pid)).unwrap_or_default(), started: procs::started(pid) }
+    }
 }
 
 /// Who holds a port, as the UI acts on it.
@@ -87,6 +113,9 @@ pub fn program(command: &str) -> Option<&str> {
 /// Held by the control API while it wants ports scanned ([`Ports::interest`]).
 pub struct PortsInterest(#[allow(dead_code)] std::rc::Rc<BTreeSet<u16>>);
 
+/// Held while the whole machine's listeners are wanted ([`Ports::machine`]).
+pub struct MachineInterest(#[allow(dead_code)] std::rc::Rc<()>);
+
 /// The scan and port memory of one workspace.
 pub struct Ports {
     workspace: String,
@@ -103,6 +132,10 @@ pub struct Ports {
     shown: BTreeMap<EntityId, u16>,
     /// The control API's readers and followers, with the ports they watch.
     interests: Vec<std::rc::Weak<BTreeSet<u16>>>,
+    /// Who wants the whole machine read.
+    machine: Vec<std::rc::Weak<()>>,
+    /// The ports the memory has for each command of this workspace (refreshed with it).
+    known: BTreeMap<RunKey, Vec<u16>>,
     scans: u64,
     task: Option<Task<()>>,
     _observe: Subscription,
@@ -112,12 +145,16 @@ pub struct Ports {
 struct Job {
     runs: Vec<(RunKey, u32)>,
     watched: BTreeSet<u16>,
+    machine: bool,
 }
 
 /// What one scan found, off the UI thread.
 struct Found {
     listening: BTreeMap<RunKey, Vec<u16>>,
     held: BTreeMap<u16, (Holder, Option<RunKey>)>,
+    addrs: BTreeMap<u16, IpAddr>,
+    machine: BTreeMap<u16, (Holder, Option<RunKey>)>,
+    procs: BTreeMap<u16, ProcInfo>,
 }
 
 impl Ports {
@@ -133,6 +170,8 @@ impl Ports {
             scan: PortScan::default(),
             shown: BTreeMap::new(),
             interests: Vec::new(),
+            machine: Vec::new(),
+            known: BTreeMap::new(),
             scans: 0,
             task: None,
             _observe: cx.observe(&runner, |this: &mut Ports, _, cx| this.ensure(cx)),
@@ -200,7 +239,38 @@ impl Ports {
     }
 
     fn wanted(&self, cx: &App) -> bool {
-        self.state_dir.is_some() && (!self.watched().is_empty() || !self.runner.read(cx).pids().is_empty())
+        self.state_dir.is_some() && (!self.watched().is_empty() || !self.runner.read(cx).pids().is_empty() || self.machine_wanted())
+    }
+
+    fn machine_wanted(&self) -> bool {
+        self.machine.iter().any(|w| w.strong_count() > 0)
+    }
+
+    /// Reads every listener of the machine while the handle lives (the Ports list's
+    /// "machine").
+    pub fn machine(&mut self, cx: &mut Context<Self>) -> MachineInterest {
+        self.machine.retain(|w| w.strong_count() > 0);
+        let held = std::rc::Rc::new(());
+        self.machine.push(std::rc::Rc::downgrade(&held));
+        self.ensure(cx);
+        MachineInterest(held)
+    }
+
+    /// The ports each command of the workspace was seen on (the port memory).
+    pub fn known(&mut self) -> &BTreeMap<RunKey, Vec<u16>> {
+        let ws = self.workspace.clone();
+        let known: BTreeMap<RunKey, Vec<u16>> = self
+            .memory()
+            .and_then(|m| m.ports.get(&ws))
+            .map(|apps| apps.iter().flat_map(|(app, cmds)| cmds.iter().map(move |(cmd, ports)| (RunKey::new(app, cmd), ports.clone()))).collect())
+            .unwrap_or_default();
+        self.known = known;
+        &self.known
+    }
+
+    /// What [`Ports::known`] read last.
+    pub fn known_now(&self) -> &BTreeMap<RunKey, Vec<u16>> {
+        &self.known
     }
 
     /// The ports port views show and the API's interests watch.
@@ -248,7 +318,8 @@ impl Ports {
             return None;
         }
         self.interests.retain(|w| w.strong_count() > 0);
-        Some(Job { runs: self.runner.read(cx).pids(), watched: self.watched() })
+        self.machine.retain(|w| w.strong_count() > 0);
+        Some(Job { runs: self.runner.read(cx).pids(), watched: self.watched(), machine: self.machine_wanted() })
     }
 
     fn apply(&mut self, found: Found, cx: &mut Context<Self>) {
@@ -271,9 +342,11 @@ impl Ports {
                 let _ = memory.remember(&ws, &key.app, &key.cmd, ports);
             }
         }
+        let _ = self.known();
         let runner = self.runner.read(cx);
         let held = found.held.into_iter().map(|(port, (h, owner))| (port, resolve(h, owner, runner))).collect();
-        let scan = PortScan { listening: found.listening, held };
+        let machine = found.machine.into_iter().map(|(port, (h, owner))| (port, resolve(h, owner, runner))).collect();
+        let scan = PortScan { listening: found.listening, held, addrs: found.addrs, machine, procs: found.procs };
         if scan != self.scan {
             self.scan = scan;
             cx.notify();
@@ -296,23 +369,57 @@ impl Job {
         let trees: Vec<(RunKey, BTreeSet<u32>)> = self.runs.iter().map(|(k, pid)| (k.clone(), procs::tree(*pid, &pairs))).collect();
         let by_pid: BTreeMap<u32, &RunKey> = trees.iter().flat_map(|(k, pids)| pids.iter().map(move |p| (*p, k))).collect();
         let mut found: BTreeMap<RunKey, Vec<u16>> = BTreeMap::new();
+        let mut addrs = BTreeMap::new();
+        let mut pids_of: BTreeMap<u16, u32> = BTreeMap::new();
         if !by_pid.is_empty() {
             let pids: Vec<u32> = by_pid.keys().copied().collect();
-            for l in listening(&pids).map_err(unsupported).unwrap_or_default() {
+            let all_of: Vec<_> = listening(&pids).map_err(unsupported).unwrap_or_default();
+            // The topmost listener of a port: a server's workers share its socket.
+            for l in &all_of {
                 if let Some(key) = by_pid.get(&l.pid) {
                     found.entry((*key).clone()).or_default().push(l.port);
+                    addrs.entry(l.port).or_insert(l.addr);
+                    let shares = |p: u32| all_of.iter().any(|o| o.port == l.port && o.pid == p);
+                    if procs::parent_of(l.pid).is_none_or(|p| !shares(p)) {
+                        pids_of.entry(l.port).or_insert(l.pid);
+                    }
                 }
+            }
+        }
+        // The whole machine, when asked for: each listener's holder, a run's when it's one.
+        let mut machine = BTreeMap::new();
+        if self.machine {
+            for Listener { port, addr, holder } in all().map_err(unsupported).unwrap_or_default() {
+                addrs.entry(port).or_insert(addr);
+                if let Holder::Process { pid, .. } = &holder {
+                    pids_of.entry(port).or_insert(*pid);
+                }
+                let owner = match &holder {
+                    Holder::Process { pid, .. } => owner(*pid, &self.runs, Some(&by_pid)),
+                    Holder::Unknown => None,
+                };
+                machine.entry(port).or_insert((holder, owner));
             }
         }
         for ports in found.values_mut() {
             ports.sort_unstable();
             ports.dedup();
         }
-        let held = self
+        // Several ports watched: one walk of every process answers them all.
+        let everyone: Option<BTreeMap<u16, Holder>> = (self.watched.len() > 1 && !self.machine)
+            .then(|| all().map_err(unsupported).ok())
+            .flatten()
+            .map(|l| l.into_iter().map(|x| (x.port, x.holder)).collect());
+        let held: BTreeMap<u16, (Holder, Option<RunKey>)> = self
             .watched
             .iter()
             .filter_map(|&port| {
-                let h = holder(port).map_err(unsupported).ok()??;
+                let h = match (&everyone, machine.get(&port)) {
+                    (_, Some((h, _))) => h.clone(),
+                    (Some(e), None) => e.get(&port)?.clone(),
+                    (None, None) if self.machine => return None,
+                    (None, None) => holder(port).map_err(unsupported).ok()??,
+                };
                 let owner = match &h {
                     Holder::Process { pid, .. } => owner(*pid, &self.runs, Some(&by_pid)),
                     Holder::Unknown => None,
@@ -320,7 +427,13 @@ impl Job {
                 Some((port, (h, owner)))
             })
             .collect();
-        Found { listening: found, held }
+        for (port, h) in &held {
+            if let (Holder::Process { pid, .. }, _) = h {
+                pids_of.entry(*port).or_insert(*pid);
+            }
+        }
+        let procs = pids_of.into_iter().map(|(port, pid)| (port, ProcInfo::read(pid))).collect();
+        Found { listening: found, held, addrs, machine, procs }
     }
 }
 

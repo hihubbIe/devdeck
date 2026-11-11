@@ -31,6 +31,7 @@ mod notes_sidebar;
 mod notifications;
 mod pane_header;
 mod ports;
+mod ports_list;
 mod pty_driver;
 mod reveal;
 mod runs;

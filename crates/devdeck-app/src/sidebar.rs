@@ -209,6 +209,9 @@ pub struct Sidebar {
     save_failed: bool,
     /// The list env's pods, while the Cluster list shows with **watch** on.
     pods: Option<(String, crate::cluster::PodsInterest)>,
+    /// While the Ports list shows: its ports scanned (the known ones watched), and the
+    /// whole machine with "machine" on.
+    ports_watch: Option<(crate::port_scan::PortsInterest, Option<crate::port_scan::MachineInterest>)>,
     /// While the Terminals list shows: redraws every [`TERMINALS_TICK`] (what a shell
     /// runs changes without anyone saying so).
     tick: Option<gpui::Task<()>>,
@@ -277,6 +280,7 @@ impl Sidebar {
             scroll: UniformListScrollHandle::new(),
             save_failed: false,
             pods: None,
+            ports_watch: None,
             tick: None,
             _subs: subs,
         };
@@ -303,6 +307,7 @@ impl Sidebar {
     /// on and the list on screen, its pods (a new handle before the old one goes, so a same-env refresh keeps the
     /// watch).
     fn load_list(&mut self, cx: &mut Context<Self>) {
+        self.watch_ports(cx);
         let list_env = self.list_env(cx);
         let s = self.services.read(cx);
         let target = match (self.activity(), s.cluster.clone(), list_env) {
@@ -331,6 +336,31 @@ impl Sidebar {
             self.save(cx);
             cx.notify();
         }
+    }
+
+    /// "machine": the Ports list shows every listener of the machine, or the workspace's.
+    pub fn toggle_ports_machine(&mut self, cx: &mut Context<Self>) {
+        self.state.ports_machine = !self.state.ports_machine;
+        self.watch_ports(cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Scans while the Ports list shows: the ports the workspace knows watched (who holds
+    /// them), the whole machine with "machine" on.
+    fn watch_ports(&mut self, cx: &mut Context<Self>) {
+        let shown = self.activity() == Activity::Ports && (self.activity().full_view() || self.state.visible);
+        if !shown {
+            self.ports_watch = None;
+            return;
+        }
+        let s = self.services.read(cx);
+        let (ports, machine) = (s.ports.clone(), self.state.ports_machine);
+        let declared: std::collections::BTreeSet<u16> = s.catalog.apps.iter().flat_map(|a| a.commands.iter().flat_map(|c| c.ports.iter().copied())).collect();
+        self.ports_watch = Some(ports.update(cx, |p, cx| {
+            let known: std::collections::BTreeSet<u16> = declared.into_iter().chain(p.known().values().flatten().copied()).collect();
+            (p.interest(known, cx), machine.then(|| p.machine(cx)))
+        }));
     }
 
     pub fn watching_pods(&self) -> bool {
@@ -526,11 +556,23 @@ impl Sidebar {
                 }
                 _ => Vec::new(),
             },
-            Activity::Ports => s
-                .ports(cx)
-                .into_iter()
-                .map(|p| ListItem::new(p.port.to_string(), format!(":{}", p.port)).detail(p.holder).running(true))
-                .collect(),
+            // Held now (the holder), or known and free (the command that wants it).
+            Activity::Ports => {
+                let runner = s.runner.read(cx);
+                s.port_rows(self.state.ports_machine, cx)
+                    .into_iter()
+                    .map(|r| {
+                        let detail = match (&r.held, r.wants.first()) {
+                            (Some(h), _) => h.holder.clone(),
+                            (None, Some(w)) => runner.title(&w.key),
+                            (None, None) => String::new(),
+                        };
+                        let state = if r.held.is_none() { "free" } else if r.foreign { "not devdeck's" } else { "listening" };
+                        let hint = [format!(":{}", r.port), detail.clone(), state.to_string()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+                        ListItem::new(r.port.to_string(), format!(":{}", r.port)).detail(detail).running(r.held.is_some()).hint(Some(hint))
+                    })
+                    .collect()
+            }
             Activity::Layouts => {
                 let book = &self.deck.read(cx).book;
                 book.entries()
@@ -1402,6 +1444,14 @@ impl Render for Sidebar {
                         devdeck_ui::icon_action("open-matrix", Icon::Matrix, "the branch matrix: every service on every env", true, &t)
                             .debug_selector(|| "open-matrix".into())
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_matrix(cx))),                    )
+            })
+            .when(activity == Activity::Ports, |d| {
+                d.child(
+                    toggle_button("ports-machine", "machine", self.state.ports_machine, &t)
+                        .debug_selector(|| "ports-machine".into())
+                        .tooltip(tip("everything listening on this machine, not only this workspace's"))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_ports_machine(cx))),
+                )
             })
             .when(activity == Activity::Cluster, |d| {
                 d.child(
