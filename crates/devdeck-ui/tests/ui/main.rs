@@ -9,5 +9,6 @@ mod components;
 mod host;
 mod input;
 mod overlay;
+mod picker;
 mod scroll;
 mod toolbar;

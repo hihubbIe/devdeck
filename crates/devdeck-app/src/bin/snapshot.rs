@@ -686,18 +686,13 @@ fn svc_redeploying(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Ent
     cx.run_until_parked();
 }
 
-fn svc_suggestions(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+/// Deploy…: the picker of tags and branches.
+fn svc_deploy_picker(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     deploy(cx, shell, "dev35", "entityservice", "lan-160", 3500);
     let v = service(cx, shell, "dev35", "entityservice", true);
-    let items = cx.update(|cx| ServiceView::suggestions_for(&v, cx));
-    let _ = cx.update_window(w, |_, window, cx| open_menu(point(logical(720.), logical(140.)), items, window, cx));
+    let _ = cx.update_window(w, |_, window, cx| ServiceView::open_deploy(&v, window, cx));
 }
 
-/// Another tag typed: the rocket ready (in the accent), "unsaved" at the row's end.
-fn svc_tag_ready(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    let v = service(cx, shell, "dev35", "entityservice", true);
-    cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-160", cx))));
-}
 
 /// The notify dropdown open, two options ticked: the bell in the accent.
 fn svc_notify(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -1454,8 +1449,7 @@ fn states() -> Vec<State> {
         w("84-svc-confirm", "work", 1.0, Some(svc_confirm)),
         w("84-svc-confirm-refused", "work", 1.0, Some(svc_confirm_refused)),
         w("84-svc-redeploy-confirm", "work", 1.0, Some(svc_redeploy_confirm)),
-        w("85-svc-suggestions", "work", 1.0, Some(svc_suggestions)),
-        w("85-svc-tag-ready", "work", 1.0, Some(svc_tag_ready)),
+        w("85-svc-deploy-picker", "work", 1.0, Some(svc_deploy_picker)),
         w("85-svc-notify", "work", 1.0, Some(svc_notify)),
         w("86-svc-loading", "work", 1.0, Some(svc_loading)),
         w("87-svc-unreachable", "work", 1.0, Some(svc_unreachable)),

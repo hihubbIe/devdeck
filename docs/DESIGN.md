@@ -773,6 +773,16 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   a fixed-height panel under the commands; the summary branch row, `split_bar` and the
   header's git icon go. The app view now reads its repository's full state while shown
   (the working tree's changes), as the git panel always did.
+- 2026-11-11 (user) Two shared components for the full views: the picker
+  (`devdeck_ui::picker`, a modal to pick one of many: its search focused at once, groups,
+  kind chips, up/down/enter, what's typed as an option when the caller says so; the
+  palette, the help and the git branch switch can move onto it) and the table
+  (`devdeck_ui::table`: fixed columns, the first takes the rest, rows that open in place).
+  The service view deploys through the picker: Deploy… lists the tags on the other envs,
+  its app's remote branches and the tags it ran before; a pick goes on to the checks and
+  the confirmation as the rocket did. The tag field and its suggestions menu go; deploy,
+  redeploy and notify sit together; no button for what doesn't work yet (scale,
+  port-forward, shell). `pods_bar` drops its count (its tooltip says it).
 
 ## Open questions
 

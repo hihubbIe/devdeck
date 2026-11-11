@@ -3,7 +3,7 @@
 //! wider than they're given room for. `name` labels their parts for tests.
 
 use crate::theme::Theme;
-use gpui::{Hsla, ParentElement, Styled, div, prelude::*, relative};
+use gpui::{Hsla, InteractiveElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::*, relative};
 
 /// A usage bar against a request (a tick) and a limit (the full width); without a limit
 /// the bar spans the request, else what's used. Past its request it turns to a warning.
@@ -37,13 +37,23 @@ pub enum PodMark {
     Old,
 }
 
-/// One small square per pod, ready / starting / failing / old (a rollout's), then
-/// `ready/wanted`.
-pub fn pods_bar(name: &str, pods: &[PodMark], t: &Theme) -> gpui::Div {
+/// One square per pod, ready / starting / failing / old (a rollout's); no count, the
+/// squares say it (its tooltip spells it out: "2 of 3 ready").
+pub fn pods_bar(name: &str, pods: &[PodMark], t: &Theme) -> gpui::Stateful<gpui::Div> {
     let wanted = pods.iter().filter(|p| **p != PodMark::Old).count();
     let ready = pods.iter().filter(|p| **p == PodMark::Ready).count();
     let side = t.size(9.);
-    let mut row = div().debug_selector(|| name.to_string()).flex_none().flex().items_center().gap(t.hairline * 2.);
+    let mut row = div()
+        .id(SharedString::from(format!("{name}-pods")))
+        .debug_selector({
+            let name = name.to_string();
+            move || name
+        })
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(t.hairline * 2.)
+        .tooltip(crate::tip(format!("{ready} of {wanted} ready")));
     for (i, p) in pods.iter().enumerate() {
         let part = format!("{name}-{i}");
         let square = div().debug_selector(move || part).flex_none().size(side).rounded(t.hairline);
@@ -54,5 +64,5 @@ pub fn pods_bar(name: &str, pods: &[PodMark], t: &Theme) -> gpui::Div {
             PodMark::Old => square.bg(t.dim),
         });
     }
-    row.child(div().flex_none().ml_1().text_color(if ready == wanted { t.mute } else { t.warn }).child(format!("{ready}/{wanted}")))
+    row
 }

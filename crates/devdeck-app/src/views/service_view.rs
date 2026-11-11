@@ -19,8 +19,8 @@ use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
-    Icon, InputEvent, MenuItem, ModalFocus, TextInput, Theme, ToastKind, button, dot, icon, icon_action_ready, icon_button, icon_text, label, modal_frame,
-    notify_button, open_menu, pop_modal, push_modal, section, theme, tip, toasts, under,
+    Icon, InputEvent, MenuItem, ModalFocus, PickGroup, PickOption, PickerSpec, TextInput, Theme, ToastKind, button, dot, icon, icon_text, label, modal_frame,
+    notify_button, open_menu, open_picker, pop_modal, push_modal, section, theme, tip, toasts, under,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -29,7 +29,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*,
 };
 
-actions!(service_view, [SaveTag, OpenLogs, EditTag, Redeploy, NotifyMenu, ConfirmModal]);
+actions!(service_view, [SaveTag, OpenLogs, Redeploy, NotifyMenu, ConfirmModal]);
 
 pub struct ServiceView {
     pub env: String,
@@ -302,40 +302,53 @@ impl ServiceView {
         self.ctx.open(ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() }, cx);
     }
 
-    /// The tag suggestions menu (snapshots open it directly).
-    pub fn suggestions_for(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
-        Self::suggestions(this, cx)
-    }
-
-    fn suggestions(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
+    /// Deploy…: the picker of what can go here (the tags on the other envs, its app's
+    /// branches on the remote, the tags it ran before, or what's typed); a pick goes on to
+    /// the checks and the confirmation, as the rocket did ([`ServiceView::save`]).
+    pub fn open_deploy(this: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let s = this.read(cx);
-        let mut list = s.cluster.read(cx).tag_suggestions(&s.env, &s.name);
-        // The repository's remote branches: a branch only local was never built.
+        let c = s.cluster.read(cx);
+        let now = c.now_s();
+        // A version (`1.62.8`, `v2.27.4`) is a tag; anything else, a branch's.
+        let kind = |t: &str| if t.trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit()) { "tag" } else { "branch" };
+        let (mut envs, mut before) = (Vec::new(), Vec::new());
+        for (tag, why) in c.tag_suggestions(&s.env, &s.name) {
+            match why.strip_prefix("on ") {
+                Some(env) => envs.push(PickOption::new(tag.clone()).chip(env.to_string()).kind(kind(&tag))),
+                None => before.push(PickOption::new(tag.clone()).kind(kind(&tag))),
+            }
+        }
+        let mut branches = Vec::new();
         if let Some(snapshot) = s.repo.as_ref().and_then(|(_, r)| r.read(cx).snapshot()) {
+            // Remote branches only: a branch only local was never built.
             for b in snapshot.branches.iter().filter(|b| b.remote.is_some()) {
                 let remote = b.remote.as_deref().unwrap_or_default();
                 let name = b.name.strip_prefix(&format!("{remote}/")).unwrap_or(&b.name).to_string();
-                if !list.iter().any(|(t, _)| *t == name) && Some(&name) != s.shown_tag.as_ref() {
-                    list.push((name, format!("branch on {remote}")));
+                if Some(&name) != s.shown_tag.as_ref() {
+                    branches.push(PickOption::new(name).detail(format!("{} ago · {}", fmt_age(now.saturating_sub(b.at)), b.author)).kind("branch"));
                 }
             }
         }
-        if list.is_empty() {
-            return vec![MenuItem::new("no other tags known", |_, _| {}).disabled("deploy history is empty")];
-        }
-        list.into_iter()
-            .map(|(tag, why)| {
-                let (me, t) = (this.clone(), tag.clone());
-                MenuItem::new(tag, move |window, cx| {
-                    me.update(cx, |s, cx| {
-                        s.tag.update(cx, |i, cx| i.set_text(&t, cx));
-                        s.tag.read(cx).focus_handle(cx).focus(window, cx);
-                        cx.notify();
-                    })
+        let groups = [("ON OTHER ENVS", envs), ("BRANCHES", branches), ("BEFORE HERE", before)]
+            .into_iter()
+            .filter(|(_, o)| !o.is_empty())
+            .map(|(label, options)| PickGroup { label: label.into(), options })
+            .collect();
+        let me = this.clone();
+        let spec = PickerSpec {
+            title: format!("Deploy {} to {}", s.name, s.env).into(),
+            placeholder: "search branches and tags".into(),
+            kinds: vec!["branch", "tag"],
+            groups,
+            typed: Some("as typed".into()),
+            on_pick: Rc::new(move |tag, _, cx| {
+                me.update(cx, |s, cx| {
+                    s.tag.update(cx, |i, cx| i.set_text(&tag, cx));
+                    s.save(cx);
                 })
-                .hint(why)
-            })
-            .collect()
+            }),
+        };
+        open_picker(spec, window, cx);
     }
 }
 
@@ -381,13 +394,14 @@ impl Render for ServiceView {
             .size_full()
             .flex()
             .flex_col()
-            .on_action(cx.listener(|this, _: &SaveTag, _, cx| this.save(cx)))
+            // After this update: the picker reads the view.
+            .on_action(cx.listener(|_, _: &SaveTag, window, cx| {
+                let me = cx.entity();
+                window.defer(cx, move |window, cx| ServiceView::open_deploy(&me, window, cx));
+            }))
             .on_action(cx.listener(|this, _: &OpenLogs, _, cx| this.open_logs(cx)))
             .on_action(cx.listener(|this, _: &Redeploy, _, cx| this.redeploy(cx)))
-            .on_action(cx.listener(|this, _: &NotifyMenu, window, cx| this.open_notify(window, cx)))
-            .on_action(cx.listener(|this, _: &EditTag, window, cx| {
-                this.tag.read(cx).focus_handle(cx).focus(window, cx);
-            }));
+            .on_action(cx.listener(|this, _: &NotifyMenu, window, cx| this.open_notify(window, cx)));
         let message = |text: String, color: Hsla| div().flex_1().flex().items_center().justify_center().text_color(color).child(label(text));
         let d = match (&state, c.deployment(&self.env, &self.name)) {
             (Remote::Loading, _) => return root.child(message(format!("loading {}…", self.env), t.mute)),
@@ -403,8 +417,6 @@ impl Render for ServiceView {
         let usage = |p: &Pod| c.usage(&self.env, &p.name);
         let history = c.history(&self.env, &self.name).to_vec();
         let metrics = c.metrics_allowed(&self.env);
-        let dirty = self.dirty(cx);
-        let blocked = self.save_blocked(cx);
         let redeploy_blocked = self.redeploy_blocked(cx);
         let (status_mark, status, status_color) = match rollout.as_ref().map(|r| &r.state) {
             Some(RolloutState::Rolling { ready, of }) => (icon(Icon::Busy, t.accent, &t).into_any_element(), format!("rolling {ready}/{of}"), t.accent),
@@ -452,7 +464,7 @@ impl Render for ServiceView {
             let enabled = why.is_none();
             button(id, text, &t).when(!enabled, |b| b.text_color(t.dim)).tooltip(tip(why.unwrap_or_else(|| text.to_string())))
         };
-        let later = || Some("comes in a later step of M3".to_string());
+        // Deploying's actions together (deploy, redeploy, notify), then where to look.
         let actions = div()
             .flex_none()
             .px_3()
@@ -462,15 +474,25 @@ impl Render for ServiceView {
             .gap_1()
             .border_b_1()
             .border_color(t.line_soft)
-            .child(action("logs", "logs", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
-            .child(action("git", "git", self.repo.is_none().then(|| self.unlinked.clone().unwrap_or_else(|| "linking to its app…".into()))).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
-            .child(action("redeploy", "redeploy", redeploy_blocked).debug_selector(|| "svc-redeploy".into()).on_click(cx.listener(|this, _, _, cx| this.redeploy(cx))))
-            .child(action("scale", "replicas", later()))
-            .child(action("port-forward", "port-forward", later()))
-            .child(action("shell", "shell", later()))
+            .child({
+                let me = me.clone();
+                devdeck_ui::labeled_button("svc-deploy", Icon::Deploy, "Deploy…", &t)
+                    .debug_selector(|| "svc-deploy".into())
+                    .on_click(move |_, window, cx| ServiceView::open_deploy(&me, window, cx))
+            })
+            .child(action("redeploy", "Redeploy", redeploy_blocked).debug_selector(|| "svc-redeploy".into()).on_click(cx.listener(|this, _, _, cx| this.redeploy(cx))))
+            .child({
+                let ticked = !c.notify_options(&self.env, &self.name).is_empty();
+                notify_button("notify", ticked, self.notify_at.clone(), &t)
+                    .debug_selector(|| "tag-notify".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_notify(window, cx)))
+            })
+            .child(div().w(t.size(12.)))
+            .child(action("logs", "Logs", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
+            .child(action("git", "Git", self.repo.is_none().then(|| self.unlinked.clone().unwrap_or_else(|| "linking to its app…".into()))).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
             .when(protected, |a| {
                 a.child(div().flex_1()).child(
-                    action("lock", if self.unlocked { "lock" } else { "unlock…" }, None).on_click(cx.listener(|this, _, _, cx| {
+                    action("lock", if self.unlocked { "Lock" } else { "Unlock…" }, None).on_click(cx.listener(|this, _, _, cx| {
                         if this.unlocked {
                             this.unlocked = false;
                             cx.notify();
@@ -481,37 +503,6 @@ impl Render for ServiceView {
                 )
             });
 
-        let editor = div()
-            .flex_none()
-            .px_3()
-            .py_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(div().flex_none().text_color(t.mute).child("image tag"))
-            .child(div().w(t.size(260.)).debug_selector(|| "tag-editor".into()).child(self.tag.clone()))
-            .child({
-                let me = me.clone();
-                icon_button("suggest", Icon::Open, "tags on other envs and history", &t).on_click(move |e, window, cx| {
-                    let items = ServiceView::suggestions(&me, cx);
-                    open_menu(e.position(), items, window, cx);
-                })
-            })
-            // The rocket: ready (in the accent) when another tag is typed, dim with its reason
-            // otherwise (a click says it too).
-            .child(
-                icon_action_ready("deploy", Icon::Deploy, blocked.clone().unwrap_or_else(|| "deploy".into()), blocked.is_none(), &t)
-                    .debug_selector(|| "tag-deploy".into())
-                    .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
-            )
-            .child({
-                let ticked = !c.notify_options(&self.env, &self.name).is_empty();
-                notify_button("notify", ticked, self.notify_at.clone(), &t)
-                    .debug_selector(|| "tag-notify".into())
-                    .on_click(cx.listener(|this, _, window, cx| this.open_notify(window, cx)))
-            })
-            // Kept in place when clean (hidden), so nothing shifts.
-            .child(div().flex_none().flex().items_center().gap_1().text_color(t.warn).when(!dirty, |d| d.invisible()).child(dot(t.warn, true, &t)).child("unsaved"));
         // A list kept over a lost connection: what's wrong, above it.
         let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pb_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
         // Its app's repository: the branch checked out, and the running tag's branch on the
@@ -737,7 +728,7 @@ impl Render for ServiceView {
             .child(hist);
 
         self.window = Some(window.window_handle());
-        root.child(header).child(actions).child(editor).children(repo_line).children(problem_line).children(rollout_line).child(body)
+        root.child(header).child(actions).children(repo_line).children(problem_line).children(rollout_line).child(body)
     }
 }
 

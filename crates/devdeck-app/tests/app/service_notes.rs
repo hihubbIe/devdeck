@@ -449,33 +449,33 @@ fn b_opens_the_dropdown_whose_toggles_keep_it_open(cx: &mut TestAppContext) {
     assert!(!cx.update(|cx| layer_state(main, cx).0), "Esc closes it");
 }
 
+/// Deploy…, Redeploy and notify sit together; Deploy… opens the picker, and a pick goes on
+/// to the checks (the running tag: refused, saying why) and the confirmation.
 #[gpui::test]
-fn the_rocket_is_dim_with_its_reason_until_another_tag_is_typed(cx: &mut TestAppContext) {
+fn deploy_opens_the_picker_then_the_checks_and_the_confirmation(cx: &mut TestAppContext) {
     let shell = start(cx, "rocket");
     let main = main_window(&shell, cx);
     let view = open_service(&shell, cx);
-    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some("the tag is unchanged".into()), "dim, its reason in its tooltip");
     let mut vcx = gpui::VisualTestContext::from_window(main, cx);
-    let rocket = vcx.debug_bounds("tag-deploy").expect("the rocket");
+    let deploy = vcx.debug_bounds("svc-deploy").expect("Deploy…");
+    let redeploy = vcx.debug_bounds("svc-redeploy").expect("Redeploy");
     let bell = vcx.debug_bounds("tag-notify").expect("the notify dropdown");
-    let field = vcx.debug_bounds("tag-editor").expect("the tag field");
-    assert!(field.right() <= rocket.left() && rocket.right() <= bell.left(), "the tag field, the rocket, the dropdown");
-    assert!(vcx.debug_bounds("tag-save").is_none(), "no save button any more");
-    vcx.simulate_click(rocket.center(), gpui::Modifiers::none());
+    assert!(deploy.right() <= redeploy.left() && redeploy.right() <= bell.left(), "deploy, redeploy, notify, together");
+    vcx.simulate_click(deploy.center(), gpui::Modifiers::none());
     vcx.run_until_parked();
-    assert_eq!(vcx.update(|_, cx| layer_state(main, cx).1), 0, "refused: no confirmation");
+    assert_eq!(vcx.update(|_, cx| layer_state(main, cx).1), 1, "the picker");
+    let running = vcx.read(|cx| view.read(cx).tag.read(cx).text().to_string());
+    vcx.simulate_input(&running);
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert_eq!(vcx.update(|_, cx| layer_state(main, cx).1), 0, "the running tag: refused, no confirmation");
     let last = vcx.update(|_, cx| toasts(cx).read(cx).notes.notes().front().map(|n| n.text.to_string()));
-    assert_eq!(last.as_deref(), Some("Not deployed: the tag is unchanged."), "a click says why");
-    vcx.simulate_keystrokes("t ctrl-a");
+    assert_eq!(last.as_deref(), Some("Not deployed: the tag is unchanged."), "it says why");
+    vcx.simulate_click(deploy.center(), gpui::Modifiers::none());
     vcx.simulate_input("lan-160");
-    vcx.run_until_parked();
-    assert_eq!(vcx.read(|cx| view.read(cx).save_blocked(cx)), None, "ready");
-    vcx.simulate_click(rocket.center(), gpui::Modifiers::none());
+    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     assert_eq!(vcx.update(|_, cx| layer_state(main, cx).1), 1, "the confirmation");
-    vcx.simulate_keystrokes("escape ctrl-s");
-    vcx.run_until_parked();
-    assert_eq!(vcx.update(|_, cx| layer_state(main, cx).1), 1, "ctrl+s still opens it");
 }
 
 #[gpui::test]
@@ -578,13 +578,6 @@ fn open_svc(shell: &Entity<Shell>, cx: &mut TestAppContext, env: &str, name: &st
     cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<ServiceView>().unwrap())
 }
 
-fn click(main: AnyWindowHandle, cx: &mut TestAppContext, selector: &'static str) {
-    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
-    let at = vcx.debug_bounds(selector).expect("drawn");
-    vcx.simulate_click(at.center(), gpui::Modifiers::none());
-    vcx.run_until_parked();
-}
-
 fn last_toast(cx: &mut TestAppContext) -> Option<String> {
     texts(cx).last().cloned()
 }
@@ -596,9 +589,10 @@ fn the_rocket_on_a_protected_env(cx: &mut TestAppContext) {
     let view = open_svc(&shell, cx, "hades", "proxyapi");
     cx.update(|cx| view.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-161", cx))));
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some("hades is protected: unlock it first".into()), "locked: dim with its reason");
-    click(main, cx, "tag-deploy");
-    assert_eq!(cx.update(|cx| layer_state(main, cx).1), 1, "a click asks to unlock");
+    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some("hades is protected: unlock it first".into()), "locked, with its reason");
+    cx.update(|cx| view.update(cx, |v, cx| v.save(cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| layer_state(main, cx).1), 1, "a pick asks to unlock");
 }
 
 #[gpui::test]
@@ -634,12 +628,15 @@ fn the_rocket_waits_for_a_short_name(cx: &mut TestAppContext) {
     let why = devdeck_app::cluster::NO_SHORT_NAME.to_string();
     assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(why.clone()), "dim, the reason in its tooltip");
     assert_eq!(cx.read(|cx| view.read(cx).redeploy_blocked(cx)), Some(why.clone()));
-    click(main, cx, "tag-deploy");
+    cx.update(|cx| view.update(cx, |v, cx| v.save(cx)));
+    cx.run_until_parked();
     assert_eq!(cx.update(|cx| layer_state(main, cx).1), 0);
     assert_eq!(last_toast(cx), Some(format!("Not deployed: {why}.")));
     cx.simulate_keystrokes(main, "ctrl-s");
+    cx.simulate_input(main, "lan-160");
+    cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(cx.update(|cx| layer_state(main, cx).1), 0, "ctrl+s refused too");
+    assert_eq!(cx.update(|cx| layer_state(main, cx).1), 0, "through the picker, refused too");
     assert!(cx.read(|cx| c.read(cx).rollout(DEMO_ENV, DEMO_SVC).is_none()), "nothing written");
     cx.update(|cx| devdeck_app::app_settings::set_short_name("i.alglave", cx)).unwrap();
     assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), None, "named: ready");

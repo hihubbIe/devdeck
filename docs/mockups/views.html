@@ -48,6 +48,7 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .dot.on { background: var(--ok); border-color: var(--ok); }
 .dot.err { background: var(--err); border-color: var(--err); }
 .dot.busy { border-color: var(--warn); border-style: dashed; }
+.dot.err { background: var(--err); border-color: var(--err); }
 .warn { color: var(--warn); } .okc { color: var(--ok); } .errc { color: var(--err); } .mute { color: var(--mute); } .dimc { color: var(--dim); }
 .split { flex: 1; display: flex; min-width: 0; }
 .pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
@@ -122,6 +123,77 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .link:hover { color: var(--accent); }
 .todo { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--mute); gap: 6px; }
 .todo b { color: var(--fg); }
+/* Cluster */
+.fields { display: flex; flex-wrap: wrap; gap: 6px 28px; padding: 8px 10px 4px; }
+.fld { min-width: 0; }
+.fk { color: var(--dim); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.fv { white-space: nowrap; display: flex; align-items: center; min-height: 22px; }
+.inrow { margin: 0 6px 8px 28px; border-left: 2px solid var(--line); padding-left: 8px; }
+.inrow .sub { margin-top: 6px; }
+.envtags { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 2px 10px 6px; }
+.envtag { display: inline-flex; gap: 6px; color: var(--mute); }
+.envtag.on { color: var(--fg); }
+.abtn.small { height: 22px; padding: 0 8px; }
+.facts { display: flex; gap: 14px; padding: 6px 12px 0; white-space: nowrap; overflow: hidden; color: var(--mute); }
+.acts-row { display: flex; gap: 6px; padding: 6px 8px; flex-wrap: wrap; }
+.abtn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 3px; color: var(--fg); cursor: pointer; white-space: nowrap; }
+.abtn:hover { background: var(--hover); }
+.abtn.primary { color: var(--accent); border-color: var(--accent); }
+.abtn.danger:hover { color: var(--warn); }
+.modal.picker { width: 640px; padding: 0; }
+.modal.picker .mt { padding: 10px 14px 6px; }
+.pin { width: calc(100% - 28px); margin: 0 14px; height: 30px; background: var(--bg); border: 1px solid var(--accent); border-radius: 3px; color: var(--fg); font: inherit; padding: 0 8px; outline: none; }
+.pfs { display: flex; gap: 6px; padding: 8px 14px 4px; }
+.pf { padding: 0 8px; line-height: 20px; border: 1px solid var(--line); border-radius: 10px; color: var(--mute); cursor: pointer; }
+.pf.on { color: var(--fg); background: var(--selected); border-color: var(--selected); }
+.plist { max-height: 320px; overflow: auto; padding: 4px 6px; }
+.pg { color: var(--dim); font-size: 11px; letter-spacing: .05em; padding: 6px 8px 2px; }
+.po { display: grid; grid-template-columns: minmax(120px, 1fr) auto 220px; gap: 10px; align-items: center; height: 26px; padding: 0 8px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+.po > * { overflow: hidden; text-overflow: ellipsis; }
+.po.on, .po:hover { background: var(--selected); }
+.po .pd { color: var(--mute); text-align: right; }
+.pfoot { color: var(--dim); padding: 6px 14px 10px; border-top: 1px solid var(--line); margin-top: 4px; }
+.panel { background: var(--bar); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; min-width: 0; }
+.panel .ph { height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 12px; border-bottom: 1px solid #262930; color: var(--mute); }
+.panel .pb { padding: 4px; overflow-x: auto; }
+.dash { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px; align-content: flex-start; }
+.dash .c3 { flex: 3 1 0; min-width: 380px; display: flex; flex-direction: column; gap: 12px; }
+.dash .c2 { flex: 2 1 0; min-width: 300px; display: flex; flex-direction: column; gap: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.seg span { padding: 0 8px; line-height: 22px; color: var(--mute); cursor: pointer; }
+.seg span.on { background: var(--selected); color: var(--fg); }
+.drow { height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 8px; cursor: default; white-space: nowrap; }
+.drow:hover { background: var(--hover); }
+.drow.sel { background: var(--selected); }
+.drow .n { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.prow { height: 24px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 34px; color: var(--mute); white-space: nowrap; cursor: default; }
+.prow:hover { background: var(--hover); color: var(--fg); }
+.prow.sel { background: var(--selected); color: var(--fg); }
+.ubar { position: relative; width: 70px; height: 7px; background: var(--line); border-radius: 2px; flex: none; }
+.ubar b { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; }
+.ubar i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--fg); }
+.tr { display: grid; grid-template-columns: var(--cols); align-items: center; column-gap: 10px; height: 26px; padding: 0 8px; white-space: nowrap; cursor: default; }
+.tr > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tr:hover { background: var(--hover); }
+.tr.sel { background: var(--selected); }
+.tr.th { color: var(--dim); font-size: 11px; letter-spacing: .05em; height: 22px; border-bottom: 1px solid #262930; }
+.tr.th:hover { background: none; }
+.tr.pod { color: var(--mute); height: 24px; }
+.tr .r { text-align: right; }
+.cellrow { display: flex; align-items: center; gap: 6px; }
+.mx { border-collapse: collapse; white-space: nowrap; table-layout: fixed; }
+.mx th, .mx td { overflow: hidden; text-overflow: ellipsis; }
+.mx th { color: var(--mute); font-weight: normal; text-align: left; padding: 0 10px; height: 26px; position: sticky; top: 0; background: var(--bg); }
+.mx td { padding: 0 10px; height: 26px; border-top: 1px solid #22252b; cursor: pointer; }
+.mx td:hover { background: var(--hover); }
+.mx td.sel { background: var(--selected); }
+.mx td.first { color: var(--fg); cursor: default; }
+.pick { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 4px; margin: 4px 8px 8px; max-height: 220px; overflow: auto; background: var(--raised); }
+.pick .g { color: var(--dim); font-size: 11px; padding: 4px 8px 0; letter-spacing: .05em; }
+.pick .o { height: 24px; display: flex; align-items: center; gap: 8px; padding: 0 8px; cursor: pointer; white-space: nowrap; }
+.pick .o:hover { background: var(--selected); }
+.field { flex: 1; height: 26px; border: 1px solid var(--line); border-radius: 3px; display: flex; align-items: center; padding: 0 8px; gap: 6px; min-width: 0; background: var(--bg); }
+.go { color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; height: 26px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -172,6 +244,7 @@ const ICON = {
   funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
   bell: '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
   corner: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+  grid: '<path d="M3 9h18"/><path d="M9 3v18"/><rect x="3" y="3" width="18" height="18" rx="2"/>',
 };
 const ic = (k, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24">${ICON[k]}</svg>`;
 // An icon button; `danger` ones ask in a modal that opens on Cancel (R5.6).
@@ -181,8 +254,9 @@ const openInPulse = what => `<span class="ib" data-tip="open in pulse…" data-p
 
 // "Go there": the target activity's icon with the same corner arrow.
 const pivot = (act, tip, attrs = '') => `<span class="ib" data-tip="${tip}" data-pivot="${act}" ${attrs}>${ic(act)}${ic('corner', 'i corner')}</span>`;
-// Pods: one segment each (ready, starting, failing; old ones grey during a rollout).
-const podsBar = (pods, ready) => `<span class="pods">${pods.map(k => `<i class="${k}"></i>`).join('')}</span><span class="mute">${ready}/${pods.filter(k => k !== 'old').length}</span>`;
+// Pods: one square each (ready, starting, failing; old ones grey during a rollout), no
+// count: the squares say it, the tooltip spells it out.
+const podsBar = (pods, ready) => `<span class="pods" data-tip="${ready} of ${pods.filter(k => k !== 'old').length} ready">${pods.map(k => `<i class="${k}"></i>`).join('')}</span>`;
 // Ahead / behind: a two-sided bar, behind to the left, ahead to the right.
 const aheadBehind = (ahead, behind) => `<span class="ab" data-tip="${behind} behind · ${ahead} ahead of origin"><span class="warn">↓${behind}</span><span class="half l"><b style="width:${Math.min(100, behind * 20)}%;background:var(--warn)"></b></span><span class="mid"></span><span class="half"><b style="width:${Math.min(100, ahead * 20)}%;background:var(--ok)"></b></span><span class="okc">↑${ahead}</span></span>`;
 // Changes: added, modified, deleted as one stacked bar.
@@ -222,6 +296,7 @@ const APPS = [
 const PORTS = { 'go:run': ':5800', 'start:dev': ':3000' };
 const ARGS = { 'go:run': '--config dev.yaml', 'go:test': './...', 'start:dev': '--host' };
 
+const CL = { env: 'dev33', mode: 'env', sel: 'frontendapp', pods: {}, parts: { monitorapp: true }, podLogs: '' };
 const S = { act: 'apps', sel: 'entityservice', open: { 'front-end': true }, runningOnly: false, drill: null, listW: 0.3 };
 
 const flat = apps => apps.flatMap(a => a.folder ? [a, ...a.children] : [a]);
@@ -231,7 +306,7 @@ const nameOf = a => a.name || a.id;
 // ---- Frame --------------------------------------------------------------------------
 function renderActs() {
   document.getElementById('acts').innerHTML = ACTS.map(([k, t], i) =>
-    `<div class="act ${S.act === k ? 'on' : ''}" data-act="${k}" data-tip="${t} · ctrl+${i + 1}">${ic(k)}</div>`).join('');
+    `<div class="act ${S.act === k ? 'on' : ''}" data-act="${k}" data-tip="${t}">${ic(k)}</div>`).join('');
 }
 document.getElementById('acts').addEventListener('click', e => {
   const a = e.target.closest('[data-act]'); if (!a) return;
@@ -321,6 +396,8 @@ function commandLine(a, c) {
     <span class="ibs">${on ? ib('stop', 'stop') + ib('restart', 'restart') : ib('play', 'run')}${ib('term', 'output')}</span></div>`;
 }
 function deployBlock(a) {
+  const part = a.id.startsWith('front-end/') && PARTS.find(x => x.app === nameOf(a));
+  if (part) a = { ...a, deploy: part.tag, via: 'in frontendapp' };
   if (!a.deploy) return `<div class="block"><div class="label">DEPLOYMENTS</div><div class="dimc">not a cluster service</div></div>`;
   const rows = ENVS.map(env => {
     const tag = a.deploy[env], rolling = a.rolling === env, prot = env === 'dev31';
@@ -328,7 +405,7 @@ function deployBlock(a) {
     return `<div class="line click" data-pivot="cluster" data-env="${env}"><span class="dot ${rolling ? 'busy' : 'on'}"></span><span class="chip" style="width:62px;text-align:center">${env}</span>${prot ? `<span class="errc" data-tip="protected: asks first">${ic('lock')}</span>` : ''}<span class="n" style="width:150px;overflow:hidden;text-overflow:ellipsis">${tag}</span><span class="s">${state}</span>
       <span class="ibs keep">${pivot('cluster', `${a.id} on ${env} in Cluster: deploy, logs, history`, `data-env="${env}"`)}</span></div>`;
   }).join('');
-  return `<div class="block"><div class="label">DEPLOYMENTS<span class="ibs">${ib('bell', 'notify me on…')}</span></div>${rows}</div>`;
+  return `<div class="block"><div class="label">DEPLOYMENTS${a.via ? ` · ${a.via}` : ''}<span class="ibs">${ib('bell', 'notify me on…')}</span></div>${rows}</div>`;
 }
 function gitBlock(a) {
   const branch = a.branch || 'main', ahead = a.ahead || 0, behind = a.behind || 0;
@@ -390,6 +467,203 @@ function appsView() {
   return `<div class="split" id="appsplit">${appsList()}<div class="divider" id="divider"></div>${details()}</div>`;
 }
 
+// ---- Cluster ------------------------------------------------------------------------
+// frontendapp, as dev33 runs it (read with kubectl, 2026-11-11): one nginx container, and
+// one init container per front-end app (`init-<app>`, image `<app>:<tag>`, its own nginx
+// port), copied into a volume nginx serves. Each app is a part with its own tag; deploying
+// one patches its init container only. Its URL comes from the frontendapp configmap's
+// tadastack_config.yml (`public_urls`), its config from `<app>.yml` in the same configmap.
+const PARTS = [
+  { app: 'controlboardapp', port: 8081, url: 'controlboard', tag: svc('v4.48.0', 'v4.48.0', 'v4.48.0', 'v4.47.2', 'LB-301-board-filters') },
+  { app: 'mastertadaapp', port: 8082, url: 'mastertada', tag: svc('v2.27.4', 'v2.27.4', 'v2.27.4', 'v2.27.1', 'v2.27.4') },
+  { app: 'monitorapp', port: 8083, url: 'monitor', tag: svc('v1.49.0', 'v1.48.3', 'v1.49.0', 'v1.49.0', 'LB-288-alerts') },
+  { app: 'remotedesktopapp', port: 8084, url: 'remotedesktop', tag: svc('v6.3.5', 'v6.3.5', 'v6.3.5', 'v6.3.2', 'v6.3.5') },
+  { app: 'shellapp', port: 8085, url: 'shell', tag: svc('v8.27.0', 'v8.27.0', 'v8.27.0', 'v8.26.4', 'v8.27.0') },
+  { app: 'frontendcdn', port: 8088, url: 'frontendcdn', tag: svc('v7.12.106-fix.1', 'v7.12.106-fix.1', 'v7.12.106-fix.1', 'v7.12.104', 'v7.12.106-fix.1') },
+];
+const HOST = { controlboard: 'controlboard', mastertada: 'mastertada', monitor: 'monitor', remotedesktop: 'remotedesktop', shell: 'www', frontendcdn: 'cdn' };
+const urlOf = (part, env) => `https://${HOST[part.url]}.${env}.intdw.org`;
+const deployed = () => flat(APPS).filter(a => a.deploy).map(a => ({ name: a.id, tag: a.deploy, rolling: a.rolling }))
+  .concat([{ name: 'frontendapp', tag: svc('v1.0.0', 'v1.0.0', 'v1.0.0', 'v1.0.0', 'v1.0.0'), parts: PARTS }]).sort((a, b) => a.name.localeCompare(b.name));
+const podsOf = (d, env) => {
+  if (d.name === 'proxyapi') return []; // scaled to 0: stopped
+  const n = d.parts ? 1 : d.name.length % 2 ? 3 : 2, rolling = d.rolling === env, failing = d.name === 'reportservicev2';
+  return Array.from({ length: n }, (_, i) => ({
+    name: `${d.name}-${d.parts ? '5df496b96d' : `7d9f${(d.name.length * 7 + i * 13) % 97}c`}-${['8ggsd', 'p9m1z', 'b7r3w'][i]}`,
+    state: rolling && i === n - 1 ? 'starting' : failing && i === n - 1 ? 'failing' : 'ready', restarts: failing && i === n - 1 ? 12 : i === 1 && d.name.length % 3 === 0 ? 4 : 0,
+    age: rolling && i === n - 1 ? '20s' : d.parts ? '21h' : `${2 + i}d`, cpu: 8 + (i * 17 + d.name.length * 5) % 60, mem: 30 + (i * 23 + d.name.length * 3) % 55,
+  }));
+};
+// A state word, colored by how much it matters: all is well muted, under way a warning,
+// broken an error, nothing running dim.
+const STATE_COLOR = { running: 'mute', ready: 'mute', 'rolling out': 'warn', starting: 'warn', failing: 'errc', stopped: 'dimc', terminating: 'dimc', completed: 'mute' };
+const stateWord = w => `<span class="${STATE_COLOR[w]}">${w}</span>`;
+const square = st => `<span class="pods"><i class="${st === 'starting' ? 'start' : st === 'failing' ? 'fail' : st === 'terminating' ? 'old' : ''}"></i></span>`;
+const depState = (pods, rolling) => pods.length === 0 ? 'stopped' : pods.some(p => p.state === 'failing') ? 'failing' : rolling ? 'rolling out' : 'running';
+const ubar = (pct, req) => `<span class="ubar"><b style="width:${Math.min(100, pct)}%;background:${pct > req ? 'var(--warn)' : 'var(--ok)'}"></b><i style="left:${req}%"></i></span>`;
+const panel = (title, body, actions = '') => `<div class="panel"><div class="ph"><span class="grow">${title}</span>${actions}</div><div class="pb">${body}</div></div>`;
+const STATE_DOT = { running: 'on', 'rolling out': 'busy', failing: 'err', stopped: '' };
+// A group's actions, together, in its body (never hoisted into a header).
+const actionsRow = btns => `<div class="acts-row">${btns.join('')}</div>`;
+const btn = (icon, text, attrs = '', cls = '') => `<span class="abtn ${cls}" ${attrs}>${ic(icon)}${text}</span>`;
+
+// The picker (one devdeck-ui component for every "pick one of many": deploying a branch,
+// the palette, the help, switching branch…): a modal, its search focused at once, filter
+// chips, groups, the keyboard; the caller gives the options and what a pick does.
+function openPicker({ title, placeholder, filters, groups, onPick }) {
+  const v = document.createElement('div'); v.className = 'veil';
+  let filter = filters ? filters[0] : null, q = '', at = 0;
+  const visible = () => groups.map(g => ({ ...g, options: g.options.filter(o => (!filter || filter === 'all' || o.kind === filter) && (o.label + ' ' + (o.detail || '')).toLowerCase().includes(q.toLowerCase())) })).filter(g => g.options.length);
+  const draw = () => {
+    const gs = visible(); const flatOpts = gs.flatMap(g => g.options); at = Math.min(at, Math.max(0, flatOpts.length - 1));
+    let n = -1;
+    v.querySelector('.plist').innerHTML = gs.map(g => `<div class="pg">${g.label}</div>` + g.options.map(o => { n++; return `<div class="po ${n === at ? 'on' : ''}" data-po="${n}"><span class="pl">${o.label}</span>${(o.chips || []).map(c => `<span class="chip">${c}</span>`).join('')}<span class="pd">${o.detail || ''}</span></div>`; }).join('')).join('') || '<div class="pg">nothing matches</div>';
+    v.querySelectorAll('.pf').forEach(el => el.classList.toggle('on', el.dataset.pf === filter));
+    return flatOpts;
+  };
+  v.innerHTML = `<div class="modal picker"><div class="mt">${title}</div><input class="pin" placeholder="${placeholder}">
+    ${filters ? `<div class="pfs">${filters.map(f => `<span class="pf" data-pf="${f}">${f}</span>`).join('')}</div>` : ''}<div class="plist"></div>
+    </div>`;
+  document.body.appendChild(v);
+  const input = v.querySelector('.pin'); input.focus(); let opts = draw();
+  const pick = o => { v.remove(); onPick(o); };
+  input.addEventListener('input', () => { q = input.value; at = 0; opts = draw(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { at = Math.min(opts.length - 1, at + 1); opts = draw(); e.preventDefault(); }
+    if (e.key === 'ArrowUp') { at = Math.max(0, at - 1); opts = draw(); e.preventDefault(); }
+    if (e.key === 'Enter' && opts[at]) pick(opts[at]);
+    if (e.key === 'Escape') v.remove();
+    e.stopPropagation();
+  });
+  v.addEventListener('click', e => {
+    const f = e.target.closest('[data-pf]'); if (f) { filter = f.dataset.pf; at = 0; opts = draw(); input.focus(); return; }
+    const o = e.target.closest('[data-po]'); if (o) { pick(opts[+o.dataset.po]); return; }
+    if (e.target === v) v.remove();
+  });
+}
+
+// Deploying: the picker of what can go there, then today's confirmation.
+function deployPicker(name, env, tags, part) {
+  const branches = ['main', 'feature/geo-index', 'fix/lan-175-null-tags', 'LB-264-ontology-package', 'LB-288-alerts', 'LB-301-board-filters'];
+  openPicker({
+    title: `Deploy ${part ? `${part} in ${name}` : name} to @${env}`, placeholder: 'search branches and tags', filters: ['all', 'branch', 'tag'],
+    groups: [
+      { label: 'ON OTHER ENVS', options: ENVS.filter(e => e !== env).map(e => ({ value: tags[e], label: tags[e], chips: [e], kind: /^v?\d/.test(tags[e]) ? 'tag' : 'branch' })) },
+      { label: 'BRANCHES ON ORIGIN', options: branches.map((b, i) => ({ value: b, label: b, detail: `${['2 h', '1 d', '3 d', '5 d', '6 d', '8 d'][i]} ago · ${['j.doe', 'f.lastname', 'j.doe', 'a.smith', 'f.lastname', 'j.doe'][i]}`, kind: 'branch' })) },
+      { label: 'RECENT HERE', options: ['v1.64.0', 'main'].map(t => ({ value: t, label: t, kind: /^v?\d/.test(t) ? 'tag' : 'branch' })) },
+    ],
+    onPick: o => {
+      const v = document.createElement('div'); v.className = 'veil';
+      v.innerHTML = `<div class="modal"><div class="mt">Deploy ${o.value} to ${env}?</div><div class="mb">${part ? `${part} in ${name}` : name} on <span class="chip">${env}</span> runs <code>${tags[env]}</code>. This sets ${part ? `its init container <code>init-${part}</code>` : 'its image'} to <code>${o.value}</code>${part ? ' and nothing else in the pod' : ''}, as <code>j.doe via Kugelblitz</code>, and follows the rollout.${env === 'dev31' ? ' <span class="errc">dev31 is protected: type its name to go on.</span>' : ''}</div><div class="mf"><span class="b focus" data-modal="cancel">Cancel</span><span class="b go" data-modal="go">${ic('rocket')} Deploy</span></div></div>`;
+      document.body.appendChild(v); S.pendingEnv = env; S.pendingTo = o.value;
+    },
+  });
+}
+
+function clusterList(deps) {
+  const row = d => {
+    const pods = podsOf(d, CL.env), st = depState(pods, d.rolling === CL.env);
+    const marks = pods.map(p => p.state === 'starting' ? 'start' : p.state === 'failing' ? 'fail' : 'ok');
+    return `<div class="row ${CL.sel === d.name ? 'sel' : ''}" data-cl-dep="${d.name}" data-tip="${st}"><span class="dot ${STATE_DOT[st]}"></span>
+      <span class="n" style="${st === 'failing' ? 'color:var(--err)' : st === 'stopped' ? 'color:var(--mute)' : ''}">${d.name}</span>
+      <span class="r" style="width:64px;justify-content:flex-end">${podsBar(marks, marks.filter(m => m === 'ok').length)}</span></div>`;
+  };
+  const pinned = deps.filter(d => d.name === 'graphservice');
+  return `<div class="list" style="width:${S.listW * 100}%">
+    <div class="head"><span class="t">Cluster</span><span class="grow"></span><span class="ib" data-cl-mode="matrix" data-tip="the branch matrix: every service on every env">${ic('grid')}</span><span class="chip" data-tip="the list's env (the runs' stays @dev35)">@${CL.env} ▾</span></div>
+    <div class="filter">filter</div>
+    <div class="scroll"><div class="sec">${ic('chevD')} PINNED · ${pinned.length}</div>${pinned.map(row).join('')}
+      <div class="sec">${ic('chevD')} ALL · ${deps.length}</div>${deps.map(row).join('')}</div></div>`;
+}
+
+// A table in a panel: `cols` the data columns' fixed widths after a name that takes the
+// rest (never under 120px: the panel scrolls sideways before a name disappears).
+const table = (cols, head, rows) => `<div class="tr th" style="--cols:minmax(120px,1fr) ${cols}">${head.map((h, i) => `<span class="${i > 0 && h.r ? 'r' : ''}">${h.t || h}</span>`).join('')}</div>${rows.join('')}`;
+const trow = (cols, cells, attrs = '') => `<div class="tr" style="--cols:minmax(120px,1fr) ${cols}" ${attrs}>${cells.join('')}</div>`;
+
+// A summary card's fields: a small caption over its value, side by side.
+const fields = list => `<div class="fields">${list.filter(Boolean).map(([k, v]) => `<div class="fld"><div class="fk">${k}</div><div class="fv">${v}</div></div>`).join('')}</div>`;
+
+function clusterDetails() {
+  const d = deployed().find(x => x.name === CL.sel);
+  if (!d) return `<div class="details"><div class="blank">pick a service</div></div>`;
+  const pods = podsOf(d, CL.env), st = depState(pods, d.rolling === CL.env), env = CL.env, prot = env === 'dev31';
+  const app = byId(d.name);
+  const marks = ps => ps.map(p => p.state === 'starting' ? 'start' : p.state === 'failing' ? 'fail' : 'ok');
+  const head = `<div class="dhead"><span class="t">${d.name}</span><span class="chip">@${env}</span><span class="grow"></span>
+    <span class="ibs">${app ? pivot('apps', `${d.name} in Apps`) : ''}${openInPulse(d.name)}</span></div>`;
+  const open = (set, k) => CL[set] && CL[set][k];
+  const chev = (set, k) => `<span data-cl-open="${set}|${k}">${ic(open(set, k) ? 'chevD' : 'chevR')}</span>`;
+
+  // The deployment: its fields and what can be done with it, together.
+  const deployFields = (tags, who) => fields([
+    ['State', `<span class="cellrow"><span class="dot ${STATE_DOT[st]}"></span>${stateWord(st)}</span>`],
+    ['Tag', `<span style="color:var(--fg)">${tags[env]}</span>`],
+    ['Pods', podsBar(marks(pods), pods.filter(p => p.state === 'ready').length)],
+    ['Deployed', who],
+    ['Revision', '59'],
+    prot ? ['Env', `<span class="errc">${ic('lock')} protected</span>`] : null,
+  ]);
+  const deployActions = partName => actionsRow([btn('rocket', 'Deploy…', `data-cl-deploy="${partName || ''}"`, 'primary'), btn('restart', 'Redeploy', 'data-cl-redeploy'), btn('bell', 'Notify ▾')]);
+  const deployment = d.parts
+    ? panel('Deployment', fields([['State', `<span class="cellrow"><span class="dot ${STATE_DOT[st]}"></span>${stateWord(st)}</span>`], ['Pods', podsBar(marks(pods), pods.filter(p => p.state === 'ready').length)], ['Revision', '59'], ['Restarted', '21 h ago']]) + actionsRow([btn('restart', 'Redeploy', 'data-cl-redeploy'), btn('bell', 'Notify ▾')]))
+    : panel('Deployment', deployFields(d.tag, '2 h ago · j.doe') + deployActions());
+
+  // frontendapp: its apps, each with its own tag and deploy; a row opens in place.
+  const A = '150px 70px 240px 120px';
+  const parts = d.parts ? panel(`Apps · ${d.parts.length}`, table(A, ['APP', 'TAG', 'PORT', 'URL', ''], d.parts.map(x => {
+    const row = trow(A, [`<span class="cellrow">${chev('parts', x.app)}${x.app}</span>`, `<span class="${x.tag[env] === x.tag.dev33 ? '' : 'warn'}">${x.tag[env]}</span>`, `<span class="mute">${x.port}</span>`, `<span style="color:var(--accent)">${urlOf(x, env).replace('https://', '')}</span>`, `<span class="abtn small primary" data-cl-deploy="${x.app}">${ic('rocket')}Deploy…</span>`]);
+    if (!open('parts', x.app)) return row;
+    const envTags = ENVS.map(e => `<span class="envtag ${e === env ? 'on' : ''}"><span style="color:${e === 'dev31' ? 'var(--err)' : 'var(--env)'}">@${e}</span>${x.tag[e]}</span>`).join('');
+    return row + `<div class="inrow">${fields([['Init container', `init-${x.app}`], ['Deployed', '2 h ago · j.doe'], ['Config', `<span style="color:var(--accent);cursor:pointer" data-cl-config>${x.app}.yml</span>`]])}<div class="envtags">${envTags}</div></div>`;
+  }))) : '';
+
+  // Pods: a row opens in place: its facts, containers, startup, env and its actions.
+  const P = '92px 44px 64px 130px 130px';
+  const usageCell = (v, req, text) => `<span class="cellrow">${ubar(v, req)}<span class="mute">${text}</span></span>`;
+  const podDetail = p => {
+    const K = '120px 140px 90px';
+    const containers = [{ n: d.parts ? 'frontendapp-nginx' : d.name, ports: d.parts ? '8080–8088' : '8080', probe: 'GET /healthz' }, ...(d.parts ? [] : [{ n: 'istio-proxy', ports: '15090', probe: '—' }])];
+    const ctable = table(K, ['CONTAINER', 'STATE', 'PORTS', 'PROBE', { t: 'RESTARTS', r: 1 }], containers.map((c, i) => trow(K, [`<span>${c.n}</span>`, stateWord('running'), `<span class="mute">${c.ports}</span>`, `<span class="mute">${c.probe}</span>`, `<span class="warn r">${i === 0 && p.restarts ? `↻ ${p.restarts}` : ''}</span>`])));
+    const startup = d.parts ? table('90px 60px', ['INIT CONTAINER', 'ENDED', 'TOOK'], d.parts.map((x, i) => trow('90px 60px', [`<span class="cellrow">${square('ready')}init-${x.app}</span>`, `<span class="mute">20:04:${String(6 + i * 4).padStart(2, '0')}</span>`, `<span class="mute">${[2, 15, 2, 2, 3, 2][i]} s</span>`]))) : '';
+    const envVars = table('minmax(0,2fr)', ['VARIABLE', 'VALUE'], [['DEPLOY_ENV', 'dev'], ['TADASTACK', env], ['POD_NAMESPACE', env]].map(([k, v]) => trow('minmax(0,2fr)', [`<span>${k}</span>`, `<span class="mute">${v}</span>`])));
+    return `<div class="inrow">${fields([['Node', 'gke-…-tvxc'], ['IP', '10.120.138.245'], ['QoS', 'Burstable'], ['Started', p.age + ' ago'], ['Conditions', 'Ready · Initialized · Scheduled']])}
+      ${actionsRow([btn('logs', 'Logs', `data-cl-podlogs="${p.name}"`), btn('ports', 'Port-forward…', 'data-cl-forward'), btn('term', 'Shell…', 'data-cl-shell', 'danger')])}
+      ${ctable}${startup ? `<div class="sub">${startup}</div>` : ''}<div class="sub">${envVars}</div></div>`;
+  };
+  const podsPanel = panel(`Pods · ${pods.length}`, pods.length ? table(P, ['POD', 'STATE', 'AGE', { t: 'RESTARTS', r: 1 }, 'CPU', 'MEMORY'], pods.map(p => {
+    const row = trow(P, [`<span class="cellrow">${chev('pods', p.name)}${square(p.state)}${p.name.slice(d.name.length + 1)}</span>`, stateWord(p.state), `<span class="mute">${p.age}</span>`, `<span class="warn r">${p.restarts ? `↻ ${p.restarts}` : ''}</span>`, usageCell(p.cpu, 40, `${p.cpu}m`), usageCell(p.mem, 60, `${p.mem * 4}Mi`)]);
+    return open('pods', p.name) ? row + podDetail(p) : row;
+  })) + actionsRow([btn('plus', 'Scale…', '', 'danger')]) : '<div class="line"><span class="dimc">no pod</span></div>');
+
+  // Logs: on the page, every pod's lines (one pod's when picked from its row).
+  const lines = Array.from({ length: 14 }, (_, i) => { const k = i % 7; const pod = pods.length ? pods[i % pods.length].name.slice(-5) : '-'; return k === 3 ? `<span class="w">12:0${i % 10}:1${i % 6}  ${pod}  WRN slow query entities.find 812ms</span>` : k === 5 ? `<span class="e">12:0${i % 10}:2${i % 6}  ${pod}  ERR publish failed: channel closed</span>` : `12:0${i % 10}:0${i % 6}  ${pod}  INF GET /v1/entities 200 12ms`; }).join('\n');
+  const logs = panel(`Logs${CL.podLogs ? ` · ${CL.podLogs.slice(-5)}` : ''}`, `<div class="filter" style="margin:4px 4px 6px">filter</div><div class="content" style="height:220px;overflow:auto;color:var(--fg);padding:0 8px">${lines}</div>`,
+    `<span class="seg"><span class="on">all</span><span>warn</span><span>error</span></span>${CL.podLogs ? ib('x', 'every pod', 'data-cl-podlogs=""') : ''}${ib('term', 'open as a tab')}`);
+
+  const history = panel('History', table('110px 190px', ['WHEN', 'WHO', 'CHANGE'], [['2 h ago', 'j.doe', `${d.tag.dev33} → ${d.tag[env]}`], ['1 d ago', 'f.lastname', '1.63.9 → 1.64.0'], ['3 d ago', 'ci', '1.63.8 → 1.63.9']].map(h => trow('110px 190px', [`<span class="mute">${h[0]}</span>`, `<span>${h[1]}</span>`, `<span class="mute">${h[2]}</span>`]))));
+  const envs = d.parts ? '' : panel('Envs', table('170px 64px', ['ENV', 'TAG', 'PODS'], ENVS.map(e => {
+    const ps = podsOf(d, e);
+    return trow('170px 64px', [`<span style="color:${e === 'dev31' ? 'var(--err)' : 'var(--env)'}">@${e}${e === 'dev31' ? ' 🔒' : ''}</span>`, `<span class="${d.tag[e] === d.tag[env] ? '' : 'mute'}">${d.tag[e]}</span>`, podsBar(marks(ps), ps.filter(p => p.state === 'ready').length)], `style="cursor:pointer" data-cl-env="${e}"`).replace('class="tr"', `class="tr ${e === env ? 'sel' : ''}"`);
+  })));
+  const containers = panel(`Containers · ${d.parts ? 1 : 2}`, table('minmax(0,2fr)', ['CONTAINER', 'IMAGE'], (d.parts ? [['frontendapp-nginx', `frontendapp:${d.tag[env]}`]] : [[d.name, `${d.name}:${d.tag[env]}`], ['istio-proxy', 'proxyv2:1.20.3']]).map(([n, i]) => trow('minmax(0,2fr)', [`<span>${n}</span>`, `<span class="mute">registry/…/${i}</span>`]))));
+  const body = `<div class="dash"><div class="c3">${deployment}${parts}${podsPanel}${logs}</div><div class="c2">${envs}${history}${containers}</div></div>`;
+  return `<div class="details">${head}<div class="scroll">${body}</div></div>`;
+}
+
+// The matrix: services × envs, the whole width; a cell shows that service on that env.
+function clusterMatrix(deps) {
+  const rows = deps.map(d => `<tr><td class="first">${d.name}</td>${ENVS.map(e => `<td data-cl-cell="${d.name}|${e}" class="${d.tag[e] === d.tag[CL.env] ? '' : 'mute'}">${d.tag[e]}</td>`).join('')}</tr>`).join('');
+  return `<div class="details"><div class="dhead">${ib('back', 'back to the services', 'data-cl-mode="env"')}<span class="t">Branch matrix</span></div>
+    <div class="scroll" style="overflow:auto;padding:8px 12px"><table class="mx"><colgroup><col style="width:220px">${ENVS.map(() => '<col style="width:150px">').join('')}</colgroup><tr><th>SERVICE</th>${ENVS.map(e => `<th>${e}${e === 'dev31' ? ' 🔒' : ''}</th>`).join('')}</tr>${rows}</table></div></div>`;
+}
+
+function clusterView() {
+  const deps = deployed();
+  if (CL.mode === 'matrix') return `<div class="split">${clusterMatrix(deps)}</div>`;
+  return `<div class="split" id="appsplit">${clusterList(deps)}<div class="divider" id="divider"></div>${clusterDetails()}</div>`;
+}
+
 // ---- Not designed yet -----------------------------------------------------------------
 function todoView(t) {
   return `<div class="side"><div class="head"><span class="t">${t}</span></div><div class="filter">filter</div><div class="empty">…its list, as today</div></div>
@@ -425,10 +699,32 @@ function closeModal(go) { document.querySelector('.veil')?.remove(); if (go) toa
 
 document.addEventListener('click', e => {
   const m = e.target.closest('[data-modal]');
-  if (m) { const a = byId(S.sel); closeModal(m.dataset.modal === 'go' ? `deploying ${a.branch || 'main'} to ${S.pendingEnv}…` : null); return; }
+  if (m) { closeModal(m.dataset.modal === 'go' ? `deploying ${S.act === 'cluster' ? S.pendingTo : 'main'} to ${S.pendingEnv}…` : null); return; }
   const mi = e.target.closest('.mi');
   if (mi) { const d = mi.dataset.do; if (d.startsWith('toast:')) toast(d.slice(6)); if (d.startsWith('switch:')) toast(`switched to ${d.slice(7)}`); closeMenu(); return; }
   if (menuEl && !e.target.closest('.menu')) closeMenu();
+  if (S.act === 'cluster') {
+    const t = e.target;
+    const mode = t.closest('[data-cl-mode]'); if (mode) { CL.mode = mode.dataset.clMode; render(); return; }
+    const tog = t.closest('[data-cl-toggle]'); if (tog) { CL.open[tog.dataset.clToggle] = !CL.open[tog.dataset.clToggle]; render(); return; }
+    const op = t.closest('[data-cl-open]'); if (op) { const [set, k] = op.dataset.clOpen.split('|'); CL[set][k] = !CL[set][k]; render(); return; }
+    const pl = t.closest('[data-cl-podlogs]'); if (pl) { CL.podLogs = pl.dataset.clPodlogs; render(); return; }
+    const dep = t.closest('[data-cl-dep]'); if (dep) { CL.sel = dep.dataset.clDep; CL.podLogs = ''; render(); return; }
+    const cell = t.closest('[data-cl-cell]'); if (cell) { const [d, env] = cell.dataset.clCell.split('|'); CL.sel = d; CL.env = env; CL.mode = 'env'; render(); return; }
+    const envRow = t.closest('[data-cl-env]'); if (envRow) { CL.env = envRow.dataset.clEnv; render(); return; }
+    const dp = t.closest('[data-cl-deploy]');
+    if (dp) {
+      const d = deployed().find(x => x.name === CL.sel), p = dp.dataset.clDeploy && d.parts.find(x => x.app === dp.dataset.clDeploy);
+      deployPicker(d.name, CL.env, p ? p.tag : d.tag, p ? p.app : null); return;
+    }
+    if (t.closest('[data-cl-redeploy]')) { toast('redeploy: asks first, then restarts its pods on the same image'); return; }
+    if (t.closest('[data-cl-forward]')) { openPicker({ title: 'Port-forward to localhost', placeholder: 'search ports', groups: [{ label: 'ITS PORTS', options: [8080, 8081, 8082, 8083, 8084, 8085, 8088].map(n => ({ value: n, label: `:${n}`, detail: { 8080: 'nginx', 8081: 'cbapp-http', 8082: 'mtapp-http', 8083: 'monapp-http', 8084: 'rdapp-http', 8085: 'shapp-http', 8088: 'fcdn-http' }[n] })) }], onPick: o => toast(`localhost:${o.value} → pod :${o.value}`) }); return; }
+    if (t.closest('[data-cl-shell]')) { toast('asks first, then a terminal in the pod'); return; }
+    if (t.closest('[data-cl-config]')) { toast('the configmap file, read only, in a modal'); return; }
+    const pm = t.closest('[data-pulse-menu]'); if (pm) { const r = pm.getBoundingClientRect(); openMenu(r.right - 220, r.bottom + 2, pulseItems(pm.dataset.pulseMenu)); e.stopPropagation(); return; }
+    const pv = t.closest('[data-pivot]'); if (pv) { S.act = 'apps'; S.sel = CL.sel; S.drill = null; render(); return; }
+    return;
+  }
   if (S.act !== 'apps') return;
   const a = byId(S.sel);
   const pm = e.target.closest('[data-pulse-menu]');
@@ -436,6 +732,7 @@ document.addEventListener('click', e => {
   const pv = e.target.closest('[data-pivot]');
   if (pv && !e.target.closest('[data-deploy]')) {
     const where = { cluster: `Cluster: ${a.id} on ${pv.dataset.env || 'dev35'}`, terminals: 'Terminals: that shell', ports: 'Ports: :5800' }[pv.dataset.pivot];
+    if (pv.dataset.pivot === 'cluster') { const fe = a.id.startsWith('front-end/'); CL.sel = fe ? 'frontendapp' : a.id; if (fe) CL.parts[nameOf(a)] = true; CL.env = pv.dataset.env || CL.env; CL.mode = 'env'; }
     S.act = pv.dataset.pivot; S.drill = null; render(); toast(`→ ${where} (selected there)`); e.stopPropagation(); return;
   }
   const dep = e.target.closest('[data-deploy]');
@@ -469,7 +766,7 @@ document.addEventListener('mousedown', e => {
 function render() {
   renderActs();
   const t = ACTS.find(a => a[0] === S.act)[1];
-  document.getElementById('main').innerHTML = S.act === 'pulses' ? pulseView() : S.act === 'apps' ? appsView() : todoView(t);
+  document.getElementById('main').innerHTML = S.act === 'pulses' ? pulseView() : S.act === 'apps' ? appsView() : S.act === 'cluster' ? clusterView() : todoView(t);
 }
 render();
 </script>

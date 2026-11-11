@@ -172,9 +172,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("note.confirm_delete", "delete", "Notes", Some("Modal && DeleteNote"), ["enter"], crate::views::note_view::ConfirmDeleteNote),
         spec!("view.toggle_rendered", "source or rendered", "View", Some("FileView || NoteView"), ["ctrl-shift-e"], crate::views::ToggleRendered),
         // Service
-        spec!("svc.save", "deploy", "Service", Some("ServiceView"), ["ctrl-s"], sv::SaveTag),
+        spec!("svc.save", "deploy…", "Service", Some("ServiceView"), ["ctrl-s"], sv::SaveTag),
         spec!("svc.logs", "logs", "Service", Some("ServiceView && !TextInput"), ["l"], sv::OpenLogs),
-        spec!("svc.tag", "edit tag", "Service", Some("ServiceView && !TextInput"), ["t"], sv::EditTag),
         spec!("svc.redeploy", "redeploy", "Service", Some("ServiceView && !TextInput"), ["r"], sv::Redeploy),
         spec!("svc.notify", "notify", "Service", Some("ServiceView && !TextInput"), ["b"], sv::NotifyMenu),
         spec!("svc.confirm", "confirm", "Service", Some("Modal && ServiceModal"), ["enter"], sv::ConfirmModal),
@@ -235,6 +234,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("send.9", "pane 9", "Send to", Some("SendTo"), ["9"], crate::send_to::PickTarget(9)),
         spec!("send.new", "new window", "Send to", Some("SendTo"), ["n"], crate::send_to::PickNewWindow),
         // Menus and modals
+        spec!("picker.down", "down", "Picker", Some("Picker"), ["down"], devdeck_ui::picker::PickerDown),
+        spec!("picker.up", "up", "Picker", Some("Picker"), ["up"], devdeck_ui::picker::PickerUp),
         spec!("menu.down", "down", "Menus", Some("Menu"), ["down"], ov::MenuDown),
         spec!("menu.up", "up", "Menus", Some("Menu"), ["up"], ov::MenuUp),
         spec!("menu.confirm", "pick", "Menus", Some("Menu"), ["enter", "space"], ov::MenuConfirm),

@@ -52,9 +52,11 @@ fn modals(main: AnyWindowHandle, cx: &mut TestAppContext) -> usize {
     cx.update(|cx| layer_state(main, cx).1)
 }
 
-fn type_tag(main: AnyWindowHandle, cx: &mut TestAppContext, tag: &str) {
-    cx.simulate_keystrokes(main, "t ctrl-a");
+/// Deploy… (ctrl+s) and `tag` picked as typed: on to the checks and the confirmation.
+fn deploy_tag(main: AnyWindowHandle, cx: &mut TestAppContext, tag: &str) {
+    cx.simulate_keystrokes(main, "ctrl-s");
     cx.simulate_input(main, tag);
+    cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
 }
 
@@ -66,10 +68,7 @@ fn tag_edit_confirm_rollout_ready(cx: &mut TestAppContext) {
     let view = open_service(&shell, cx, "dev35", "entityservice");
     let before = cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().clone());
     assert!(!cx.read(|cx| view.read(cx).dirty(cx)));
-    type_tag(main, cx, "lan-160");
-    assert!(cx.read(|cx| view.read(cx).dirty(cx)), "unsaved marker");
-    cx.simulate_keystrokes(main, "ctrl-s");
-    cx.run_until_parked();
+    deploy_tag(main, cx, "lan-160");
     assert_eq!(modals(main, cx), 1, "a confirmation, not a deploy");
     assert!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").is_none()));
     cx.simulate_keystrokes(main, "tab enter");
@@ -94,16 +93,16 @@ fn a_broken_tag_keeps_failing_until_another_deploy_replaces_it(cx: &mut TestAppC
     let c = cluster(&shell, cx);
     let _view = open_service(&shell, cx, "dev35", "graphservice");
     let tag = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag());
-    type_tag(main, cx, "lan-broken");
-    cx.simulate_keystrokes(main, "ctrl-s tab enter");
+    deploy_tag(main, cx, "lan-broken");
+    cx.simulate_keystrokes(main, "tab enter");
     advance(cx, ROLLOUT_STEP * 4);
     let state = cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").map(|r| r.state.clone()));
     let Some(RolloutState::Failing { reason, .. }) = state else { panic!("failing: {state:?}") };
     assert!(reason.starts_with("image ") && reason.ends_with(":lan-broken not found"), "{reason}");
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().any(|p| p.tag == "lan-broken" && !p.ready)), "a pod stuck pulling");
     // The fix: another deploy, right away (nothing waits for the failing one).
-    type_tag(main, cx, &tag);
-    cx.simulate_keystrokes(main, "ctrl-s tab enter");
+    deploy_tag(main, cx, &tag);
+    cx.simulate_keystrokes(main, "tab enter");
     let replicas = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().replicas);
     advance(cx, ROLLOUT_STEP * replicas);
     let history = cx.read(|cx| c.read(cx).history("dev35", "graphservice").to_vec());
@@ -117,9 +116,7 @@ fn protected_envs_need_the_typed_name(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     let c = cluster(&shell, cx);
     let view = open_service(&shell, cx, "hades", "proxyapi");
-    type_tag(main, cx, "lan-161");
-    cx.simulate_keystrokes(main, "ctrl-s");
-    cx.run_until_parked();
+    deploy_tag(main, cx, "lan-161");
     assert_eq!(modals(main, cx), 1, "unlock asked first");
     cx.simulate_input(main, "Hades");
     cx.simulate_keystrokes(main, "enter");
@@ -132,8 +129,7 @@ fn protected_envs_need_the_typed_name(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.read(|cx| view.read(cx).unlocked));
     assert_eq!(modals(main, cx), 0);
-    cx.simulate_keystrokes(main, "ctrl-s");
-    cx.run_until_parked();
+    deploy_tag(main, cx, "lan-161");
     assert_eq!(modals(main, cx), 1, "now the confirmation");
     cx.simulate_keystrokes(main, "tab enter");
     cx.run_until_parked();
@@ -230,9 +226,8 @@ fn esc_in_an_input_returns_to_its_view_in_any_window(cx: &mut TestAppContext) {
     let detached = cx.windows().into_iter().find(|w| *w != main).expect("detached window");
     let focus = cx.read(|cx| view.read(cx).focus_handle(cx));
     cx.update_window(detached, |_, window, cx| focus.focus(window, cx)).unwrap();
-    cx.simulate_keystrokes(detached, "t");
-    let tag = cx.read(|cx| view.read(cx).tag.read(cx).focus_handle(cx));
-    assert!(cx.update_window(detached, |_, window, _| tag.is_focused(window)).unwrap(), "t edits the tag");
+    cx.simulate_keystrokes(detached, "ctrl-s");
+    assert!(cx.update(|cx| devdeck_ui::overlay::layer_state(detached, cx).1 == 1), "Deploy… opens its picker there");
     cx.simulate_keystrokes(detached, "escape");
     assert!(cx.update_window(detached, |_, window, _| focus.is_focused(window)).unwrap(), "Esc gives the keys back to the view");
 }
@@ -242,15 +237,13 @@ fn esc_in_a_modal_input_closes_the_modal_and_esc_in_a_view_without_focus_goes_to
     let shell = start(cx, "esc-modal");
     let main = main_window(&shell, cx);
     let view = open_service(&shell, cx, "hades", "proxyapi");
-    type_tag(main, cx, "lan-1");
-    cx.simulate_keystrokes(main, "ctrl-s");
-    cx.run_until_parked();
+    deploy_tag(main, cx, "lan-1");
     assert_eq!(modals(main, cx), 1, "unlock modal with its input focused");
     cx.simulate_keystrokes(main, "escape");
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 0, "Esc closes the modal");
-    let tag = cx.read(|cx| view.read(cx).tag.read(cx).focus_handle(cx));
-    assert!(cx.update_window(main, |_, window, _| tag.is_focused(window)).unwrap(), "focus back where it was, not taken by the view");
+    let focus = cx.read(|cx| view.read(cx).focus_handle(cx));
+    assert!(cx.update_window(main, |_, window, _| focus.is_focused(window)).unwrap(), "focus back where it was: the view");
     // The gallery has inputs but no focus handle of its own: Esc goes to the pane area.
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(devdeck_core::layout::ViewRef::new("demo/gallery"), l.main().focused).map(|_| ()))));
@@ -328,9 +321,7 @@ fn a_deploy_confirmed_after_someone_deployed_is_refused_in_its_confirmation(cx: 
     let main = main_window(&shell, cx);
     let c = cluster(&shell, cx);
     let _view = open_service(&shell, cx, "dev35", "entityservice");
-    type_tag(main, cx, "lan-160");
-    cx.simulate_keystrokes(main, "ctrl-s");
-    cx.run_until_parked();
+    deploy_tag(main, cx, "lan-160");
     assert_eq!(modals(main, cx), 1);
     let hotfix = cx.update(|cx| {
         c.update(cx, |c, cx| {
