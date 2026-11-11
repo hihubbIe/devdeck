@@ -38,8 +38,9 @@ The interactive HTML prototype that was approved is the visual reference
 ## Visual language
 
 - Monospace everywhere (JetBrains Mono, bundled so the look is the same on every machine).
-- 13 px text, 24 px rows, 32 px tab strips, 1 px dividers, no shadows except floating
-  menus, no rounded cards except a few grouped blocks.
+- 13 px text (11 small, 16 for a stat tile's value), 24 px rows, 32 px tab strips, 1 px
+  dividers, no shadows except floating menus, no rounded cards except a few grouped
+  blocks: a dashboard-like view's panels and stat tiles.
 - Color carries state only and is always paired with a mark: a filled dot running or
   ready (green), the error icon and the exit code when failed (red), the warning
   triangle for a missing tool or a warning (amber), the turning loader while a run
@@ -757,6 +758,14 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   commands take 3/5 of the width, their names a column as wide as the longest; how long
   a run has run is redrawn every 30 s while the view shows and something runs. Found
   tools on one line, each missing one with what it blocks.
+- 2026-11-11 (user: "it feels empty, like one background") Dashboard-like views are made
+  of panels (`devdeck_ui::panel`: `t.bar` surface, `t.line` border, `t.radius_m` corners,
+  a header strip with title, count and actions) standing on the page's `t.bg`, and open
+  with stat tiles (`devdeck_ui::stat_tile`: a value in the new `t.text_large`, 16 px
+  before scale, its caption under it). The app view: running, deployed, branch (opens
+  the git panel), terminals, tools; then Commands (tiers as small headings), Git, Notes
+  | Deployments (a table, rules between its columns), Terminals, Tools. A running
+  command's row has a faint `t.ok` tint.
 
 ## Open questions
 

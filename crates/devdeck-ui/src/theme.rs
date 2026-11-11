@@ -40,6 +40,8 @@ pub struct Theme {
     pub font: SharedString,
     pub text: Pixels,
     pub text_small: Pixels,
+    /// A value worth seeing at a glance (a stat tile's).
+    pub text_large: Pixels,
     pub line_height: Pixels,
     // sizes
     pub row_h: Pixels,
@@ -109,6 +111,7 @@ impl Theme {
             font: "JetBrains Mono NL".into(),
             text: s(13.),
             text_small: s(11.),
+            text_large: s(16.),
             line_height: s(20.),
             row_h: s(24.),
             tab_h: s(32.),

@@ -4,7 +4,7 @@
 use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Point, Render, SharedString,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Point, Render, SharedString,
     Stateful, StatefulInteractiveElement, Styled, Svg, Window, div, prelude::*,
 };
 use std::cell::Cell;
@@ -290,6 +290,63 @@ pub fn tree_row(
         .gap_1()
         .whitespace_nowrap()
         .child(chevron)
+}
+
+/// A grouped block of a dashboard-like view (DESIGN: "a few grouped blocks"): its own
+/// surface, a border, rounded corners; a header strip with its title (and count) on the
+/// left and its `actions` on the right, over a soft rule; then `body`, padded. Panels
+/// stand apart on the page's background.
+pub fn panel(name: &str, title: impl Into<SharedString>, actions: Vec<AnyElement>, body: impl IntoElement, t: &Theme) -> gpui::Div {
+    let (head, content) = (format!("{name}-head"), name.to_string());
+    div()
+        .debug_selector(move || content)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .bg(t.bar)
+        .border_1()
+        .border_color(t.line)
+        .rounded(t.radius_m)
+        .overflow_hidden()
+        .child(
+            div()
+                .debug_selector(move || head)
+                .flex_none()
+                .h(t.tab_h)
+                .px_3()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .border_b_1()
+                .border_color(t.line_soft)
+                .child(label(title).flex_1().min_w_0().text_color(t.mute))
+                .children(actions),
+        )
+        .child(div().px_1().py_1().flex().flex_col().min_w_0().child(body))
+}
+
+/// A value worth seeing at a glance, with what it is under it: a dashboard's tile, on a
+/// panel's surface. `color` is the value's (a state's, or the text's); `name` its id.
+pub fn stat_tile(name: &str, caption: impl Into<SharedString>, value: impl Into<SharedString>, color: Hsla, t: &Theme) -> Stateful<gpui::Div> {
+    let selector = name.to_string();
+    div()
+        .id(SharedString::from(name.to_string()))
+        .debug_selector(move || selector)
+        .flex_1()
+        .min_w(t.size(110.))
+        .px_3()
+        .py_2()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .bg(t.bar)
+        .border_1()
+        .border_color(t.line)
+        .rounded(t.radius_m)
+        .child(div().min_w_0().truncate().text_size(t.text_large).text_color(color).child(value.into()))
+        .child(label(caption).text_size(t.text_small).text_color(t.mute))
 }
 
 /// Section heading inside a view: muted text over a soft hairline.

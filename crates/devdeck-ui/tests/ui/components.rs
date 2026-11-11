@@ -232,3 +232,34 @@ fn a_go_action_clicks_and_says_where_it_leads(cx: &mut TestAppContext) {
     vcx.simulate_click(b.center(), Modifiers::none());
     assert_eq!(clicks.get(), 1);
 }
+
+#[gpui::test]
+fn a_panel_heads_its_body_with_its_title_and_actions(cx: &mut TestAppContext) {
+    let window = host(cx, |_, cx| {
+        let t = devdeck_ui::theme(cx).clone();
+        let actions = vec![icon_button("p-act", Icon::Plus, "add", &t).debug_selector(|| "p-act".into()).into_any_element()];
+        div().w(logical(400.)).child(devdeck_ui::panel("p", "Notes · 2", actions, div().debug_selector(|| "p-body".into()).h(logical(48.)), &t)).into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let panel = vcx.debug_bounds("p").expect("drawn");
+    let head = vcx.debug_bounds("p-head").expect("drawn");
+    let body = vcx.debug_bounds("p-body").expect("drawn");
+    let act = vcx.debug_bounds("p-act").expect("drawn");
+    assert!(head.origin.y < body.origin.y, "the header over the body");
+    assert!(panel.contains(&body.origin) && panel.contains(&body.bottom_right()), "the body inside the panel");
+    assert!(act.origin.x > head.origin.x + head.size.width / 2., "its actions on the right");
+}
+
+#[gpui::test]
+fn a_stat_tile_clicks(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let c = clicks.clone();
+    let window = host(cx, move |_, cx| {
+        let (c, t) = (c.clone(), devdeck_ui::theme(cx).clone());
+        devdeck_ui::stat_tile("s", "running", "1 of 3", t.ok, &t).on_click(move |_, _, _| c.set(c.get() + 1)).into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let s = vcx.debug_bounds("s").expect("drawn");
+    vcx.simulate_click(s.center(), Modifiers::none());
+    assert_eq!(clicks.get(), 1);
+}

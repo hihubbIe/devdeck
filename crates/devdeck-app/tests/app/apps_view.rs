@@ -287,6 +287,15 @@ fn the_details_header_holds_the_views_icons(cx: &mut TestAppContext) {
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
     let terminal = vcx.debug_bounds("details-action-app_view.terminal").expect("the app view's own icon, in the one header");
     assert!(vcx.debug_bounds("app-facts").is_some(), "the view keeps its facts, not a second header");
+    // A dashboard: its numbers on top, its parts in panels.
+    let stats = vcx.debug_bounds("app-stats").expect("the numbers");
+    for name in ["stat-running", "stat-deployed", "stat-terminals", "stat-tools"] {
+        assert!(vcx.debug_bounds(name).is_some(), "{name}");
+    }
+    for name in ["app-commands", "app-notes", "app-deployments", "app-terminals", "app-tools"] {
+        let panel = vcx.debug_bounds(name).unwrap_or_else(|| panic!("{name}"));
+        assert!(panel.origin.y > stats.origin.y, "{name} under the numbers");
+    }
     vcx.simulate_click(terminal.center(), Modifiers::none());
     vcx.run_until_parked();
     let top = details(&shell, cx).and_then(|s| s.last().cloned()).expect("drilled");
