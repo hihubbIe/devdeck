@@ -70,6 +70,11 @@ pub trait ClusterDriver {
     fn set_image(&self, _env: &str, _name: &str, _change: ImageChange, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
         None
     }
+    /// Sets a part's image: the init container at `change.index` ([`Deployment::part`]);
+    /// as [`ClusterDriver::set_image`].
+    fn set_part_image(&self, _env: &str, _name: &str, _change: ImageChange, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
     /// Redeploys a deployment (`kubectl rollout restart`, R7.3, R7.5); the answer goes to
     /// [`Cluster::write_done`]. `None`: this driver can't deploy.
     fn restart(&self, _env: &str, _name: &str, _restart: Restart, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
@@ -418,6 +423,12 @@ impl Cluster {
     /// The command a tag change would run.
     pub fn command_for(&self, env: &str, name: &str, tag: &str) -> Option<String> {
         self.deployment(env, name).map(|d| set_image_command(&self.driver.namespace(env), d, tag))
+    }
+
+    /// The command a part's tag change runs.
+    pub fn part_command_for(&self, env: &str, name: &str, part: &str, tag: &str) -> Option<String> {
+        let d = self.deployment(env, name)?;
+        d.part(part).map(|(_, c)| devdeck_core::cluster::set_part_command(&self.driver.namespace(env), d, c, tag))
     }
 
     /// The command a redeploy is the equivalent of.

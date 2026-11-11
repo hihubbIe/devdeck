@@ -1,8 +1,9 @@
 //! Cluster as a full view (docs/plans/cluster-view.md, 4b): its list, then the selected
 //! service's page; the branch matrix the whole width; the page's panels, its pod rows
-//! opening in place, its env rows and its app.
+//! opening in place, its env rows and its app. 4c: a deployment's parts (the front-end
+//! apps inside `frontendapp`), each deployed on its own.
 
-use devdeck_app::cluster::LOAD_DELAY;
+use devdeck_app::cluster::{Cluster, LOAD_DELAY, ROLLOUT_STEP};
 use devdeck_app::shell::Shell;
 use devdeck_app::sidebar::{Activity, Sidebar};
 use devdeck_app::views::service_view::ServiceView;
@@ -148,4 +149,61 @@ fn an_env_row_shows_that_env_and_the_header_goes_to_its_app(cx: &mut TestAppCont
     vcx.run_until_parked();
     assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Apps);
     assert_eq!(cx.read(|cx| s.read(cx).selected.clone()).as_deref(), Some("graphservice"));
+}
+
+fn cluster(shell: &Entity<Shell>, cx: &TestAppContext) -> Entity<Cluster> {
+    cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).cluster.clone().unwrap())
+}
+
+#[gpui::test]
+fn a_part_deploys_on_its_own_through_the_picker_and_its_confirmation(cx: &mut TestAppContext) {
+    let shell = start(cx, "cl-parts");
+    select(&shell, cx, "frontendapp");
+    let main = main_window(&shell, cx);
+    let s = sidebar(&shell, cx);
+    let env = cx.read(|cx| s.read(cx).list_env(cx)).unwrap();
+    let c = cluster(&shell, cx);
+    let before = cx.read(|cx| c.read(cx).deployment(&env, "frontendapp").cloned()).expect("frontendapp runs there");
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    for i in 0..before.init_containers.len() {
+        assert!(vcx.debug_bounds(Box::leak(format!("part-{i}").into_boxed_str())).is_some(), "a row per app in it");
+    }
+    let deploy = vcx.debug_bounds("part-deploy-0").expect("its Deploy…");
+    vcx.simulate_click(deploy.center(), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(vcx.update(|_, cx| devdeck_ui::overlay::layer_state(main, cx).1), 1, "the picker");
+    vcx.simulate_input("v9.9.9");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("deploy-part").is_some(), "the confirmation says only that app changes");
+    vcx.simulate_keystrokes("tab enter");
+    vcx.run_until_parked();
+    cx.executor().advance_clock(ROLLOUT_STEP * (before.replicas + 1));
+    cx.run_until_parked();
+    let after = cx.read(|cx| c.read(cx).deployment(&env, "frontendapp").cloned()).unwrap();
+    let part = before.init_containers[0].image.short_name().to_string();
+    assert_eq!(after.part(&part).unwrap().1.image.label(), "v9.9.9", "its init container's image");
+    assert_eq!(after.main().image, before.main().image, "the deployment's own image stays");
+    assert_eq!(after.init_containers[1..], before.init_containers[1..], "the other apps keep theirs");
+    let last = cx.read(|cx| c.read(cx).history(&env, "frontendapp").last().cloned()).expect("recorded");
+    assert_eq!((last.from, last.to), (format!("{part}:{}", before.init_containers[0].image.label()), format!("{part}:v9.9.9")));
+    assert_eq!(last.outcome, "done", "followed to its end");
+}
+
+#[gpui::test]
+fn a_front_end_apps_deployments_are_its_part_in_frontendapp(cx: &mut TestAppContext) {
+    let shell = start(cx, "cl-part-app");
+    let s = sidebar(&shell, cx);
+    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Apps, "front-end/controlboardapp", cx)));
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let c = cluster(&shell, cx);
+    let tag = cx.read(|cx| c.read(cx).deployment("dev35", "frontendapp").and_then(|d| d.part("controlboardapp").map(|(_, k)| k.image.label()))).expect("its part");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    let row = vcx.debug_bounds("deployment-dev35").expect("its deployment on dev35");
+    vcx.simulate_click(row.center(), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Cluster);
+    assert_eq!(details(&shell, cx), Some(vec![svc("dev35", "frontendapp")]), "the deployment it's in");
+    assert!(!tag.is_empty());
 }

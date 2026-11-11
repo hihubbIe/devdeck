@@ -796,6 +796,17 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   on every env, so a page reads every env as the matrix does; a row shows that env),
   History, Containers. The Git and Logs buttons go (its app's git is in Apps; the logs
   are on the page, `l` still opens them on their own).
+- 2026-11-11 (user) A deployment's parts: an init container whose image is an app's
+  (`frontendapp` copies each front-end app into the volume its nginx serves) is that
+  deployment's part, deployed on its own. The model reads init containers
+  (`Deployment::init_containers`, `part`); a deployment's version is all its images, so a
+  part's change is a deploy, followed and kept in history as `monitorapp:v1.48.3 →
+  monitorapp:v1.49.0`. Its write is the same JSON Patch on
+  `initContainers/<i>` (`set_init_image`, `ClusterDriver::set_part_image`), through the
+  same picker, checks and confirmation, which says only that app changes. The service
+  page gets an Apps panel (each part's tag, its Deploy…, its app); a page with parts has
+  no Envs (the server's tag is the same everywhere). An app's Deployments in Apps are its
+  part's tag "in frontendapp" (`links::part_app`), a row going to that page.
 
 ## Open questions
 

@@ -29,7 +29,7 @@
 
 use crate::cluster::{Cluster, PodScope, PodsInterest};
 use crate::danger::Confirmed;
-use devdeck_core::cluster::{DeployRecord, Deployment, HISTORY_KEPT, Progress, Rollout, RolloutState, assess, check_write, remember, restart_stamp};
+use devdeck_core::cluster::{DeployRecord, Deployment, HISTORY_KEPT, Image, Progress, Rollout, RolloutState, assess, check_write, part_label, remember, restart_stamp};
 use devdeck_core::state::{Deploys, Loaded, StateStore};
 use devdeck_kube::{ImageChange, Restart};
 use gpui::{Context, Task};
@@ -98,6 +98,24 @@ pub(crate) struct DeployState {
 fn image_with(d: &Deployment, tag: &str) -> Option<String> {
     let (_, c) = d.deploy_target().ok()?;
     Some(format!("{}:{tag}", c.image.repo))
+}
+
+/// What a deploy changed, from the images it ran before ([`Deployment::version`]): its tag,
+/// else the first part whose image moved (`monitorapp:v1.48.3`, [`part_label`]). The label
+/// before, the one now, the image now; the same images (a redeploy) give its tag twice.
+fn what_changed(before: &str, d: &Deployment) -> (String, String, String) {
+    let old: Vec<&str> = before.split(' ').collect();
+    let main = &d.main().image;
+    if let Some(was) = old.first().filter(|o| **o != main.raw) {
+        return (Image::parse(was).label(), d.tag(), main.raw.clone());
+    }
+    for (i, c) in d.init_containers.iter().enumerate() {
+        if let Some(was) = old.get(i + 1).filter(|o| **o != c.image.raw) {
+            let was = Image::parse(was);
+            return (format!("{}:{}", was.short_name(), was.label()), part_label(c), c.image.raw.clone());
+        }
+    }
+    (d.tag(), d.tag(), main.raw.clone())
 }
 
 impl Cluster {
@@ -243,6 +261,36 @@ impl Cluster {
         Ok(())
     }
 
+    /// Why `to` can't go on `part` of `name` in `env` now, if it can't: every guard of a
+    /// write, then a part it has, not running `to` already.
+    pub fn part_blocked(&self, env: &str, name: &str, part: &str, to: &str, unlocked: bool, cx: &gpui::App) -> Option<String> {
+        if let Some(why) = self.write_blocked(env, name, unlocked, cx) {
+            return Some(why);
+        }
+        let d = self.deployment(env, name)?;
+        let Some((_, c)) = d.part(part) else { return Some(format!("{name} has no part {part}")) };
+        (format!("{}:{to}", c.image.repo) == c.image.raw).then(|| format!("{part} already runs {to}"))
+    }
+
+    /// Deploys `to` as `part` of `name` in `env` (its init container running that app,
+    /// [`Deployment::part`]), pinned to `from` (its image confirmed); followed as
+    /// [`Cluster::deploy`] is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn deploy_part(&mut self, env: &str, name: &str, part: &str, from: &str, to: &str, unlocked: bool, _: Confirmed, cx: &mut Context<Self>) -> Result<(), String> {
+        if let Some(why) = self.part_blocked(env, name, part, to, unlocked, cx) {
+            return Err(why);
+        }
+        let d = self.deployment(env, name).ok_or_else(|| format!("{name} isn't deployed in {env}"))?;
+        let (index, c) = d.part(part).ok_or_else(|| format!("{name} has no part {part}"))?;
+        let manager = self.field_manager(cx)?;
+        let change = ImageChange { index, container: c.name.clone(), from: from.to_string(), to: format!("{}:{to}", c.image.repo), manager: manager.clone() };
+        let pending = Pending { to_image: change.to.clone(), generation: None, redeploy: None, manager };
+        let driver = self.driver.clone();
+        #[allow(clippy::disallowed_methods)] // Confirmed above.
+        self.send(env, name, pending, move |cx| driver.set_part_image(env, name, change, cx), cx);
+        Ok(())
+    }
+
     /// Redeploys `name` in `env` (what `kubectl rollout restart` does), pinned to `image`
     /// (the one confirmed): its pod template's `restartedAt` set to now. The answer comes
     /// through [`Cluster::write_done`]; the rollout is followed from the watch.
@@ -344,26 +392,26 @@ impl Cluster {
         let mut changed = false;
         for d in map.values() {
             let key = (env.to_string(), d.name.clone());
-            let image = d.main().image.raw.clone();
-            let tag = d.tag();
+            // Every image it runs: a part's change is a deploy too.
+            let version = d.version();
             let Some(before) = self.dep.versions.get(&key).cloned() else {
                 // The baseline; a deploy left open by a devdeck that closed resumes or ends.
-                self.dep.versions.insert(key.clone(), (d.revision, image));
+                self.dep.versions.insert(key.clone(), (d.revision, version));
                 changed |= self.reopen(&key, d, now);
                 continue;
             };
             let by_revision = d.revision > 0 && before.0 > 0;
             // Without a revision, devdeck's own redeploy is known by its stamp.
             let our_stamp = self.dep.pending.get(&key).and_then(|p| p.redeploy.as_ref()).is_some_and(|(at, _)| d.restarted_at.as_deref() == Some(at.as_str()));
-            let deployed = if by_revision { d.revision > before.0 } else { image != before.1 || our_stamp };
+            let deployed = if by_revision { d.revision > before.0 } else { version != before.1 || our_stamp };
             // A new image under the same revision: the controller hasn't moved it yet.
             if deployed || !by_revision {
-                self.dep.versions.insert(key.clone(), (d.revision, image.clone()));
+                self.dep.versions.insert(key.clone(), (d.revision, version));
             }
             if !deployed {
                 continue;
             }
-            let from = devdeck_core::cluster::Image::parse(&before.1).label();
+            let (from, tag, image) = what_changed(&before.1, d);
             let ours = self.dep.pending.get(&key).is_some_and(|p| match &p.redeploy {
                 // Any redeploy keeps the image: devdeck's is the one with its stamp.
                 Some((at, _)) => p.to_image == image && d.restarted_at.as_deref() == Some(at.as_str()),
@@ -417,9 +465,9 @@ impl Cluster {
         let open = |r: &&DeployRecord| r.outcome.is_empty() || r.outcome.starts_with("failing");
         let Some(last) = self.dep.history.get(key).and_then(|h| h.last()).filter(open).cloned() else { return false };
         let same = if last.redeploy() {
-            d.tag() == last.to && last.revision.is_none_or(|r| r == d.revision) && (last.restarted_at.is_none() || last.restarted_at == d.restarted_at)
+            d.runs(&last.to) && last.revision.is_none_or(|r| r == d.revision) && (last.restarted_at.is_none() || last.restarted_at == d.restarted_at)
         } else {
-            d.tag() == last.to
+            d.runs(&last.to)
         };
         if same {
             let r = Rollout { from: last.from, to: last.to, image: d.main().image.raw.clone(), by: last.by, generation: 0, at_s: last.at_s.min(now), state: RolloutState::Rolling { ready: 0, of: d.replicas } };

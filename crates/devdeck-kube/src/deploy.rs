@@ -112,6 +112,23 @@ pub fn set_image(target: &Target, deployment: &str, change: &ImageChange) -> asy
     rx
 }
 
+/// Sets a part's image: as [`set_image`], on the init container at `change.index`
+/// (`/spec/template/spec/initContainers/<index>`).
+pub fn set_init_image(target: &Target, deployment: &str, change: &ImageChange) -> async_channel::Receiver<Result<u64, DeployError>> {
+    let (tx, rx) = async_channel::bounded(1);
+    let (target, deployment, change) = (target.clone(), deployment.to_owned(), change.clone());
+    runtime().spawn(async move {
+        let write = async {
+            match client(&target).await {
+                Ok((client, _user)) => patch(client, &target, &deployment, &change.manager, image_patch_in("initContainers", &change)).await,
+                Err(e) => Err(DeployError::Other(describe(&e, &target, DOING))),
+            }
+        };
+        let _ = tx.try_send(within_write(&target, "the image change", write).await);
+    });
+    rx
+}
+
 /// Redeploys: a JSON Patch that tests the container at `index` is named `container` and
 /// runs `image`, then adds `restartedAt` = `at` to the pod template's annotations, or, when
 /// it has none, adds the annotations whole (which replaces them, so it also tests
@@ -157,7 +174,12 @@ fn restart_patch(r: &Restart) -> serde_json::Value {
 
 /// The JSON Patch of `change`.
 fn image_patch(change: &ImageChange) -> serde_json::Value {
-    let container = format!("/spec/template/spec/containers/{}", change.index);
+    image_patch_in("containers", change)
+}
+
+/// The JSON Patch of `change` to the pod template's `list` (`containers`, `initContainers`).
+pub(crate) fn image_patch_in(list: &str, change: &ImageChange) -> serde_json::Value {
+    let container = format!("/spec/template/spec/{list}/{}", change.index);
     json!([
         {"op": "test", "path": format!("{container}/name"), "value": change.container},
         {"op": "test", "path": format!("{container}/image"), "value": change.from},

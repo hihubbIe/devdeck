@@ -109,14 +109,14 @@ impl AppView {
             return None;
         }
         let heading = match &via {
-            Some(p) if !rows.is_empty() => format!("Deployments · {} · as {p}", rows.len()),
+            Some(p) if !rows.is_empty() => format!("Deployments · {} · {p}", rows.len()),
             _ => format!("Deployments · {}", rows.len()),
         };
         let mut block = div().flex().flex_col();
         let note = |text: String, color: gpui::Hsla| div().px_2().h(t.row_h).flex().items_center().min_w_0().child(label(text).text_color(color));
         // A table: env, tag, pods, a rule between them.
         let cell = |d: gpui::Div| d.flex_none().h_full().flex().items_center().pr_2().border_r_1().border_color(t.line_soft);
-        for (i, (env, d)) in rows.iter().enumerate() {
+        for (i, (env, d, tag)) in rows.iter().enumerate() {
             let (ctx, name, env_name) = (self.ctx.clone(), d.name.clone(), env.name.clone());
             let (ctx2, name2, env2) = (ctx.clone(), name.clone(), env_name.clone());
             let progress = d.progress.label();
@@ -141,7 +141,7 @@ impl AppView {
                             .child(div().min_w_0().truncate().text_color(if env.protected { t.err } else { t.env }).child(format!("@{}", env.name)))
                             .when(env.protected, |r| r.child(icon(Icon::Protected, t.err, t).size(t.icon_small))),
                     )
-                    .child(label(d.tag()).flex_1().min_w_0())
+                    .child(label(tag.clone()).flex_1().min_w_0())
                     .child(devdeck_ui::pods_bar(&format!("pods-{}", env.name), &pod_marks(d), t))
                     .when_some(progress, |r, p| r.child(div().flex_none().text_color(t.warn).child(p.to_string())))
                     .child(
@@ -162,7 +162,7 @@ impl AppView {
         let cluster = services.cluster.clone()?;
         let all = services.catalog.apps.clone();
         let c = cluster.read(cx);
-        let (mut own, mut project) = (Vec::new(), Vec::new());
+        let (mut own, mut parts, mut project) = (Vec::new(), Vec::new(), Vec::new());
         let mut problems = Vec::new();
         let project_name = devdeck_core::links::project_of(&self.app);
         for env in &c.envs {
@@ -174,13 +174,23 @@ impl AppView {
             for d in deps.values() {
                 let image = d.main().image.short_name();
                 if devdeck_core::links::app_for(&d.name, image, &all).ok().flatten().as_deref() == Some(self.app.as_str()) {
-                    own.push((env.clone(), d.clone()));
+                    own.push((env.clone(), d.clone(), d.tag()));
+                } else if let Some(k) = d.init_containers.iter().find(|k| devdeck_core::links::part_app(&k.name, &k.image.raw, &all).as_deref() == Some(self.app.as_str())) {
+                    // Served inside it: its own tag there (its part, deployed on its own).
+                    parts.push((env.clone(), d.clone(), k.image.label()));
                 } else if project_name.is_some_and(|p| devdeck_core::links::deploys_as(&d.name, image, p)) {
-                    project.push((env.clone(), d.clone()));
+                    project.push((env.clone(), d.clone(), d.tag()));
                 }
             }
         }
-        let (rows, via) = if own.is_empty() { (project, project_name.map(String::from)) } else { (own, None) };
+        let (rows, via) = if !own.is_empty() {
+            (own, None)
+        } else if let Some((_, d, _)) = parts.first() {
+            let via = format!("in {}", d.name);
+            (parts, Some(via))
+        } else {
+            (project, project_name.map(|p| format!("as {p}")))
+        };
         Some(Deployed { rows, via, problems })
     }
 
@@ -435,7 +445,8 @@ fn blocked_by<'a>(app: &'a devdeck_core::apps::App, tools: &devdeck_core::apps::
 /// Where the cluster runs an app: per env, its own deployments, else its project's
 /// (`via`); the envs that can't be read.
 struct Deployed {
-    rows: Vec<(devdeck_core::catalog::Env, devdeck_core::cluster::Deployment)>,
+    /// Each with the tag it runs there (a part's own, inside the deployment).
+    rows: Vec<(devdeck_core::catalog::Env, devdeck_core::cluster::Deployment, String)>,
     via: Option<String>,
     problems: Vec<(String, String)>,
 }

@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 pub fn deployment(d: &apps::Deployment) -> Option<Deployment> {
     let name = d.metadata.name.clone()?;
     let spec = d.spec.as_ref()?;
-    let containers: Vec<Container> = spec.template.spec.as_ref()?.containers.iter().map(container).collect();
+    let pod_spec = spec.template.spec.as_ref()?;
+    let containers: Vec<Container> = pod_spec.containers.iter().map(container).collect();
+    let init_containers: Vec<Container> = pod_spec.init_containers.iter().flatten().map(container).collect();
     if containers.is_empty() {
         return None;
     }
@@ -20,6 +22,7 @@ pub fn deployment(d: &apps::Deployment) -> Option<Deployment> {
     let count = |n: Option<i32>| n.unwrap_or(0).max(0) as u32;
     Some(Deployment {
         containers,
+        init_containers,
         replicas: spec.replicas.unwrap_or(1).max(0) as u32,
         ready: count(status.and_then(|s| s.ready_replicas)),
         updated: count(status.and_then(|s| s.updated_replicas)),
@@ -227,7 +230,8 @@ fn container_status(c: &core::ContainerStatus, init: bool) -> ContainerStatus {
     let failed = state.and_then(|s| s.terminated.as_ref()).filter(|t| t.exit_code != 0);
     let ended = failed.or(c.last_state.as_ref().and_then(|s| s.terminated.as_ref()));
     let message = state.and_then(|s| s.waiting.as_ref()).and_then(|w| words(&w.message));
-    ContainerStatus { name: c.name.clone(), init, ready: c.ready, restarts: c.restart_count.max(0) as u32, state: text, message, last_termination: ended.map(termination) }
+    let done = state.and_then(|s| s.terminated.as_ref()).and_then(|t| t.finished_at.as_ref()).and_then(seconds);
+    ContainerStatus { name: c.name.clone(), init, ready: c.ready, restarts: c.restart_count.max(0) as u32, state: text, ended: done, message, last_termination: ended.map(termination) }
 }
 
 fn termination(t: &core::ContainerStateTerminated) -> Termination {
@@ -251,6 +255,22 @@ mod tests {
     }
 
     /// The model of fixture `pod-<name>`.
+    #[test]
+    fn init_containers_are_read_and_a_finished_ones_end() {
+        let mut k = fixture("rolling");
+        let spec = k.spec.as_mut().unwrap().template.spec.as_mut().unwrap();
+        spec.init_containers = Some(vec![core::Container { name: "init-monitorapp".into(), image: Some("registry/monitorapp:v1.49.0".into()), ..Default::default() }]);
+        let d = deployment(&k).unwrap();
+        assert_eq!(d.init_containers.iter().map(|c| (c.name.as_str(), c.image.label())).collect::<Vec<_>>(), [("init-monitorapp", "v1.49.0".to_string())]);
+        let done: core::ContainerStatus = serde_json::from_value(serde_json::json!({
+            "name": "init-monitorapp", "image": "registry/monitorapp:v1.49.0", "imageID": "", "ready": false, "restartCount": 0,
+            "state": {"terminated": {"exitCode": 0, "reason": "Completed", "finishedAt": "2026-11-07T16:20:41Z"}}
+        }))
+        .unwrap();
+        let s = container_status(&done, true);
+        assert_eq!((s.state.as_str(), s.ended, s.last_termination), ("terminated: Completed (exit 0)", Some(epoch("2026-11-07T16:20:41Z")), None));
+    }
+
     fn pod_fixture(name: &str) -> Pod {
         pod(&read(&format!("pod-{name}"))).unwrap()
     }
@@ -508,7 +528,7 @@ mod tests {
         assert_eq!((p.phase, p.ready, p.restarts, p.last_termination), (PodPhase::Running, true, 0, None));
         assert_eq!(p.started, Some(epoch("2026-11-07T16:20:41Z")));
         assert_eq!((p.node.as_str(), p.tag.as_str()), ("gke-km011gcp-pool-2-8f3a1c2d-x7kq", "lan-000-slim"));
-        assert_eq!(p.containers, [ContainerStatus { name: "graphservice".into(), init: false, ready: true, restarts: 0, state: "running".into(), message: None, last_termination: None }]);
+        assert_eq!(p.containers, [ContainerStatus { name: "graphservice".into(), init: false, ready: true, restarts: 0, state: "running".into(), ended: None, message: None, last_termination: None }]);
     }
 
     #[test]

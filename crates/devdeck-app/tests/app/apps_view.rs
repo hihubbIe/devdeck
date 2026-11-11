@@ -276,9 +276,9 @@ fn deployments_show_only_once_found(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
     assert!(vcx.debug_bounds("app-deployments").is_some(), "found");
-    select(&shell, cx, "front-end/mastertadaapp");
+    select(&shell, cx, "front-end/storeadminapp");
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    assert!(vcx.debug_bounds("app-deployments").is_none(), "deployed nowhere (nor front-end): no panel");
+    assert!(vcx.debug_bounds("app-deployments").is_none(), "deployed nowhere (nor in frontendapp): no panel");
 }
 
 #[gpui::test]

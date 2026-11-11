@@ -30,6 +30,13 @@ pub fn app_for(deployment: &str, image: &str, apps: &[App]) -> Result<Option<Str
     }
 }
 
+/// The app an init container carries (`init-monitorapp` running `monitorapp:v1.49.0`: a
+/// part of its deployment), found as [`app_for`] finds one; `None` when no app, or
+/// several, do.
+pub fn part_app(container: &str, image: &str, apps: &[App]) -> Option<String> {
+    app_for(container.strip_prefix("init-").unwrap_or(container), image, apps).ok().flatten()
+}
+
 /// The project an app sits in, deployed as one when its apps aren't on their own: the
 /// first folder of its id (`front-end` for `front-end/packages/mf/entities-graph`);
 /// `None` for an app that is a project. For now the one rule (user, 2026-11-11: a

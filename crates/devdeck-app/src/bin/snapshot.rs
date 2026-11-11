@@ -1230,8 +1230,17 @@ fn apps_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
 
 /// Cluster with a service's page: its panels, its first pod's row open, logs read.
 fn cluster_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cluster_page(cx, shell, "graphservice");
+}
+
+/// The page of the deployment serving the front-end apps: its Apps, a pod's init containers.
+fn cluster_parts(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cluster_page(cx, shell, devdeck_core::demo::FRONTEND);
+}
+
+fn cluster_page(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, name: &str) {
     let s = sidebar(cx, shell);
-    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Cluster, "graphservice", cx)));
+    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Cluster, name, cx)));
     cx.advance_clock(devdeck_app::cluster::LOAD_DELAY);
     cx.run_until_parked();
     cx.advance_clock(Duration::from_secs(6));
@@ -1241,7 +1250,7 @@ fn cluster_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity
     let view = cx.update(|cx| deck.read(cx).view(&top)).and_then(|v| v.downcast::<devdeck_app::views::service_view::ServiceView>().ok()).expect("its page");
     let c = work_cluster(cx, shell);
     let env = cx.update(|cx| s.read(cx).list_env(cx)).expect("the list's env");
-    let pod = cx.update(|cx| c.read(cx).pods(&env, "graphservice").first().map(|p| p.name.clone()));
+    let pod = cx.update(|cx| c.read(cx).pods(&env, name).first().map(|p| p.name.clone()));
     if let Some(pod) = pod {
         cx.update(|cx| view.update(cx, |v, cx| v.toggle_pod(&pod, cx)));
     }
@@ -1506,6 +1515,7 @@ fn states() -> Vec<State> {
         w("B2-layout-save-error", "work", 1.0, Some(layout_save_error)),
         w("B3-apps-view", "work", 1.0, Some(apps_view)),
         w("B4-cluster-view", "work", 1.0, Some(cluster_view)),
+        w("B5-cluster-parts", "work", 1.0, Some(cluster_parts)),
         w("C0-file-rust", "work", 1.0, Some(file_rust)),
         w("C1-file-md-rendered", "work", 1.0, Some(file_md_rendered)),
         w("C2-file-md-source", "work", 1.0, Some(file_md_source)),

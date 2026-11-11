@@ -263,3 +263,13 @@ async fn a_redeploy_is_refused_as_an_image_change_is() {
     assert_eq!(result, Err(DeployError::Other("km011gcp (dev35) didn't answer the redeploy: it may have gone through, the rollout will say".into())));
     assert_eq!(requests.len(), 1);
 }
+
+#[test]
+fn a_parts_patch_tests_and_replaces_its_init_container() {
+    let body = image_patch_in("initContainers", &change());
+    assert_eq!(body, json!([
+        {"op": "test", "path": "/spec/template/spec/initContainers/1/name", "value": "api"},
+        {"op": "test", "path": "/spec/template/spec/initContainers/1/image", "value": "registry/api:main"},
+        {"op": "replace", "path": "/spec/template/spec/initContainers/1/image", "value": "registry/api:feature-y"},
+    ]));
+}

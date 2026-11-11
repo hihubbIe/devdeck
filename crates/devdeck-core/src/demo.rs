@@ -97,7 +97,9 @@ fn work() -> Catalog {
         vec![command("compose:up", "docker compose up", &["docker"], &[6080]), command("compose:down", "docker compose down", &["docker"], &[])],
         EnvApply::Argument("--profile {env}".into()),
     ));
-    let services: Vec<String> = go.iter().take(15).map(|s| s.to_string()).collect();
+    let mut services: Vec<String> = go.iter().take(15).map(|s| s.to_string()).collect();
+    // The front-end apps, served together: one nginx, each app an init container.
+    services.push(FRONTEND.into());
     let mut envs: Vec<Env> = (31..=36).map(|n| Env { name: format!("dev{n}"), protected: false }).collect();
     envs.extend(["dls", "hades", "lab"].map(|n| Env { name: n.into(), protected: true }));
     envs.sort_by(|a, b| a.name.cmp(&b.name));
@@ -143,6 +145,12 @@ fn personal() -> Catalog {
     }
 }
 
+/// The deployment serving the front-end apps ([`FRONTEND_PARTS`]): one nginx container,
+/// each app copied into its volume by an init container (`init-<app>`), as on the real
+/// cluster.
+pub const FRONTEND: &str = "frontendapp";
+pub const FRONTEND_PARTS: [&str; 3] = ["controlboardapp", "mastertadaapp", "monitorapp"];
+
 /// The deployment of `name` in `env`, or `None` when it isn't deployed there.
 pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
     let h = hash(&format!("{env}/{name}"));
@@ -165,14 +173,26 @@ pub fn deployment(env: &str, name: &str) -> Option<Deployment> {
         config_maps: vec![format!("{name}-config")],
         pull_policy: Some(if h.is_multiple_of(6) { "IfNotPresent" } else { "Always" }.into()),
     }];
+    let mut init_containers = Vec::new();
+    if name == FRONTEND {
+        containers[0].image = Image::parse("europe-west1-docker.pkg.dev/registry/frontendapp:v1.0.0");
+        containers[0].ports = vec![8081, 8082, 8083];
+        for part in FRONTEND_PARTS {
+            let p = hash(&format!("{env}/{part}"));
+            let tag = if p.is_multiple_of(5) { format!("LB-{}-fix", 200 + p % 90) } else { format!("v{}.{}.{}", 1 + p % 8, 20 + p % 30, p % 7) };
+            let image = Image::parse(&format!("europe-west1-docker.pkg.dev/registry/{part}:{tag}"));
+            init_containers.push(Container { name: format!("init-{part}"), image, ports: Vec::new(), resources: Resources::default(), config_maps: Vec::new(), pull_policy: None });
+        }
+    }
     // Some run a proxy next to them, as on the real cluster.
-    if h.is_multiple_of(4) {
+    if h.is_multiple_of(4) && name != FRONTEND {
         let image = Image::parse("europe-west1-docker.pkg.dev/registry/envoy:v1.39.1");
         containers.push(Container { name: "envoy".into(), image, ports: vec![9901], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None });
     }
     Some(Deployment {
         name: name.into(),
         containers,
+        init_containers,
         replicas,
         ready,
         updated: replicas,
@@ -205,6 +225,14 @@ pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
             let last_termination = (!healthy).then_some(crashed);
             let state = if healthy { "running".to_string() } else { "waiting: CrashLoopBackOff".to_string() };
             let main = ContainerStatus { name: d.main().name.clone(), init: false, ready: healthy, restarts, state, last_termination: last_termination.clone(), ..Default::default() };
+            // Its init containers ran to their end, one after the other, as it started.
+            let inits = d.init_containers.iter().enumerate().map(|(k, c)| ContainerStatus {
+                name: c.name.clone(),
+                init: true,
+                state: "terminated: Completed (exit 0)".into(),
+                ended: d.since.map(|s| s.saturating_sub(4 * (d.init_containers.len() - k) as u64)),
+                ..Default::default()
+            });
             Pod {
                 name: format!("{}-{template}-{:05x}", d.name, (h >> 20) % 0xfffff),
                 owner: Some(d.name.clone()),
@@ -216,7 +244,7 @@ pub fn pods(env: &str, d: &Deployment) -> Vec<Pod> {
                 started: d.since,
                 node: format!("gke-{env}-pool-{}", h % 4),
                 tag: d.tag(),
-                containers: vec![main],
+                containers: inits.chain([main]).collect(),
                 unschedulable: None,
             }
         })

@@ -218,6 +218,8 @@ pub struct ContainerStatus {
     pub restarts: u32,
     /// `running`, `waiting: CrashLoopBackOff`, `terminated: Error (exit 1)`.
     pub state: String,
+    /// When it ended, for one that did (an init container done: epoch seconds).
+    pub ended: Option<u64>,
     /// What a waiting container's reason says (`… manifest unknown`, a missing secret).
     pub message: Option<String>,
     pub last_termination: Option<Termination>,
@@ -265,6 +267,10 @@ pub struct Deployment {
     pub name: String,
     /// At least one.
     pub containers: Vec<Container>,
+    /// Run before the others, each to its end. Some carry an app of their own (front-end
+    /// apps copied into the volume `frontendapp`'s nginx serves): a part, deployed on its
+    /// own ([`Deployment::part`]).
+    pub init_containers: Vec<Container>,
     pub replicas: u32,
     pub ready: u32,
     /// Replicas on the current version.
@@ -349,6 +355,22 @@ impl Deployment {
         self.main().image.label()
     }
 
+    /// The init container running `image` (its short name, `monitorapp`), with its index:
+    /// that part of the deployment, deployed on its own.
+    pub fn part(&self, image: &str) -> Option<(usize, &Container)> {
+        self.init_containers.iter().enumerate().find(|(_, c)| c.image.short_name() == image)
+    }
+
+    /// Every image it runs, the main one first: a change of any one is a deploy.
+    pub fn version(&self) -> String {
+        std::iter::once(self.main()).chain(&self.init_containers).map(|c| c.image.raw.as_str()).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Whether it runs `label`: its tag, or a part's ([`part_label`]).
+    pub fn runs(&self, label: &str) -> bool {
+        self.tag() == label || self.init_containers.iter().any(|c| part_label(c) == label)
+    }
+
     /// The other containers, for a "+n" next to the tag.
     pub fn others(&self) -> usize {
         self.containers.len().saturating_sub(1)
@@ -413,6 +435,17 @@ pub fn by_me(by: &str, short_name: Option<&str>) -> bool {
 pub fn set_image_command(namespace: &str, d: &Deployment, tag: &str) -> String {
     let c = d.main();
     format!("kubectl -n {namespace} set image deployment/{} {}={}:{tag}", d.name, c.name, c.image.repo)
+}
+
+/// A part's tag change: the same command on its init container (`kubectl set image` sets
+/// init containers by name too).
+pub fn set_part_command(namespace: &str, d: &Deployment, part: &Container, tag: &str) -> String {
+    format!("kubectl -n {namespace} set image deployment/{} {}={}:{tag}", d.name, part.name, part.image.repo)
+}
+
+/// A part's version as history and rollouts say it: `monitorapp:v1.49.0`.
+pub fn part_label(c: &Container) -> String {
+    format!("{}:{}", c.image.short_name(), c.image.label())
 }
 
 /// The command a redeploy is the equivalent of (R7.3 states it before confirming).
@@ -621,6 +654,22 @@ pub fn walk(value: u32, seed: &mut u64, lo: u32, hi: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_part_is_an_init_container_by_its_apps_image_and_its_change_is_a_version() {
+        let image = |name: &str, i: &str| Container { name: name.into(), image: Image::parse(i), ports: Vec::new(), resources: Resources::default(), config_maps: Vec::new(), pull_policy: None };
+        let nginx = image("frontendapp", "registry/frontendapp:v1.0.0");
+        let board = image("init-controlboardapp", "registry/controlboardapp:v4.48.0");
+        let shell = image("init-shellapp", "registry/shellapp:v8.27.0");
+        let d = Deployment { name: "frontendapp".into(), containers: vec![nginx], init_containers: vec![board, shell], ..Default::default() };
+        assert_eq!(d.part("shellapp").map(|(i, c)| (i, c.name.as_str())), Some((1, "init-shellapp")));
+        assert!(d.part("frontendapp").is_none(), "its main container isn't a part");
+        assert_eq!(d.version(), "registry/frontendapp:v1.0.0 registry/controlboardapp:v4.48.0 registry/shellapp:v8.27.0");
+        assert_eq!(part_label(d.part("shellapp").unwrap().1), "shellapp:v8.27.0");
+        assert!(d.runs("v1.0.0") && d.runs("shellapp:v8.27.0") && !d.runs("shellapp:v8.26.0"));
+        let ns = set_part_command("dev33", &d, d.part("shellapp").unwrap().1, "v8.28.0");
+        assert_eq!(ns, "kubectl -n dev33 set image deployment/frontendapp init-shellapp=registry/shellapp:v8.28.0");
+    }
 
     fn container(name: &str, image: &str) -> Container {
         Container { name: name.into(), image: Image::parse(image), ports: vec![5800], resources: Resources::default(), config_maps: Vec::new(), pull_policy: None }

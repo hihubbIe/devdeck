@@ -45,6 +45,8 @@ pub struct ServiceView {
     cluster: Entity<Cluster>,
     focus: FocusHandle,
     pub tag: Entity<TextInput>,
+    /// The part the tag goes to ([`Deployment::part`]: an app inside it); `None`: itself.
+    pub part: Option<String>,
     /// The tag shown when the editor isn't dirty.
     shown_tag: Option<String>,
     /// Writes allowed on a protected env until the view closes (R7.6).
@@ -102,6 +104,7 @@ impl ServiceView {
             cluster,
             focus: cx.focus_handle(),
             tag,
+            part: None,
             shown_tag: None,
             unlocked: false,
             sampling: None,
@@ -138,9 +141,18 @@ impl ServiceView {
         }
         let Some(d) = self.deployment(cx) else { return };
         let image = d.main().image.short_name().to_string();
-        let found = devdeck_core::links::app_for(&d.name, &image, &self.ctx.services.read(cx).catalog.apps);
+        let apps = self.ctx.services.read(cx).catalog.apps.clone();
+        let found = devdeck_core::links::app_for(&d.name, &image, &apps);
+        // Serving apps of its own (its parts): their repository, for their branches.
+        let part = d.init_containers.iter().find_map(|k| devdeck_core::links::part_app(&k.name, &k.image.raw, &apps));
         let id = match found {
             Ok(Some(id)) => id,
+            Ok(None) if let Some(part) = part => {
+                // Its parts' repository, when there's one; it isn't the page's own to explain.
+                self.link_repo(part, cx);
+                self.unlinked = None;
+                return;
+            }
             Ok(None) => {
                 self.unlinked = Some(format!("no app of this workspace deploys as {}: add `deployments = [\"{}\"]` to its app in the workspace file", d.name, d.name));
                 return;
@@ -155,6 +167,11 @@ impl ServiceView {
             self.unlinked = None;
             cx.notify();
         }
+        self.link_repo(id, cx);
+    }
+
+    /// Reads `id`'s repository while the page shows (its branches for Deploy…).
+    fn link_repo(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(dir) = self.ctx.services.read(cx).catalog.app(&id).map(|a| a.dir.clone()) else { return };
         let Some(repo) = self.ctx.services.update(cx, |s, cx| s.repo(&dir, cx)) else {
             self.unlinked = Some(format!("{id} isn't in a git repository"));
@@ -243,6 +260,9 @@ impl ServiceView {
     /// The rocket or ctrl+s: on a locked protected env asks to unlock first; otherwise
     /// confirms.
     pub fn save(&mut self, cx: &mut Context<Self>) {
+        if let Some(part) = self.part.clone() {
+            return self.save_part(&part, cx);
+        }
         // Everything else before the protected env's name: never ask it to then refuse.
         let to = self.tag.read(cx).text().trim().to_string();
         let other = self.cluster.read(cx).deploy_blocked(&self.env, &self.name, &to, true, cx);
@@ -261,10 +281,43 @@ impl ServiceView {
         let me = cx.entity();
         let (env, name) = (self.env.clone(), self.name.clone());
         self.in_window(cx, move |window, cx| {
-            let kind = WriteKind::Change { from: from_tag, from_image, to };
+            let kind = WriteKind::Change { from: from_tag, from_image, to, part: None };
             let modal = cx.new(|cx| ConfirmDeploy::new(me, env, name, kind, command, window, cx));
             danger::show(modal, window, cx);
         });
+    }
+
+    /// Deploys the tag typed or picked to `part`: as [`ServiceView::save`], its write
+    /// targeting that part's init container only.
+    fn save_part(&mut self, part: &str, cx: &mut Context<Self>) {
+        let to = self.tag.read(cx).text().trim().to_string();
+        let other = self.cluster.read(cx).part_blocked(&self.env, &self.name, part, &to, true, cx);
+        if other.is_none() && self.protected(cx) && !self.unlocked {
+            self.request_unlock(cx);
+            return;
+        }
+        if let Some(why) = self.cluster.read(cx).part_blocked(&self.env, &self.name, part, &to, self.unlocked, cx) {
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Not deployed: {why}."), vec![], cx));
+            return;
+        }
+        let c = self.cluster.read(cx);
+        let (Some(d), Some(command)) = (c.deployment(&self.env, &self.name), c.part_command_for(&self.env, &self.name, part, &to)) else { return };
+        let Some((_, k)) = d.part(part) else { return };
+        let kind = WriteKind::Change { from: k.image.label(), from_image: k.image.raw.clone(), to, part: Some(part.to_string()) };
+        let me = cx.entity();
+        let (env, name) = (self.env.clone(), self.name.clone());
+        self.in_window(cx, move |window, cx| {
+            let modal = cx.new(|cx| ConfirmDeploy::new(me, env, name, kind, command, window, cx));
+            danger::show(modal, window, cx);
+        });
+    }
+
+    /// Sends a part's change confirmed: `to` on its image `from` that was shown.
+    pub fn deploy_part(&mut self, part: &str, from: &str, to: &str, ok: Confirmed, cx: &mut Context<Self>) -> Result<(), String> {
+        let (env, name, unlocked) = (self.env.clone(), self.name.clone(), self.unlocked);
+        let result = self.cluster.update(cx, |c, cx| c.deploy_part(&env, &name, part, from, to, unlocked, ok, cx));
+        cx.notify();
+        result
     }
 
     /// Why a redeploy can't go ahead now, if it can't (every guard of a write).
@@ -357,25 +410,52 @@ impl ServiceView {
     /// branches on the remote, the tags it ran before, or what's typed); a pick goes on to
     /// the checks and the confirmation, as the rocket did ([`ServiceView::save`]).
     pub fn open_deploy(this: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        Self::open_deploy_part(this, None, window, cx);
+    }
+
+    /// Deploy… for `part` (an app inside it, [`Deployment::part`]; `None`: itself): its
+    /// tags on the other envs, its repository's remote branches, the tags it ran here
+    /// before (itself only), or what's typed.
+    pub fn open_deploy_part(this: &Entity<Self>, part: Option<String>, window: &mut Window, cx: &mut App) {
         let s = this.read(cx);
         let c = s.cluster.read(cx);
         let now = c.now_s();
         // A version (`1.62.8`, `v2.27.4`) is a tag; anything else, a branch's.
         let kind = |t: &str| if t.trim_start_matches('v').starts_with(|c: char| c.is_ascii_digit()) { "tag" } else { "branch" };
         let (mut envs, mut before) = (Vec::new(), Vec::new());
-        for (tag, why) in c.tag_suggestions(&s.env, &s.name) {
-            match why.strip_prefix("on ") {
-                Some(env) => envs.push(PickOption::new(tag.clone()).chip(env.to_string()).kind(kind(&tag))),
-                None => before.push(PickOption::new(tag.clone()).kind(kind(&tag))),
+        let running = match &part {
+            None => s.shown_tag.clone(),
+            Some(p) => c.deployment(&s.env, &s.name).and_then(|d| d.part(p).map(|(_, k)| k.image.label())),
+        };
+        match &part {
+            None => {
+                for (tag, why) in c.tag_suggestions(&s.env, &s.name) {
+                    match why.strip_prefix("on ") {
+                        Some(env) => envs.push(PickOption::new(tag.clone()).chip(env.to_string()).kind(kind(&tag))),
+                        None => before.push(PickOption::new(tag.clone()).kind(kind(&tag))),
+                    }
+                }
+            }
+            // The part's tag on each other env, once each.
+            Some(p) => {
+                for e in c.envs.iter().filter(|e| e.name != s.env) {
+                    let Some(tag) = c.deployment(&e.name, &s.name).and_then(|d| d.part(p).map(|(_, k)| k.image.label())) else { continue };
+                    if Some(&tag) != running.as_ref() && !envs.iter().any(|o: &PickOption| o.value == tag) {
+                        envs.push(PickOption::new(tag.clone()).chip(e.name.clone()).kind(kind(&tag)));
+                    }
+                }
             }
         }
         let mut branches = Vec::new();
-        if let Some(snapshot) = s.repo.as_ref().and_then(|(_, r)| r.read(cx).snapshot()) {
+        // Its app's repository (a part's: the one its apps are in); none for a deployment
+        // linked to no app of its own.
+        let repo = s.repo.as_ref().filter(|_| part.is_some() || s.app.is_some());
+        if let Some(snapshot) = repo.and_then(|(_, r)| r.read(cx).snapshot()) {
             // Remote branches only: a branch only local was never built.
             for b in snapshot.branches.iter().filter(|b| b.remote.is_some()) {
                 let remote = b.remote.as_deref().unwrap_or_default();
                 let name = b.name.strip_prefix(&format!("{remote}/")).unwrap_or(&b.name).to_string();
-                if Some(&name) != s.shown_tag.as_ref() {
+                if Some(&name) != running.as_ref() {
                     branches.push(PickOption::new(name).detail(format!("{} ago · {}", fmt_age(now.saturating_sub(b.at)), b.author)).kind("branch"));
                 }
             }
@@ -386,8 +466,12 @@ impl ServiceView {
             .map(|(label, options)| PickGroup { label: label.into(), options })
             .collect();
         let me = this.clone();
+        let title = match &part {
+            None => format!("Deploy {} to {}", s.name, s.env),
+            Some(p) => format!("Deploy {p} in {} to {}", s.name, s.env),
+        };
         let spec = PickerSpec {
-            title: format!("Deploy {} to {}", s.name, s.env).into(),
+            title: title.into(),
             placeholder: "search branches and tags".into(),
             kinds: vec!["branch", "tag"],
             groups,
@@ -395,6 +479,7 @@ impl ServiceView {
             on_pick: Rc::new(move |tag, _, cx| {
                 me.update(cx, |s, cx| {
                     s.tag.update(cx, |i, cx| i.set_text(&tag, cx));
+                    s.part = part.clone();
                     s.save(cx);
                 })
             }),
@@ -455,6 +540,8 @@ const POD_COLS: [Column; 6] =
     [Column::rest("POD"), Column::fixed("STATE", 110.), Column::fixed("AGE", 50.), Column::fixed("RESTARTS", 64.).right(), Column::fixed("CPU", 64.), Column::fixed("MEMORY", 70.)];
 /// A pod's containers, under its row.
 const CONTAINER_COLS: [Column; 3] = [Column::rest("CONTAINER"), Column::fixed("STATE", 220.), Column::fixed("RESTARTS", 64.).right()];
+/// Its parts: the app, its tag, its Deploy…, a way to the app.
+const PART_COLS: [Column; 4] = [Column::rest("APP"), Column::fixed("TAG", 170.), Column::fixed("", 100.).right(), Column::fixed("", 24.)];
 const ENV_COLS: [Column; 3] = [Column::rest("ENV"), Column::fixed("TAG", 130.), Column::fixed("PODS", 90.)];
 const HISTORY_COLS: [Column; 3] = [Column::fixed("WHEN", 56.), Column::fixed("WHO", 110.), Column::rest("CHANGE")];
 
@@ -632,6 +719,36 @@ impl Render for ServiceView {
             &t,
         );
 
+        // ---- Apps: the apps it serves (its parts), each deployed on its own.
+        let parts = (!d.init_containers.is_empty()).then(|| {
+            let apps = self.ctx.services.read(cx).catalog.apps.clone();
+            let mut block = div().flex().flex_col().min_w_0().child(table_head(&PART_COLS, &t));
+            for (i, k) in d.init_containers.iter().enumerate() {
+                let short = k.image.short_name().to_string();
+                let app = devdeck_core::links::part_app(&k.name, &k.image.raw, &apps);
+                let deploy = {
+                    let (me, part) = (me.clone(), short.clone());
+                    devdeck_ui::labeled_button(("part-deploy", i), Icon::Deploy, "Deploy…", &t)
+                        .debug_selector(move || format!("part-deploy-{i}"))
+                        .on_click(move |_, window, cx| ServiceView::open_deploy_part(&me, Some(part.clone()), window, cx))
+                };
+                let go = match app {
+                    Some(id) => {
+                        let ctx = self.ctx.clone();
+                        devdeck_ui::go_action(("part-app", i), Icon::Apps, format!("{id} in Apps"), &t)
+                            .on_click(move |_, _, cx| ctx.pivot(Activity::Apps, id.clone(), None, cx))
+                            .into_any_element()
+                    }
+                    None => div().into_any_element(),
+                };
+                block = block.child(
+                    table_row(("part", i), &PART_COLS, vec![label(short).text_color(t.fg).into_any_element(), label(k.image.label()).text_color(t.mute).into_any_element(), deploy.into_any_element(), go], &t)
+                        .debug_selector(move || format!("part-{i}")),
+                );
+            }
+            devdeck_ui::panel("svc-parts", format!("Apps · {}", d.init_containers.len()), Vec::new(), block, &t)
+        });
+
         // ---- Pods: one row each; a row opens in place on what it's made of.
         let mut pod_block = div().flex().flex_col().min_w_0();
         let note = |el: AnyElement| div().px_2().h(t.row_h).flex().items_center().min_w_0().child(el);
@@ -729,7 +846,9 @@ impl Render for ServiceView {
                     .when(!here, |r| r.cursor_pointer().hover(|s| s.bg(t.hover)).on_click(move |_, _, cx| ctx.pivot(Activity::Cluster, name.clone(), Some(to.clone()), cx))),
             );
         }
-        let envs = devdeck_ui::panel("svc-envs", "Envs", Vec::new(), env_block, &t);
+        // A deployment serving apps of its own: its tag is the server's, the same everywhere;
+        // each app's tags on the other envs are in its Deploy….
+        let envs = d.init_containers.is_empty().then(|| devdeck_ui::panel("svc-envs", "Envs", Vec::new(), env_block, &t));
 
         // ---- History: what devdeck saw deployed here, newest first.
         let mut hist = div().flex().flex_col().min_w_0();
@@ -789,8 +908,8 @@ impl Render for ServiceView {
         let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pt_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
         // Panels on the page's background: what runs on the left (the most room), where
         // and what it ran on the right; one under the other when narrow.
-        let left = div().flex_grow(3.).flex_basis(gpui::relative(0.)).min_w(t.size(440.)).flex().flex_col().gap_3().child(deployment).child(pods_panel).child(logs);
-        let right = div().flex_grow(2.).flex_basis(gpui::relative(0.)).min_w(t.size(300.)).flex().flex_col().gap_3().child(envs).child(history_panel).child(containers);
+        let left = div().flex_grow(3.).flex_basis(gpui::relative(0.)).min_w(t.size(440.)).flex().flex_col().gap_3().child(deployment).children(parts).child(pods_panel).child(logs);
+        let right = div().flex_grow(2.).flex_basis(gpui::relative(0.)).min_w(t.size(300.)).flex().flex_col().gap_3().children(envs).child(history_panel).child(containers);
         let body = div()
             .id("service-body")
             .flex_1()
@@ -829,7 +948,8 @@ impl ServiceView {
         let mut containers: Vec<_> = p.containers.iter().collect();
         containers.sort_by_key(|k| !k.init);
         for (j, k) in containers.into_iter().enumerate() {
-            let color = if k.ready || k.state.starts_with("terminated: Completed") { t.ok } else if k.state.starts_with("running") { t.warn } else { t.err };
+            let done = k.state.starts_with("terminated: Completed");
+            let color = if k.ready || done { t.ok } else if k.state.starts_with("running") { t.warn } else { t.err };
             let name = div()
                 .flex()
                 .items_center()
@@ -837,9 +957,11 @@ impl ServiceView {
                 .min_w_0()
                 .child(label(k.name.clone()).text_color(t.fg))
                 .when(k.init, |d| d.child(div().flex_none().text_size(t.text_small).text_color(t.dim).child("init")));
-            let state = match &k.message {
-                Some(m) => format!("{} · {m}", k.state),
-                None => k.state.clone(),
+            // An init container done: when it ended.
+            let state = match (&k.message, k.ended) {
+                (_, Some(at)) if done => format!("completed · {} ago", fmt_age(now.saturating_sub(at))),
+                (Some(m), _) => format!("{} · {m}", k.state),
+                (None, _) => k.state.clone(),
             };
             block = block.child(table_row(("pod-container", i * 64 + j), &CONTAINER_COLS, vec![
                 name.into_any_element(),
@@ -865,7 +987,7 @@ impl ServiceView {
 #[derive(Clone, Debug, PartialEq)]
 pub enum WriteKind {
     /// Another branch: the tags `from` → `to`, and the image running when confirming.
-    Change { from: String, from_image: String, to: String },
+    Change { from: String, from_image: String, to: String, part: Option<String> },
     /// The same branch again (`kubectl rollout restart`), what may keep the old build.
     Redeploy { tag: String, image: String, warning: Option<String> },
 }
@@ -929,7 +1051,8 @@ impl ConfirmDeploy {
         #[allow(clippy::disallowed_methods)] // Its Deploy button or Enter on it.
         let ok = danger::confirmed(self);
         let sent = self.service.update(cx, |s, cx| match &kind {
-            WriteKind::Change { from_image, to, .. } => s.deploy(from_image, to, ok, cx),
+            WriteKind::Change { from_image, to, part: None, .. } => s.deploy(from_image, to, ok, cx),
+            WriteKind::Change { from_image, to, part: Some(p), .. } => s.deploy_part(p, from_image, to, ok, cx),
             WriteKind::Redeploy { image, .. } => s.send_redeploy(image, ok, cx),
         });
         match sent {
@@ -991,7 +1114,15 @@ impl Render for ConfirmDeploy {
             .on_action(cx.listener(|this, _: &ModalPrev, window, cx| this.focus.cycle(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|this, _: &ConfirmModal, window, cx| this.confirm(window, cx)))
-            .child(div().text_color(t.hi).child(format!("{} {} on {}?", if redeploy { "Redeploy" } else { "Deploy" }, self.name, self.env)))
+            .child(div().text_color(t.hi).child(match &self.kind {
+                WriteKind::Change { part: Some(p), .. } => format!("Deploy {p} in {} on {}?", self.name, self.env),
+                _ => format!("{} {} on {}?", if redeploy { "Redeploy" } else { "Deploy" }, self.name, self.env),
+            }))
+            // A part: only its init container changes, the deployment's other apps stay.
+            .when_some(match &self.kind {
+                WriteKind::Change { part: Some(p), .. } => Some(p.clone()),
+                _ => None,
+            }, |d, p| d.child(label(format!("Only {p}'s init container changes; the other apps keep their tags.")).text_color(t.mute).debug_selector(|| "deploy-part".into())))
             .child(match &self.kind {
                 WriteKind::Change { from, to, .. } => div().flex().items_center().gap_2().child(label(from.clone()).text_color(t.mute)).child(icon(Icon::To, t.mute, &t)).child(label(to.clone()).text_color(t.hi)),
                 WriteKind::Redeploy { tag, .. } => div().flex().items_center().gap_2().child(label("branch").text_color(t.mute)).child(label(tag.clone()).text_color(t.hi)),

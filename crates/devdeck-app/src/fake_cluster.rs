@@ -90,18 +90,11 @@ impl ClusterDriver for FakeCluster {
     }
 
     fn set_image(&self, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Option<Task<()>> {
-        let (env, name) = (env.to_string(), name.to_string());
-        Some(cx.spawn(async move |this, cx| {
-            let Ok(Some(old)) = this.update(cx, |c, _| c.deployment(&env, &name).cloned()) else { return };
-            if old.containers.get(change.index).is_none_or(|c| c.name != change.container || c.image.raw != change.from) {
-                let _ = this.update(cx, |c, cx| c.write_done(&env, &name, Err(format!("{name} changed since you confirmed")), cx));
-                return;
-            }
-            let mut new = old.clone();
-            new.containers[change.index].image = Image::parse(&change.to);
-            let broken = change.to.contains("broken").then(|| change.to.clone());
-            roll(&this, cx, &env, &name, old, new, broken).await;
-        }))
+        Some(set_in(false, env, name, change, cx))
+    }
+
+    fn set_part_image(&self, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        Some(set_in(true, env, name, change, cx))
     }
 
     /// A redeploy: a new template on the same tag, rolled as a branch change is.
@@ -181,6 +174,25 @@ impl ClusterDriver for FakeCluster {
         let _ = tx.try_send(LogUpdate::Ended);
         Ok(LogStream { updates, keep: Box::new(()) })
     }
+}
+
+/// Sets an image of `name` (an init container's when `init`), as the patch tests it: the
+/// container at the index named as said and running the image confirmed; then rolls it.
+fn set_in(init: bool, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Task<()> {
+    let (env, name) = (env.to_string(), name.to_string());
+    cx.spawn(async move |this, cx| {
+        let Ok(Some(old)) = this.update(cx, |c, _| c.deployment(&env, &name).cloned()) else { return };
+        let list = |d: &Deployment| if init { d.init_containers.clone() } else { d.containers.clone() };
+        if list(&old).get(change.index).is_none_or(|c| c.name != change.container || c.image.raw != change.from) {
+            let _ = this.update(cx, |c, cx| c.write_done(&env, &name, Err(format!("{name} changed since you confirmed")), cx));
+            return;
+        }
+        let mut new = old.clone();
+        let target = if init { &mut new.init_containers } else { &mut new.containers };
+        target[change.index].image = Image::parse(&change.to);
+        let broken = change.to.contains("broken").then(|| change.to.clone());
+        roll(&this, cx, &env, &name, old, new, broken).await;
+    })
 }
 
 /// Answers devdeck's write of `name` with `new`'s generation (its spec as patched; the
