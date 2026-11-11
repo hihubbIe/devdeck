@@ -203,7 +203,8 @@ fn shift_f10_and_right_click_open_menus(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "escape ctrl-2 down shift-f10");
     cx.run_until_parked();
     assert!(overlay(&shell, cx).0, "the selected row's menu");
-    cx.simulate_keystrokes(main, "escape");
+    // Back to Pulses: the Apps view hides the tabs.
+    cx.simulate_keystrokes(main, "escape ctrl-1");
     let mut vcx = VisualTestContext::from_window(main, cx);
     let tab = vcx.debug_bounds("tab-title").expect("a tab");
     vcx.simulate_mouse_down(tab.center(), MouseButton::Right, Modifiers::none());

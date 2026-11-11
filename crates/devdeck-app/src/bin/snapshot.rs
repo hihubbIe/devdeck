@@ -1225,6 +1225,12 @@ fn layouts_list(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Layouts, cx)));
 }
 
+/// The Apps view: the list, then a running app's details.
+fn apps_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Apps, "entityservice", cx)));
+}
+
 fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     let deck = with_layouts(cx, shell);
     let _ = cx.update_window(w, |_, window, cx| devdeck_app::layouts::open_save_as(deck.clone(), window, cx));
@@ -1482,6 +1488,7 @@ fn states() -> Vec<State> {
         w("B0-layout-menu", "work", 1.0, Some(layout_menu)),
         w("B1-layouts-list", "work", 1.0, Some(layouts_list)),
         w("B2-layout-save-error", "work", 1.0, Some(layout_save_error)),
+        w("B3-apps-view", "work", 1.0, Some(apps_view)),
         w("C0-file-rust", "work", 1.0, Some(file_rust)),
         w("C1-file-md-rendered", "work", 1.0, Some(file_md_rendered)),
         w("C2-file-md-source", "work", 1.0, Some(file_md_source)),

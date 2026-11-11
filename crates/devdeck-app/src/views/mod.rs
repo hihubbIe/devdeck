@@ -66,9 +66,13 @@ impl ViewCx {
         }))
     }
 
-    /// Opens (or activates) a view in the main window's focused pane.
+    /// Opens (or activates) a view: over this one when it's in a full view's details
+    /// ([`Deck::drill`]), else in the main window's focused pane.
     pub fn open(&self, addr: ViewAddr, cx: &mut App) {
-        open_in(&self.deck, addr, cx);
+        let drilled = self.deck.upgrade().is_some_and(|d| d.update(cx, |d, cx| d.drill(&self.view, addr.to_ref(), cx)));
+        if !drilled {
+            open_in(&self.deck, addr, cx);
+        }
     }
 }
 

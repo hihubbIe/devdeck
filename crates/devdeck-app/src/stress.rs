@@ -169,6 +169,7 @@ impl Stress {
         }
         self.run_once(cx).await;
         self.watch_pods(cx).await;
+        self.apps_view(cx).await;
         self.layout_moves(n, opened.last().expect("a demo view").clone(), cx).await;
         self.overlays(cx).await;
         for to in [self.other, self.home] {
@@ -203,6 +204,28 @@ impl Stress {
             self.frame(cx).await;
         }
         cx.update(|cx| sidebar.update(cx, |s, cx| s.show(back, cx)));
+        self.frame(cx).await;
+    }
+
+    /// The Apps view: an app's details, drilled into one of its commands' output, then
+    /// another app (a new stack), then Pulses again. A frame at each step.
+    async fn apps_view(&self, cx: &mut AsyncApp) {
+        use crate::sidebar::Activity;
+        let sidebar = cx.update(|cx| self.shell.read(cx).active_sidebar());
+        let apps: Vec<(String, Option<String>)> = cx.update(|cx| {
+            let s = self.shell.read(cx);
+            s.workspaces[self.home].services.read(cx).catalog.apps.iter().take(2).map(|a| (a.id.clone(), a.commands.first().map(|c| c.id.clone()))).collect()
+        });
+        for (app, cmd) in apps {
+            cx.update(|cx| sidebar.update(cx, |s, cx| s.show_item(Activity::Apps, &app, cx)));
+            self.frame(cx).await;
+            if let Some(cmd) = cmd {
+                let (from, to) = (ViewAddr::App { app: app.clone() }.to_ref(), ViewAddr::Run { app, cmd }.to_ref());
+                cx.update(|cx| self.deck.update(cx, |d, cx| d.drill(&from, to, cx)));
+                self.frame(cx).await;
+            }
+        }
+        cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Layouts, cx)));
         self.frame(cx).await;
     }
 

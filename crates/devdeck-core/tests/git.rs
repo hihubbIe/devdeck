@@ -269,6 +269,9 @@ fn ahead_behind_gone_and_no_upstream() {
     r.git("work").run(&Op::Fetch).unwrap();
     let up = r.git("work").status().unwrap().upstream;
     assert_eq!(up, Some(Upstream { name: "origin/main".into(), ahead: 1, behind: 1, gone: false }));
+    // The branch list says it too, without a status (a light read).
+    let main = r.git("work").branches().unwrap().into_iter().find(|b| b.name == "main").unwrap();
+    assert_eq!((main.ahead, main.behind), (1, 1));
 
     r.sh("work", &["switch", "-q", "feat"]);
     let up = r.git("work").status().unwrap().upstream;
@@ -298,6 +301,8 @@ fn branches_local_then_remote_newest_first() {
             name: "main".into(),
             remote: None,
             upstream: Some("origin/main".into()),
+            ahead: 0,
+            behind: 0,
             commit: r.sh("work", &["rev-parse", "--short", "main"]),
             subject: "first".into(),
             author: "Ada".into(),

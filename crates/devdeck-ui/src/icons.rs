@@ -66,6 +66,8 @@ icons! {
     Protected => "lock",
     // Controls.
     Close => "x",
+    /// Back to what was shown before (a full view's details). From gpui-kit-assets' Lucide set.
+    Back => "arrow-left",
     Open => "chevron-down",
     Expand => "chevron-right",
     Collapse => "chevron-up",

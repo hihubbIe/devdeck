@@ -9,6 +9,7 @@
 use crate::registry;
 use crate::runner::RunKey;
 use crate::shell::{self, Shell};
+use crate::sidebar::Activity;
 use devdeck_core::apps::Tier;
 use devdeck_core::fuzzy;
 use devdeck_core::view_addr::ViewAddr;
@@ -280,6 +281,7 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
         (w.deck.clone(), w.services.clone(), w.sidebar.clone())
     };
     let open = |addr: ViewAddr, cx: &mut App| {
+        sidebar.update(cx, |s, cx| s.show_pulses(cx));
         deck.update(cx, |d, cx| {
             d.apply(cx, |l| {
                 let p = l.main().focused;
@@ -293,7 +295,10 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
                 window.dispatch_action((spec.build)(), cx);
             }
         }
-        Item::App(app) => open(ViewAddr::App { app }, cx),
+        // An app shows on the Apps view.
+        Item::App(app) => {
+            sidebar.update(cx, |s, cx| s.show_item(Activity::Apps, &app, cx));
+        }
         Item::View(addr) => open(addr, cx),
         Item::Service(name) => {
             let env = services.read(cx).env.clone().unwrap_or_default();
@@ -305,6 +310,7 @@ pub fn run(shell: &Entity<Shell>, item: Item, env_override: Option<String>, wind
         }
         Item::Workspace(i) => shell.update(cx, |s, cx| s.switch(i, cx)),
         Item::Layout(id) => {
+            sidebar.update(cx, |s, cx| s.show_pulses(cx));
             if let Err(e) = deck.update(cx, |d, cx| d.switch_layout(&id, cx)) {
                 toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, e.to_string(), vec![], cx));
             }

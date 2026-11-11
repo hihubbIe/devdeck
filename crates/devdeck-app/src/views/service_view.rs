@@ -26,7 +26,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Pixels, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*, relative,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*,
 };
 
 actions!(service_view, [SaveTag, OpenLogs, EditTag, Redeploy, NotifyMenu, ConfirmModal]);
@@ -362,22 +362,6 @@ fn quantity(v: Option<u32>, unit: &str) -> String {
     v.map_or_else(|| "none".into(), |v| format!("{v}{unit}"))
 }
 
-/// A usage bar against request (tick) and limit (full width); without a limit the bar
-/// spans the request, else what's used.
-fn bar(used: u32, request: Option<u32>, limit: Option<u32>, t: &Theme) -> impl IntoElement {
-    let full = limit.or(request).unwrap_or(used).max(1) as f32;
-    let fill = (used as f32 / full).min(1.0);
-    let color: Hsla = if request.is_some_and(|r| used > r) { t.warn } else { t.ok };
-    div()
-        .relative()
-        .w(t.size(220.))
-        .h(t.size(8.))
-        .rounded(t.radius_s)
-        .bg(t.line)
-        .child(div().absolute().left_0().top_0().h_full().w(relative(fill)).rounded(t.radius_s).bg(color))
-        .when_some(request, |d, r| d.child(div().absolute().top_0().h_full().w(t.hairline).left(relative((r as f32 / full).min(1.0))).bg(t.fg)))
-}
-
 fn phase_text(p: &Pod) -> (String, bool) {
     (p.phase.text(), p.phase.ok())
 }
@@ -591,7 +575,7 @@ impl Render for ServiceView {
                         .items_center()
                         .gap_3()
                         .child(div().w(t.size(40.)).text_color(t.mute).child("cpu"))
-                        .child(bar(cpu, times(res.cpu_request_m), times(res.cpu_limit_m), &t))
+                        .child(devdeck_ui::usage_bar("cpu", cpu, times(res.cpu_request_m), times(res.cpu_limit_m), &t))
                         .child(label(format!("{cpu}m · request {} · limit {}", quantity(times(res.cpu_request_m), "m"), quantity(times(res.cpu_limit_m), "m"))).text_color(t.mute)),
                 )
                 .child(
@@ -600,7 +584,7 @@ impl Render for ServiceView {
                         .items_center()
                         .gap_3()
                         .child(div().w(t.size(40.)).text_color(t.mute).child("mem"))
-                        .child(bar(mem, times(res.mem_request_mi), times(res.mem_limit_mi), &t))
+                        .child(devdeck_ui::usage_bar("mem", mem, times(res.mem_request_mi), times(res.mem_limit_mi), &t))
                         .child(label(format!("{mem}Mi · request {} · limit {}", quantity(times(res.mem_request_mi), "Mi"), quantity(times(res.mem_limit_mi), "Mi"))).text_color(t.mute)),
                 )
                 .into_any_element(),

@@ -50,10 +50,20 @@ pub struct GitView {
     scroll: UniformListScrollHandle,
     /// A push plan asked for by this panel.
     wants_plan: bool,
+    /// An operation asked for from elsewhere (an app view), done once the full state is read.
+    pub queued: Option<Queued>,
     /// Tags running on each env (deployments of this repository's apps): the env chips.
     envs_by_tag: BTreeMap<String, Vec<(String, bool)>>,
     window: Option<AnyWindowHandle>,
     _subs: Vec<Subscription>,
+}
+
+/// What another view asks the panel to do ([`GitView::queue`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Queued {
+    Pull,
+    Push,
+    NewBranch,
 }
 
 /// A branch row: a local branch, or a remote one without a local branch of its name.
@@ -93,6 +103,7 @@ impl GitView {
             show_remotes: false,
             scroll: UniformListScrollHandle::new(),
             wants_plan: false,
+            queued: None,
             envs_by_tag: BTreeMap::new(),
             window: None,
             _subs: subs,
@@ -113,7 +124,27 @@ impl GitView {
         cx.notify();
     }
 
+    /// Does `op` as its own button would, once the panel is drawn and the full state read
+    /// (now when both are): its confirmation, its refusal, its toast are the panel's.
+    pub fn queue(&mut self, op: Queued, cx: &mut Context<Self>) {
+        self.queued = Some(op);
+        self.run_queued(cx);
+    }
+
+    fn run_queued(&mut self, cx: &mut Context<Self>) {
+        if self.window.is_none() || self.repo.read(cx).full().is_none() {
+            return;
+        }
+        match self.queued.take() {
+            Some(Queued::Pull) => self.pull(cx),
+            Some(Queued::Push) => self.push(cx),
+            Some(Queued::NewBranch) => self.new_branch(cx),
+            None => {}
+        }
+    }
+
     fn repo_changed(&mut self, cx: &mut Context<Self>) {
+        self.run_queued(cx);
         if self.wants_plan
             && let Some(plan) = self.repo.update(cx, |r, _| r.take_plan())
         {
@@ -494,7 +525,11 @@ fn now_s() -> u64 {
 
 impl Render for GitView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let first = self.window.is_none();
         self.window = Some(window.window_handle());
+        if first && self.queued.is_some() {
+            cx.defer_in(window, |this, _, cx| this.run_queued(cx));
+        }
         let t = theme(cx).clone();
         let root = div()
             .id("git-view")

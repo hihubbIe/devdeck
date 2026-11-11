@@ -231,7 +231,7 @@ fn follow_keys_reach_the_view_after_any_way_back_to_the_panes(cx: &mut TestAppCo
     let view = cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<RunView>().unwrap());
     assert!(cx.read(|cx| view.read(cx).follow));
     // Into the sidebar and back with Esc: the run view has the keys again.
-    cx.simulate_keystrokes(main, "ctrl-2 escape alt-f");
+    cx.simulate_keystrokes(main, "ctrl-1 escape alt-f");
     cx.run_until_parked();
     assert!(!cx.read(|cx| view.read(cx).follow), "alt+f toggled follow");
 }

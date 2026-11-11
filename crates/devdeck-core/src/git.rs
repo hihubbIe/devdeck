@@ -136,6 +136,9 @@ pub struct Branch {
     pub remote: Option<String>,
     /// A local branch's upstream (`origin/main`).
     pub upstream: Option<String>,
+    /// Commits it has that its upstream hasn't, and the other way round (as last fetched).
+    pub ahead: u32,
+    pub behind: u32,
     /// Short id.
     pub commit: String,
     pub subject: String,
@@ -244,7 +247,19 @@ impl Git {
     }
 
     pub fn branches(&self) -> Result<Vec<Branch>, String> {
-        let format = ["%(refname)", "%(upstream:short)", "%(objectname:short)", "%(authorname)", "%(committerdate:unix)", "%(HEAD)", "%(symref)", "%(worktreepath)", "%(contents:subject)"].join("%00");
+        let format = [
+            "%(refname)",
+            "%(upstream:short)",
+            "%(upstream:track,nobracket)",
+            "%(objectname:short)",
+            "%(authorname)",
+            "%(committerdate:unix)",
+            "%(HEAD)",
+            "%(symref)",
+            "%(worktreepath)",
+            "%(contents:subject)",
+        ]
+        .join("%00");
         let out = self.read_text(&["for-each-ref", &format!("--format={format}"), "refs/heads", "refs/remotes"])?;
         let mut branches: Vec<Branch> = out.lines().filter_map(|line| self.branch(line)).collect();
         sort_branches(&mut branches);
@@ -622,8 +637,8 @@ impl Git {
 
     /// One `for-each-ref` line; `None` for a remote's `HEAD`.
     fn branch(&self, line: &str) -> Option<Branch> {
-        let f: Vec<&str> = line.splitn(9, '\0').collect();
-        let [refname, upstream, commit, author, at, head, symref, worktree, subject] = f[..] else { return None };
+        let f: Vec<&str> = line.splitn(10, '\0').collect();
+        let [refname, upstream, track, commit, author, at, head, symref, worktree, subject] = f[..] else { return None };
         if !symref.is_empty() {
             return None;
         }
@@ -637,6 +652,8 @@ impl Git {
             name: name.to_string(),
             remote,
             upstream: Some(upstream.to_string()).filter(|u| !u.is_empty()),
+            ahead: track_count(track, "ahead "),
+            behind: track_count(track, "behind "),
             commit: commit.to_string(),
             subject: subject.to_string(),
             author: author.to_string(),
@@ -645,6 +662,12 @@ impl Git {
             worktree,
         })
     }
+}
+
+/// A count in `for-each-ref`'s `upstream:track` ("ahead 2, behind 1", "gone", ""): the one
+/// after `word`, 0 when it isn't there.
+fn track_count(track: &str, word: &str) -> u32 {
+    track.split(", ").find_map(|part| part.strip_prefix(word)?.parse().ok()).unwrap_or(0)
 }
 
 /// How long a read may take.
@@ -1132,11 +1155,21 @@ mod tests {
     }
 
     #[test]
+    fn upstream_track_counts() {
+        assert_eq!((track_count("ahead 2, behind 1", "ahead "), track_count("ahead 2, behind 1", "behind ")), (2, 1));
+        assert_eq!((track_count("behind 7", "ahead "), track_count("behind 7", "behind ")), (0, 7));
+        assert_eq!(track_count("gone", "ahead "), 0);
+        assert_eq!(track_count("", "behind "), 0);
+    }
+
+    #[test]
     fn branches_newest_first_locals_before_remotes() {
         let b = |name: &str, remote: Option<&str>, at: u64| Branch {
             name: name.into(),
             remote: remote.map(Into::into),
             upstream: None,
+            ahead: 0,
+            behind: 0,
             commit: String::new(),
             subject: String::new(),
             author: String::new(),

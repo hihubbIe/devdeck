@@ -10,7 +10,7 @@ use crate::runner::RunKey;
 use devdeck_core::apps::{Command, Tier};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::Scrolls;
-use devdeck_ui::{Icon, ToastKind, action_button, icon, icon_text, label, section, theme, toasts};
+use devdeck_ui::{Icon, Theme, ToastKind, action_button, icon, icon_action, label, section, theme, toasts};
 use gpui::{
     App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
@@ -52,6 +52,78 @@ impl AppView {
             this.looking = visible.then(|| this.repo.as_ref().map(|r| r.update(cx, |r, cx| r.glance(cx)))).flatten();
         }));
         Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, _subs: subs }
+    }
+
+    /// A new terminal in its folder, opened as its other views are.
+    pub fn open_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(dir) = self.ctx.services.read(cx).catalog.app(&self.app).map(|a| a.dir.display().to_string()) else { return };
+        let Some(n) = self.ctx.deck.upgrade().map(|d| d.read(cx).next_terminal(cx)) else { return };
+        self.ctx.open(ViewAddr::Terminal { n, dir }, cx);
+    }
+
+    /// Fetches its repository's remotes.
+    pub fn fetch(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else { return };
+        if let Err(why) = repo.update(cx, |r, cx| r.run(devdeck_core::git::Op::Fetch, "Fetch".into(), "fetching…".into(), cx)) {
+            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Fetch: {why}"), vec![], cx));
+        }
+    }
+
+    /// Opens the git panel and asks it to do `op`: its checks and confirmations are the
+    /// panel's, the one place git asks.
+    pub fn git(&mut self, op: super::git_view::Queued, cx: &mut Context<Self>) {
+        self.open_git(cx);
+        let Some(root) = self.repo.as_ref().map(|r| r.read(cx).root.display().to_string()) else { return };
+        let panel = self.ctx.deck.upgrade().and_then(|d| d.read(cx).view(&ViewAddr::Git { root }.to_ref())).and_then(|v| v.downcast::<super::git_view::GitView>().ok());
+        if let Some(panel) = panel {
+            panel.update(cx, |p, cx| p.queue(op, cx));
+        }
+    }
+
+    /// Its repository: the branch, behind and ahead of its upstream, and what can be done
+    /// with it. `None` outside a repository.
+    fn git_block(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        use super::git_view::Queued;
+        let repo = self.repo.as_ref()?.read(cx);
+        let snapshot = repo.snapshot();
+        let head = snapshot.map(|s| match &s.status.head {
+            devdeck_core::git::Head::Branch(b) | devdeck_core::git::Head::Unborn(b) => b.clone(),
+            devdeck_core::git::Head::Detached(c) => format!("detached at {c}"),
+        });
+        let current = snapshot.and_then(|s| s.branches.iter().find(|b| b.current && b.remote.is_none())).cloned();
+        let actions = div()
+            .flex()
+            .items_center()
+            .child(icon_action("app-fetch", Icon::Fetch, "fetch", true, t).on_click(cx.listener(|this, _, _, cx| this.fetch(cx))))
+            .child(icon_action("app-pull", Icon::Pull, "pull…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::Pull, cx))))
+            .child(icon_action("app-push", Icon::Push, "push…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::Push, cx))))
+            .child(icon_action("app-new-branch", Icon::NewBranch, "new branch…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::NewBranch, cx))))
+            .child(icon_action("app-git-panel", Icon::Git, "branches, changes: the git panel", true, t).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))));
+        let branch_row = div()
+            .id("app-branch")
+            .h(t.row_h)
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .rounded(t.radius_s)
+            .cursor_pointer()
+            .hover(|s| s.bg(t.hover))
+            .on_click(cx.listener(|this, _, _, cx| this.open_git(cx)))
+            .child(icon(Icon::Git, t.mute, t).size(t.icon_small))
+            .child(label(head.unwrap_or_else(|| "reading…".into())).flex_1().min_w_0())
+            .child(match current.as_ref().and_then(|b| b.upstream.clone().map(|u| (b, u))) {
+                Some((b, upstream)) => div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(devdeck_ui::split_bar("app-ahead-behind", b.behind, b.ahead, t))
+                    .child(div().flex_none().text_color(t.dim).child(upstream))
+                    .into_any_element(),
+                None => div().flex_none().text_color(t.dim).child("no upstream").into_any_element(),
+            });
+        Some(div().flex().flex_col().child(section("Git", t).flex().items_center().justify_between().child(actions)).child(branch_row))
     }
 
     /// Opens its repository's git panel.
@@ -193,6 +265,41 @@ impl super::KeepsState for AppView {
     }
 }
 
+/// "12 min": how long something has run (it runs: no "ago").
+fn lasted(d: std::time::Duration) -> String {
+    match d.as_secs() {
+        0..60 => "<1 min".into(),
+        s @ 60..3600 => format!("{} min", s / 60),
+        s @ 3600..86400 => format!("{} h", s / 3600),
+        s => format!("{} d", s / 86400),
+    }
+}
+
+/// Every tool its commands need, found or missing; a missing one says what it blocks.
+fn tools_block(app: &devdeck_core::apps::App, tools: &devdeck_core::apps::Tools, t: &Theme) -> gpui::Div {
+    let mut needed: Vec<&str> = app.commands.iter().flat_map(|c| c.tools.iter().map(String::as_str)).collect();
+    needed.sort_unstable();
+    needed.dedup();
+    let mut block = div().flex().flex_col().child(section(format!("Tools · {}", needed.len()), t));
+    for tool in needed {
+        let blocked: Vec<&str> = app.commands.iter().filter(|c| c.tools.iter().any(|x| x == tool) && tools.missing(app, c).is_some_and(|m| m.starts_with(tool))).map(|c| c.name()).collect();
+        let found = blocked.is_empty();
+        block = block.child(
+            div()
+                .h(t.row_h)
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .debug_selector(move || format!("tool-{tool}"))
+                .child(if found { icon(Icon::Check, t.ok, t).size(t.icon_small) } else { icon(Icon::Warning, t.warn, t).size(t.icon_small) })
+                .child(div().flex_none().w(t.size(140.)).truncate().text_color(if found { t.fg } else { t.warn }).child(tool.to_string()))
+                .child(label(if found { "found".to_string() } else { format!("not found: {} can't run", blocked.join(", ")) }).flex_1().min_w_0().text_color(t.mute)),
+        );
+    }
+    block
+}
+
 impl Focusable for AppView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
@@ -209,13 +316,7 @@ impl Render for AppView {
         let runner = services.runner.read(cx);
         let tools = runner.tools().clone();
         let env = services.env.clone();
-        let missing = tools.missing_for(&app);
         let focused = self.focus.contains_focused(window, cx);
-        let branch = self.repo.as_ref().and_then(|r| r.read(cx).snapshot()).map(|s| match &s.status.head {
-            devdeck_core::git::Head::Branch(b) => format!("on {b}"),
-            devdeck_core::git::Head::Detached(c) => format!("detached at {c}"),
-            devdeck_core::git::Head::Unborn(b) => format!("on {b}"),
-        });
 
         let env_line = match &env {
             Some(e) => div()
@@ -237,20 +338,21 @@ impl Render for AppView {
             .child(
                 div()
                     .flex()
+                    .items_center()
                     .gap_2()
                     .min_w_0()
                     .child(div().flex_none().text_color(t.hi).child(app.name.clone()))
                     .child(div().flex_none().text_color(t.dim).child(app.kind.clone()))
-                    .child(label(app.folder.clone()).text_color(t.dim).min_w_0())
-                    .when_some(branch, |d, b| d.child(div().flex_none().text_color(t.mute).child(b)))
-                    .when(self.repo.is_some(), |d| {
-                        d.child(devdeck_ui::button("app-git", "git", &t).tooltip(devdeck_ui::tip("its repository's git panel")).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
-                    }),
+                    .child(label(app.folder.clone()).text_color(t.dim).flex_1().min_w_0())
+                    .child(icon_action("app-terminal", Icon::Terminals, "a terminal in its folder", true, &t).on_click(cx.listener(|this, _, _, cx| this.open_terminal(cx))))
+                    .when(self.repo.is_some(), |d| d.child(icon_action("app-git", Icon::Git, "its git panel", true, &t).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))),
             )
-            .child(env_line)
-            .children(missing.iter().map(|m| icon_text(Icon::Warning, t.warn, m.clone(), &t)));
+            .child(env_line);
 
-        let mut body = div().id("app-commands").flex_1().min_h_0().scroll_y().px_3().pb_2().flex().flex_col();
+        // Left: what it runs, its repository, its notes. Right: what it needs. Side by side
+        // when there's room, else one under the other.
+        let mut commands = div().flex().flex_col();
+        let now = cx.background_executor().now();
         for tier in Tier::ALL {
             let cmds = app.tier(tier);
             if cmds.is_empty() {
@@ -271,7 +373,7 @@ impl Render for AppView {
                     cx.notify();
                 }));
             }
-            body = body.child(head);
+            commands = commands.child(head);
             if collapsed {
                 continue;
             }
@@ -280,13 +382,14 @@ impl Render for AppView {
                 let state = runner.state(&key);
                 let refusal = tools.missing(&app, c);
                 let running = state.is_some_and(|s| s.is_running());
+                let ran = runner.running_for(&key, now).map(lasted);
                 let selected = self.selected.as_deref() == Some(c.id.as_str());
                 let n = tier as usize * 100 + i;
-                let (r1, r2, r3, r4, r5) = (c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone());
+                let (r1, r2, r3, r4, r5, r6) = (c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone(), c.id.clone());
                 let row_label: SharedString = c.name().to_string().into();
                 let can_run = refusal.is_none() && state != Some(devdeck_core::runs::RunState::Running);
                 let run_tip = refusal.clone().map_or_else(|| format!("run {}", c.name()), |r| format!("can't run: {r}"));
-                body = body.child(
+                commands = commands.child(
                     div()
                         .id(("cmd", n))
                         .debug_selector(move || format!("cmd-{r5}"))
@@ -319,6 +422,8 @@ impl Render for AppView {
                             None => run_mark(state, ("cmd-state", n), t.icon_small, &t),
                         }))
                         .child(div().flex_none().w(t.size(110.)).truncate().text_color(if refusal.is_some() { t.dim } else { t.fg }).child(row_label))
+                        // How long it has run, while it runs: the dot says it runs.
+                        .child(div().flex_none().w(t.size(56.)).truncate().text_color(t.mute).debug_selector(move || format!("cmd-ran-{r6}")).children(ran))
                         .child(label(c.line.clone()).flex_1().min_w_0().text_color(t.dim))
                         .when(!c.ports.is_empty(), |d| {
                             d.child(div().flex_none().text_color(t.mute).child(c.ports.iter().map(|p| format!(":{p}")).collect::<Vec<_>>().join(" ")))
@@ -338,20 +443,20 @@ impl Render for AppView {
             }
         }
 
-        // Notes (R12.3): one alphabetical list, after the commands.
+        // Notes (R12.3): one alphabetical list.
         let notes = self.ctx.services.read(cx).notes.read(cx).of(&self.app);
-        body = body.child(
+        let mut notes_block = div().flex().flex_col().child(
             section(format!("Notes · {}", notes.len()), &t)
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(devdeck_ui::button("new-note", "new note", &t).debug_selector(|| "new-note".into()).on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx)))),
+                .child(icon_action("new-note", Icon::Plus, "new note", true, &t).debug_selector(|| "new-note".into()).on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx)))),
         );
         for (i, n) in notes.iter().enumerate() {
             let key = format!("{NOTE_KEY}{}", n.id);
             let selected = self.selected.as_deref() == Some(key.as_str());
             let (open, menu_id, sel, selector) = (n.id.clone(), n.id.clone(), key.clone(), n.id.clone());
-            body = body.child(
+            notes_block = notes_block.child(
                 div()
                     .id(("note", i))
                     .debug_selector(move || format!("note-{selector}"))
@@ -382,6 +487,17 @@ impl Render for AppView {
                     .child(label(n.name.clone()).flex_1().min_w_0()),
             );
         }
+
+        let left = div()
+            .flex_1()
+            .min_w(t.size(380.))
+            .flex()
+            .flex_col()
+            .child(commands)
+            .when_some(self.git_block(&t, cx), |d, g| d.child(g))
+            .child(notes_block);
+        let right = div().flex_1().min_w(t.size(300.)).flex().flex_col().child(tools_block(&app, &tools, &t));
+        let body = div().id("app-body").flex_1().min_h_0().scroll_y().px_3().pb_2().flex().flex_wrap().gap_x_6().child(left).child(right);
 
         div()
             .id("app-view")
@@ -423,5 +539,19 @@ impl Render for AppView {
             .child(header)
             .child(body)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lasted;
+    use std::time::Duration;
+
+    #[test]
+    fn how_long_it_has_run() {
+        assert_eq!(lasted(Duration::from_secs(20)), "<1 min");
+        assert_eq!(lasted(Duration::from_secs(125)), "2 min");
+        assert_eq!(lasted(Duration::from_secs(7300)), "2 h");
+        assert_eq!(lasted(Duration::from_secs(3 * 86400)), "3 d");
     }
 }

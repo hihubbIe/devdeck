@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devdeck views mockup</title>
+<!-- Pure mockup, fake data: one page for every activity's full view, edited as each is planned. -->
+<style>
+:root {
+  --bg: #0f1012; --bar: #15161a; --raised: #1c1d22; --line: #30333a;
+  --fg: #e1e2e5; --mute: #8d9099; --dim: #666a73; --accent: #64a6e3;
+  --ok: #67c174; --warn: #e3ad48; --err: #eb7474; --env: #cbbdf7; --env-bg: #2d2645;
+  --hover: #1f2126; --selected: #23324a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 13px/24px "JetBrains Mono", ui-monospace, monospace; overflow: hidden; }
+svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.app { display: flex; flex-direction: column; height: 100%; }
+.title { height: 32px; flex: none; display: flex; align-items: center; gap: 18px; padding: 0 12px; background: var(--bar); border-bottom: 1px solid var(--line); color: var(--mute); }
+.title .ctl { display: flex; align-items: center; gap: 4px; }
+.chip { color: var(--env); background: var(--env-bg); padding: 0 6px; border-radius: 3px; white-space: nowrap; }
+.tag { color: var(--mute); border: 1px solid var(--line); padding: 0 6px; line-height: 20px; border-radius: 3px; white-space: nowrap; }
+.badge { position: fixed; right: 12px; bottom: 6px; color: var(--dim); font-size: 11px; pointer-events: none; }
+.body { flex: 1; display: flex; min-height: 0; }
+.acts { width: 44px; flex: none; background: var(--bar); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding-top: 4px; gap: 4px; }
+.act { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--mute); position: relative; cursor: pointer; }
+.act svg.i { width: 18px; height: 18px; }
+.act:hover, .act.on { color: var(--fg); }
+.act.on::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--accent); }
+[data-tip] { position: relative; }
+[data-tip]:hover::after { content: attr(data-tip); position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--raised); border: 1px solid var(--line); padding: 0 8px; white-space: nowrap; z-index: 20; color: var(--fg); font-size: 12px; line-height: 22px; pointer-events: none; }
+.act[data-tip]:hover::after { top: 10px; left: 48px; transform: none; }
+.main { flex: 1; display: flex; min-width: 0; }
+.side { width: 260px; flex: none; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+.head { height: 32px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+.head .t { font-weight: 600; }
+.filter { margin: 0 8px 4px; height: 24px; border: 1px solid var(--line); color: var(--dim); padding: 0 8px; display: flex; align-items: center; }
+.sec { color: var(--mute); font-size: 11px; padding: 0 8px; display: flex; align-items: center; gap: 4px; letter-spacing: .05em; }
+.row { height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 8px; cursor: default; white-space: nowrap; }
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--selected); }
+.row .n { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.row .r { margin-left: auto; color: var(--mute); padding-left: 12px; flex: none; display: flex; }
+.row.dim .n { color: var(--mute); }
+.empty { color: var(--dim); padding: 0 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1.5px solid var(--dim); }
+.dot.on { background: var(--ok); border-color: var(--ok); }
+.dot.err { background: var(--err); border-color: var(--err); }
+.dot.busy { border-color: var(--warn); border-style: dashed; }
+.warn { color: var(--warn); } .okc { color: var(--ok); } .errc { color: var(--err); } .mute { color: var(--mute); } .dimc { color: var(--dim); }
+.split { flex: 1; display: flex; min-width: 0; }
+.pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+.pane:last-child { border-right: 0; }
+.col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.col > .pane { border-right: 0; border-bottom: 1px solid var(--line); }
+.col > .pane:last-child { border-bottom: 0; }
+.tabs { height: 32px; flex: none; background: var(--bar); display: flex; border-bottom: 1px solid var(--line); }
+.tab { padding: 0 12px; display: flex; align-items: center; gap: 6px; color: var(--mute); border-right: 1px solid var(--line); white-space: nowrap; }
+.tab.on { color: var(--fg); background: var(--bg); box-shadow: inset 0 2px 0 var(--accent); }
+.content { flex: 1; overflow: hidden; padding: 4px 12px; color: var(--mute); white-space: pre; }
+.content .ok { color: var(--ok); } .content .w { color: var(--warn); } .content .e { color: var(--err); }
+.divider { width: 5px; flex: none; cursor: col-resize; background: linear-gradient(to right, transparent 2px, var(--line) 2px, var(--line) 3px, transparent 3px); }
+.divider:hover { background: linear-gradient(to right, transparent 2px, var(--accent) 2px, var(--accent) 3px, transparent 3px); }
+.list { display: flex; flex-direction: column; min-width: 0; flex: none; }
+.scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
+.details { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.dhead { height: 36px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--bar); white-space: nowrap; }
+.dhead .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.dhead .crumb { color: var(--mute); cursor: pointer; } .dhead .crumb:hover { color: var(--accent); }
+.ib { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; color: var(--mute); cursor: pointer; flex: none; }
+.ib:hover { color: var(--fg); background: var(--hover); }
+.ib.danger:hover { color: var(--warn); }
+.ib.off { color: var(--dim); cursor: default; } .ib.off:hover { background: none; }
+.ib .corner { position: absolute; right: 1px; top: 1px; width: 9px; height: 9px; stroke-width: 3; }
+.ibs { display: flex; gap: 2px; align-items: center; }
+.grow { flex: 1; }
+.cols { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 0 24px; padding: 4px 12px 12px; }
+.block { padding-top: 10px; min-width: 0; }
+.label { color: var(--mute); font-size: 11px; letter-spacing: .05em; display: flex; align-items: center; gap: 6px; height: 26px; }
+.label .ibs { margin-left: auto; }
+.line { height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 6px; margin: 0 -6px; white-space: nowrap; min-width: 0; }
+.line.click { cursor: pointer; }
+.line:hover { background: var(--hover); }
+.line .n { overflow: hidden; text-overflow: ellipsis; flex: none; }
+.line .w140 { width: 130px; } .line .w90 { width: 90px; } .line .w70 { width: 64px; }
+.line .s { color: var(--mute); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.line .ibs { margin-left: auto; opacity: .0; }
+.line:hover .ibs { opacity: 1; }
+.line .ibs.keep { opacity: 1; }
+.hint { color: var(--dim); padding: 4px 12px; border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
+.blank { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim); }
+.menu { position: fixed; background: var(--raised); border: 1px solid var(--line); box-shadow: 0 6px 18px #0008; min-width: 220px; z-index: 30; padding: 4px 0; }
+.menu .mi { height: 24px; display: flex; align-items: center; gap: 8px; padding: 0 12px; white-space: nowrap; cursor: default; }
+.menu .mi:hover { background: var(--selected); }
+.menu .mi.head { color: var(--mute); font-size: 11px; } .menu .mi.head:hover { background: none; }
+.menu .mi .k { width: 12px; color: var(--accent); }
+.menu .sep { height: 1px; background: var(--line); margin: 4px 0; }
+.toast { position: fixed; right: 16px; bottom: 30px; background: var(--raised); border: 1px solid var(--line); padding: 4px 12px; display: none; gap: 8px; align-items: center; z-index: 40; }
+.veil { position: fixed; inset: 0; background: #0009; display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal { background: var(--raised); border: 1px solid var(--line); width: 520px; padding: 12px 16px; box-shadow: 0 8px 24px #000a; }
+.modal .mt { font-weight: 600; margin-bottom: 6px; }
+.modal .mb { color: var(--mute); white-space: normal; }
+.modal .mb code { color: var(--fg); }
+.modal .mf { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.modal .b { border: 1px solid var(--line); padding: 0 12px; cursor: pointer; }
+.modal .b.focus { outline: 1px solid var(--accent); }
+.modal .b.go { color: var(--warn); }
+.pods { display: inline-flex; gap: 2px; align-items: center; }
+.pods i { width: 10px; height: 10px; border-radius: 2px; background: var(--ok); display: inline-block; }
+.pods i.start { background: none; border: 1.5px dashed var(--warn); }
+.pods i.fail { background: var(--err); }
+.pods i.old { background: var(--dim); }
+.ab { display: inline-flex; align-items: center; gap: 4px; color: var(--mute); }
+.ab .half { width: 48px; height: 8px; display: flex; background: var(--raised); }
+.ab .half.l { justify-content: flex-end; }
+.ab .half b { display: block; height: 100%; }
+.ab .mid { width: 1px; height: 12px; background: var(--line); }
+.stack { display: inline-flex; width: 120px; height: 8px; background: var(--raised); }
+.stack b { display: block; height: 100%; }
+.link { cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
+.link:hover { color: var(--accent); }
+.todo { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--mute); gap: 6px; }
+.todo b { color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="title">
+    <span style="color:var(--warn)">●</span>
+    <span class="ctl">work <svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+    <span class="ctl"><span class="chip">@dev35</span> <svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+    <span class="grow"></span>
+    <span>search</span><span>?</span>
+    <svg class="i" viewBox="0 0 24 24"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
+    <span>settings</span>
+  </div>
+  <div class="body">
+    <div class="acts" id="acts"></div>
+    <div class="main" id="main"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="badge">mockup · fake data</div>
+
+<script>
+const ICON = {
+  pulses: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+  apps: '<path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/>',
+  cluster: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+  ports: '<path d="M10 8v1"/><path d="M14 8v1"/><path d="M18 8v1"/><path d="M19 17a2 2 0 00-1.765 1.059l-.47.882A2 2 0 0115 20H9a2 2 0 01-1.765-1.059l-.47-.882A2 2 0 005 17H4a2 2 0 01-2-2V6a2 2 0 012-2h16a2 2 0 012 2v9a2 2 0 01-2 2z"/><path d="M6 8v1"/>',
+  terminals: '<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
+  notes: '<path d="M21 9a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z"/><path d="M15 3v5a1 1 0 0 0 1 1h5"/>',
+  chevD: '<path d="m6 9 6 6 6-6"/>', chevR: '<path d="m9 18 6-6-6-6"/>',
+  warn: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  play: '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
+  stop: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  restart: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  git: '<path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>',
+  branchPlus: '<path d="M6 3v12"/><path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M15 6a9 9 0 0 0-9 9"/><path d="M18 15v6"/><path d="M21 18h-6"/>',
+  fetch: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  pull: '<path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/>',
+  push: '<path d="m18 9-6-6-6 6"/><path d="M12 3v14"/><path d="M5 21h14"/>',
+  rocket: '<path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09"/><path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  term: '<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
+  note: '<path d="M21 9a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z"/><path d="M15 3v5a1 1 0 0 0 1 1h5"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
+  bell: '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
+  corner: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+};
+const ic = (k, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24">${ICON[k]}</svg>`;
+// An icon button; `danger` ones ask in a modal that opens on Cancel (R5.6).
+const ib = (k, tip, attrs = '', cls = '') => `<span class="ib ${cls}" data-tip="${tip}" ${attrs}>${ic(k)}</span>`;
+// "Open in pulse": the pulse icon with a small arrow in its corner.
+const openInPulse = what => `<span class="ib" data-tip="open in pulse…" data-pulse-menu="${what}">${ic('pulses')}${ic('corner', 'i corner')}</span>`;
+
+// "Go there": the target activity's icon with the same corner arrow.
+const pivot = (act, tip, attrs = '') => `<span class="ib" data-tip="${tip}" data-pivot="${act}" ${attrs}>${ic(act)}${ic('corner', 'i corner')}</span>`;
+// Pods: one segment each (ready, starting, failing; old ones grey during a rollout).
+const podsBar = (pods, ready) => `<span class="pods">${pods.map(k => `<i class="${k}"></i>`).join('')}</span><span class="mute">${ready}/${pods.filter(k => k !== 'old').length}</span>`;
+// Ahead / behind: a two-sided bar, behind to the left, ahead to the right.
+const aheadBehind = (ahead, behind) => `<span class="ab" data-tip="${behind} behind · ${ahead} ahead of origin"><span class="warn">↓${behind}</span><span class="half l"><b style="width:${Math.min(100, behind * 20)}%;background:var(--warn)"></b></span><span class="mid"></span><span class="half"><b style="width:${Math.min(100, ahead * 20)}%;background:var(--ok)"></b></span><span class="okc">↑${ahead}</span></span>`;
+// Changes: added, modified, deleted as one stacked bar.
+const changes = (a, m, d) => { const n = a + m + d; return `<span class="stack" data-tip="${a} added · ${m} modified · ${d} deleted"><b style="width:${a / n * 100}%;background:var(--ok)"></b><b style="width:${m / n * 100}%;background:var(--warn)"></b><b style="width:${d / n * 100}%;background:var(--err)"></b></span>`; };
+
+const ACTS = [['pulses', 'Pulses'], ['apps', 'Apps'], ['cluster', 'Cluster'], ['ports', 'Ports'], ['terminals', 'Terminals'], ['notes', 'Notes']];
+const PULSES = ['default', 'focus', 'incident dev35 long name for truncation', 'triage'];
+const CURRENT_PULSE = 'focus';
+const ENVS = ['dev31', 'dev32', 'dev33', 'dev34', 'dev35'];
+
+// ---- Fake apps ----------------------------------------------------------------------
+const KINDS = {
+  go: { main: ['go:run', 'go:test', 'go:build'], other: ['go:lint', 'go:generate'], tools: [['go', '1.22.4'], ['golangci-lint', null], ['docker', '27.1']] },
+  node: { main: ['start:dev', 'test', 'build'], other: ['lint', 'storybook'], tools: [['node', '20.15.0'], ['pnpm', '9.4.0']] },
+  compose: { main: ['compose:up', 'compose:down'], other: ['compose:logs'], tools: [['docker', null]] },
+};
+const svc = (dev31, dev32, dev33, dev34, dev35) => ({ dev31, dev32, dev33, dev34, dev35 });
+const APPS = [
+  { id: 'a-service-with-a-name-long-enough-to-truncate', kind: 'go' },
+  { id: 'boardservice', kind: 'go', deploy: svc('1.62.8', 'main', 'main +1', '1.63.6', 'main') },
+  { id: 'contentverticalservice', kind: 'go', deploy: svc('main', 'lan-170 +1', '1.83.8', '1.84.0', 'main') },
+  { id: 'entityservice', kind: 'go', running: ['go:run'], pinned: true, branch: 'feature/geo-index', ahead: 2, behind: 0,
+    deploy: svc('lan-175', 'main +1', 'lan-165', '1.68.2', 'feature/geo-index'), rolling: 'dev35' },
+  { id: 'eventservice', kind: 'go', deploy: svc('lan-110', 'lan-125', '1.88.7 +1', '1.69.0', 'main') },
+  { id: 'front-end', folder: true, children: [
+    { id: 'front-end/mastertadaapp', name: 'mastertadaapp', kind: 'node', running: ['start:dev'] },
+    { id: 'front-end/pagerender-ui', name: 'pagerender-ui', kind: 'node' },
+    { id: 'front-end/visualizer-ui', name: 'visualizer-ui', kind: 'node', running: ['start:dev', 'test'], failed: ['test'] },
+  ] },
+  { id: 'geodataservice', kind: 'go', deploy: svc('1.79.1', 'main', 'main', 'lan-180 +1', 'main') },
+  { id: 'graphservice', kind: 'go', running: ['go:run', 'go:test'], pinned: true, deploy: svc('1.62.8', '1.83.8', 'main +1', 'main', 'main') },
+  { id: 'proxyapi', kind: 'go', deploy: svc('1.87.3', 'lan-170', '1.77.5', 'lan-140 +1', 'main') },
+  { id: 'remotedesktopapp', kind: 'compose', missing: 'docker not found' },
+  { id: 'reportservicev2', kind: 'go', deploy: svc('lan-180', 'lan-145', 'main +1', '1.77.2', 'main') },
+  { id: 'vesselservice', kind: 'go', running: ['go:run'], deploy: svc('1.74.2', 'main', '1.64.1 +1', 'lan-165', 'main') },
+];
+const PORTS = { 'go:run': ':5800', 'start:dev': ':3000' };
+const ARGS = { 'go:run': '--config dev.yaml', 'go:test': './...', 'start:dev': '--host' };
+
+const S = { act: 'apps', sel: 'entityservice', open: { 'front-end': true }, runningOnly: false, drill: null, listW: 0.3 };
+
+const flat = apps => apps.flatMap(a => a.folder ? [a, ...a.children] : [a]);
+const byId = id => flat(APPS).find(a => a.id === id);
+const nameOf = a => a.name || a.id;
+
+// ---- Frame --------------------------------------------------------------------------
+function renderActs() {
+  document.getElementById('acts').innerHTML = ACTS.map(([k, t], i) =>
+    `<div class="act ${S.act === k ? 'on' : ''}" data-act="${k}" data-tip="${t} · ctrl+${i + 1}">${ic(k)}</div>`).join('');
+}
+document.getElementById('acts').addEventListener('click', e => {
+  const a = e.target.closest('[data-act]'); if (!a) return;
+  S.act = a.dataset.act; S.drill = null; render();
+});
+document.addEventListener('keydown', e => {
+  if (document.querySelector('.veil')) { if (e.key === 'Escape' || e.key === 'Enter') closeModal(); return; }
+  if (e.ctrlKey && e.key >= '1' && e.key <= '6') { S.act = ACTS[+e.key - 1][0]; S.drill = null; render(); e.preventDefault(); return; }
+  if (S.act !== 'apps') return;
+  if (e.key === 'Escape') { closeMenu(); if (S.drill) { S.drill = null; render(); } }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const ids = visibleApps().filter(a => !a.folder).map(a => a.id);
+    const i = ids.indexOf(S.sel);
+    S.sel = ids[Math.max(0, Math.min(ids.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    S.drill = null; render(); e.preventDefault();
+  }
+});
+
+// ---- Pulse --------------------------------------------------------------------------
+function pulseView() {
+  const rows = PULSES.map(p => `<div class="row ${p === CURRENT_PULSE ? 'sel' : ''}"><span class="dot ${p === CURRENT_PULSE ? 'on' : ''}"></span><span class="n">${p}</span>${p === CURRENT_PULSE ? '<span class="r">current</span>' : ''}</div>`).join('');
+  const log = Array.from({ length: 40 }, (_, i) => {
+    const l = 556 + i, k = i % 6;
+    return k === 0 ? `<span class="w">${l} WRN slow query entities.find 812ms</span>` : k === 1 ? `<span class="e">${l} ERR rabbitmq publish failed: channel closed</span>` : `${l} INF GET /v1/entities/9DC5 200 12ms`;
+  }).join('\n');
+  return `
+  <div class="side">
+    <div class="head"><span class="t">Pulses</span></div>
+    <div class="filter">filter</div>
+    <div class="sec">${ic('chevD')} PINNED · 0</div><div class="empty">nothing pinned</div>
+    <div class="sec">${ic('chevD')} ALL · ${PULSES.length}</div>${rows}
+  </div>
+  <div class="split">
+    <div class="pane"><div class="tabs"><div class="tab on">${ic('term')} dev35 › entityservice</div><div class="tab">${ic('note')} notes</div></div><div class="content">${log}</div></div>
+    <div class="col">
+      <div class="pane"><div class="tabs"><div class="tab on">matrix</div></div><div class="content">service            dev31     dev32     dev33
+boardservice       1.62.8    main      main +1
+entityservice      lan-175   main +1   lan-165</div></div>
+      <div class="pane"><div class="tabs"><div class="tab on">${ic('note')} notes</div></div><div class="content"># notes
+
+Panes are generic containers; any view can be dropped anywhere.</div></div>
+    </div>
+  </div>`;
+}
+
+// ---- Apps: the list ---------------------------------------------------------------------
+function visibleApps() {
+  const out = [];
+  for (const a of APPS) {
+    if (a.folder) {
+      const kids = a.children.filter(c => !S.runningOnly || c.running);
+      if (S.runningOnly && !kids.length) continue;
+      out.push(a);
+      if (S.open[a.id] || S.runningOnly) out.push(...kids.map(c => ({ ...c, depth: 1 })));
+    } else if (!S.runningOnly || a.running) out.push(a);
+  }
+  return out;
+}
+function appRow(a, depth = a.depth || 0) {
+  const pad = `style="padding-left:${8 + depth * 16}px"`;
+  if (a.folder) return `<div class="row" data-folder="${a.id}" ${pad}>${ic(S.open[a.id] ? 'chevD' : 'chevR')}<span class="n">${a.id}/</span></div>`;
+  const dot = a.failed ? 'err' : a.running ? 'on' : '';
+  const right = a.missing ? `<span class="r warn" data-tip="${a.missing}">${ic('warn')}</span>` : '';
+  return `<div class="row ${S.sel === a.id ? 'sel' : ''} ${a.missing ? 'dim' : ''}" data-app="${a.id}" ${pad}><span class="dot ${dot}"></span><span class="n">${nameOf(a)}</span>${right}</div>`;
+}
+function appsList() {
+  const pinned = flat(APPS).filter(a => a.pinned && (!S.runningOnly || a.running));
+  return `
+  <div class="list" style="width:${S.listW * 100}%">
+    <div class="head"><span class="t">Apps</span><span class="grow"></span>
+      <span class="ib" data-toggle="running" data-tip="only what runs" style="${S.runningOnly ? 'color:var(--fg);background:var(--selected)' : ''}">${ic('funnel')}</span>
+      <span class="chip">@dev35</span></div>
+    <div class="filter">filter</div>
+    <div class="scroll">
+      <div class="sec">${ic('chevD')} PINNED · ${pinned.length}</div>${pinned.map(a => appRow(a, 0)).join('')}
+      <div class="sec">${ic('chevD')} ALL · ${flat(APPS).filter(a => !a.folder).length}</div>${visibleApps().map(a => appRow(a)).join('')}
+    </div>
+  </div>`;
+}
+
+// ---- Apps: the details ------------------------------------------------------------------
+function commandLine(a, c) {
+  const on = (a.running || []).includes(c), bad = (a.failed || []).includes(c);
+  const state = bad ? '<span class="errc">exit 1 · 2 min ago</span>' : on ? '<span class="okc">running · 12 min</span>' : a.missing ? '<span class="warn">docker not found</span>' : '<span class="dimc">stopped</span>';
+  const port = on && PORTS[c] ? `<span class="w70 n"><span class="link mute" data-pivot="ports" data-tip="see ${PORTS[c]} in Ports">${PORTS[c]}${ic('corner', 'i')}</span></span>` : '<span class="w70 n"></span>';
+  return `<div class="line click" data-drill="run:${c}"><span class="dot ${bad ? 'err' : on ? 'on' : ''}"></span><span class="n w140">${c}</span><span class="n w140" style="width:150px">${state}</span>${port}<span class="s">${ARGS[c] || ''}</span>
+    <span class="ibs">${on ? ib('stop', 'stop') + ib('restart', 'restart') : ib('play', 'run')}${ib('term', 'output')}</span></div>`;
+}
+function deployBlock(a) {
+  if (!a.deploy) return `<div class="block"><div class="label">DEPLOYMENTS</div><div class="dimc">not a cluster service</div></div>`;
+  const rows = ENVS.map(env => {
+    const tag = a.deploy[env], rolling = a.rolling === env, prot = env === 'dev31';
+    const state = rolling ? `${podsBar(['ok', 'ok', 'start', 'old'], 2)} <span class="warn">rolling out</span>` : podsBar(['ok', 'ok', 'ok'], 3);
+    return `<div class="line click" data-pivot="cluster" data-env="${env}"><span class="dot ${rolling ? 'busy' : 'on'}"></span><span class="chip" style="width:62px;text-align:center">${env}</span>${prot ? `<span class="errc" data-tip="protected: asks first">${ic('lock')}</span>` : ''}<span class="n" style="width:150px;overflow:hidden;text-overflow:ellipsis">${tag}</span><span class="s">${state}</span>
+      <span class="ibs keep">${ib('rocket', `deploy ${a.branch || 'main'} to ${env}…`, `data-deploy="${env}"`, 'danger')}${pivot('cluster', `${a.id} on ${env} in Cluster`, `data-env="${env}"`)}</span></div>`;
+  }).join('');
+  return `<div class="block"><div class="label">DEPLOYMENTS<span class="ibs">${ib('bell', 'notify me on…')}</span></div>${rows}</div>`;
+}
+function gitBlock(a) {
+  const branch = a.branch || 'main', ahead = a.ahead || 0, behind = a.behind || 0;
+  const others = ['main', 'feature/geo-index', 'fix/lan-175-null-tags', 'chore/bump-go-1.22'].filter(b => b !== branch);
+  return `<div class="block"><div class="label">GIT<span class="ibs">${ib('fetch', 'fetch')}${ib('pull', `pull ${branch}`, '', behind ? '' : 'off')}${ib('push', ahead ? `push ${ahead} commits of ${branch}` : 'nothing to push', '', ahead ? '' : 'off')}${ib('git', 'switch branch…', 'data-switch')}${ib('branchPlus', 'new branch…')}</span></div>
+    <div class="line click" data-drill="git:changes">${ic('git')}<span class="n w140" style="width:170px;overflow:hidden;text-overflow:ellipsis">${branch}</span>${aheadBehind(ahead, behind)}</div>
+    <div class="line click" data-drill="git:changes"><span class="dimc" style="width:14px;text-align:center">±</span><span class="n w140" style="width:170px">3 changed files</span>${changes(1, 2, 0)}</div>
+    ${others.slice(0, 2).map(b => `<div class="line click" data-switch-to="${b}"><span style="width:14px"></span><span class="n mute">${b}</span><span class="ibs">${ib('git', `switch to ${b}`)}</span></div>`).join('')}
+  </div>`;
+}
+function details() {
+  const a = byId(S.sel);
+  if (!a) return `<div class="details"><div class="blank">pick an app</div></div>`;
+  const name = nameOf(a), k = KINDS[a.kind];
+  if (S.drill) return drilled(a);
+  const tools = k.tools.map(([t, v]) => `<div class="line"><span class="${v ? 'okc' : 'warn'}">${v ? '✓' : ic('warn')}</span><span class="n w140">${t}</span><span class="s">${v || 'not found: ' + (t === 'docker' ? 'compose commands' : 'go:lint') + " can't run"}</span></div>`).join('');
+  return `<div class="details">
+    <div class="dhead"><span class="t">${name}</span><span class="tag">${a.kind}</span><span class="chip">@dev35</span>
+      <span class="mute" style="display:flex;gap:4px;align-items:center">${ic('git')} ${a.branch || 'main'}${a.ahead ? ` <span class="okc">↑${a.ahead}</span>` : ''}</span>
+      <span class="grow"></span>
+      <span class="ibs">${ib('folder', 'terminal in its folder')}${ib('git', 'git panel', 'data-drill="git:changes"')}${openInPulse(name)}</span></div>
+    <div class="scroll"><div class="cols">
+      <div>
+        <div class="block"><div class="label">MAIN</div>${k.main.map(c => commandLine(a, c)).join('')}</div>
+        <div class="block"><div class="label">OTHER</div>${k.other.map(c => commandLine(a, c)).join('')}</div>
+        ${gitBlock(a)}
+        <div class="block"><div class="label">NOTES<span class="ibs">${ib('plus', 'new note')}</span></div>
+          <div class="line click" data-drill="note:deploy checklist">${ic('note')}<span class="n">deploy checklist</span><span class="s">edited yesterday</span></div>
+          <div class="line click" data-drill="note:todo">${ic('note')}<span class="n">todo</span><span class="s">edited 3 days ago</span></div></div>
+      </div>
+      <div>
+        ${deployBlock(a)}
+        <div class="block"><div class="label">TERMINALS<span class="ibs">${ib('plus', 'new terminal here')}</span></div>
+          <div class="line click" data-pivot="terminals"><span class="dot on"></span><span class="n w140">2 · zsh</span><span class="s">go test ./store/...</span><span class="ibs">${pivot('terminals', 'terminal 2 in Terminals')}</span></div>
+          <div class="line click" data-pivot="terminals"><span class="dot"></span><span class="n w140">5 · zsh</span><span class="s">idle</span><span class="ibs">${pivot('terminals', 'terminal 5 in Terminals')}</span></div></div>
+        <div class="block"><div class="label">TOOLS</div>${tools}</div>
+        <div class="block"><div class="label dimc">RESOURCES · needs new work (devdeck-sys)</div>
+          <div class="line dimc" style="opacity:.6"><span class="n w70">go:run</span><span class="n" style="width:30px">cpu</span><span class="stack" style="width:90px"><b style="width:12%;background:var(--accent)"></b></span><span class="n" style="width:30px;margin-left:8px">mem</span><span class="stack" style="width:90px"><b style="width:45%;background:var(--accent)"></b></span></div></div>
+      </div>
+    </div></div>
+    </div>`;
+}
+function drilled(a) {
+  const name = nameOf(a), [kind, what] = S.drill.split(/:(.*)/);
+  const label = { run: what, git: 'git', note: what }[kind];
+  let body;
+  if (kind === 'run') body = what.includes('test') ? `<span class="ok">ok   store      0.412s</span>\n<span class="ok">ok   api        1.208s</span>\n<span class="e">FAIL import    0.031s</span>\n    import_test.go:88: want 3 rows, got 2`
+    : `listening on :5800\n<span class="ok">GET /v1/entities 200 12ms</span>\n<span class="ok">POST /v1/entities 201 31ms</span>\n<span class="w">slow query entities.find 812ms</span>`;
+  else if (kind === 'git') body = `On ${a.branch || 'main'} · ↑${a.ahead || 0} ↓${a.behind || 0} origin/${a.branch || 'main'}\n\n<span class="w">M  go.mod</span>\n<span class="w">M  store/index.go</span>\n<span class="ok">A  store/geo.go</span>\n\n(the git panel as today: stage, commit, push, pull, switch…)`;
+  else body = `# ${what}\n\n- [ ] bump the index\n- [ ] deploy to dev35 first`;
+  const acts = kind === 'run' ? ib('restart', 'restart') + ib('stop', 'stop') : '';
+  return `<div class="details">
+    <div class="dhead">${ib('back', 'back', 'data-back')}<span class="crumb" data-back>${name}</span><span class="dimc">›</span><span class="t">${label}</span><span class="chip">@dev35</span><span class="grow"></span>
+      <span class="ibs">${acts}${openInPulse(`${name} › ${label}`)}</span></div>
+    <div class="content" style="color:var(--fg)">${body}</div>
+    </div>`;
+}
+function appsView() {
+  return `<div class="split" id="appsplit">${appsList()}<div class="divider" id="divider"></div>${details()}</div>`;
+}
+
+// ---- Not designed yet -----------------------------------------------------------------
+function todoView(t) {
+  return `<div class="side"><div class="head"><span class="t">${t}</span></div><div class="filter">filter</div><div class="empty">…its list, as today</div></div>
+  <div class="todo"><b>${t}</b><div>today: this sidebar list + the current pulse's panes</div><div>its full view comes when we plan it</div></div>`;
+}
+
+// ---- Menus, modal, toast ------------------------------------------------------------------
+let menuEl = null;
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+function openMenu(x, y, items) {
+  closeMenu();
+  menuEl = document.createElement('div'); menuEl.className = 'menu';
+  menuEl.innerHTML = items.map(i => i === '-' ? '<div class="sep"></div>' : `<div class="mi ${i.head ? 'head' : ''}" data-do="${i.do || ''}"><span class="k">${i.check ? '✓' : ''}</span>${i.label}</div>`).join('');
+  document.body.appendChild(menuEl);
+  menuEl.style.left = Math.min(x, innerWidth - menuEl.offsetWidth - 8) + 'px';
+  menuEl.style.top = Math.min(y, innerHeight - menuEl.offsetHeight - 8) + 'px';
+}
+const pulseItems = what => [{ label: 'open in pulse', head: true }, ...PULSES.map(p => ({ label: p.length > 28 ? p.slice(0, 27) + '…' : p, check: p === CURRENT_PULSE, do: `toast:${what} opened in ${p}` }))];
+function toast(text) {
+  const t = document.getElementById('toast');
+  t.textContent = text; t.style.display = 'flex';
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 2500);
+}
+function deployModal(a, env) {
+  const branch = a.branch || 'main';
+  const v = document.createElement('div'); v.className = 'veil';
+  v.innerHTML = `<div class="modal"><div class="mt">Deploy ${branch} to ${env}?</div>
+    <div class="mb">${nameOf(a)} on <span class="chip">${env}</span> runs <code>${a.deploy[env]}</code>. This deploys <code>${branch}</code> (a1b2c3d), as <code>j.doe via Kugelblitz</code>, and follows the rollout.${env === 'dev31' ? ' <span class="errc">dev31 is protected.</span>' : ''}</div>
+    <div class="mf"><span class="b focus" data-modal="cancel">Cancel</span><span class="b go" data-modal="go">${ic('rocket')} Deploy</span></div></div>`;
+  document.body.appendChild(v);
+}
+function closeModal(go) { document.querySelector('.veil')?.remove(); if (go) toast(go); }
+
+document.addEventListener('click', e => {
+  const m = e.target.closest('[data-modal]');
+  if (m) { const a = byId(S.sel); closeModal(m.dataset.modal === 'go' ? `deploying ${a.branch || 'main'} to ${S.pendingEnv}…` : null); return; }
+  const mi = e.target.closest('.mi');
+  if (mi) { const d = mi.dataset.do; if (d.startsWith('toast:')) toast(d.slice(6)); if (d.startsWith('switch:')) toast(`switched to ${d.slice(7)}`); closeMenu(); return; }
+  if (menuEl && !e.target.closest('.menu')) closeMenu();
+  if (S.act !== 'apps') return;
+  const a = byId(S.sel);
+  const pm = e.target.closest('[data-pulse-menu]');
+  if (pm) { const r = pm.getBoundingClientRect(); openMenu(r.right - 220, r.bottom + 2, pulseItems(pm.dataset.pulseMenu)); e.stopPropagation(); return; }
+  const pv = e.target.closest('[data-pivot]');
+  if (pv && !e.target.closest('[data-deploy]')) {
+    const where = { cluster: `Cluster: ${a.id} on ${pv.dataset.env || 'dev35'}`, terminals: 'Terminals: that shell', ports: 'Ports: :5800' }[pv.dataset.pivot];
+    S.act = pv.dataset.pivot; S.drill = null; render(); toast(`→ ${where} (selected there)`); e.stopPropagation(); return;
+  }
+  const dep = e.target.closest('[data-deploy]');
+  if (dep) { S.pendingEnv = dep.dataset.deploy; deployModal(a, dep.dataset.deploy); e.stopPropagation(); return; }
+  const sw = e.target.closest('[data-switch]');
+  if (sw) { const r = sw.getBoundingClientRect(); openMenu(r.left, r.bottom + 2, [{ label: 'switch to', head: true }, ...['main', 'feature/geo-index', 'fix/lan-175-null-tags', 'chore/bump-go-1.22'].map(b => ({ label: b, check: b === (a.branch || 'main'), do: `switch:${b}` }))]); e.stopPropagation(); return; }
+  const swt = e.target.closest('[data-switch-to]');
+  if (swt) { toast(`switched to ${swt.dataset.switchTo}`); return; }
+  if (e.target.closest('.ib') && !e.target.closest('[data-drill],[data-back],[data-toggle]')) { const t = e.target.closest('.ib').dataset.tip; if (!e.target.closest('.off')) toast(t.replace('…', '')); return; }
+  if (e.target.closest('[data-back]')) { S.drill = null; render(); return; }
+  if (e.target.closest('[data-toggle="running"]')) { S.runningOnly = !S.runningOnly; render(); return; }
+  const f = e.target.closest('[data-folder]'); if (f) { S.open[f.dataset.folder] = !S.open[f.dataset.folder]; render(); return; }
+  const row = e.target.closest('[data-app]'); if (row) { S.sel = row.dataset.app; S.drill = null; render(); return; }
+  const d = e.target.closest('[data-drill]'); if (d) { S.drill = d.dataset.drill; render(); }
+});
+document.addEventListener('contextmenu', e => {
+  const row = e.target.closest('[data-app]'); if (!row || S.act !== 'apps') return;
+  e.preventDefault(); S.sel = row.dataset.app; S.drill = null; render();
+  openMenu(e.clientX, e.clientY, [{ label: 'pin', do: 'toast:pinned' }, '-', ...pulseItems(nameOf(byId(S.sel)))]);
+});
+
+// Divider drag.
+document.addEventListener('mousedown', e => {
+  if (e.target.id !== 'divider') return;
+  const split = document.getElementById('appsplit').getBoundingClientRect();
+  const move = m => { S.listW = Math.max(0.15, Math.min(0.6, (m.clientX - split.left) / split.width)); document.querySelector('#appsplit .list').style.width = S.listW * 100 + '%'; };
+  const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up); };
+  addEventListener('mousemove', move); addEventListener('mouseup', up); e.preventDefault();
+});
+
+function render() {
+  renderActs();
+  const t = ACTS.find(a => a[0] === S.act)[1];
+  document.getElementById('main').innerHTML = S.act === 'pulses' ? pulseView() : S.act === 'apps' ? appsView() : todoView(t);
+}
+render();
+</script>
+</body>
+</html>

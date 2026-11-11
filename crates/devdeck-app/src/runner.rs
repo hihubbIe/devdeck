@@ -398,6 +398,12 @@ impl Runner {
         self.runs.get(key).map(|r| r.state)
     }
 
+    /// How long a running run has run, by the executor's clock.
+    pub fn running_for(&self, key: &RunKey, now: std::time::Instant) -> Option<std::time::Duration> {
+        let r = self.runs.get(key).filter(|r| r.state == RunState::Running)?;
+        Some(now.saturating_duration_since(r.started?))
+    }
+
     pub fn app_running(&self, app: &str) -> bool {
         self.runs.iter().any(|(k, r)| k.app == app && r.state.is_running())
     }

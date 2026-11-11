@@ -125,7 +125,8 @@ fn list_keys_select_pin_and_open(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let view = ViewRef::new("app/visualizerservice");
     let tabs = cx.read(|cx| deck.read(cx).layout().panes.values().flat_map(|p| p.tabs.iter()).filter(|r| **r == view).count());
-    assert_eq!(tabs, 1, "opened once, then activated rather than duplicated");
+    assert_eq!(tabs, 0, "the Apps view opens no tab");
+    assert_eq!(cx.read(|cx| deck.read(cx).outside().map(<[ViewRef]>::to_vec)), Some(vec![view]), "its details show");
     assert!(list_focused(&s, main, cx), "focus stays in the list");
     cx.simulate_keystrokes(main, "r");
     let (items, rows) = cx.read(|cx| s.read(cx).rows(cx));
@@ -145,13 +146,18 @@ fn filter_typing_never_triggers_row_keys(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "backspace enter");
     cx.run_until_parked();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&ViewRef::new("app/proxyapi")).is_some()), "enter opens the match");
+    assert_eq!(cx.read(|cx| deck.read(cx).outside().map(<[ViewRef]>::to_vec)), Some(vec![ViewRef::new("app/proxyapi")]), "enter shows the match");
     cx.simulate_keystrokes(main, "escape");
     assert_eq!(cx.read(|cx| s.read(cx).filter.read(cx).text().to_string()), "", "esc clears the filter");
     assert!(list_focused(&s, main, cx));
     cx.simulate_keystrokes(main, "escape");
-    assert!(!list_focused(&s, main, cx), "second esc goes back to the panes");
+    assert!(!list_focused(&s, main, cx), "second esc goes to the details");
+    let details = cx.read(|cx| deck.read(cx).outside_focus()).expect("the app view takes keys");
+    assert!(cx.update_window(main, |_, window, _| details.is_focused(window)).unwrap(), "the app view has the keys");
+    // The list of a full view always shows; Pulses' hides.
     cx.simulate_keystrokes(main, "ctrl-b");
+    assert!(cx.read(|cx| s.read(cx).state.visible));
+    cx.simulate_keystrokes(main, "ctrl-1 ctrl-b");
     assert!(!cx.read(|cx| s.read(cx).state.visible));
     cx.simulate_keystrokes(main, "ctrl-b");
     assert!(cx.read(|cx| s.read(cx).state.visible));
@@ -163,7 +169,7 @@ fn hiding_a_focused_sidebar_returns_focus_to_the_panes(cx: &mut TestAppContext) 
     let shell = start(cx, None, "hide");
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-2 ctrl-b");
+    cx.simulate_keystrokes(main, "ctrl-1 ctrl-b");
     cx.run_until_parked();
     assert!(!list_focused(&s, main, cx));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
@@ -183,9 +189,9 @@ fn mouse_right_click_menu_and_drop_on_header(cx: &mut TestAppContext) {
     vcx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::none());
     vcx.run_until_parked();
     assert!(vcx.update(|_, cx| layer_state(main, cx).0), "right-click opens the row menu");
-    vcx.simulate_keystrokes("down enter");
+    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
-    assert_eq!(pinned(&s, &vcx), ["graphservice"], "menu: Pin");
+    assert_eq!(pinned(&s, &vcx), ["graphservice"], "menu: Pin, first on a full view (nothing to open)");
     // Drag a row of All onto the Pinned header.
     let row = vcx.debug_bounds("row-boardservice").expect("row drawn");
     let header = vcx.debug_bounds("header-pinned").expect("header drawn");

@@ -312,6 +312,7 @@ impl WindowView {
 
     fn observe_deck(deck: &Entity<Deck>, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
         let mut subs = vec![cx.observe_in(deck, window, |this, _, window, cx| {
+            this.leave_hidden_panes(window, cx);
             this.sync_view_focus(window, cx);
             cx.notify();
         })];
@@ -346,9 +347,26 @@ impl WindowView {
         Some(Held { window: self.id, pane, view: l.pane(pane).ok()?.active_view().cloned() })
     }
 
+    /// A full view hides the main window's panes: keys in them go to its list, as a
+    /// focused element that isn't drawn takes no keys.
+    fn leave_hidden_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_main() || self.deck.read(cx).outside().is_none() {
+            return;
+        }
+        if self.keys_view(window, cx).is_some()
+            && let Some(sidebar) = self.active_sidebar()
+        {
+            sidebar.read(cx).list_focus.clone().focus(window, cx);
+        }
+    }
+
     /// When the focused pane or its active tab changed while focus is in the pane area,
     /// gives focus to that view (if it takes keys) so its keys work without a click.
     fn sync_view_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Hidden by a full view: nothing there to give keys to.
+        if self.is_main() && self.deck.read(cx).outside().is_some() {
+            return;
+        }
         let target = self.focused_pane(cx).map(|p| (p, self.deck.read(cx).layout().pane(p).ok().and_then(|p| p.active_view().cloned())));
         if target == self.view_target {
             return;
@@ -367,7 +385,14 @@ impl WindowView {
 
     /// Gives the keys to the pane area: the focused pane's view when it takes keys (so its
     /// own keys work), else the pane area itself. Every "back to the panes" goes here.
+    /// On a full view the panes are hidden: its details' view, when it takes keys.
     fn focus_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_main() && self.deck.read(cx).outside().is_some() {
+            if let Some(h) = self.deck.read(cx).outside_focus() {
+                h.focus(window, cx);
+            }
+            return;
+        }
         let pane = self.focused_pane(cx);
         match pane.and_then(|p| self.deck.read(cx).view_focus(p)) {
             Some(h) => h.focus(window, cx),
@@ -586,9 +611,10 @@ impl WindowView {
     }
 
     /// Shows or hides the sidebar; hiding it while it has focus sends focus to the panes.
+    /// A full view's list always shows.
     fn set_sidebar_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if app_settings::is_covered(cx) {
+        if app_settings::is_covered(cx) || sidebar.read(cx).activity().full_view() {
             return;
         }
         let had_focus = Self::sidebar_has_focus(&sidebar, window, cx);
@@ -1049,7 +1075,9 @@ impl Render for WindowView {
             (Cover::Notifications, _, Some(view)) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
             _ => match self.active_sidebar() {
                 Some(sidebar) => {
-                    let visible = sidebar.read(cx).state.visible;
+                    // A full view: its list always, then its selection's details instead of the panes.
+                    let full = sidebar.read(cx).activity().full_view();
+                    let visible = full || sidebar.read(cx).state.visible;
                     let width = self.sidebar_w(window, &t, cx);
                     let (shell, drag_shell) = (self.shell.clone(), self.shell.clone());
                     let (activity_w, grab, scale) = (t.activity_w, t.divider_grab, t.scale);
@@ -1074,7 +1102,7 @@ impl Render for WindowView {
                             shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
                             window.refresh();
                         })
-                        .child(panes)
+                        .child(if full { details(&self.deck, &t, cx) } else { panes.into_any_element() })
                         .into_any_element()
                 }
                 None => panes.into_any_element(),
@@ -1165,8 +1193,81 @@ impl Render for WindowView {
     }
 }
 
+/// A full view's details (Apps): a header saying where they are (each part goes back to
+/// it, the back icon to the one before), then the view on top; a word with nothing
+/// selected.
+fn details(deck: &Entity<Deck>, t: &Theme, cx: &App) -> AnyElement {
+    let d = deck.read(cx);
+    let stack = d.outside().unwrap_or_default();
+    let Some(top) = stack.last() else {
+        return div()
+            .id("details")
+            .debug_selector(|| "details".into())
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(t.dim)
+            .child("pick an app")
+            .into_any_element();
+    };
+    let mut head = div()
+        .id("details-header")
+        .flex_none()
+        .h(t.tab_h)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .bg(t.bar)
+        .border_b_1()
+        .border_color(t.line);
+    if stack.len() > 1 {
+        let (back, to) = (deck.clone(), stack.len() - 2);
+        head = head.child(devdeck_ui::icon_action("details-back", Icon::Back, "back", true, t).debug_selector(|| "details-back".into()).on_click(move |_, _, cx| back.update(cx, |d, cx| d.back_to(to, cx))));
+    }
+    let accent = t.accent;
+    for (i, r) in stack.iter().enumerate() {
+        let title = d.title(r, cx);
+        if i > 0 {
+            head = head.child(div().flex_none().text_color(t.dim).child("›"));
+        }
+        head = head.child(if i + 1 == stack.len() {
+            div().id(("crumb", i)).flex_auto().min_w_0().truncate().text_color(t.fg).child(title)
+        } else {
+            let back = deck.clone();
+            div()
+                .id(("crumb", i))
+                .debug_selector(move || format!("crumb-{i}"))
+                .flex_shrink_1()
+                .min_w_0()
+                .truncate()
+                .text_color(t.mute)
+                .cursor_pointer()
+                .hover(move |s| s.text_color(accent))
+                .child(title)
+                .on_click(move |_, _, cx| back.update(cx, |d, cx| d.back_to(i, cx)))
+        });
+    }
+    div()
+        .id("details")
+        .debug_selector(|| "details".into())
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .flex()
+        .flex_col()
+        .child(head)
+        .child(div().flex_1().min_h_0().min_w_0().flex().children(d.view(top)))
+        .into_any_element()
+}
+
 /// The activity bar: one button per activity the workspace offers. Clicking the shown
-/// activity hides the sidebar; clicking another shows it.
+/// activity hides the sidebar (not a full view's list); clicking another shows it.
 fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowView>) -> impl IntoElement {
     let s = sidebar.read(cx);
     let (current, visible) = (s.activity(), s.state.visible);
@@ -1192,6 +1293,7 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                 .tooltip(tip(a.title()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if on {
+                        // A full view's list stays (set_sidebar_visible says so).
                         this.set_sidebar_visible(false, window, cx);
                     } else {
                         this.show_activity(a, window, cx);
@@ -1201,10 +1303,10 @@ fn activity_bar(sidebar: &Entity<Sidebar>, t: &Theme, cx: &mut Context<WindowVie
                     let me = cx.entity();
                     move |e, window, cx| {
                         let (m1, m2) = (me.clone(), me.clone());
-                        let items = vec![
-                            MenuItem::new(format!("Show {}", a.title()), move |window, cx| m1.update(cx, |v, cx| v.show_activity(a, window, cx))),
-                            MenuItem::new("Hide sidebar", move |window, cx| m2.update(cx, |v, cx| v.set_sidebar_visible(false, window, cx))),
-                        ];
+                        let mut items = vec![MenuItem::new(format!("Show {}", a.title()), move |window, cx| m1.update(cx, |v, cx| v.show_activity(a, window, cx)))];
+                        if !a.full_view() {
+                            items.push(MenuItem::new("Hide sidebar", move |window, cx| m2.update(cx, |v, cx| v.set_sidebar_visible(false, window, cx))));
+                        }
                         open_menu(e.position, items, window, cx);
                     }
                 })

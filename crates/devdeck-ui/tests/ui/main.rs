@@ -3,6 +3,7 @@
 
 mod common;
 
+mod bars;
 mod code;
 mod components;
 mod host;

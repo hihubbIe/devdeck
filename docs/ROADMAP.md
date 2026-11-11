@@ -119,7 +119,9 @@ list, which can also open as a tab in a pulse. One activity at a time.
    ([plans/pulse-rename.md](plans/pulse-rename.md)).
 2. Pulses first in the activity bar — done 2026-11-11
    ([plans/pulse-first.md](plans/pulse-first.md)).
-3. Apps: a full view; the title bar's pulse menu settled. Manual test after this step.
+3. Apps: a full view ([plans/apps-view.md](plans/apps-view.md)); 3a the frame and the
+   app view — done 2026-11-11; 3b deployments, pivots, open in pulse, the title bar's
+   pulse menu. Manual test after 3b.
 4. The others, one by one: Cluster, Ports, Terminals, Notes; then Agents.
 
 ## M4 · Shareable

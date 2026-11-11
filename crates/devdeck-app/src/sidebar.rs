@@ -80,6 +80,12 @@ impl Activity {
         }
     }
 
+    /// Whether it shows as a full view: its list, then its selection's details instead
+    /// of the pulse's panes (Apps; the others, their list beside the panes, for now).
+    pub fn full_view(self) -> bool {
+        self == Activity::Apps
+    }
+
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|a| a.id() == id)
     }
@@ -258,8 +264,20 @@ impl Sidebar {
             tick: None,
             _subs: subs,
         };
+        this._subs.push(cx.observe_self(|this, cx| this.follow(cx)));
         this.load_list(cx);
+        this.follow(cx);
         this
+    }
+
+    /// On a full view the details show its selection (none for a folder); elsewhere the
+    /// pulse's panes show.
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        let base = self.activity().full_view().then(|| self.selected.as_deref().filter(|k| !k.ends_with('/')).and_then(|k| self.view_ref(k, cx)));
+        self.deck.update(cx, |d, cx| match base {
+            Some(base) => d.show_outside(base, cx),
+            None => d.hide_outside(cx),
+        });
     }
 
     /// Starts loading what the shown list needs: the env's deployments, and with **watch**
@@ -943,8 +961,14 @@ impl Sidebar {
         runner.update(cx, |r, cx| r.stop(&RunKey::terminal(n), cx));
     }
 
-    /// Opens an item in the main window's focused pane; an open one is activated.
+    /// Opens an item in the main window's focused pane; an open one is activated. On a
+    /// full view it's only selected: its details show.
     pub fn open(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.activity().full_view() {
+            self.selected = Some(key.to_string());
+            cx.notify();
+            return;
+        }
         let Some(view) = self.view_ref(key, cx) else {
             if self.activity() != Activity::Layouts {
                 return;
@@ -1009,6 +1033,26 @@ impl Sidebar {
             let (items, rows) = self.rows(cx);
             let row = self.selected_row(&items, &rows);
             self.select_row(&items, &rows, row, cx);
+        }
+    }
+
+    /// Shows `activity` with `key` selected (on a full view, its details).
+    pub fn show_item(&mut self, activity: Activity, key: &str, cx: &mut Context<Self>) -> bool {
+        if !self.show(activity, cx) {
+            return false;
+        }
+        self.selected = Some(key.to_string());
+        let (items, rows) = self.rows(cx);
+        let row = self.selected_row(&items, &rows);
+        self.select_row(&items, &rows, row, cx);
+        true
+    }
+
+    /// Shows Pulses when a full view hides the pulse's panes: what opens there next is
+    /// seen.
+    pub fn show_pulses(&mut self, cx: &mut Context<Self>) {
+        if self.activity().full_view() {
+            self.show(Activity::Layouts, cx);
         }
     }
 
@@ -1154,11 +1198,18 @@ impl Sidebar {
                 MenuItem::new("Delete…", move |window, cx| crate::views::note_view::delete_note(&n2, &k4, window, cx)),
             ];
         }
-        let mut items = vec![
-            MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
-            MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
-            Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
-        ];
+        let pin_item = MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx)));
+        // A full view shows a row's details: nothing to open.
+        let full = this.read(cx).activity().full_view();
+        let mut items = if full {
+            vec![pin_item, Sidebar::move_menu(this, Moving::Node(key.to_string()), cx)]
+        } else {
+            vec![
+                MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
+                pin_item,
+                Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
+            ]
+        };
         // An app's shell, in its folder (not a folder row's).
         if this.read(cx).activity() == Activity::Apps
             && this.read(cx).services.read(cx).catalog.app(key).is_some()
@@ -1167,7 +1218,14 @@ impl Sidebar {
             let d = deck.read(cx);
             let (folder, focused) = (d.folder_of(Some(&view), cx), d.layout().main().focused);
             items.push(MenuItem::separator());
+            // From a full view it opens in the pulse, shown first.
+            let pulses = full.then(|| this.downgrade());
             items.push(places::item("Open terminal here", Place::Pane(focused), MAIN_WINDOW, &deck, None, cx, move |d, place, cx| {
+                if let Some(s) = pulses.clone() {
+                    cx.defer(move |cx| {
+                        let _ = s.update(cx, |s, cx| s.show_pulses(cx));
+                    });
+                }
                 d.open_terminal(&folder, place, cx)
             }));
         }

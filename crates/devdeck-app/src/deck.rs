@@ -119,6 +119,10 @@ pub struct Deck {
     visible: HashSet<ViewRef>,
     /// The main window shows something else over its panes (Settings).
     covered: bool,
+    /// A full view's details (Apps): what the main window shows instead of the pulse's
+    /// panes, the selection then what it was drilled into, the last on screen. `None`:
+    /// the panes show.
+    outside: Option<Vec<ViewRef>>,
     /// While a quiet change syncs: the OS windows it opens don't take the focus.
     opening_quietly: bool,
     /// Detached windows to open without taking the focus.
@@ -205,6 +209,7 @@ impl Deck {
             book: LayoutBook::default(),
             visible: HashSet::new(),
             covered: false,
+            outside: None,
             opening_quietly: false,
             open_unfocused: HashSet::new(),
             flash: None,
@@ -272,7 +277,12 @@ impl Deck {
     /// and that no tab shows any more is forgotten (R6.12).
     fn report_terminals(&self, cx: &mut Context<Self>) {
         let Some(services) = &self.services else { return };
-        let shown: std::collections::BTreeSet<u32> = self.terminals(cx).into_iter().filter(|(_, t)| t.here || !t.layouts.is_empty()).map(|(n, _)| n).collect();
+        let mut shown: std::collections::BTreeSet<u32> = self.terminals(cx).into_iter().filter(|(_, t)| t.here || !t.layouts.is_empty()).map(|(n, _)| n).collect();
+        // A full view's details show terminals too.
+        shown.extend(self.outside.iter().flatten().filter_map(|r| match ViewAddr::parse(r) {
+            ViewAddr::Terminal { n, .. } => Some(n),
+            _ => None,
+        }));
         let runner = services.read(cx).runner.clone();
         runner.update(cx, |r, cx| r.set_shown_terminals(shown, cx));
     }
@@ -371,8 +381,12 @@ impl Deck {
             return HashSet::new();
         }
         let l = &self.layout;
-        let window_drawn = |w: WindowId| if w == MAIN_WINDOW { !self.covered } else { matches!(self.os_windows.get(&w), Some(Some(_))) };
-        l.windows.iter().filter(|w| window_drawn(w.id)).flat_map(|w| l.shown_in(w.id)).collect()
+        let panes_drawn = |w: WindowId| if w == MAIN_WINDOW { !self.covered && self.outside.is_none() } else { matches!(self.os_windows.get(&w), Some(Some(_))) };
+        let mut shown: HashSet<ViewRef> = l.windows.iter().filter(|w| panes_drawn(w.id)).flat_map(|w| l.shown_in(w.id)).collect();
+        if !self.covered {
+            shown.extend(self.outside.as_ref().and_then(|s| s.last()).cloned());
+        }
+        shown
     }
 
     /// Recomputes what is on screen; the one place visibility changes are announced.
@@ -397,6 +411,65 @@ impl Deck {
 
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// A full view's details, from the selection to what's on screen (`None`: the
+    /// pulse's panes show).
+    pub fn outside(&self) -> Option<&[ViewRef]> {
+        self.outside.as_deref()
+    }
+
+    /// Shows a full view's details instead of the pulse's panes: `base` (the selection;
+    /// none, an empty stack) and, when it's already the base, what it was drilled into.
+    pub fn show_outside(&mut self, base: Option<ViewRef>, cx: &mut Context<Self>) {
+        let stack: Vec<ViewRef> = base.into_iter().collect();
+        match &self.outside {
+            Some(now) if now.first() == stack.first() => return,
+            _ => self.outside = Some(stack),
+        }
+        self.sync(cx);
+        cx.notify();
+    }
+
+    /// Where keys go in the details: the view on top, when it takes keys.
+    pub fn outside_focus(&self) -> Option<FocusHandle> {
+        self.outside.as_ref()?.last().and_then(|r| self.focus.get(r).cloned())
+    }
+
+    /// Shows the pulse's panes again.
+    pub fn hide_outside(&mut self, cx: &mut Context<Self>) {
+        if self.outside.take().is_some() {
+            self.sync(cx);
+            cx.notify();
+        }
+    }
+
+    /// Opens `to` over `from` when `from` is in the details: what was over `from` goes,
+    /// `to` shows (already there, back to it). False when `from` isn't in the details.
+    pub fn drill(&mut self, from: &ViewRef, to: ViewRef, cx: &mut Context<Self>) -> bool {
+        let Some(stack) = self.outside.as_mut() else { return false };
+        let Some(at) = stack.iter().position(|r| r == from) else { return false };
+        match stack.iter().position(|r| *r == to) {
+            Some(i) => stack.truncate(i + 1),
+            None => {
+                stack.truncate(at + 1);
+                stack.push(to);
+            }
+        }
+        self.sync(cx);
+        cx.notify();
+        true
+    }
+
+    /// Back to the details' `n`th view (0: the selection).
+    pub fn back_to(&mut self, n: usize, cx: &mut Context<Self>) {
+        if let Some(stack) = self.outside.as_mut()
+            && n + 1 < stack.len()
+        {
+            stack.truncate(n + 1);
+            self.sync(cx);
+            cx.notify();
+        }
     }
 
     /// A tab's title: what its view says, else what its address says.
@@ -736,8 +809,9 @@ impl Deck {
         if gone || !self.active {
             self.send = None;
         }
-        // Views: create missing, drop closed.
-        let open = self.layout.views();
+        // Views: create missing, drop closed (the details are kept like tabs).
+        let mut open = self.layout.views();
+        open.extend(self.outside.iter().flatten().cloned());
         let closed: Vec<ViewRef> = self.views.keys().filter(|r| !open.contains(*r)).cloned().collect();
         // Views already gone need no watching: the list only holds possible leaks, so
         // it stays as small as the leaks themselves.

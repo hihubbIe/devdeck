@@ -14,6 +14,7 @@ use crate::notes::{NoteDeleted, NoteWritten, Notes};
 use devdeck_ui::code::{Code, CodeEvent};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{Icon, ModalFocus, Rendered, Scrolls, button, label, modal_frame, pop_modal, theme};
+use std::rc::Rc;
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
     Subscription, WeakFocusHandle, Window, actions, div,
@@ -242,17 +243,25 @@ impl Render for NoteView {
     }
 }
 
-/// Asks a name, then makes a note for `app` and opens it (as source: it's empty).
+/// Asks a name, then makes a note for `app` and opens it (as source: it's empty), as
+/// the view asking opens views ([`ViewCx::open`]).
 pub fn new_note(ctx: &ViewCx, app: &str, window: &mut Window, cx: &mut App) {
-    make_note(ctx.services.read(cx).notes.clone(), ctx.deck.clone(), app, window, cx);
+    let ctx = ctx.clone();
+    ask_note(ctx.services.read(cx).notes.clone(), app, Rc::new(move |addr, cx| ctx.open(addr, cx)), window, cx);
 }
 
 /// Asks a name, then makes a note for `app` (empty: no project) and opens it in `deck`.
 pub fn make_note(notes: Entity<Notes>, deck: gpui::WeakEntity<crate::deck::Deck>, app: &str, window: &mut Window, cx: &mut App) {
+    ask_note(notes, app, Rc::new(move |addr, cx| super::open_in(&deck, addr, cx)), window, cx);
+}
+
+type Opener = Rc<dyn Fn(devdeck_core::view_addr::ViewAddr, &mut App)>;
+
+fn ask_note(notes: Entity<Notes>, app: &str, open: Opener, window: &mut Window, cx: &mut App) {
     let app = app.to_string();
-    let submit: crate::name_prompt::Submit = std::rc::Rc::new(move |name, cx| {
+    let submit: crate::name_prompt::Submit = Rc::new(move |name, cx| {
         let id = notes.update(cx, |n, cx| n.create(&app, name, cx)).ok_or("the note wasn't made")?;
-        super::open_in(&deck, devdeck_core::view_addr::ViewAddr::Note { id }, cx);
+        open(devdeck_core::view_addr::ViewAddr::Note { id }, cx);
         Ok(())
     });
     crate::name_prompt::open("New note", "", "note-name", submit, window, cx);

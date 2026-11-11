@@ -305,6 +305,7 @@ impl Shell {
             return Err(NotRevealed::ViewGone(why));
         }
         self.switch(i, cx);
+        self.workspaces[i].sidebar.update(cx, |s, cx| s.show_pulses(cx));
         let (revealed, window) = deck.update(cx, |d, cx| d.reveal(view, cx))?;
         let main = self.main;
         // After the switch's and the layout's deferred work (windows open, the main window

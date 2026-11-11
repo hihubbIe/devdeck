@@ -2,6 +2,7 @@
 //! use raw `px`/`rems` (see `clippy.toml`); everything else takes sizes from [`Theme`].
 #![allow(clippy::disallowed_methods)]
 
+pub mod bars;
 pub mod code;
 pub mod components;
 pub mod icons;
@@ -13,6 +14,7 @@ pub mod text_input;
 pub mod theme;
 pub mod toolbar;
 
+pub use bars::{SPLIT_FULL, split_bar, usage_bar};
 pub use code::{Code, CodeEvent, MenuOpener, Rendered};
 pub use components::*;
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};

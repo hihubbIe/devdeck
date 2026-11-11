@@ -724,6 +724,16 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   bar (Pulses, Apps, Cluster, Ports, Terminals, Notes). A saved sidebar reopens where it
   was. The title bar's pulse menu stays until the Apps full view settles what the main
   area shows. Clicking the active icon still hides the sidebar.
+- 2026-11-11 (user) Apps is a full view (R4.10): the sidebar's list as it is, then the
+  selection's details instead of the pulse's panes. The details are views like tabs, kept
+  by the deck outside the pulse (`Deck::outside`, a stack: the selection, then what it
+  was drilled into); `ViewCx::open` from them drills instead of opening a tab. While
+  they show, the main window's panes count as hidden, and keys that were in them go to
+  the list. The app view (tab or details) gains how long a run has run, a git block
+  (branch, a behind/ahead bar from the light read's `upstream:track`, fetch, and pull,
+  push, new branch handed to the git panel, whose confirmations stay the only ones) and
+  the tools its commands need. New `devdeck-ui` charts: `usage_bar` (from the service
+  view) and `split_bar`. Pivots, deployments and open in pulse come in step 3b.
 
 ## Open questions
 
