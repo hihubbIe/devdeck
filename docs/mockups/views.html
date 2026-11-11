@@ -239,6 +239,8 @@ const ICON = {
   term: '<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
   note: '<path d="M21 9a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z"/><path d="M15 3v5a1 1 0 0 0 1 1h5"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
@@ -297,7 +299,7 @@ const PORTS = { 'go:run': ':5800', 'start:dev': ':3000' };
 const ARGS = { 'go:run': '--config dev.yaml', 'go:test': './...', 'start:dev': '--host' };
 
 const CL = { env: 'dev33', mode: 'env', sel: 'frontendapp', pods: {}, parts: { monitorapp: true }, podLogs: '' };
-const S = { act: 'apps', sel: 'entityservice', open: { 'front-end': true }, runningOnly: false, drill: null, listW: 0.3 };
+const S = { act: 'ports', sel: 'entityservice', open: { 'front-end': true }, runningOnly: false, drill: null, listW: 0.3 };
 
 const flat = apps => apps.flatMap(a => a.folder ? [a, ...a.children] : [a]);
 const byId = id => flat(APPS).find(a => a.id === id);
@@ -664,6 +666,95 @@ function clusterView() {
   return `<div class="split" id="appsplit">${clusterList(deps)}<div class="divider" id="divider"></div>${clusterDetails()}</div>`;
 }
 
+// ---- Ports ------------------------------------------------------------------------------
+// What listens and the ports devdeck knows (declared by a command, or seen on one): a run,
+// a terminal, a port-forward, or another process on a known port; a known port nobody
+// holds is "free". "machine" (the scope to decide) adds whatever else listens here.
+const PT = { sel: '3000', machine: false };
+const PORT_LIST = [
+  { port: 3000, kind: 'run', holder: 'mastertadaapp', cmd: 'pnpm:start:dev', line: 'pnpm run start:dev --host', app: 'front-end/mastertadaapp', pid: 48211, up: '12 min', addr: '127.0.0.1', http: '200 OK · 14 ms',
+    wants: [['front-end/mastertadaapp', 'pnpm:start:dev', 'declared', 'running'], ['front-end/controlboardapp', 'pnpm:start:dev', 'seen 2 d ago', 'held']] },
+  { port: 5720, kind: 'free', wants: [['entityservice', 'go:run', 'seen yesterday', 'stopped']] },
+  { port: 5800, kind: 'run', holder: 'graphservice', cmd: 'go:run', line: 'go run ./cmd/server --config dev.yaml', app: 'graphservice', pid: 51022, up: '1 h 4 min', addr: '0.0.0.0', http: '404 Not Found · 3 ms',
+    wants: [['graphservice', 'go:run', 'seen today', 'running']] },
+  { port: 5900, kind: 'forward', holder: 'port-forward', line: 'kubectl -n dev35 port-forward svc/graphservice 5900:80', pid: 52190, up: '25 min', addr: '127.0.0.1', http: '200 OK · 41 ms', env: 'dev35', target: 'svc/graphservice', remote: 80, wants: [] },
+  { port: 6080, kind: 'free', wants: [['remotedesktopapp', 'compose:up', 'declared', 'stopped']] },
+  { port: 8000, kind: 'terminal', holder: 'terminal 2 · repos', line: 'python3 -m http.server', pid: 53377, up: '3 min', addr: '0.0.0.0', http: '200 OK · 2 ms', wants: [] },
+];
+const MACHINE_PORTS = [
+  { port: 631, kind: 'unknown', holder: 'another user', addr: '127.0.0.1', wants: [] },
+  { port: 5432, kind: 'other', holder: 'docker-proxy', line: '/usr/bin/docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 5432 -container-port 5432', pid: 2210, up: '3 d', addr: '0.0.0.0', wants: [] },
+  { port: 6379, kind: 'other', holder: 'redis-server', line: 'redis-server *:6379', pid: 1870, up: '3 d', addr: '127.0.0.1', wants: [] },
+];
+const portsShown = () => PORT_LIST.concat(PT.machine ? MACHINE_PORTS : []).sort((a, b) => a.port - b.port);
+const HOLDER_WORD = { run: 'listening', terminal: 'listening', forward: 'forwarding', other: 'listening', unknown: 'listening', free: 'free' };
+
+function portRow(p) {
+  const free = p.kind === 'free';
+  const r = free ? (p.wants[0] ? nameOf(byId(p.wants[0][0]) || { id: p.wants[0][0] }) : '') : p.holder;
+  return `<div class="row ${PT.sel === String(p.port) ? 'sel' : ''} ${free ? 'dim' : ''}" data-pt="${p.port}" data-tip="${HOLDER_WORD[p.kind]}">
+    <span class="dot ${free ? '' : 'on'}"></span><span class="n" style="width:56px;flex:none">:${p.port}</span>
+    <span class="n mute" style="flex:1">${r}</span>${['other', 'unknown'].includes(p.kind) ? '<span class="r dimc">not devdeck\'s</span>' : ''}</div>`;
+}
+
+function portsList() {
+  const all = portsShown(), pinned = all.filter(p => p.port === 3000);
+  return `<div class="list" style="width:${S.listW * 100}%">
+    <div class="head"><span class="t">Ports</span><span class="grow"></span>
+      <span class="ib" data-pt-machine data-tip="everything listening on this machine, not only devdeck's" style="${PT.machine ? 'color:var(--fg);background:var(--selected)' : ''}">${ic('ports')}</span></div>
+    <div class="filter">filter</div>
+    <div class="scroll"><div class="sec">${ic('chevD')} PINNED · ${pinned.length}</div>${pinned.map(portRow).join('')}
+      <div class="sec">${ic('chevD')} ALL · ${all.length}</div>${all.map(portRow).join('')}</div></div>`;
+}
+
+function portDetails() {
+  const p = portsShown().find(x => String(x.port) === PT.sel);
+  if (!p) return `<div class="details"><div class="blank">pick a port</div></div>`;
+  const free = p.kind === 'free', ours = ['run', 'terminal', 'forward'].includes(p.kind);
+  const url = `http://localhost:${p.port}`;
+  const links = [p.app ? pivot('apps', `${nameOf(byId(p.app) || { id: p.app })} in Apps`) : '', p.kind === 'terminal' ? pivot('terminals', 'terminal 2 in Terminals') : '', p.kind === 'forward' ? pivot('cluster', `${p.target} on ${p.env} in Cluster`) : ''].join('');
+  const head = `<div class="dhead"><span class="t">:${p.port}</span><span class="grow"></span><span class="ibs">${links}${ours ? openInPulse(':' + p.port) : ''}</span></div>`;
+
+  // Who holds it: what, since when, where it listens, and what can be done, together.
+  const where = p.addr === '0.0.0.0' ? '<span class="warn" data-tip="every interface: reachable from the network">0.0.0.0 · every interface</span>' : '127.0.0.1 · this machine';
+  const stop = p.kind === 'unknown' ? '' : btn('stop', 'Stop holder…', `data-pt-stop data-tip="${p.kind === 'run' ? 'stops the run' : 'asks first: names the process'}"`, 'danger');
+  const listening = free
+    ? panel('Listening', fields([['State', '<span class="dimc">free</span>'], ['Last held by', p.wants[0] ? `${nameOf(byId(p.wants[0][0]) || { id: p.wants[0][0] })} · ${p.wants[0][1]}` : '—']]))
+    : panel('Listening', fields([
+        ['State', `<span class="cellrow"><span class="dot on"></span>${HOLDER_WORD[p.kind]}</span>`],
+        ['Held by', p.kind === 'run' ? `${nameOf(byId(p.app))} · ${p.cmd}` : p.holder],
+        p.pid ? ['PID', String(p.pid)] : null,
+        p.up ? ['Up', p.up] : null,
+        ['Address', where],
+        p.http ? ['HTTP', `<span class="${p.http.startsWith('2') ? '' : 'warn'}" data-tip="a HEAD request while shown">${p.http}</span>`] : null,
+      ]) + (p.line ? `<div class="content" style="padding:2px 10px 6px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.line}</div>` : '')
+      + actionsRow([btn('globe', 'Open', `data-pt-open="${url}"`, 'primary'), btn('copy', 'Copy URL', `data-pt-copy="${url}"`), ...(p.kind === 'run' ? [btn('restart', 'Restart', 'data-pt-restart')] : []), stop]));
+
+  // Its output, when it's devdeck's (a run's, a terminal's, the forward's).
+  const lines = p.kind === 'forward'
+    ? ['Forwarding from 127.0.0.1:5900 -> 80', 'Forwarding from [::1]:5900 -> 80', 'Handling connection for 5900', 'Handling connection for 5900']
+    : p.kind === 'terminal' ? ['Serving HTTP on 0.0.0.0 port 8000 (http://0.0.0.0:8000/) ...', '127.0.0.1 - - "GET / HTTP/1.1" 200 -', '127.0.0.1 - - "GET /favicon.ico HTTP/1.1" 404 -']
+    : ['<span class="ok">ready</span> in 812 ms', `➜  Local:   ${url}/`, '<span class="w">WRN</span> chunk size over 500 kB', 'page reload src/app.tsx', 'hmr update /src/routes/index.tsx'];
+  const output = ours ? panel(p.kind === 'forward' ? 'Forward output' : 'Output', `<div class="content" style="height:200px;overflow:auto;color:var(--fg)">${lines.join('\n')}</div>`, ib('term', 'open on its own')) : '';
+
+  // Who wants it: what declares it or was seen on it; a start would collide with the holder.
+  const W = '110px 80px 56px';
+  const wants = p.wants.length ? panel(`Wants it · ${p.wants.length}`, table(W, ['COMMAND', 'HOW', 'STATE', ''], p.wants.map(([app, cmd, how, st]) => {
+    const conflict = st === 'held';
+    return trow(W, [`<span>${nameOf(byId(app) || { id: app })} · ${cmd}</span>`, `<span class="mute">${how}</span>`,
+      conflict ? `<span class="warn" data-tip="a start is refused while :${p.port} is held">port held</span>` : stateWord(st === 'running' ? 'running' : 'stopped'),
+      `<span class="r">${st === 'stopped' ? ib('play', `run ${cmd}`) : ''}${pivot('apps', `${app} in Apps`)}</span>`]);
+  }))) : '';
+
+  const forward = p.kind === 'forward' ? panel('Forward', fields([['Env', `<span class="chip">@${p.env}</span>`], ['To', p.target], ['Remote port', String(p.remote)], ['Local', `:${p.port}`]])) : '';
+  const other = ['other', 'unknown'].includes(p.kind) ? panel('Not devdeck\'s', `<div class="line"><span class="s">${p.kind === 'unknown' ? 'Another user\'s process: stop it where it runs.' : 'Started outside devdeck: stopped only after a confirmation that names it.'}</span></div>`) : '';
+  return `<div class="details">${head}<div class="scroll"><div class="dash"><div class="c3">${listening}${output}</div><div class="c2">${forward}${wants}${other}</div></div></div></div>`;
+}
+
+function portsView() {
+  return `<div class="split" id="appsplit">${portsList()}<div class="divider" id="divider"></div>${portDetails()}</div>`;
+}
+
 // ---- Not designed yet -----------------------------------------------------------------
 function todoView(t) {
   return `<div class="side"><div class="head"><span class="t">${t}</span></div><div class="filter">filter</div><div class="empty">…its list, as today</div></div>
@@ -703,6 +794,19 @@ document.addEventListener('click', e => {
   const mi = e.target.closest('.mi');
   if (mi) { const d = mi.dataset.do; if (d.startsWith('toast:')) toast(d.slice(6)); if (d.startsWith('switch:')) toast(`switched to ${d.slice(7)}`); closeMenu(); return; }
   if (menuEl && !e.target.closest('.menu')) closeMenu();
+  if (S.act === 'ports') {
+    const t = e.target;
+    if (t.closest('[data-pt-machine]')) { PT.machine = !PT.machine; render(); return; }
+    const row = t.closest('[data-pt]'); if (row) { PT.sel = row.dataset.pt; render(); return; }
+    const o = t.closest('[data-pt-open]'); if (o) { toast(`${o.dataset.ptOpen} in the browser`); return; }
+    const c = t.closest('[data-pt-copy]'); if (c) { toast(`copied ${c.dataset.ptCopy}`); return; }
+    if (t.closest('[data-pt-restart]')) { toast('restarted: the same run, its port again'); return; }
+    if (t.closest('[data-pt-stop]')) { toast('stop: a run stops at once; another process after a confirmation naming it'); return; }
+    const pm = t.closest('[data-pulse-menu]'); if (pm) { const r = pm.getBoundingClientRect(); openMenu(r.right - 220, r.bottom + 2, pulseItems(pm.dataset.pulseMenu)); e.stopPropagation(); return; }
+    const pv = t.closest('[data-pivot]'); if (pv) { toast(`→ ${pv.dataset.tip}`); return; }
+    if (t.closest('.ib')) { toast(t.closest('.ib').dataset.tip); return; }
+    return;
+  }
   if (S.act === 'cluster') {
     const t = e.target;
     const mode = t.closest('[data-cl-mode]'); if (mode) { CL.mode = mode.dataset.clMode; render(); return; }
@@ -766,7 +870,7 @@ document.addEventListener('mousedown', e => {
 function render() {
   renderActs();
   const t = ACTS.find(a => a[0] === S.act)[1];
-  document.getElementById('main').innerHTML = S.act === 'pulses' ? pulseView() : S.act === 'apps' ? appsView() : S.act === 'cluster' ? clusterView() : todoView(t);
+  document.getElementById('main').innerHTML = S.act === 'pulses' ? pulseView() : S.act === 'apps' ? appsView() : S.act === 'cluster' ? clusterView() : S.act === 'ports' ? portsView() : todoView(t);
 }
 render();
 </script>
