@@ -38,9 +38,9 @@ The interactive HTML prototype that was approved is the visual reference
 ## Visual language
 
 - Monospace everywhere (JetBrains Mono, bundled so the look is the same on every machine).
-- 13 px text (11 small, 16 for a stat tile's value), 24 px rows, 32 px tab strips, 1 px
-  dividers, no shadows except floating menus, no rounded cards except a few grouped
-  blocks: a dashboard-like view's panels and stat tiles.
+- 13 px text (11 small), 24 px rows, 32 px tab strips, 1 px dividers, no shadows except
+  floating menus, no rounded cards except a few grouped blocks: a dashboard-like view's
+  panels.
 - Color carries state only and is always paired with a mark: a filled dot running or
   ready (green), the error icon and the exit code when failed (red), the warning
   triangle for a missing tool or a warning (amber), the turning loader while a run
@@ -766,6 +766,13 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   the git panel), terminals, tools; then Commands (tiers as small headings), Git, Notes
   | Deployments (a table, rules between its columns), Terminals, Tools. A running
   command's row has a faint `t.ok` tint.
+- 2026-11-11 (user) The app view keeps what's useful: the stat tiles and their component
+  and token go ("useless"); Deployments shows only once found, Tools only as "Missing
+  tools" when one is. Its git is the git panel itself (`GitView`, built by the app view
+  with its own context: it reads as the app view shows, opens what it opens over it), in
+  a fixed-height panel under the commands; the summary branch row, `split_bar` and the
+  header's git icon go. The app view now reads its repository's full state while shown
+  (the working tree's changes), as the git panel always did.
 
 ## Open questions
 

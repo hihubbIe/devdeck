@@ -148,8 +148,8 @@ fn the_app_view_names_the_tools_its_commands_need(cx: &mut TestAppContext) {
     assert!(vcx.debug_bounds("tool-docker").is_some(), "docker, missing: what it blocks");
     select(&shell, cx, "entityservice");
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    assert!(vcx.debug_bounds("tools-found").is_some(), "what's there, on one line");
     assert!(vcx.debug_bounds("tool-docker").is_none(), "only what its commands need");
+    assert!(vcx.debug_bounds("tool-golangci-lint").is_some(), "only what's missing");
 }
 
 #[gpui::test]
@@ -267,17 +267,18 @@ fn coming_back_to_apps_shows_the_app_left(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn deployments_say_reading_until_every_env_is_read(cx: &mut TestAppContext) {
-    let shell = start(cx, "apps-reading");
-    select(&shell, cx, "front-end/mastertadaapp");
+fn deployments_show_only_once_found(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-found");
+    select(&shell, cx, "graphservice");
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    assert!(vcx.debug_bounds("deployments-reading").is_some(), "not read yet: it says so");
-    assert!(vcx.debug_bounds("deployments-none").is_none(), "never \"not deployed\" before");
+    assert!(vcx.debug_bounds("app-deployments").is_none(), "nothing found yet: no panel");
     cx.executor().advance_clock(devdeck_app::cluster::LOAD_DELAY);
     cx.run_until_parked();
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
-    assert!(vcx.debug_bounds("deployments-reading").is_none());
-    assert!(vcx.debug_bounds("deployments-none").is_some(), "every env read, no deployment of it or of front-end");
+    assert!(vcx.debug_bounds("app-deployments").is_some(), "found");
+    select(&shell, cx, "front-end/mastertadaapp");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    assert!(vcx.debug_bounds("app-deployments").is_none(), "deployed nowhere (nor front-end): no panel");
 }
 
 #[gpui::test]
@@ -287,14 +288,9 @@ fn the_details_header_holds_the_views_icons(cx: &mut TestAppContext) {
     let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
     let terminal = vcx.debug_bounds("details-action-app_view.terminal").expect("the app view's own icon, in the one header");
     assert!(vcx.debug_bounds("app-facts").is_some(), "the view keeps its facts, not a second header");
-    // A dashboard: its numbers on top, its parts in panels.
-    let stats = vcx.debug_bounds("app-stats").expect("the numbers");
-    for name in ["stat-running", "stat-deployed", "stat-terminals", "stat-tools"] {
+    // Its parts in panels, the ones that have something to say.
+    for name in ["app-commands", "app-notes", "app-terminals", "app-tools"] {
         assert!(vcx.debug_bounds(name).is_some(), "{name}");
-    }
-    for name in ["app-commands", "app-notes", "app-deployments", "app-terminals", "app-tools"] {
-        let panel = vcx.debug_bounds(name).unwrap_or_else(|| panic!("{name}"));
-        assert!(panel.origin.y > stats.origin.y, "{name} under the numbers");
     }
     vcx.simulate_click(terminal.center(), Modifiers::none());
     vcx.run_until_parked();

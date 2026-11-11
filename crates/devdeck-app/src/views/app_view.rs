@@ -19,9 +19,8 @@ use gpui::{
 
 actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote, OpenTerminal]);
 
-/// Its header's actions (a tab's, the Apps view's details'): the registry's ids.
+/// Its header's action (a tab's, the Apps view's details'): the registry's id.
 pub const OPEN_TERMINAL: &str = "app_view.terminal";
-pub const OPEN_GIT: &str = "app_view.git";
 
 /// A selected note is `note:<id>` in [`AppView::selected`] (commands are `source:name`).
 const NOTE_KEY: &str = "note:";
@@ -41,6 +40,9 @@ pub struct AppView {
     /// Its repository, when it's in one (read while the view is visible).
     repo: Option<gpui::Entity<crate::repo::Repo>>,
     looking: Option<crate::repo::Looking>,
+    /// Its repository's git panel, in it (the same view as a `git/<root>` tab; it reads
+    /// as this view shows, and opens what it opens over it).
+    git: Option<gpui::Entity<super::git_view::GitView>>,
     /// While on screen: redraws now and then, so how long a run has run moves.
     tick: Option<gpui::Task<()>>,
     _subs: Vec<Subscription>,
@@ -81,7 +83,11 @@ impl AppView {
                 })
             });
         }));
-        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, tick: None, _subs: subs }
+        let git = repo.as_ref().map(|r| {
+            let (root, r, ctx) = (r.read(cx).root.clone(), r.clone(), ctx.clone());
+            cx.new(|cx| super::git_view::GitView::new(root, r, ctx, cx))
+        });
+        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, git, tick: None, _subs: subs }
     }
 
     /// A new terminal in its folder, opened as its other views are.
@@ -91,88 +97,17 @@ impl AppView {
         self.ctx.open(ViewAddr::Terminal { n, dir }, cx);
     }
 
-    /// Fetches its repository's remotes.
-    pub fn fetch(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else { return };
-        if let Err(why) = repo.update(cx, |r, cx| r.run(devdeck_core::git::Op::Fetch, "Fetch".into(), "fetching…".into(), cx)) {
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Fetch: {why}"), vec![], cx));
-        }
-    }
-
-    /// Opens the git panel and asks it to do `op`: its checks and confirmations are the
-    /// panel's, the one place git asks.
-    pub fn git(&mut self, op: super::git_view::Queued, cx: &mut Context<Self>) {
-        self.open_git(cx);
-        let Some(root) = self.repo.as_ref().map(|r| r.read(cx).root.display().to_string()) else { return };
-        let panel = self.ctx.deck.upgrade().and_then(|d| d.read(cx).view(&ViewAddr::Git { root }.to_ref())).and_then(|v| v.downcast::<super::git_view::GitView>().ok());
-        if let Some(panel) = panel {
-            panel.update(cx, |p, cx| p.queue(op, cx));
-        }
-    }
-
-    /// Its repository: the branch, behind and ahead of its upstream, and what can be done
-    /// with it. `None` outside a repository.
-    fn git_block(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        use super::git_view::Queued;
-        let (head, current) = self.branch(cx)?;
-        let actions = div()
-            .flex()
-            .items_center()
-            .child(icon_action("app-fetch", Icon::Fetch, "fetch", true, t).on_click(cx.listener(|this, _, _, cx| this.fetch(cx))))
-            .child(icon_action("app-pull", Icon::Pull, "pull…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::Pull, cx))))
-            .child(icon_action("app-push", Icon::Push, "push…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::Push, cx))))
-            .child(icon_action("app-new-branch", Icon::NewBranch, "new branch…", true, t).on_click(cx.listener(|this, _, _, cx| this.git(Queued::NewBranch, cx))))
-            .into_any_element();
-        let branch_row = div()
-            .id("app-branch")
-            .h(t.row_h)
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .rounded(t.radius_s)
-            .cursor_pointer()
-            .hover(|s| s.bg(t.hover))
-            .on_click(cx.listener(|this, _, _, cx| this.open_git(cx)))
-            .child(icon(Icon::Git, t.mute, t).size(t.icon_small))
-            .child(label(head.unwrap_or_else(|| "reading…".into())).flex_1().min_w_0())
-            .child(match current.as_ref().and_then(|b| b.upstream.clone().map(|u| (b, u))) {
-                Some((b, upstream)) if b.ahead == 0 && b.behind == 0 => {
-                    div().flex_none().text_color(t.dim).debug_selector(|| "app-up-to-date".into()).child(format!("up to date with {upstream}")).into_any_element()
-                }
-                Some((b, upstream)) => div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(devdeck_ui::split_bar("app-ahead-behind", b.behind, b.ahead, t))
-                    .child(div().flex_none().text_color(t.dim).child(upstream))
-                    .into_any_element(),
-                None => div().flex_none().text_color(t.dim).child("no upstream").into_any_element(),
-            });
-        Some(devdeck_ui::panel("app-git", "Git", vec![actions], branch_row, t))
-    }
-
-    /// Its branch (or where its head is), and that branch as the branch list knows it
-    /// (upstream, behind, ahead); `None` outside a repository.
-    fn branch(&self, cx: &App) -> Option<(Option<String>, Option<devdeck_core::git::Branch>)> {
-        let snapshot = self.repo.as_ref()?.read(cx).snapshot();
-        let head = snapshot.map(|s| match &s.status.head {
-            devdeck_core::git::Head::Branch(b) | devdeck_core::git::Head::Unborn(b) => b.clone(),
-            devdeck_core::git::Head::Detached(c) => format!("detached at {c}"),
-        });
-        let current = snapshot.and_then(|s| s.branches.iter().find(|b| b.current && b.remote.is_none())).cloned();
-        Some((head, current))
-    }
-
     /// Where the workspace's cluster runs it, one row per env: the tag, its pods. An app
     /// deployed as nothing of its own shows its project's (a monorepo served as one,
     /// [`devdeck_core::links::project_of`]). A row goes to it in Cluster, where it's
-    /// deployed, its logs and history are. Envs still read say so, and envs that can't
-    /// be read say why: "not deployed" only when every env was read. `None` without a
-    /// cluster.
+    /// deployed, its logs and history are; envs that can't be read say why. `None` until
+    /// a deployment of it is found (none, without a cluster).
     fn deployments_block(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let Deployed { rows, via, reading, problems } = self.deployed(cx)?;
+        let Deployed { rows, via, problems } = self.deployed(cx)?;
+        // Only once found: an app deployed nowhere has no panel.
+        if rows.is_empty() {
+            return None;
+        }
         let heading = match &via {
             Some(p) if !rows.is_empty() => format!("Deployments · {} · as {p}", rows.len()),
             _ => format!("Deployments · {}", rows.len()),
@@ -215,14 +150,8 @@ impl AppView {
                     ),
             );
         }
-        if !reading.is_empty() {
-            block = block.child(note(format!("reading {}…", reading.join(", ")), t.dim).debug_selector(|| "deployments-reading".into()));
-        }
         for (env, why) in problems {
             block = block.child(note(format!("@{env}: {why}"), t.warn));
-        }
-        if rows.is_empty() && reading.is_empty() {
-            block = block.child(note("not deployed".into(), t.dim).debug_selector(|| "deployments-none".into()));
         }
         Some(devdeck_ui::panel("app-deployments", heading, Vec::new(), block, t))
     }
@@ -234,19 +163,14 @@ impl AppView {
         let all = services.catalog.apps.clone();
         let c = cluster.read(cx);
         let (mut own, mut project) = (Vec::new(), Vec::new());
-        let (mut reading, mut problems) = (Vec::new(), Vec::new());
+        let mut problems = Vec::new();
         let project_name = devdeck_core::links::project_of(&self.app);
         for env in &c.envs {
             let state = c.state(&env.name);
             if let Some(p) = state.and_then(|s| s.problem.clone()) {
                 problems.push((env.name.clone(), p));
             }
-            let Some(deps) = state.and_then(|s| s.deployments.as_ref()) else {
-                if state.is_none_or(|s| s.problem.is_none()) {
-                    reading.push(env.name.clone());
-                }
-                continue;
-            };
+            let Some(deps) = state.and_then(|s| s.deployments.as_ref()) else { continue };
             for d in deps.values() {
                 let image = d.main().image.short_name();
                 if devdeck_core::links::app_for(&d.name, image, &all).ok().flatten().as_deref() == Some(self.app.as_str()) {
@@ -257,46 +181,7 @@ impl AppView {
             }
         }
         let (rows, via) = if own.is_empty() { (project, project_name.map(String::from)) } else { (own, None) };
-        Some(Deployed { rows, via, reading, problems })
-    }
-
-    /// Its numbers at a glance, over its panels: what runs, where it's deployed, its
-    /// branch, its terminals, its tools. The branch's opens the git panel.
-    fn stats(&self, app: &devdeck_core::apps::App, tools: &devdeck_core::apps::Tools, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let runner = self.ctx.services.read(cx).runner.read(cx);
-        let visible: Vec<&devdeck_core::apps::Command> = app.commands.iter().filter(|c| c.tier != Tier::Hidden).collect();
-        let running = visible.iter().filter(|c| runner.state(&RunKey::new(&app.id, &c.id)).is_some_and(|s| s.is_running())).count();
-        let mut tiles = div().flex().flex_wrap().gap_3().px_3().pt_2().debug_selector(|| "app-stats".into());
-        tiles = tiles.child(devdeck_ui::stat_tile("stat-running", "running", format!("{running} of {}", visible.len()), if running > 0 { t.ok } else { t.mute }, t));
-        if let Some(d) = self.deployed(cx) {
-            let (value, color) = match (d.rows.len(), &d.via) {
-                (0, _) if !d.reading.is_empty() => ("reading…".to_string(), t.dim),
-                (0, _) => ("nowhere".to_string(), t.mute),
-                (n, Some(p)) => (format!("{n} envs as {p}"), t.fg),
-                (n, None) => (format!("{n} envs"), t.fg),
-            };
-            tiles = tiles.child(devdeck_ui::stat_tile("stat-deployed", "deployed", value, color, t));
-        }
-        if let Some((head, current)) = self.branch(cx) {
-            let (value, color) = match current.as_ref().filter(|b| b.upstream.is_some()) {
-                Some(b) if b.ahead == 0 && b.behind == 0 => ("up to date".to_string(), t.ok),
-                Some(b) => (format!("↓{} ↑{}", b.behind, b.ahead), if b.behind > 0 { t.warn } else { t.fg }),
-                None if head.is_some() => ("no upstream".to_string(), t.mute),
-                None => ("reading…".to_string(), t.dim),
-            };
-            tiles = tiles.child(
-                devdeck_ui::stat_tile("stat-branch", head.unwrap_or_else(|| "branch".into()), value, color, t)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.hover))
-                    .tooltip(devdeck_ui::tip("the git panel"))
-                    .on_click(cx.listener(|this, _, _, cx| this.open_git(cx))),
-            );
-        }
-        let terminals = self.terminals_here(app, cx).len();
-        tiles = tiles.child(devdeck_ui::stat_tile("stat-terminals", "terminals", terminals.to_string(), if terminals > 0 { t.fg } else { t.mute }, t));
-        let missing = needed_tools(app).into_iter().filter(|tool| !blocked_by(app, tools, tool).is_empty()).count();
-        let (value, color) = if missing == 0 { ("all found".to_string(), t.ok) } else { (format!("{missing} missing"), t.warn) };
-        tiles.child(devdeck_ui::stat_tile("stat-tools", "tools", value, color, t))
+        Some(Deployed { rows, via, problems })
     }
 
     /// Terminals in its folder, by number.
@@ -511,15 +396,16 @@ fn lasted(d: std::time::Duration) -> String {
 }
 
 /// Every tool its commands need, found or missing; a missing one says what it blocks.
-fn tools_block(app: &devdeck_core::apps::App, tools: &devdeck_core::apps::Tools, t: &Theme) -> gpui::Div {
-    let needed = needed_tools(app);
-    let (found, missing): (Vec<&str>, Vec<&str>) = needed.iter().partition(|tool| blocked_by(app, tools, tool).is_empty());
-    let row = || div().h(t.row_h).px_2().flex().items_center().gap_2().min_w_0();
-    let mut block = div().flex().flex_col();
-    // What's there, on one line; each missing one with what it blocks.
-    if !found.is_empty() {
-        block = block.child(row().debug_selector(|| "tools-found".into()).child(icon(Icon::Check, t.ok, t).size(t.icon_small)).child(label(found.join(" · ")).flex_1().min_w_0()));
+/// The tools its commands need and the machine lacks, each with what it blocks; `None`
+/// when nothing is missing.
+fn tools_block(app: &devdeck_core::apps::App, tools: &devdeck_core::apps::Tools, t: &Theme) -> Option<gpui::Div> {
+    let missing: Vec<&str> = needed_tools(app).into_iter().filter(|tool| !blocked_by(app, tools, tool).is_empty()).collect();
+    if missing.is_empty() {
+        return None;
     }
+    let row = || div().h(t.row_h).px_2().flex().items_center().gap_2().min_w_0();
+    let title = format!("Missing tools · {}", missing.len());
+    let mut block = div().flex().flex_col();
     for tool in missing {
         let what = blocked_by(app, tools, tool);
         block = block.child(
@@ -530,7 +416,7 @@ fn tools_block(app: &devdeck_core::apps::App, tools: &devdeck_core::apps::Tools,
                 .child(label(format!("not found: {} can't run", what.join(", "))).flex_1().min_w_0().text_color(t.mute)),
         );
     }
-    devdeck_ui::panel("app-tools", format!("Tools · {}", needed.len()), Vec::new(), block, t)
+    Some(devdeck_ui::panel("app-tools", title, Vec::new(), block, t))
 }
 
 /// Every tool its commands need, alphabetical, once each.
@@ -547,29 +433,22 @@ fn blocked_by<'a>(app: &'a devdeck_core::apps::App, tools: &devdeck_core::apps::
 }
 
 /// Where the cluster runs an app: per env, its own deployments, else its project's
-/// (`via`); the envs not read yet, and those that can't be.
+/// (`via`); the envs that can't be read.
 struct Deployed {
     rows: Vec<(devdeck_core::catalog::Env, devdeck_core::cluster::Deployment)>,
     via: Option<String>,
-    reading: Vec<String>,
     problems: Vec<(String, String)>,
 }
 
-/// Its header's icons: a terminal in its folder, its git panel (in a repository).
+/// Its header's icon: a terminal in its folder (its git is in it).
 impl super::Live for AppView {
     fn actions(&self, _cx: &App) -> Vec<super::ViewAction> {
-        let mut out = vec![super::ViewAction { id: OPEN_TERMINAL, icon: Icon::Terminals, on: false }];
-        if self.repo.is_some() {
-            out.push(super::ViewAction { id: OPEN_GIT, icon: Icon::Git, on: false });
-        }
-        out
+        vec![super::ViewAction { id: OPEN_TERMINAL, icon: Icon::Terminals, on: false }]
     }
 
     fn run(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
-        match id {
-            OPEN_TERMINAL => self.open_terminal(cx),
-            OPEN_GIT => self.open_git(cx),
-            _ => {}
+        if id == OPEN_TERMINAL {
+            self.open_terminal(cx);
         }
     }
 }
@@ -786,7 +665,10 @@ impl Render for AppView {
             .flex_col()
             .gap_3()
             .child(devdeck_ui::panel("app-commands", commands_title, Vec::new(), commands, &t))
-            .when_some(self.git_block(&t, cx), |d, g| d.child(g))
+            .when_some(self.git.clone(), |d, git| {
+                // A fixed height: its branch list scrolls in it.
+                d.child(devdeck_ui::panel("app-git", "Git", Vec::new(), div().h(t.size(400.)).min_w_0().flex().flex_col().child(git), &t))
+            })
             .child(devdeck_ui::panel("app-notes", notes_title, vec![new_note.into_any_element()], notes_block, &t));
         let right = div()
             .flex_grow(2.)
@@ -797,8 +679,7 @@ impl Render for AppView {
             .gap_3()
             .when_some(self.deployments_block(&t, cx), |d, b| d.child(b))
             .child(self.terminals_block(&app, &t, cx))
-            .child(tools_block(&app, &tools, &t));
-        let stats = self.stats(&app, &tools, &t, cx);
+            .when_some(tools_block(&app, &tools, &t), |d, b| d.child(b));
         let body = div()
             .id("app-body")
             .flex_1()
@@ -806,7 +687,6 @@ impl Render for AppView {
             .scroll_y()
             .flex()
             .flex_col()
-            .child(stats)
             .child(div().px_3().pt_3().pb_3().flex().flex_wrap().gap_3().child(left).child(right));
 
         div()

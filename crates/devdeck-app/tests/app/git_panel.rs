@@ -265,3 +265,24 @@ fn a_second_operation_waits_for_the_first(cx: &mut TestAppContext) {
     until(cx, "the fetch done", |cx| cx.read(|cx| repo.read(cx).busy.is_none()));
     assert_eq!(head(&repo, cx), Some(Head::Branch("main".into())), "the refused switch didn't happen");
 }
+
+/// The app view holds its repository's git panel (user, 2026-11-11): on the Apps view it
+/// reads the full state as the view shows, and its parts are there, in a panel.
+#[gpui::test]
+fn an_app_view_holds_its_git_panel(cx: &mut TestAppContext) {
+    let (folder, web) = repos(cx);
+    let (shell, _) = start(cx, &folder);
+    let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.show_item(devdeck_app::sidebar::Activity::Apps, "web", cx)));
+    cx.run_until_parked();
+    let s = cx.read(|cx| shell.read(cx).workspaces[0].services.clone());
+    let repo = cx.update(|cx| s.update(cx, |s, cx| s.repo(&web, cx))).expect("a repository");
+    until(cx, "the full read the git panel wants", |cx| cx.read(|cx| repo.read(cx).full().is_some()));
+    let main = cx.read(|cx| shell.read(cx).main_window().expect("main"));
+    let mut vcx = gpui::VisualTestContext::from_window(main.into(), cx);
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("app-git").is_some(), "a Git panel");
+    assert!(vcx.debug_bounds("git-head-line").is_some(), "the git panel's own branch line, in it");
+    assert!(vcx.debug_bounds("git-filter").is_some(), "its branches, filtered");
+    assert!(vcx.debug_bounds("details-action-app_view.git").is_none(), "no icon to open it elsewhere");
+}

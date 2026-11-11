@@ -1,12 +1,9 @@
-//! Small charts that sit in a row: a quantity against its bounds, two counts either side
-//! of a mark. Sized from the theme (they follow the UI scale), colored by state only, and
-//! never wider than they're given room for. `name` labels their parts for tests.
+//! Small charts that sit in a row: a quantity against its bounds, a deployment's pods.
+//! Sized from the theme (they follow the UI scale), colored by state only, and never
+//! wider than they're given room for. `name` labels their parts for tests.
 
 use crate::theme::Theme;
 use gpui::{Hsla, ParentElement, Styled, div, prelude::*, relative};
-
-/// How many a [`split_bar`] side shows before it's full.
-pub const SPLIT_FULL: u32 = 10;
 
 /// A usage bar against a request (a tick) and a limit (the full width); without a limit
 /// the bar spans the request, else what's used. Past its request it turns to a warning.
@@ -27,35 +24,6 @@ pub fn usage_bar(name: &str, used: u32, request: Option<u32>, limit: Option<u32>
         .when_some(request, |d, r| {
             d.child(div().debug_selector(move || tick_name).absolute().top_0().h_full().w(t.hairline).left(relative((r as f32 / full).min(1.0))).bg(t.fg))
         })
-}
-
-/// Two counts either side of a mark, each with its number: `behind` to the left (a
-/// warning: something to take in), `ahead` to the right; a side is full at
-/// [`SPLIT_FULL`]. A git branch against its upstream.
-pub fn split_bar(name: &str, behind: u32, ahead: u32, t: &Theme) -> gpui::Div {
-    let half = |n: u32| n.min(SPLIT_FULL) as f32 / SPLIT_FULL as f32;
-    let side = |part: String, n: u32, color: Hsla, right: bool| {
-        div()
-            .flex_none()
-            .w(t.size(48.))
-            .h(t.size(8.))
-            .flex()
-            .when(!right, |d| d.justify_end())
-            .bg(t.line)
-            .child(div().debug_selector(move || part).h_full().w(relative(half(n))).bg(color))
-    };
-    let count = |text: String, n: u32, color: Hsla| div().flex_none().text_color(if n == 0 { t.dim } else { color }).child(text);
-    div()
-        .debug_selector(|| name.to_string())
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap_1()
-        .child(count(format!("↓{behind}"), behind, t.warn))
-        .child(side(format!("{name}-behind"), behind, t.warn, false))
-        .child(div().flex_none().w(t.hairline).h(t.size(12.)).bg(t.mute))
-        .child(side(format!("{name}-ahead"), ahead, t.ok, true))
-        .child(count(format!("↑{ahead}"), ahead, t.ok))
 }
 
 /// One pod of a [`pods_bar`].

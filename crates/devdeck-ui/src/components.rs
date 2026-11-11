@@ -327,28 +327,6 @@ pub fn panel(name: &str, title: impl Into<SharedString>, actions: Vec<AnyElement
         .child(div().px_1().py_1().flex().flex_col().min_w_0().child(body))
 }
 
-/// A value worth seeing at a glance, with what it is under it: a dashboard's tile, on a
-/// panel's surface. `color` is the value's (a state's, or the text's); `name` its id.
-pub fn stat_tile(name: &str, caption: impl Into<SharedString>, value: impl Into<SharedString>, color: Hsla, t: &Theme) -> Stateful<gpui::Div> {
-    let selector = name.to_string();
-    div()
-        .id(SharedString::from(name.to_string()))
-        .debug_selector(move || selector)
-        .flex_1()
-        .min_w(t.size(110.))
-        .px_3()
-        .py_2()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .bg(t.bar)
-        .border_1()
-        .border_color(t.line)
-        .rounded(t.radius_m)
-        .child(div().min_w_0().truncate().text_size(t.text_large).text_color(color).child(value.into()))
-        .child(label(caption).text_size(t.text_small).text_color(t.mute))
-}
-
 /// Section heading inside a view: muted text over a soft hairline.
 pub fn section(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
     div()
