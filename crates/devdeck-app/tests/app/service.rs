@@ -15,8 +15,6 @@ use std::time::Duration;
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
     let config = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
-    // These deploy (the demo's simulated rollouts): edit mode on (R5.6, its own tests in edit_mode.rs).
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
     cx.run_until_parked();
@@ -74,7 +72,7 @@ fn tag_edit_confirm_rollout_ready(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 1, "a confirmation, not a deploy");
     assert!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").is_none()));
-    cx.simulate_keystrokes(main, "enter");
+    cx.simulate_keystrokes(main, "tab enter");
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 0);
     assert!(matches!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").map(|r| r.state.clone())), Some(RolloutState::Rolling { .. })));
@@ -97,7 +95,7 @@ fn a_broken_tag_keeps_failing_until_another_deploy_replaces_it(cx: &mut TestAppC
     let _view = open_service(&shell, cx, "dev35", "graphservice");
     let tag = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().tag());
     type_tag(main, cx, "lan-broken");
-    cx.simulate_keystrokes(main, "ctrl-s enter");
+    cx.simulate_keystrokes(main, "ctrl-s tab enter");
     advance(cx, ROLLOUT_STEP * 4);
     let state = cx.read(|cx| c.read(cx).rollout("dev35", "graphservice").map(|r| r.state.clone()));
     let Some(RolloutState::Failing { reason, .. }) = state else { panic!("failing: {state:?}") };
@@ -105,7 +103,7 @@ fn a_broken_tag_keeps_failing_until_another_deploy_replaces_it(cx: &mut TestAppC
     assert!(cx.read(|cx| c.read(cx).pods("dev35", "graphservice").iter().any(|p| p.tag == "lan-broken" && !p.ready)), "a pod stuck pulling");
     // The fix: another deploy, right away (nothing waits for the failing one).
     type_tag(main, cx, &tag);
-    cx.simulate_keystrokes(main, "ctrl-s enter");
+    cx.simulate_keystrokes(main, "ctrl-s tab enter");
     let replicas = cx.read(|cx| c.read(cx).deployment("dev35", "graphservice").unwrap().replicas);
     advance(cx, ROLLOUT_STEP * replicas);
     let history = cx.read(|cx| c.read(cx).history("dev35", "graphservice").to_vec());
@@ -137,7 +135,7 @@ fn protected_envs_need_the_typed_name(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "ctrl-s");
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 1, "now the confirmation");
-    cx.simulate_keystrokes(main, "enter");
+    cx.simulate_keystrokes(main, "tab enter");
     cx.run_until_parked();
     assert!(cx.read(|cx| c.read(cx).rollout("hades", "proxyapi").is_some()));
 }
@@ -280,7 +278,7 @@ fn r_redeploys_the_same_branch_and_the_fake_rolls_new_pods(cx: &mut TestAppConte
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 1, "a confirmation, not a redeploy");
     assert!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").is_none()));
-    cx.simulate_keystrokes(main, "enter");
+    cx.simulate_keystrokes(main, "tab enter");
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 0, "closed once the cluster took it");
     let r = cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").cloned()).expect("followed");
@@ -315,7 +313,7 @@ fn a_redeploy_confirmed_after_someone_deployed_is_refused_in_its_confirmation(cx
             c.apply("dev35", devdeck_app::cluster::EnvUpdate::Deployments(list), cx);
         })
     });
-    cx.simulate_keystrokes(main, "enter");
+    cx.simulate_keystrokes(main, "tab enter");
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 1, "the confirmation stays, saying why");
     let mut vcx = gpui::VisualTestContext::from_window(main, cx);
@@ -345,7 +343,7 @@ fn a_deploy_confirmed_after_someone_deployed_is_refused_in_its_confirmation(cx: 
             image
         })
     });
-    cx.simulate_keystrokes(main, "enter");
+    cx.simulate_keystrokes(main, "tab enter");
     advance(cx, ROLLOUT_STEP * 3);
     assert_eq!(modals(main, cx), 1, "the confirmation stays, saying why");
     let modal = cx.update(|cx| devdeck_ui::overlay::layer(main, cx).read(cx).modals.last().cloned()).unwrap();
@@ -360,12 +358,6 @@ fn the_redeploy_button_says_why_not_and_a_protected_env_asks_its_name_first(cx: 
     let main = main_window(&shell, cx);
     assert_eq!(devdeck_app::registry::by_id("svc.redeploy").and_then(|s| s.key_text()).as_deref(), Some("r"), "registered, on r");
     let view = open_service(&shell, cx, "hades", "proxyapi");
-    cx.update(|cx| devdeck_app::edit_mode::set(false, cx));
-    assert_eq!(cx.read(|cx| view.read(cx).redeploy_blocked(cx)), Some(devdeck_app::edit_mode::OFF.into()), "edit mode first");
-    cx.simulate_keystrokes(main, "r");
-    cx.run_until_parked();
-    assert_eq!(modals(main, cx), 0, "refused, never the env's name to then refuse");
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     assert_eq!(cx.read(|cx| view.read(cx).redeploy_blocked(cx)), Some("hades is protected: unlock it first".into()));
     cx.simulate_keystrokes(main, "r");
     cx.run_until_parked();

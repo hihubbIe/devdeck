@@ -556,10 +556,6 @@ pub fn env_get(cx: &CallCx, p: EnvParams, app: &mut App) -> Result<Env, ApiError
     envs(w.services.read(app)).into_iter().find(|e| e.name == p.name).ok_or_else(|| ApiError::not_found(format!("no env {}", p.name)))
 }
 
-pub fn editmode_get(_: &CallCx, _: NoParams, app: &mut App) -> Result<EditMode, ApiError> {
-    Ok(EditMode { on: crate::edit_mode::is_on(app) })
-}
-
 pub fn settings_get(_: &CallCx, _: NoParams, app: &mut App) -> Result<Settings, ApiError> {
     let s = crate::app_settings::settings(app).read(app);
     Ok(Settings { scale: s.store.settings.scale(), theme: s.store.settings.theme.clone() })

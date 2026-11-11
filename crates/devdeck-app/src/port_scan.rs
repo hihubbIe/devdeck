@@ -10,18 +10,20 @@
 //!   the state folder, loaded when first needed); an empty scan never erases them.
 //! - Before a start, a remembered or declared port that someone holds refuses the start
 //!   with "port 5720 is held by …"; the toast offers "Stop holder": our own run stops at
-//!   once; another process is stopped (SIGTERM) only after a confirmation that names it.
+//!   once; another process is stopped (SIGTERM) only after a confirmation that names it
+//!   ([`stop_process`], a dangerous action, R5.6).
 //! - `Services::ports` reads this cache (plus the demo's fake holders).
 //!
 //! The demo has no machine scan, no memory and no conflicts: its runs are fake.
 
+use crate::danger::{self, Confirmed, DangerModal};
 use crate::runner::{RunKey, RunRefusal, Runner};
 use devdeck_core::ports::PortMemory;
 use devdeck_sys::SysError;
 use devdeck_sys::ports::{Holder, holder, listening};
 use devdeck_sys::procs;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
-use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, push_modal, theme, toasts};
+use devdeck_ui::{ModalFocus, ToastKind, button, label, modal_frame, pop_modal, theme, toasts};
 use gpui::{
     App, AppContext, Context, Entity, EntityId, FocusHandle, IntoElement, ParentElement, Render, Styled, Subscription, Task, WeakEntity,
     WeakFocusHandle, Window, actions, div, prelude::*,
@@ -360,10 +362,8 @@ pub fn start_or_toast(runner: &Entity<Runner>, key: &RunKey, env: Option<String>
 pub fn refusal_toast(runner: &Entity<Runner>, key: &RunKey, why: &RunRefusal, cx: &mut App) {
     let text = format!("{}: {why}", runner.read(cx).title(key));
     let mut actions: Vec<(gpui::SharedString, devdeck_ui::overlay::MenuAction)> = Vec::new();
-    // A process devdeck didn't start is stopped only in edit mode (R5.6): not offered then.
     if let RunRefusal::PortHeld { port, holder } = why
         && holder.stoppable()
-        && (matches!(holder, PortHolder::Run { .. }) || crate::edit_mode::is_on(cx))
     {
         let (runner, port, holder) = (runner.downgrade(), *port, holder.clone());
         actions.push(("Stop holder".into(), Rc::new(move |window, cx| stop_holder(&runner, port, &holder, window, cx))));
@@ -378,11 +378,6 @@ pub fn stop_holder(runner: &WeakEntity<Runner>, port: u16, holder: &PortHolder, 
         PortHolder::Run { key, .. } => {
             let _ = runner.update(cx, |r, cx| r.stop(key, cx));
         }
-        // Not one of devdeck's runs: only in edit mode (R5.6).
-        PortHolder::Process { .. } if crate::edit_mode::refusal(cx).is_some() => {
-            let why = crate::edit_mode::OFF;
-            toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("Stop holder: {why}."), vec![], cx));
-        }
         PortHolder::Process { pid, command } => confirm_stop(port, *pid, command.clone(), window, cx),
         PortHolder::Unknown => {}
     }
@@ -391,12 +386,22 @@ pub fn stop_holder(runner: &WeakEntity<Runner>, port: u16, holder: &PortHolder, 
 fn confirm_stop(port: u16, pid: u32, command: String, window: &mut Window, cx: &mut App) {
     let restore = window.focused(cx).map(|f| f.downgrade());
     let modal = cx.new(|cx| StopProcess { port, pid, command, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore });
-    push_modal(modal.clone().into(), window, cx);
-    let first = modal.read(cx).focus.0[0].clone();
-    first.focus(window, cx);
+    danger::show(modal, window, cx);
 }
 
-/// "Stop node (pid 7712)?" with its command line; Enter stops, Esc cancels.
+/// Stops `pid` (SIGTERM), a process devdeck didn't start, if it still holds `port`: the
+/// pid may have ended and been reused since the user confirmed.
+pub fn stop_process(port: u16, pid: u32, _: Confirmed) -> Result<(), String> {
+    let still = matches!(holder(port), Ok(Some(Holder::Process { pid: p, .. })) if p == pid);
+    if !still {
+        return Err(format!("pid {pid} no longer holds port {port}"));
+    }
+    #[allow(clippy::disallowed_methods)] // Confirmed above.
+    devdeck_core::process::terminate(pid)
+}
+
+/// "Stop node (pid 7712)?" with its command line; a danger modal (R5.6): opens on Cancel,
+/// Enter stops from Stop, Esc cancels.
 pub struct StopProcess {
     pub port: u16,
     pub pid: u32,
@@ -415,24 +420,26 @@ impl StopProcess {
 
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close(window, cx);
-        // The pid may have ended and been reused since the question: it must still hold
-        // the port.
-        let still = matches!(holder(self.port), Ok(Some(Holder::Process { pid, .. })) if pid == self.pid);
-        // Edit mode may have been turned off while this asked.
-        let result = if let Some(why) = crate::edit_mode::refusal(cx) {
-            Err(why)
-        } else if still { devdeck_core::process::terminate(self.pid) } else { Err(format!("pid {} no longer holds port {}", self.pid, self.port)) };
-        if let Err(why) = result {
+        #[allow(clippy::disallowed_methods)] // Its Stop button or Enter on it.
+        let ok = danger::confirmed(self);
+        if let Err(why) = stop_process(self.port, self.pid, ok) {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, why, vec![], cx));
         }
     }
 
+    /// Enter: stops only from Stop; anywhere else it cancels.
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.focus.0[1].is_focused(window) {
-            self.close(window, cx);
-        } else {
+        if self.focus.0[0].is_focused(window) {
             self.stop(window, cx);
+        } else {
+            self.close(window, cx);
         }
+    }
+}
+
+impl DangerModal for StopProcess {
+    fn cancel(&self) -> &FocusHandle {
+        &self.focus.0[1]
     }
 }
 

@@ -12,6 +12,7 @@
 
 use super::{ViewCx, fmt_age};
 use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling, WriteState};
+use crate::danger::{self, Confirmed, DangerModal};
 use crate::repo::{Looking, Repo};
 use devdeck_core::cluster::{Deployment, Pod, Remote, RolloutState, redeploy_warning, unlock_matches};
 use devdeck_core::view_addr::ViewAddr;
@@ -60,10 +61,7 @@ pub struct ServiceView {
 impl ServiceView {
     pub fn new(env: String, name: String, ctx: ViewCx, cluster: Entity<Cluster>, cx: &mut Context<Self>) -> Self {
         let tag = cx.new(|cx| TextInput::new("image tag", cx));
-        // Its buttons say whether edit mode allows them.
-        let edit_mode = crate::edit_mode::edit_mode(cx);
         let mut subs = vec![
-            cx.observe(&edit_mode, |_, _, cx| cx.notify()),
             cx.observe(&cluster, |this, _, cx| this.cluster_changed(cx)),
             cx.subscribe(&tag, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit(_) => this.save(cx),
@@ -180,7 +178,7 @@ impl ServiceView {
 
     /// Why the deploy (the rocket, ctrl+s) can't go ahead now, if it can't.
     pub fn save_blocked(&self, cx: &App) -> Option<String> {
-        // Edit mode first: it's what the user can do something about.
+        // The short name first: it's what the user can do something about.
         if let Err(why) = self.cluster.read(cx).writes(cx) {
             return Some(why);
         }
@@ -194,7 +192,6 @@ impl ServiceView {
     /// The rocket or ctrl+s: on a locked protected env asks to unlock first; otherwise
     /// confirms.
     pub fn save(&mut self, cx: &mut Context<Self>) {
-        // Edit mode before the protected env's name: never ask the name to then refuse.
         // Everything else before the protected env's name: never ask it to then refuse.
         let to = self.tag.read(cx).text().trim().to_string();
         let other = self.cluster.read(cx).deploy_blocked(&self.env, &self.name, &to, true, cx);
@@ -215,12 +212,11 @@ impl ServiceView {
         self.in_window(cx, move |window, cx| {
             let kind = WriteKind::Change { from: from_tag, from_image, to };
             let modal = cx.new(|cx| ConfirmDeploy::new(me, env, name, kind, command, window, cx));
-            show_modal(modal, window, cx);
+            danger::show(modal, window, cx);
         });
     }
 
-    /// Why a redeploy can't go ahead now, if it can't (every guard of a write: edit mode
-    /// first).
+    /// Why a redeploy can't go ahead now, if it can't (every guard of a write).
     pub fn redeploy_blocked(&self, cx: &App) -> Option<String> {
         self.cluster.read(cx).write_blocked(&self.env, &self.name, self.unlocked, cx)
     }
@@ -245,22 +241,22 @@ impl ServiceView {
         let (env, name) = (self.env.clone(), self.name.clone());
         self.in_window(cx, move |window, cx| {
             let modal = cx.new(|cx| ConfirmDeploy::new(me, env, name, kind, command, window, cx));
-            show_modal(modal, window, cx);
+            danger::show(modal, window, cx);
         });
     }
 
     /// Sends the redeploy confirmed, pinned to the image that was shown.
-    pub fn send_redeploy(&mut self, image: &str, cx: &mut Context<Self>) -> Result<(), String> {
+    pub fn send_redeploy(&mut self, image: &str, ok: Confirmed, cx: &mut Context<Self>) -> Result<(), String> {
         let (env, name, unlocked) = (self.env.clone(), self.name.clone(), self.unlocked);
-        let result = self.cluster.update(cx, |c, cx| c.redeploy(&env, &name, image, unlocked, cx));
+        let result = self.cluster.update(cx, |c, cx| c.redeploy(&env, &name, image, unlocked, ok, cx));
         cx.notify();
         result
     }
 
     /// Sends the change confirmed: `to` on the image `from` that was shown.
-    pub fn deploy(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<(), String> {
+    pub fn deploy(&mut self, from: &str, to: &str, ok: Confirmed, cx: &mut Context<Self>) -> Result<(), String> {
         let (env, name, unlocked) = (self.env.clone(), self.name.clone(), self.unlocked);
-        let result = self.cluster.update(cx, |c, cx| c.deploy(&env, &name, from, to, unlocked, cx));
+        let result = self.cluster.update(cx, |c, cx| c.deploy(&env, &name, from, to, unlocked, ok, cx));
         cx.notify();
         result
     }
@@ -774,7 +770,8 @@ pub enum WriteKind {
 }
 
 /// "Deploy X on env: from → to" (or "Redeploy X on env?" with its branch) with the
-/// equivalent command; Enter sends, Esc cancels. It stays until the cluster answers: closes
+/// equivalent command; a danger modal (R5.6): opens on Cancel, Enter sends from Deploy, Esc
+/// cancels. It stays until the cluster answers: closes
 /// when the write is taken, shows why when not.
 pub struct ConfirmDeploy {
     service: Entity<ServiceView>,
@@ -828,9 +825,11 @@ impl ConfirmDeploy {
         let cluster = self.service.read(cx).cluster.clone();
         cluster.update(cx, |c, _| c.watch_write(&self.env, &self.name, true));
         let kind = self.kind.clone();
+        #[allow(clippy::disallowed_methods)] // Its Deploy button or Enter on it.
+        let ok = danger::confirmed(self);
         let sent = self.service.update(cx, |s, cx| match &kind {
-            WriteKind::Change { from_image, to, .. } => s.deploy(from_image, to, cx),
-            WriteKind::Redeploy { image, .. } => s.send_redeploy(image, cx),
+            WriteKind::Change { from_image, to, .. } => s.deploy(from_image, to, ok, cx),
+            WriteKind::Redeploy { image, .. } => s.send_redeploy(image, ok, cx),
         });
         match sent {
             Ok(()) => {
@@ -853,17 +852,18 @@ impl ConfirmDeploy {
         }
     }
 
+    /// Enter: sends only from Deploy; anywhere else it cancels.
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.focus.0[1].is_focused(window) {
-            return self.close(window, cx);
+        if self.focus.0[0].is_focused(window) {
+            return self.send(window, cx);
         }
-        self.send(window, cx);
+        self.close(window, cx);
     }
 }
 
-impl HasModalFocus for ConfirmDeploy {
-    fn modal_focus(&self) -> &ModalFocus {
-        &self.focus
+impl DangerModal for ConfirmDeploy {
+    fn cancel(&self) -> &FocusHandle {
+        &self.focus.0[1]
     }
 }
 

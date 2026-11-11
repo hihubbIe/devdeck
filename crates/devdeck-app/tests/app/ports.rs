@@ -205,22 +205,19 @@ fn a_start_is_refused_while_its_port_is_held_and_names_the_holder(cx: &mut TestA
     let w = window(cx);
     cx.update(|cx| start_or_toast(&s.runner, &key("a:serve"), None, cx));
     assert_eq!(last_toast(cx), format!("web · serve: {text}"));
-    // Not one of devdeck's runs: not offered while edit mode is off (R5.6), and refused
-    // if asked anyway (a toast from before).
+    // Not one of devdeck's runs: offered, behind a danger modal (R5.6) that opens on
+    // Cancel, so a stray Enter cancels.
     let offered = cx.update(|cx| toasts(cx).read(cx).queue.items.last().is_some_and(|t| t.actions.iter().any(|(n, _)| n == "Stop holder")));
-    assert!(!offered, "no Stop holder while edit mode is off");
-    let holder = PortHolder::Process { pid: me, command: "test".into() };
-    let runner = s.runner.downgrade();
-    cx.update_window(w, |_, window, cx| devdeck_app::port_scan::stop_holder(&runner, port, &holder, window, cx)).unwrap();
-    assert_eq!(cx.update(|cx| layer_state(w, cx)), (false, 0), "no confirmation");
-    assert_eq!(last_toast(cx), format!("Stop holder: {}.", devdeck_app::edit_mode::OFF));
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
-    cx.update(|cx| start_or_toast(&s.runner, &key("a:serve"), None, cx));
+    assert!(offered, "Stop holder offered");
     toast_action(cx, w, "Stop holder");
     assert_eq!(cx.update(|cx| layer_state(w, cx)), (false, 1), "a confirmation is open");
     let mut vcx = VisualTestContext::from_window(w, cx);
     assert!(vcx.debug_bounds("stop-holder-command").is_some(), "it shows the command");
     assert!(vcx.debug_bounds("stop-holder-confirm").is_some());
+    // Its Enter (the window here binds no keys): from Cancel, it cancels.
+    vcx.update(|window, cx| window.dispatch_action(Box::new(devdeck_app::port_scan::ConfirmStopHolder), cx));
+    vcx.run_until_parked();
+    assert_eq!(vcx.update(|_, cx| layer_state(w, cx)), (false, 0), "cancelled");
 
     drop(held);
     wait_free(port);

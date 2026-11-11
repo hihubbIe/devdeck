@@ -372,14 +372,10 @@ impl Cluster {
         (self.log_gens.0, self.log_gens.1.get(env).copied().unwrap_or(0))
     }
 
-    /// Why deploys can't be made now, if they can't: the driver can't, edit mode is off
-    /// (R5.6), or nobody is named to make them (the short name, Settings). Every write to
-    /// the cluster goes through it.
+    /// Why deploys can't be made now, if they can't: the driver can't, or nobody is named
+    /// to make them (the short name, Settings). Every write to the cluster goes through it.
     pub fn writes(&self, cx: &gpui::App) -> Result<(), String> {
         self.driver.writes()?;
-        if let Some(why) = crate::edit_mode::refusal(cx) {
-            return Err(why);
-        }
         self.field_manager(cx).map(|_| ())
     }
 

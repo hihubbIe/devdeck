@@ -161,10 +161,16 @@ fn rename_and_delete_from_the_row(cx: &mut TestAppContext) {
     assert_eq!(vcx.read(|cx| s.deck.read(cx).title(&note_ref(&id), cx)), "entityservice · bugs", "the tab follows");
     assert_eq!(s.store.list().unwrap()[0].name, "bugs");
 
-    // Delete asks first.
-    let id2 = id.clone();
-    vcx.update(|window, cx| devdeck_app::views::note_view::delete_note(&s.notes, &id2, window, cx));
+    // Delete asks first, in a danger modal (R5.6): it opens on Cancel, so Enter cancels.
+    let ask = |vcx: &mut VisualTestContext| {
+        vcx.update(|window, cx| devdeck_app::views::note_view::delete_note(&s.notes, &id, window, cx));
+        vcx.run_until_parked();
+    };
+    ask(&mut vcx);
+    vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
+    assert!(vcx.debug_bounds("delete-note-confirm").is_none() && file(&s, &id).exists(), "Enter cancelled");
+    ask(&mut vcx);
     assert!(file(&s, &id).exists(), "not before the answer");
     let confirm = vcx.debug_bounds("delete-note-confirm").expect("asks");
     vcx.simulate_click(confirm.center(), Modifiers::none());

@@ -76,7 +76,7 @@ pub enum ErrorKind {
     PermissionDenied,
     ApprovalRequired,
     ApprovalDenied,
-    /// One of devdeck's own rules: edit mode off, a protected env, main/master.
+    /// One of devdeck's own rules: a protected env, main/master.
     Gated,
     Conflict,
     Busy,

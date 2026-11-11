@@ -94,8 +94,6 @@ methods! {
         "The workspace's envs, protected or not, and the current one.";
     EnvGet = "env.get", Observe, EnvParams => Env,
         "An env.";
-    EditModeGet = "editmode.get", Observe, NoParams => EditMode,
-        "Whether edit mode is on. Only the user turns it on.";
     SettingsGet = "settings.get", Observe, NoParams => Settings,
         "UI scale and theme.";
     RunStart = "run.start", Run, RunStartParams => Run,

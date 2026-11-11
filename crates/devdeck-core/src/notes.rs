@@ -185,6 +185,7 @@ pub fn tree(notes: &[NoteMeta], app_name: impl Fn(&str) -> Option<String>) -> Tr
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // The store's delete directly: the app gates it (R5.6).
 mod tests {
     use super::*;
     use crate::testing::TempDir;

@@ -64,7 +64,10 @@ All six taken as proposed.
 4. **No "run any action by its id" method.** It would let a client press "confirm" in a
    modal. Every operation is its own method with typed arguments.
 5. **Grows without breaking.** An integer `api_level`; methods and fields are only ever
-   added (Neovim's rule); new ones can be marked experimental.
+   added (Neovim's rule); new ones can be marked experimental. The one exception (user,
+   2026-11-11, R13.2): a feature devdeck drops takes its methods, fields and topics with
+   it, at a new level, listed in `API_LEVEL`'s comment (level 5: edit mode's
+   `editmode.get` and `edit_mode` topic).
 
 ## What it protects against
 
@@ -110,8 +113,8 @@ listens, timers only while something waits: idle CPU stays 0 (R1.3).
   whether this caller may use it.
 - **Errors**: protocol errors use JSON-RPC codes. devdeck's errors carry a `kind`:
   `not_found`, `invalid`, `refused` (with the reason the UI would show),
-  `permission_denied`, `approval_required`, `approval_denied`, `gated` (edit mode off,
-  protected env, main/master), `conflict`, `busy`, `expired`, `rate_limited`,
+  `permission_denied`, `approval_required`, `approval_denied`, `gated` (a protected env,
+  main/master), `conflict`, `busy`, `expired`, `rate_limited`,
   `unavailable` (not built yet).
 - **Reading text is always bounded**:
   - `limit` and `tail`, and a cursor to read only what came since the last read. The
@@ -184,8 +187,9 @@ does (R6.12).
 
 1. The caller's policy for the class (allow, ask, deny).
 2. Scope: the caller's own workspace (R2.1); protected envs excluded by default.
-3. devdeck's own rules, exactly as for the UI, in the model: edit mode, protected env,
-   main/master never pushed.
+3. devdeck's own rules, exactly as for the UI, in the model: a dangerous action confirmed
+   (R5.6: the user's approval is its confirmation), protected env, main/master never
+   pushed.
 4. Approval, if the policy says ask.
 5. Rate limits.
 6. Audit log (time, caller, process, method, arguments, decision, result), shown in the
@@ -193,7 +197,7 @@ does (R6.12).
 
 ### Never through the API
 
-Turning edit mode on, unlocking a protected env (unlocks are per caller: the API can't
+Unlocking a protected env (unlocks are per caller: the API can't
 use the user's), changing permissions, reading or clearing the audit log, answering
 approvals, and the UI's confirm, modal and menu actions.
 
@@ -229,7 +233,7 @@ For an agent in a devdeck terminal (decision 2):
 | run | allow on what it started; ask on the user's |
 | type | allow into terminals it opened; ask once per terminal otherwise; refused into its own shell (it could answer its own permission prompts) |
 | remote | ask |
-| destructive | ask, and edit mode must be on |
+| destructive | ask: the user's approval is the action's confirmation (R5.6) |
 
 Setting the current env to a protected one, or starting a run in one, always asks; a toast
 says who did it.
@@ -357,18 +361,18 @@ Writes and real logs answer `unavailable` until M3 steps 4–5 exist.
 - `deploy.set_image`, `deploy.undo`, `deploy.restart`, `deploy.scale`, `pod.exec`
   [destructive]
 - `port_forward.start`, `port_forward.stop` [run; asks on a protected env]
-- `k9s.open` [run; read only unless edit mode]
+- `k9s.open` [run; read only]
 
-### Edit mode, settings, jobs, events
+### Settings, jobs, events
 
-- `editmode.get`, `settings.get` (no way to set edit mode)
+- `settings.get` (`editmode.get` removed at level 5, with edit mode)
 - `job.get`, `job.wait`, `job.cancel`, `job.list`
 - `events.subscribe`, `events.unsubscribe`
 
 ### Event topics
 
 Workspace, run state and exit, run output, terminal, layout, tab shown or hidden, ports,
-git, deployments, pods, rollout, notes, settings, edit mode, toasts, jobs.
+git, deployments, pods, rollout, notes, settings, toasts, jobs.
 
 ## Changes the app needs first
 

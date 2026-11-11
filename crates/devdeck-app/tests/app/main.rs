@@ -16,10 +16,10 @@ mod cluster_views;
 mod components;
 mod config_workspaces;
 mod context_menu;
+mod danger;
 mod deck;
 mod deploys;
 mod drop_preview;
-mod edit_mode;
 mod files;
 mod git_panel;
 mod lifecycle;
@@ -42,3 +42,10 @@ mod terminal;
 mod terminals;
 mod watcher;
 mod workspaces;
+
+/// A dangerous action's token without its modal (R5.6): the tests set states up directly;
+/// the modals have their own tests (`danger`).
+#[allow(clippy::disallowed_methods)]
+pub fn confirmed() -> devdeck_app::danger::Confirmed {
+    devdeck_app::danger::for_tests()
+}

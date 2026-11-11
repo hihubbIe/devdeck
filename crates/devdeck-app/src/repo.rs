@@ -10,8 +10,10 @@
 //! read once more after it. Nothing runs while idle. A git panel needs the full state (the
 //! working tree's changes); a service or app view only the branches (a light read, no scan
 //! of the working tree). Every write goes through the core's [`Git::run`], which refuses
-//! while an operation (a rebase…) is under way.
+//! while an operation (a rebase…) is under way. A dangerous one ([`Op::dangerous`]) runs
+//! only with the [`Confirmed`] of its modal ([`Repo::run_confirmed`], R5.6).
 
+use crate::danger::Confirmed;
 use devdeck_core::cluster::Remote;
 use devdeck_core::git::{Branch, Git, GitDirs, Head, Op, PushPlan, Status};
 use gpui::{Context, EventEmitter, Task};
@@ -215,13 +217,7 @@ impl Repo {
 
     /// Why `op` can't run now, if it can't: another operation running, or one under way
     /// in the repository (only an abort then).
-    pub fn refusal(&self, op: &Op, cx: &gpui::App) -> Option<String> {
-        // A replace rewrites the remote branch's history, an abort resets changes: edit
-        // mode only (R5.6). Aborting a bisect resets nothing.
-        let destructive = matches!(op, Op::Push(PushPlan::Replace { .. })) || matches!(op, Op::Abort(d) if *d != devdeck_core::git::Doing::Bisecting);
-        if destructive && let Some(why) = crate::edit_mode::refusal(cx) {
-            return Some(why);
-        }
+    pub fn refusal(&self, op: &Op) -> Option<String> {
         if let Some((busy, _)) = &self.busy {
             return Some(format!("{busy} first"));
         }
@@ -255,16 +251,30 @@ impl Repo {
         self.ticking = None;
     }
 
-    /// Runs `op` (`what`: it in words, `doing`: while it runs). The task holds the
-    /// repository until git exits.
+    /// Runs `op` (`what`: it in words, `doing`: while it runs); a dangerous one is
+    /// refused ([`Repo::run_confirmed`]).
     pub fn run(&mut self, op: Op, what: String, doing: String, cx: &mut Context<Self>) -> Result<(), String> {
-        if let Some(why) = self.refusal(&op, cx) {
+        if op.dangerous() {
+            return Err("it needs confirming first".into());
+        }
+        self.send(op, what, doing, cx)
+    }
+
+    /// Runs `op` as [`Repo::run`] does, a dangerous one too: the user confirmed it.
+    pub fn run_confirmed(&mut self, op: Op, _: Confirmed, what: String, doing: String, cx: &mut Context<Self>) -> Result<(), String> {
+        self.send(op, what, doing, cx)
+    }
+
+    /// The task holds the repository until git exits.
+    fn send(&mut self, op: Op, what: String, doing: String, cx: &mut Context<Self>) -> Result<(), String> {
+        if let Some(why) = self.refusal(&op) {
             return Err(why);
         }
         let git = self.git.clone().ok_or("the repository isn't read yet")?;
         self.start(doing, cx);
         let me = cx.entity();
         cx.spawn(async move |_, cx| {
+            #[allow(clippy::disallowed_methods)] // Dangerous ops reach it only through run_confirmed.
             let result = cx.background_executor().spawn(async move { git.run(&op) }).await;
             me.update(cx, |r, cx| {
                 r.finish();
@@ -282,7 +292,7 @@ impl Repo {
     /// Fetches the push remote and decides what a push would do ([`Repo::plan`] once
     /// known).
     pub fn plan_push(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        if let Some(why) = self.refusal(&Op::Fetch, cx) {
+        if let Some(why) = self.refusal(&Op::Fetch) {
             return Err(why);
         }
         let git = self.git.clone().ok_or("the repository isn't read yet")?;

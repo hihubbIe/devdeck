@@ -191,6 +191,24 @@ pub enum PushPlan {
     UpToDate { remote: String, branch: String },
 }
 
+impl Op {
+    /// Hard to undo (R5.6): it runs only once confirmed in its modal. A replace rewrites
+    /// the remote branch's history; an abort resets changes (a bisect's resets nothing).
+    pub fn dangerous(&self) -> bool {
+        match self {
+            Op::Fetch | Op::Pull(_) | Op::Switch(_) | Op::Track(_) | Op::Create(_) => false,
+            Op::Push(plan) => match plan {
+                PushPlan::Replace { .. } => true,
+                PushPlan::Publish { .. } | PushPlan::Send { .. } | PushPlan::Behind { .. } | PushPlan::UpToDate { .. } => false,
+            },
+            Op::Abort(doing) => match doing {
+                Doing::Bisecting => false,
+                Doing::Rebasing | Doing::Applying | Doing::Merging | Doing::CherryPicking | Doing::Reverting => true,
+            },
+        }
+    }
+}
+
 impl Git {
     /// The repository holding `dir`, looked for up to `ceiling` (the workspace folder: a
     /// repository there opens, one above it doesn't).
@@ -936,7 +954,7 @@ fn change(xy: &str, path: &str, from: Option<String>) -> Change {
     Change { path: path.to_string(), from, kind, staged }
 }
 
-/// The branches devdeck never pushes, edit mode or not (user, 2026-11-08): a push always
+/// The branches devdeck never pushes, confirmed or not (user, 2026-11-08): a push always
 /// goes to the branch of the same name, so these can't be written by devdeck.
 pub const NEVER_PUSHED: [&str; 2] = ["main", "master"];
 
@@ -991,6 +1009,7 @@ pub fn never_pushed(branch: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // `Git::run` directly: the app gates the dangerous ones.
 mod tests {
     use super::*;
     use crate::testing::TempDir;
@@ -1027,6 +1046,28 @@ mod tests {
         let out = f();
         TEST_LIMIT.with(|t| t.set(None));
         out
+    }
+
+    #[test]
+    fn only_a_replace_and_an_abort_that_resets_are_dangerous() {
+        let (r, b) = (String::from("origin"), String::from("x"));
+        let plans = [
+            (PushPlan::Publish { remote: r.clone(), branch: b.clone() }, false),
+            (PushPlan::Send { remote: r.clone(), branch: b.clone(), head: "h".into(), commits: 1 }, false),
+            (PushPlan::Replace { remote: r.clone(), branch: b.clone(), expected: "e".into(), head: "h".into(), replaced: vec![] }, true),
+            (PushPlan::Behind { remote: r.clone(), branch: b.clone(), commits: 1 }, false),
+            (PushPlan::UpToDate { remote: r, branch: b }, false),
+        ];
+        for (plan, dangerous) in plans {
+            assert_eq!(Op::Push(plan.clone()).dangerous(), dangerous, "{plan:?}");
+        }
+        for doing in [Doing::Rebasing, Doing::Applying, Doing::Merging, Doing::CherryPicking, Doing::Reverting] {
+            assert!(Op::Abort(doing).dangerous(), "{doing:?}");
+        }
+        assert!(!Op::Abort(Doing::Bisecting).dangerous(), "a bisect's abort resets nothing");
+        for op in [Op::Fetch, Op::Pull("x".into()), Op::Switch("x".into()), Op::Track("origin/x".into()), Op::Create("x".into())] {
+            assert!(!op.dangerous(), "{op:?}");
+        }
     }
 
     #[test]

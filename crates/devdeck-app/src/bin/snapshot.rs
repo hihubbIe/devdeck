@@ -594,9 +594,8 @@ fn deploy(cx: &mut HeadlessAppContext, shell: &Entity<Shell>, env: &str, name: &
     });
     cx.advance_clock(Duration::from_millis(400));
     cx.run_until_parked();
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let from = cx.update(|cx| c.read(cx).deployment(env, name).map(|d| d.main().image.raw.clone())).expect("deployed");
-    cx.update(|cx| c.update(cx, |c, cx| c.deploy(env, name, &from, tag, true, cx))).expect("deploys");
+    cx.update(|cx| c.update(cx, |c, cx| c.deploy(env, name, &from, tag, true, confirmed(), cx))).expect("deploys");
     cx.advance_clock(Duration::from_millis(wait_ms));
     cx.run_until_parked();
 }
@@ -619,13 +618,11 @@ fn svc_failed(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<S
 }
 
 fn svc_protected(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let v = service(cx, shell, "hades", "proxyapi", true);
     cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-161", cx))));
 }
 
 fn svc_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let v = service(cx, shell, "dev35", "entityservice", true);
     cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-160", cx))));
     let _ = cx.update_window(w, |_, window, _| window.refresh());
@@ -650,8 +647,18 @@ fn svc_confirm_refused(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &
             c.apply("dev35", EnvUpdate::Deployments(list), cx);
         })
     });
-    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::views::service_view::ConfirmModal), cx));
+    // Tab to Deploy (the modal opens on Cancel), then Enter.
+    let _ = cx.update_window(w, |_, window, cx| {
+        window.dispatch_action(Box::new(devdeck_ui::overlay::ModalNext), cx);
+        window.dispatch_action(Box::new(devdeck_app::views::service_view::ConfirmModal), cx);
+    });
     cx.run_until_parked();
+}
+
+/// A dangerous action sent without its modal: the snapshots set up states directly.
+#[allow(clippy::disallowed_methods)]
+fn confirmed() -> devdeck_app::danger::Confirmed {
+    devdeck_app::danger::for_tests()
 }
 
 /// dev35's first service whose main container doesn't pull `Always` (the demo's
@@ -663,7 +670,6 @@ fn if_not_present() -> String {
 
 /// The redeploy confirmation, with the pull policy's warning.
 fn svc_redeploy_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let v = service(cx, shell, "dev35", &if_not_present(), true);
     let _ = cx.update_window(w, |_, window, _| window.refresh());
     cx.run_until_parked();
@@ -674,9 +680,8 @@ fn svc_redeploy_confirm(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: 
 fn svc_redeploying(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     service(cx, shell, "dev35", "boardservice", true);
     let c = work_cluster(cx, shell);
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let image = cx.update(|cx| c.read(cx).deployment("dev35", "boardservice").map(|d| d.main().image.raw.clone())).expect("deployed");
-    cx.update(|cx| c.update(cx, |c, cx| c.redeploy("dev35", "boardservice", &image, true, cx))).expect("redeploys");
+    cx.update(|cx| c.update(cx, |c, cx| c.redeploy("dev35", "boardservice", &image, true, confirmed(), cx))).expect("redeploys");
     cx.advance_clock(Duration::from_millis(1000));
     cx.run_until_parked();
 }
@@ -690,7 +695,6 @@ fn svc_suggestions(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Enti
 
 /// Another tag typed: the rocket ready (in the accent), "unsaved" at the row's end.
 fn svc_tag_ready(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let v = service(cx, shell, "dev35", "entityservice", true);
     cx.update(|cx| v.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-160", cx))));
 }
@@ -885,23 +889,6 @@ fn git_panel_narrow(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Ent
         })
     });
     cx.run_until_parked();
-}
-
-/// Edit mode asked for: its modal over the window.
-fn edit_mode_modal(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    cx.update(|cx| {
-        let main = shell.read(cx).main_window().expect("main");
-        cx.defer(move |cx| {
-            let _ = main.update(cx, |_, window, cx| devdeck_app::edit_mode::toggle(window, cx));
-        });
-    });
-    cx.run_until_parked();
-}
-
-/// Edit mode on: the title bar's red chip, a service view whose save is allowed.
-fn edit_mode_on(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
-    service(cx, shell, "dev35", "entityservice", true);
 }
 
 fn maximize_focused(cx: &mut HeadlessAppContext, shell: &Entity<Shell>) {
@@ -1481,8 +1468,6 @@ fn states() -> Vec<State> {
         w("97-git-panel", "work", 1.0, Some(git_panel)),
         w("98-git-panel-remotes", "work", 1.0, Some(git_panel_remotes)),
         w("99-git-panel-narrow", "work", 1.0, Some(git_panel_narrow)),
-        w("98-edit-mode-modal", "work", 1.0, Some(edit_mode_modal)),
-        w("99-edit-mode-on", "work", 1.0, Some(edit_mode_on)),
         w("93-port", "work", 1.0, Some(port)),
         w("A0-cheat-sheet", "work", 1.0, Some(cheat_sheet)),
         w("A1-cheat-sheet-filtered", "work", 1.0, Some(cheat_sheet_filtered)),
@@ -1535,7 +1520,6 @@ fn main() -> Result<(), String> {
             app_settings::set_scale(state.scale, cx);
             app_settings::set_cover(app_settings::Cover::None, cx);
             app_settings::set_open(state.settings_open, cx);
-            devdeck_app::edit_mode::set(false, cx);
             toasts(cx).update(cx, |t, cx| {
                 t.queue.items.clear();
                 t.notes.clear();

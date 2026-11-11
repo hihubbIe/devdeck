@@ -7,4 +7,15 @@ disallowed-methods = [
     { path = "gpui::StatefulInteractiveElement::overflow_x_scroll", reason = "use devdeck_ui::Scrolls::scroll_x" },
     { path = "gpui::StatefulInteractiveElement::overflow_y_scroll", reason = "use devdeck_ui::Scrolls::scroll_y" },
     { path = "gpui::uniform_list", reason = "use devdeck_ui::scroll_list" },
+    # Dangerous actions run only once confirmed in their modal (R5.6, devdeck_app::danger):
+    # what lies under them is called from the one place that takes the token.
+    { path = "devdeck_core::git::Git::run", reason = "go through devdeck_app::repo::Repo::run (run_confirmed for a dangerous op)" },
+    { path = "devdeck_core::process::terminate", reason = "go through devdeck_app::port_scan::stop_process" },
+    { path = "devdeck_app::cluster::ClusterDriver::set_image", reason = "go through devdeck_app::cluster::Cluster::deploy" },
+    { path = "devdeck_app::cluster::ClusterDriver::restart", reason = "go through devdeck_app::cluster::Cluster::redeploy" },
+    { path = "devdeck_kube::set_image", reason = "go through devdeck_app::cluster::Cluster::deploy" },
+    { path = "devdeck_kube::restart", reason = "go through devdeck_app::cluster::Cluster::redeploy" },
+    { path = "devdeck_core::notes::NotesStore::delete", reason = "go through devdeck_app::notes::Notes::delete" },
+    { path = "devdeck_app::danger::confirmed", reason = "only a danger modal's action button mints the token" },
+    { path = "devdeck_app::danger::for_tests", reason = "a dangerous action takes the Confirmed of its modal; for_tests is for tests and snapshots" },
 ]

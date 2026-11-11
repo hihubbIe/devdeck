@@ -77,7 +77,6 @@ const CRASH: &str = "waiting: CrashLoopBackOff";
 fn setup(cx: &mut TestAppContext) -> Entity<Cluster> {
     let envs = vec![Env { name: ENV.into(), protected: false }];
     let cluster = cx.update(|cx| new_cluster(envs, Rc::new(Scripted), Some(1_000), cx));
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     cx.update(|cx| {
         cluster.update(cx, |c, cx| {
             c.workspace = Some("work".into());
@@ -183,7 +182,7 @@ fn only_what_is_ticked_is_told(cx: &mut TestAppContext) {
 fn own_deploys_always_say_how_they_end_never_that_they_began(cx: &mut TestAppContext) {
     let c = setup(cx);
     tick(&c, cx, &[Notify::BranchDeployed]);
-    let deploy = |cx: &mut TestAppContext, from: &str, to: &str| cx.update(|cx| c.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}:{from}"), to, false, cx))).unwrap();
+    let deploy = |cx: &mut TestAppContext, from: &str, to: &str| cx.update(|cx| c.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}:{from}"), to, false, crate::confirmed(), cx))).unwrap();
     let answer = |cx: &mut TestAppContext, g: u64| {
         cx.update(|cx| c.update(cx, |c, cx| c.write_done(ENV, SVC, Ok(g), cx)));
         cx.run_until_parked();
@@ -305,7 +304,7 @@ fn left_failing(cx: &mut TestAppContext, tag: &str) -> std::path::PathBuf {
     let dir = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     let c = setup(cx);
     cx.update(|cx| c.update(cx, |c, cx| c.keep_history(StateStore::new(dir.clone()), "work", cx)));
-    cx.update(|cx| c.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}:main"), "feature", false, cx))).unwrap();
+    cx.update(|cx| c.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}:main"), "feature", false, crate::confirmed(), cx))).unwrap();
     cx.update(|cx| c.update(cx, |c, cx| c.write_done(ENV, SVC, Ok(6), cx)));
     watch(&c, cx, dep("feature", 4, 6, 6, Progress::Rolling));
     pods(&c, cx, vec![pod("feature", "a", false, CRASH, 3)]);
@@ -377,7 +376,6 @@ fn my_deploys_from_anywhere_never_say_they_began(cx: &mut TestAppContext) {
 fn start(cx: &mut TestAppContext, tag: &str) -> Entity<Shell> {
     let config = cx.update(|cx| devdeck_app::test_dir(tag, cx));
     cx.update(|cx| devdeck_app::init_with_config_dir(&config, cx));
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     let shell = cx.update(|cx| Shell::start(devdeck_app::demo_workspaces(), "work", None, cx));
     cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
     cx.run_until_parked();
@@ -500,7 +498,7 @@ fn subscriptions_outlive_the_view_and_open_reveals_it(cx: &mut TestAppContext) {
         let d = c.read(cx).deployment(DEMO_ENV, DEMO_SVC).unwrap();
         (d.main().image.raw.clone(), d.tag(), d.replicas)
     });
-    cx.update(|cx| c.update(cx, |c, cx| c.deploy(DEMO_ENV, DEMO_SVC, &image, "lan-160", false, cx))).unwrap();
+    cx.update(|cx| c.update(cx, |c, cx| c.deploy(DEMO_ENV, DEMO_SVC, &image, "lan-160", false, crate::confirmed(), cx))).unwrap();
     advance(cx, ROLLOUT_STEP * (replicas + 1));
     let note = notes(cx).into_iter().rev().find(|n| n.title.as_deref() == Some("entityservice on dev35")).expect("told");
     assert_eq!((note.kind, note.text.to_string()), (ToastKind::Ok, format!("now running lan-160 (was {was})")));
@@ -592,18 +590,12 @@ fn last_toast(cx: &mut TestAppContext) -> Option<String> {
 }
 
 #[gpui::test]
-fn the_rocket_on_a_protected_env_or_with_edit_mode_off(cx: &mut TestAppContext) {
+fn the_rocket_on_a_protected_env(cx: &mut TestAppContext) {
     let shell = start(cx, "rocket-guards");
     let main = main_window(&shell, cx);
     let view = open_svc(&shell, cx, "hades", "proxyapi");
     cx.update(|cx| view.update(cx, |v, cx| v.tag.update(cx, |i, cx| i.set_text("lan-161", cx))));
     cx.run_until_parked();
-    cx.update(|cx| devdeck_app::edit_mode::set(false, cx));
-    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(devdeck_app::edit_mode::OFF.into()), "edit mode first: dim, said in its tooltip");
-    click(main, cx, "tag-deploy");
-    assert_eq!(cx.update(|cx| layer_state(main, cx).1), 0, "never the env's name to then refuse");
-    assert_eq!(last_toast(cx), Some(format!("Not deployed: {}.", devdeck_app::edit_mode::OFF)));
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some("hades is protected: unlock it first".into()), "locked: dim with its reason");
     click(main, cx, "tag-deploy");
     assert_eq!(cx.update(|cx| layer_state(main, cx).1), 1, "a click asks to unlock");
@@ -619,7 +611,7 @@ fn an_own_redeploy_says_how_it_ended(cx: &mut TestAppContext) {
         (d.main().image.raw.clone(), d.replicas)
     });
     let tag = cx.read(|cx| c.read(cx).deployment(DEMO_ENV, DEMO_SVC).unwrap().tag());
-    cx.update(|cx| c.update(cx, |c, cx| c.redeploy(DEMO_ENV, DEMO_SVC, &image, false, cx))).unwrap();
+    cx.update(|cx| c.update(cx, |c, cx| c.redeploy(DEMO_ENV, DEMO_SVC, &image, false, crate::confirmed(), cx))).unwrap();
     advance(cx, ROLLOUT_STEP * (replicas + 1));
     let note = notes(cx).into_iter().rev().find(|n| n.title.as_deref() == Some("entityservice on dev35")).expect("told, though nothing is ticked");
     assert_eq!((note.kind, note.text.to_string()), (ToastKind::Ok, format!("redeployed {tag}: every pod ready")));
@@ -654,7 +646,7 @@ fn the_rocket_waits_for_a_short_name(cx: &mut TestAppContext) {
     cx.update(|cx| view.update(cx, |v, cx| v.save(cx)));
     cx.run_until_parked();
     assert_eq!(cx.update(|cx| layer_state(main, cx).1), 1, "the confirmation");
-    cx.simulate_keystrokes(main, "enter");
+    cx.simulate_keystrokes(main, "tab enter");
     advance(cx, ROLLOUT_STEP * 3);
     // The deploy went through (who made it is checked on the history in deploys.rs: a
     // driver swapped here starts no new baseline until its list changes).

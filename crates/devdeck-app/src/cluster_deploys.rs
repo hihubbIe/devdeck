@@ -3,11 +3,12 @@
 //!
 //! - A deploy changes the main container's image only, pinned to the image confirmed
 //!   (the driver's write fails if the cluster changed meanwhile); a redeploy sets the pod
-//!   template's `restartedAt`, pinned the same way. Guards, below the UI
-//!   ([`Cluster::write_blocked`], both): edit mode and the driver ([`Cluster::writes`]), the
-//!   account (the access review's answer, when known), a protected env unlocked, no write of
-//!   the same service in flight, not paused, a container that is clearly the main one; a
-//!   branch change also needs another image.
+//!   template's `restartedAt`, pinned the same way. Both are dangerous (R5.6): they take
+//!   the [`Confirmed`] of their modal. Guards, below the UI ([`Cluster::write_blocked`],
+//!   both): the driver and the short name ([`Cluster::writes`]), the account (the access
+//!   review's answer, when known), a protected env unlocked, no write of the same service
+//!   in flight, not paused, a container that is clearly the main one; a branch change also
+//!   needs another image.
 //! - Deploys are spotted on the deployment watch: a revision that grows (or an image that
 //!   changes) is one, whoever made it, `by` as written: the field manager this window
 //!   sent ("<short name> via Kugelblitz") when it matches the write in flight (its image; a
@@ -27,6 +28,7 @@
 //!   and log generation, when a service view opens.
 
 use crate::cluster::{Cluster, PodScope, PodsInterest};
+use crate::danger::Confirmed;
 use devdeck_core::cluster::{DeployRecord, Deployment, HISTORY_KEPT, Progress, Rollout, RolloutState, assess, check_write, remember, restart_stamp};
 use devdeck_core::state::{Deploys, Loaded, StateStore};
 use devdeck_kube::{ImageChange, Restart};
@@ -195,7 +197,7 @@ impl Cluster {
     }
 
     /// Why `name` in `env` can't be written now (a branch change or a redeploy), if it
-    /// can't, in this order: edit mode and the driver, the account, a protected env
+    /// can't, in this order: the driver and the short name, the account, a protected env
     /// unlocked, a write of it in flight, rollouts paused, a container clearly the main one.
     pub fn write_blocked(&self, env: &str, name: &str, unlocked: bool, cx: &gpui::App) -> Option<String> {
         if let Err(why) = self.writes(cx) {
@@ -225,7 +227,8 @@ impl Cluster {
 
     /// Deploys `to` on `name` in `env`, pinned to `from` (the image confirmed). The
     /// answer comes through [`Cluster::write_done`]; the rollout is followed from the watch.
-    pub fn deploy(&mut self, env: &str, name: &str, from: &str, to: &str, unlocked: bool, cx: &mut Context<Self>) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn deploy(&mut self, env: &str, name: &str, from: &str, to: &str, unlocked: bool, _: Confirmed, cx: &mut Context<Self>) -> Result<(), String> {
         if let Some(why) = self.deploy_blocked(env, name, to, unlocked, cx) {
             return Err(why);
         }
@@ -235,6 +238,7 @@ impl Cluster {
         let change = ImageChange { index, container: c.name.clone(), from: from.to_string(), to: format!("{}:{to}", c.image.repo), manager: manager.clone() };
         let pending = Pending { to_image: change.to.clone(), generation: None, redeploy: None, manager };
         let driver = self.driver.clone();
+        #[allow(clippy::disallowed_methods)] // Confirmed above.
         self.send(env, name, pending, move |cx| driver.set_image(env, name, change, cx), cx);
         Ok(())
     }
@@ -242,7 +246,7 @@ impl Cluster {
     /// Redeploys `name` in `env` (what `kubectl rollout restart` does), pinned to `image`
     /// (the one confirmed): its pod template's `restartedAt` set to now. The answer comes
     /// through [`Cluster::write_done`]; the rollout is followed from the watch.
-    pub fn redeploy(&mut self, env: &str, name: &str, image: &str, unlocked: bool, cx: &mut Context<Self>) -> Result<(), String> {
+    pub fn redeploy(&mut self, env: &str, name: &str, image: &str, unlocked: bool, _: Confirmed, cx: &mut Context<Self>) -> Result<(), String> {
         if let Some(why) = self.write_blocked(env, name, unlocked, cx) {
             return Err(why);
         }
@@ -254,6 +258,7 @@ impl Cluster {
         let restart = Restart { index, container, image: image.to_string(), at: at.clone(), generation, annotated, manager: manager.clone() };
         let pending = Pending { to_image: image.to_string(), generation: None, redeploy: Some((at, generation)), manager };
         let driver = self.driver.clone();
+        #[allow(clippy::disallowed_methods)] // Confirmed above.
         self.send(env, name, pending, move |cx| driver.restart(env, name, restart, cx), cx);
         Ok(())
     }

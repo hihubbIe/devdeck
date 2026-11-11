@@ -176,11 +176,28 @@ fn a_switch_made_in_a_terminal_shows_and_a_rebase_under_way_only_offers_its_abor
     cx.read(|cx| {
         let p = panel.read(cx);
         assert!(p.refusal(&Op::Fetch, cx).is_some() && p.refusal(&Op::Pull("feat".into()), cx).is_some() && p.refusal(&Op::Switch("main".into()), cx).is_some());
-        assert_eq!(p.refusal(&Op::Abort(Doing::Rebasing), cx), Some(devdeck_app::edit_mode::OFF.into()), "an abort resets changes: edit mode only");
+        assert_eq!(p.refusal(&Op::Abort(Doing::Rebasing), cx), None, "only the abort");
     });
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
-    cx.read(|cx| assert_eq!(panel.read(cx).refusal(&Op::Abort(Doing::Rebasing), cx), None, "only the abort"));
-    cx.update(|cx| repo.update(cx, |r, cx| r.run(Op::Abort(Doing::Rebasing), "Abort".into(), "aborting…".into(), cx))).unwrap();
+    // An abort resets changes: dangerous, it runs only from its modal (R5.6).
+    let run = cx.update(|cx| repo.update(cx, |r, cx| r.run(Op::Abort(Doing::Rebasing), "Abort".into(), "aborting…".into(), cx)));
+    assert_eq!(run, Err("it needs confirming first".into()));
+    // The modal opens on Cancel: a stray Enter cancels; Tab then Enter aborts.
+    let main = cx.read(|cx| shell.read(cx).main_window().expect("main"));
+    let ask = |cx: &mut TestAppContext| {
+        cx.update(|cx| panel.update(cx, |p, cx| p.abort(Doing::Rebasing, cx)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx).1) == 0 {
+            assert!(Instant::now() < deadline, "timed out waiting for the abort's modal");
+            std::thread::sleep(Duration::from_millis(20));
+            cx.run_until_parked();
+        }
+    };
+    ask(cx);
+    cx.simulate_keystrokes(main.into(), "enter");
+    assert_eq!(cx.update(|cx| devdeck_ui::overlay::layer_state(main.into(), cx).1), 0, "cancelled");
+    assert!(cx.read(|cx| repo.read(cx).snapshot().is_some_and(|s| s.blocked.is_some())), "still under way");
+    ask(cx);
+    cx.simulate_keystrokes(main.into(), "tab enter");
     until(cx, "aborted", |cx| cx.read(|cx| repo.read(cx).snapshot().is_some_and(|s| s.blocked.is_none())));
     assert_eq!(std::fs::read_to_string(web.join("a.txt")).unwrap(), "feat\n", "back where it was");
 }

@@ -85,7 +85,6 @@ handlers! {
     NoteGet => typed h::note_get,
     EnvList => typed h::env_list,
     EnvGet => typed h::env_get,
-    EditModeGet => typed h::editmode_get,
     SettingsGet => typed h::settings_get,
     RunStart => typed h::run_start,
     RunStop => typed h::run_stop,

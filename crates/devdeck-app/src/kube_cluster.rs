@@ -99,11 +99,13 @@ impl ClusterDriver for KubeCluster {
         Ok(())
     }
 
+    #[allow(clippy::disallowed_methods)] // Reached only from Cluster::deploy, confirmed.
     fn set_image(&self, env: &str, name: &str, change: ImageChange, cx: &mut Context<Cluster>) -> Option<Task<()>> {
         let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()));
         Some(answer(env, name, target.map(|t| devdeck_kube::set_image(&t, name, &change)), cx))
     }
 
+    #[allow(clippy::disallowed_methods)] // Reached only from Cluster::redeploy, confirmed.
     fn restart(&self, env: &str, name: &str, restart: Restart, cx: &mut Context<Cluster>) -> Option<Task<()>> {
         let target = self.target(env).unwrap_or_else(|| Err("the kubeconfigs are still being read".into()));
         Some(answer(env, name, target.map(|t| devdeck_kube::restart(&t, name, &restart)), cx))

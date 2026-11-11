@@ -1,6 +1,8 @@
 //! `devdeck_core::git` against real repositories made in temporary folders: a bare
 //! `origin` and clones of it. A test binary of its own: these spawn many processes, and a
 //! process forked while another test holds a socket would hold it too (`ports` tests).
+// `Git::run` is called here directly: the app gates the dangerous ones (R5.6).
+#![allow(clippy::disallowed_methods)]
 
 use devdeck_core::git::*;
 use devdeck_core::testing::TempDir;

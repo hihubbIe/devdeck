@@ -242,15 +242,16 @@ fn a_cluster_section_brings_the_cluster_area_and_its_kubeconfig_problems(cx: &mu
     });
     assert!(shown.starts_with("no context hades00-hecate in "), "{shown}");
 
-    // Deploys need edit mode (R5.6); the kube driver itself can write.
-    cx.read(|cx| assert_eq!(c.read(cx).writes(cx), Err(devdeck_app::edit_mode::OFF.to_string())));
+    // The kube driver itself can write: only the short name is missing.
+    let nameless = devdeck_app::cluster::NO_SHORT_NAME.to_string();
+    cx.read(|cx| assert_eq!(c.read(cx).writes(cx), Err(nameless.clone())));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let r = ViewAddr::Svc { env: "hades".into(), name: "graphservice".into() }.to_ref();
     let open = r.clone();
     cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(open, l.main().focused).map(|_| ()))));
     cx.run_until_parked();
     let view = cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<ServiceView>().unwrap());
-    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(devdeck_app::edit_mode::OFF.to_string()), "Save says why: edit mode first");
+    assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), Some(nameless), "Save says why: the short name first");
 }
 
 #[gpui::test]

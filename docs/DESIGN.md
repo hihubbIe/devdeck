@@ -8,7 +8,7 @@ The interactive HTML prototype that was approved is the visual reference
 ## Window anatomy
 
 ```
-┌ title bar ── workspace ▾ · layout ▾ ── search (ctrl k) ── env ▾ · ● 3 running · ? · ⚠ edit ┐
+┌ title bar ── workspace ▾ · layout ▾ ── search (ctrl k) ── env ▾ · ● 3 running · ? ─────────┐
 │ activity │ sidebar (list) │ split tree of panes ……………………………………………………………………………………… │
 │   bar    │  Pinned        │ ┌ pane: tabs ───────────┐┌ pane: tabs ─────────────────────────┐ │
 │          │  All           │ │ view                  ││ view                                │ │
@@ -128,7 +128,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   converts pixel drags to weights and enforces a minimum pane size in pixels.
 - A detached window's root is always a single pane. Its title bar has ⇲ (send the
   tabs back to the main window's focused pane) next to × (close the window and its
-  tabs), and edit mode's button like the main window's (its views may deploy).
+  tabs).
 - "Send to…" moves a tab or a whole pane to any pane of any window, or to a new
   window: number badges appear on every pane, pick by key or click.
 - Each window has a focused pane; focus moves by pure rules after close, move and
@@ -267,7 +267,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Deploys (`cluster_deploys.rs`, `devdeck_kube::set_image`): the main container's image
   only (refused when several containers run and none is named like the deployment), as a
   JSON Patch that tests the image confirmed is still there, then replaces it, with field
-  manager "<short name> via Kugelblitz"; refused if edit mode is off, no short name is set
+  manager "<short name> via Kugelblitz"; confirmed in its modal (R5.6); refused if no short name is set
   (Settings › Deploys: one printable word, at most 32 characters; no default), the account may not (a
   `SelfSubjectAccessReview` asked when a service view opens, per env and log
   generation), a protected env isn't unlocked, a write of the service is in flight, or
@@ -297,24 +297,30 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   failure reasons come from pod container states. A deploy left open when devdeck closed
   is followed again if its image still runs, else ends "unknown".
 
-### Edit mode
+### Dangerous actions
 
-- Potentially destructive actions run only in edit mode (R5.6): deploys (set image,
-  restart, replicas), a git replace push or abort (not a bisect's), stopping a
-  process devdeck didn't start, a shell in a pod.
-  One switch for the app, off at every start; on after a modal, off without one; the
-  title bar of every window shows it (a dim warning icon, or a red "edit mode" chip).
-- Checked where the action happens (`Cluster::writes`, `Repo::refusal`, the stop of a
-  process), so no button, key, menu or modal left open gets around it; buttons say why.
-  Checked before a protected env asks its name.
-- Not gated: fetch, switch, pull, new branch, publish and plain pushes, stopping
+- What is hard to undo (R5.6) runs only once confirmed in its own modal, saying in plain
+  words what will happen: a deploy or a redeploy (and replicas when built), a git replace
+  push or abort (not a bisect's), stopping a process devdeck didn't start, deleting a
+  note (and a shell in a pod when built). No global switch (edit mode was removed,
+  2026-11-11); nothing marks them in the UI.
+- In the code (`devdeck_app::danger`): each takes a `Confirmed`, which only a
+  `DangerModal` hands out (a sealed trait, its modals listed in `danger.rs`), so calling
+  one without its modal doesn't compile: `Cluster::deploy`/`redeploy` and the service
+  view's, `Repo::run_confirmed` (`Repo::run` refuses a dangerous op, `Op::dangerous`
+  decides: checked when it runs), `port_scan::stop_process`, `Notes::delete`.
+  `clippy.toml` bans calling what lies under them (`Git::run`, `process::terminate`, the
+  cluster driver's `set_image` and `restart`) and the tests' `danger::for_tests`
+  anywhere else; each allowed call says why.
+- A danger modal opens on Cancel (`danger::show`) and acts on Enter only from its action
+  button: a stray Enter cancels. The git modal does so only for a dangerous op.
+- Not dangerous: fetch, switch, pull, new branch, publish and plain pushes, stopping
   devdeck's own runs, ending terminals, logs, port-forward, the leftovers dialog at start
-  (devdeck's own processes, while edit mode is off anyway). Commands and terminals can
-  still run anything themselves (kubectl, deploy scripts): edit mode guards devdeck's
-  own actions.
-- devdeck never pushes `main` or `master` (any case), edit mode or not. A remote whose
+  (devdeck's own processes), deleting a layout. Commands and terminals can still run
+  anything themselves (kubectl, deploy scripts): this guards devdeck's own actions.
+- devdeck never pushes `main` or `master` (any case), confirmed or not. A remote whose
   default branch has another name (`develop`, `trunk`) isn't protected by that rule: a
-  known limit (plain pushes to it stay allowed; a replace still needs edit mode).
+  known limit (plain pushes to it stay allowed; a replace still asks).
 
 ### Git
 
@@ -698,6 +704,11 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 - 2026-11-10 (user, M3) A push that can't lose anything on the remote (a publish or a
   plain push) runs at once after its check, no modal; only a replace (force-with-lease)
   asks. Amends "every write confirmed" (2026-11-08).
+- 2026-11-11 (user) Edit mode removed: each dangerous action already asks in its own
+  modal, so a global switch was redundant. Every dangerous action takes the
+  `danger::Confirmed` of its modal, which opens on Cancel. The API dropped `editmode.get`
+  and its `edit_mode` topic at level 5: a removed feature takes its methods with it (R13.2's
+  exception). Replaces "Edit mode gates destructive actions" (2026-11-08).
 
 ## Open questions
 

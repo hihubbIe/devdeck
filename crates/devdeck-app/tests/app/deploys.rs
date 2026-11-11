@@ -79,7 +79,6 @@ fn setup(cx: &mut TestAppContext, protected: bool) -> T {
     let envs = vec![Env { name: ENV.into(), protected }];
     let d = driver.clone();
     let cluster = cx.update(|cx| new_cluster(envs, d, Some(1_000), cx));
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     cx.update(|cx| cluster.update(cx, |c, cx| c.want(ENV, cx)));
     let t = T { cluster, driver };
     watch(&t, cx, dep("main", 3, 5, 5, Progress::Settled));
@@ -98,7 +97,7 @@ fn pods(t: &T, cx: &mut TestAppContext, pods: Vec<Pod>) {
 }
 
 fn deploy(t: &T, cx: &mut TestAppContext, from: &str, to: &str) -> Result<(), String> {
-    cx.update(|cx| t.cluster.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}:{from}"), to, false, cx)))
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}:{from}"), to, false, crate::confirmed(), cx)))
 }
 
 fn answer(t: &T, cx: &mut TestAppContext, result: Result<u64, String>) {
@@ -118,9 +117,6 @@ fn history(t: &T, cx: &TestAppContext) -> Vec<(String, String, String)> {
 fn guards_come_in_order_below_the_ui(cx: &mut TestAppContext) {
     let t = setup(cx, true);
     let blocked = |cx: &mut TestAppContext, to: &str| cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, to, false, cx));
-    cx.update(|cx| devdeck_app::edit_mode::set(false, cx));
-    assert_eq!(blocked(cx, "feature"), Some(devdeck_app::edit_mode::OFF.into()), "edit mode first (R5.6)");
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     cx.update(|cx| t.cluster.update(cx, |c, cx| c.check_access(ENV, cx)));
     cx.update(|cx| t.cluster.update(cx, |c, cx| c.access_known(ENV, Ok(false), cx)));
     assert_eq!(blocked(cx, "feature"), Some(format!("your account can't change deployments in {ENV}")), "the account, before anything is asked");
@@ -141,14 +137,13 @@ fn nothing_is_written_without_a_short_name(cx: &mut TestAppContext) {
     let driver = Rc::new(Scripted { nameless: true, ..Default::default() });
     let d = driver.clone();
     let cluster = cx.update(|cx| new_cluster(vec![Env { name: ENV.into(), protected: false }], d, Some(1_000), cx));
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     cx.update(|cx| cluster.update(cx, |c, cx| c.want(ENV, cx)));
     let t = T { cluster, driver };
     watch(&t, cx, dep("main", 3, 5, 5, Progress::Settled));
     let why = devdeck_app::cluster::NO_SHORT_NAME.to_string();
     assert_eq!(cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, "feature", false, cx)), Some(why.clone()));
     assert_eq!(deploy(&t, cx, "main", "feature"), Err(why.clone()));
-    assert_eq!(cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, false, cx))), Err(why), "a redeploy too");
+    assert_eq!(cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, false, crate::confirmed(), cx))), Err(why), "a redeploy too");
     assert!(t.driver.writes.borrow().is_empty() && t.driver.restarts.borrow().is_empty(), "nothing sent");
 }
 
@@ -160,7 +155,7 @@ fn writes_carry_who_made_them_and_the_history_says_it(cx: &mut TestAppContext) {
     answer(&t, cx, Ok(6));
     watch(&t, cx, dep("feature", 4, 6, 6, Progress::Settled));
     assert_eq!(history(&t, cx).last().map(|r| r.1.clone()), Some(ME.into()), "the history says it as written");
-    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, "registry/graphservice:feature", false, cx))).unwrap();
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, "registry/graphservice:feature", false, crate::confirmed(), cx))).unwrap();
     assert_eq!(t.driver.restarts.borrow()[0].1.manager, ME, "a redeploy too");
 }
 
@@ -326,7 +321,7 @@ fn an_untagged_image_is_pinned_as_the_spec_writes_it(cx: &mut TestAppContext) {
     let mut d = dep("main", 3, 5, 5, Progress::Settled);
     d.containers[0].image = Image::parse(&format!("registry/{SVC}"));
     watch(&t, cx, d);
-    cx.update(|cx| t.cluster.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}"), "feature", false, cx))).unwrap();
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.deploy(ENV, SVC, &format!("registry/{SVC}"), "feature", false, crate::confirmed(), cx))).unwrap();
     assert_eq!(t.driver.writes.borrow()[0].1.from, format!("registry/{SVC}"), "not registry/graphservice:latest, which the spec doesn't say");
 }
 
@@ -376,7 +371,7 @@ fn a_new_target_is_a_new_baseline(cx: &mut TestAppContext) {
 const MAIN: &str = "registry/graphservice:main";
 
 fn redeploy(t: &T, cx: &mut TestAppContext) -> Result<(), String> {
-    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, false, cx)))
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, false, crate::confirmed(), cx)))
 }
 
 /// `main` redeployed: revision `revision`, generation `generation` observed, its template
@@ -405,9 +400,6 @@ fn first_stamp() -> String {
 fn a_redeploy_has_every_guard_of_a_write_but_already_runs(cx: &mut TestAppContext) {
     let t = setup(cx, true);
     let blocked = |cx: &mut TestAppContext, unlocked: bool| cx.read(|cx| t.cluster.read(cx).write_blocked(ENV, SVC, unlocked, cx));
-    cx.update(|cx| devdeck_app::edit_mode::set(false, cx));
-    assert_eq!(blocked(cx, true), Some(devdeck_app::edit_mode::OFF.into()), "edit mode first (R5.6)");
-    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
     cx.update(|cx| t.cluster.update(cx, |c, cx| c.check_access(ENV, cx)));
     cx.update(|cx| t.cluster.update(cx, |c, cx| c.access_known(ENV, Ok(false), cx)));
     assert_eq!(blocked(cx, true), Some(format!("your account can't change deployments in {ENV}")));
@@ -416,7 +408,7 @@ fn a_redeploy_has_every_guard_of_a_write_but_already_runs(cx: &mut TestAppContex
     assert_eq!(blocked(cx, true), None, "the same image is what a redeploy asks for");
     assert_eq!(cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, "main", true, cx)), Some(format!("{SVC} already runs main")), "a branch change still refuses it");
     assert_eq!(redeploy(&t, cx), Err(format!("{ENV} is protected: unlock it first")), "below the UI");
-    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, true, cx))).unwrap();
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, true, crate::confirmed(), cx))).unwrap();
     assert_eq!(blocked(cx, true), Some(format!("a deploy of {SVC} is being sent")), "one write in flight");
     answer(&t, cx, Err("nope".into()));
     watch(&t, cx, dep("main", 3, 5, 5, Progress::Paused));

@@ -238,14 +238,14 @@ fn the_screen_layouts_notes_envs_and_settings(cx: &mut TestAppContext) {
     assert_eq!(list.notes.iter().map(|n| n.name.0.as_str()).collect::<Vec<_>>(), ["todo"]);
     let n: devdeck_api::types::Note = get("note.get", json!({ "id": id }), cx);
     assert_eq!(n.app, "eventservice");
-    // Envs, edit mode, settings.
+    // Envs, settings.
     let envs: devdeck_api::types::Envs = get("env.list", json!({}), cx);
     assert!(envs.envs.iter().any(|e| e.protected) && envs.envs.iter().filter(|e| e.current).count() <= 1);
     let first = envs.envs[0].name.clone();
     let e: devdeck_api::types::Env = get("env.get", json!({ "name": first }), cx);
     assert_eq!(e.name, first);
-    let m: devdeck_api::types::EditMode = get("editmode.get", json!({}), cx);
-    assert!(!m.on, "off at every start");
+    // Edit mode left at level 5 (R13.2's exception): its method is gone.
+    assert_eq!(call(&terminal(1), "editmode.get", json!({}), cx).unwrap_err().kind, devdeck_api::ErrorKind::NotFound, "no editmode.get");
     let s: devdeck_api::types::Settings = get("settings.get", json!({}), cx);
     assert!(s.scale > 0.0 && !s.theme.is_empty());
     let _: devdeck_api::types::Problems = get("devdeck.problems", json!({}), cx);

@@ -17,6 +17,9 @@ Rules that are easy to break:
 - Nothing machine-specific in code; it belongs in config (R1.5).
 - Files are view only; notes are the one thing devdeck edits (R12).
 - OS-specific code only in `devdeck-sys`, a backend or "unsupported" per OS (R11.6).
+- A dangerous action (hard to undo) takes a `danger::Confirmed`: only its confirmation
+  modal makes one, listed in `danger.rs`, and it opens on Cancel (R5.6). Git's are checked
+  when they run (`Op::dangerous`, `Repo::run_confirmed`).
 - After touching `devdeck-sys`, `devdeck-core`, `devdeck-api`, `devdeck-ctl` or
   `devdeck-mcp`, the Mac compile check passes too (`docs/PLATFORMS.md` §4): `cargo clippy
   --target aarch64-apple-darwin -p devdeck-sys -p devdeck-core -p devdeck-api -p

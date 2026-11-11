@@ -75,8 +75,6 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("app.cheat_sheet", "keys", "App", DECK, ["ctrl-/"], CheatSheet),
         spec!("app.cheat_sheet_q", "keys", "App", Some("Deck && !TextInput && !Modal && !Menu"), ["?"], CheatSheet),
         spec!("app.settings", "settings", "App", DECK, ["ctrl-,"], ToggleSettings),
-        spec!("app.edit_mode", "edit mode (allow destructive actions)", "App", DECK, [], ToggleEditMode),
-        spec!("edit_mode.confirm", "confirm", "App", Some("Modal && EditModeModal"), ["enter"], crate::edit_mode::ConfirmEditMode),
         spec!("app.close_settings", "close settings", "App", Some("Settings"), ["escape"], CloseSettings),
         spec!("app.notifications", "notifications", "App", DECK, ["ctrl-shift-n"], nt::ToggleNotifications),
         spec!("app.service_notifications", "service notifications", "App", DECK, [], nt::ServiceNotifications),

@@ -209,10 +209,10 @@ mod tests {
 
     #[test]
     fn calls_skip_events_and_read_errors() {
-        let (_d, path) = serve(r#"{"jsonrpc":"2.0","id":ID,"result":{"on":true}}"#);
+        let (_d, path) = serve(r#"{"jsonrpc":"2.0","id":ID,"result":{"scale":1.5,"theme":"dark"}}"#);
         let mut c = Client::connect(&path).unwrap();
-        let r = c.call::<crate::methods::EditModeGet>(&crate::types::NoParams {}).unwrap();
-        assert!(r.on);
+        let r = c.call::<crate::methods::SettingsGet>(&crate::types::NoParams {}).unwrap();
+        assert_eq!((r.scale, r.theme.as_str()), (1.5, "dark"));
         assert_eq!(c.next_notification().unwrap()["method"], "event", "the event that came first is kept");
         let (_d, path) = serve(r#"{"jsonrpc":"2.0","id":ID,"error":{"code":-32000,"message":"no","data":{"kind":"permission_denied"}}}"#);
         let mut c = Client::connect(&path).unwrap();

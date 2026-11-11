@@ -72,7 +72,6 @@ pub struct Hub {
     runs: HashMap<String, BTreeMap<RunKey, devdeck_core::runs::RunState>>,
     notes: HashMap<String, BTreeMap<String, u64>>,
     shown: Option<String>,
-    edit_mode: bool,
     toast: u64,
     /// Each workspace's ports, and the scan kept going for those whose callers follow
     /// `ports`.
@@ -239,14 +238,6 @@ impl ApiState {
         }
     }
 
-    fn edit_mode_changed(&mut self, cx: &mut Context<Self>) {
-        let on = crate::edit_mode::is_on(cx);
-        let Some(hub) = self.hub.as_mut() else { return };
-        if std::mem::replace(&mut hub.edit_mode, on) != on {
-            self.change(Topic::EditMode, String::new(), Change { workspace: None, terminal: None, data: json!({ "on": on }) }, cx);
-        }
-    }
-
     fn toasts_changed(&mut self, toasts: &Entity<devdeck_ui::overlay::Toasts>, cx: &mut Context<Self>) {
         let Some(hub) = self.hub.as_mut() else { return };
         let since = hub.toast;
@@ -274,7 +265,7 @@ fn hears(who: &Who, change: &Change) -> bool {
     change.workspace.as_ref().is_none_or(|w| w == workspace) && change.terminal.is_none_or(|t| t == *n)
 }
 
-/// Watches every workspace's runner, deck and notes, the shell, edit mode, the settings
+/// Watches every workspace's runner, deck and notes, the shell, the settings
 /// and the toasts; what they are now is the baseline (no events for it).
 fn hub(cx: &mut Context<ApiState>) -> Hub {
     let mut subs = Vec::new();
@@ -319,8 +310,6 @@ fn hub(cx: &mut Context<ApiState>) -> Hub {
         }
         subs.push(cx.observe(&shell, |this, _, cx| this.shell_changed(cx)));
     }
-    let edit = crate::edit_mode::edit_mode(cx);
-    subs.push(cx.observe(&edit, |this, _, cx| this.edit_mode_changed(cx)));
     let settings = crate::app_settings::settings(cx);
     subs.push(cx.observe(&settings, |this, _, cx| {
         this.change(Topic::Settings, String::new(), Change { workspace: None, terminal: None, data: json!({}) }, cx);
@@ -328,7 +317,7 @@ fn hub(cx: &mut Context<ApiState>) -> Hub {
     let toasts = devdeck_ui::toasts(cx);
     let toast = toasts.read(cx).queue.history.back().map_or(0, |t| t.id);
     subs.push(cx.observe(&toasts, |this, t, cx| this.toasts_changed(&t, cx)));
-    Hub { _subs: subs, runs, notes, shown, edit_mode: crate::edit_mode::is_on(cx), toast, ports, scanning: HashMap::new() }
+    Hub { _subs: subs, runs, notes, shown, toast, ports, scanning: HashMap::new() }
 }
 
 /// `events.subscribe` / `events.unsubscribe` for the connection of the call.

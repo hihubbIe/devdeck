@@ -89,7 +89,9 @@ metrics, protected envs. Plan:
 [plans/M3-cluster.md](plans/M3-cluster.md). Steps, one at a time:
 1. Config and real deployments, read only — done 2026-11-07.
 2. Service inspector on real data (pods, metrics) — done 2026-11-08.
-3. Git panel — done 2026-11-08. 3b. Edit mode — done 2026-11-08. 3c. Sidebar
+3. Git panel — done 2026-11-08. 3b. Edit mode — done 2026-11-08, removed
+   2026-11-11 (each dangerous action asks in its modal:
+   [plans/danger-actions.md](plans/danger-actions.md)). 3c. Sidebar
    groups, folded sections, width; layout ids
    ([plans/sidebar-groups.md](plans/sidebar-groups.md)) — done 2026-11-08. 3d. Right-click
    menu with Share with; short terminal names

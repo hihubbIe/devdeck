@@ -12,7 +12,7 @@ pub mod cluster_pods;
 pub mod context_menu;
 pub mod deck;
 pub mod drops;
-pub mod edit_mode;
+pub mod danger;
 pub mod environment;
 pub mod fake_cluster;
 pub mod fake_driver;
@@ -121,7 +121,6 @@ pub fn init_with_config_dir(dir: &std::path::Path, cx: &mut App) {
     // Before devdeck's keys: it keeps only its components' own (R12).
     devdeck_ui::code::init(cx);
     app_settings::init(dir, cx);
-    edit_mode::edit_mode(cx);
     actions::bind(cx);
     cx.on_window_closed(|cx, id| devdeck_ui::overlay::forget_layer(id, cx)).detach();
 }

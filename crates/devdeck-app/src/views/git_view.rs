@@ -16,6 +16,7 @@
 
 use super::ViewCx;
 use crate::cluster::Cluster;
+use crate::danger::{self, DangerModal};
 use crate::repo::{Looking, Repo};
 use devdeck_core::cluster::Remote;
 use devdeck_core::git::{Branch, Change, ChangeKind, Doing, Head, Op, PushPlan};
@@ -66,10 +67,7 @@ pub struct Row {
 impl GitView {
     pub fn new(root: PathBuf, repo: Entity<Repo>, ctx: ViewCx, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| TextInput::new("filter branches", cx));
-        // Its buttons say whether edit mode allows them.
-        let edit_mode = crate::edit_mode::edit_mode(cx);
         let mut subs = vec![
-            cx.observe(&edit_mode, |_, _, cx| cx.notify()),
             cx.observe(&repo, |this, _, cx| this.repo_changed(cx)),
             cx.subscribe(&filter, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Changed(_) => {
@@ -195,7 +193,7 @@ impl GitView {
     /// Why `op` can't run now, if it can't (R5.5).
     pub fn refusal(&self, op: &Op, cx: &App) -> Option<String> {
         let repo = self.repo.read(cx);
-        if let Some(why) = repo.refusal(op, cx) {
+        if let Some(why) = repo.refusal(op) {
             return Some(why);
         }
         let s = repo.full()?;
@@ -289,9 +287,6 @@ impl GitView {
         }
         let (title, lines, label) = match &plan {
             PushPlan::Publish { .. } | PushPlan::Send { .. } => unreachable!("pushed above"),
-            PushPlan::Replace { remote, branch, .. } if crate::edit_mode::refusal(cx).is_some() => {
-                return self.toast(format!("Push: your {branch} was rewritten, so pushing it replaces {remote}'s: {}.", crate::edit_mode::OFF), cx);
-            }
             PushPlan::Replace { remote, branch, replaced, .. } => {
                 let mut lines = vec![
                     format!("Your {branch} was rewritten (a rebase or an amend): {remote}'s {branch} is replaced with yours."),
@@ -418,13 +413,15 @@ impl GitView {
         self.ask(op, title, doing, confirm, lines, Vec::new(), cx);
     }
 
-    /// `confirm`, with `files` listed after the lines, one line each.
+    /// `confirm`, with `files` listed after the lines, one line each. A dangerous op's
+    /// modal opens on Cancel (R5.6).
     #[allow(clippy::too_many_arguments)]
     fn ask(&mut self, op: Op, title: String, doing: String, confirm: &'static str, lines: Vec<String>, files: Vec<String>, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
+        let dangerous = op.dangerous();
         self.in_window(cx, move |window, cx| {
             let modal = cx.new(|cx| ConfirmModal::new(repo, op, title, doing, confirm, lines, files, window, cx));
-            show(modal, window, cx);
+            if dangerous { danger::show(modal, window, cx) } else { show(modal, window, cx) }
         });
     }
 
@@ -747,7 +744,8 @@ impl GitView {
 
 // ------------------------------------------------------------------ modals
 
-/// Says in plain words what an operation will do; Enter runs it, Esc cancels.
+/// Says in plain words what an operation will do; Enter on its button runs it, Esc
+/// cancels. A danger modal (R5.6) for a replace or an abort: it opens on Cancel then.
 pub struct ConfirmModal {
     repo: Entity<Repo>,
     op: Op,
@@ -788,22 +786,36 @@ impl ConfirmModal {
     fn go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close(window, cx);
         let (op, title, doing) = (self.op.clone(), self.title.clone(), self.doing.clone());
-        if let Err(why) = self.repo.update(cx, |r, cx| r.run(op, title.clone(), doing, cx)) {
+        let result = if op.dangerous() {
+            #[allow(clippy::disallowed_methods)] // Its action button or Enter on it.
+            let ok = danger::confirmed(self);
+            self.repo.update(cx, |r, cx| r.run_confirmed(op, ok, title.clone(), doing, cx))
+        } else {
+            self.repo.update(cx, |r, cx| r.run(op, title.clone(), doing, cx))
+        };
+        if let Err(why) = result {
             toasts(cx).update(cx, |t, cx| t.push(ToastKind::Warn, format!("{title}: {why}"), vec![], cx));
         }
     }
 
+    /// Enter: runs only from the action's button; anywhere else it cancels.
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.focus.0[1].is_focused(window) {
-            return self.close(window, cx);
+        if self.focus.0[0].is_focused(window) {
+            return self.go(window, cx);
         }
-        self.go(window, cx);
+        self.close(window, cx);
     }
 }
 
 impl HasFocus for ConfirmModal {
     fn focus(&self) -> &ModalFocus {
         &self.focus
+    }
+}
+
+impl DangerModal for ConfirmModal {
+    fn cancel(&self) -> &FocusHandle {
+        &self.focus.0[1]
     }
 }
 

@@ -771,12 +771,6 @@ pub struct Notes {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct EditMode {
-    /// Destructive actions are allowed while it's on (R5.6); only the user turns it on.
-    pub on: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Settings {
     pub scale: f32,
     pub theme: String,
@@ -895,8 +889,6 @@ pub enum Topic {
     Workspace,
     /// UI scale or theme changed: `{}`.
     Settings,
-    /// Edit mode turned on or off: `{on}`.
-    EditMode,
     /// A toast was shown: `{id, kind}`, and `title` when it has one (`ui.toasts` gives
     /// its text).
     Toasts,

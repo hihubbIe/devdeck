@@ -9,10 +9,11 @@
 //! sidebar's Notes list).
 
 use super::{KeepsState, Live, ToggleRendered, ViewAction, ViewCx};
+use crate::danger::{self, DangerModal};
 use crate::notes::{NoteDeleted, NoteWritten, Notes};
 use devdeck_ui::code::{Code, CodeEvent};
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
-use devdeck_ui::{Icon, ModalFocus, Rendered, Scrolls, button, label, modal_frame, pop_modal, push_modal, theme};
+use devdeck_ui::{Icon, ModalFocus, Rendered, Scrolls, button, label, modal_frame, pop_modal, theme};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
     Subscription, WeakFocusHandle, Window, actions, div,
@@ -276,11 +277,10 @@ pub fn delete_note(notes: &Entity<Notes>, id: &str, window: &mut Window, cx: &mu
     let Some(name) = notes.read(cx).meta(id).map(|m| m.name.clone()) else { return };
     let restore = window.focused(cx).map(|f| f.downgrade());
     let modal = cx.new(|cx| DeleteNote { notes: notes.clone(), id: id.to_string(), name, focus: ModalFocus(vec![cx.focus_handle(), cx.focus_handle()]), restore });
-    push_modal(modal.clone().into(), window, cx);
-    let first = modal.read(cx).focus.0[0].clone();
-    first.focus(window, cx);
+    danger::show(modal, window, cx);
 }
 
+/// A danger modal (R5.6): opens on Cancel, Enter deletes from Delete, Esc cancels.
 pub struct DeleteNote {
     notes: Entity<Notes>,
     id: String,
@@ -299,16 +299,24 @@ impl DeleteNote {
 
     fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close(window, cx);
-        let id = self.id.clone();
-        self.notes.update(cx, |n, cx| n.delete(&id, cx));
+        #[allow(clippy::disallowed_methods)] // Its Delete button or Enter on it.
+        let (id, ok) = (self.id.clone(), danger::confirmed(self));
+        self.notes.update(cx, |n, cx| n.delete(&id, ok, cx));
     }
 
+    /// Enter: deletes only from Delete; anywhere else it cancels.
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.focus.0[1].is_focused(window) {
-            self.close(window, cx);
-        } else {
+        if self.focus.0[0].is_focused(window) {
             self.delete(window, cx);
+        } else {
+            self.close(window, cx);
         }
+    }
+}
+
+impl DangerModal for DeleteNote {
+    fn cancel(&self) -> &FocusHandle {
+        &self.focus.0[1]
     }
 }
 

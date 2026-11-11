@@ -12,6 +12,7 @@
 //!
 //! Without a folder (the demo, tests that don't give one) notes live in memory only.
 
+use crate::danger::Confirmed;
 use devdeck_core::notes::{NoteMeta, NotesStore, sort};
 use devdeck_ui::{ToastKind, toasts};
 use gpui::{App, Context, EventEmitter, Task};
@@ -166,7 +167,9 @@ impl Notes {
         cx.notify();
     }
 
-    pub fn delete(&mut self, id: &str, cx: &mut Context<Self>) {
+    /// Deletes a note for good: a dangerous action (R5.6), confirmed in its modal.
+    #[allow(clippy::disallowed_methods)] // Confirmed: the store's delete is called here only.
+    pub fn delete(&mut self, id: &str, _: Confirmed, cx: &mut Context<Self>) {
         if let Some(s) = &self.store
             && let Err(e) = s.delete(id)
         {

@@ -174,7 +174,7 @@ fn open_pin_rename_delete_from_the_list(cx: &mut TestAppContext) {
     // A rename shows in the list; a delete takes it away.
     cx.update(|cx| s.notes.update(cx, |n, cx| n.rename(&id, "bugs", cx)));
     assert_eq!(rows(&s, cx)[1], "bugs");
-    cx.update(|cx| s.notes.update(cx, |n, cx| n.delete(&id, cx)));
+    cx.update(|cx| s.notes.update(cx, |n, cx| n.delete(&id, crate::confirmed(), cx)));
     assert_eq!(rows(&s, cx), ["[Pinned 0]", "(Pinned empty)", "[All 0]", "(All empty)"]);
 }
 
