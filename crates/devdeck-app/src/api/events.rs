@@ -305,7 +305,7 @@ fn hub(cx: &mut Context<ApiState>) -> Hub {
             subs.push(cx.observe(&n, move |this, n, cx| this.notes_changed(&id, &n, cx)));
             let id = ws.clone();
             subs.push(cx.observe(&deck, move |this, _, cx| {
-                this.change(Topic::Layout, id.clone(), Change { workspace: Some(id.clone()), terminal: None, data: json!({}) }, cx);
+                this.change(Topic::Pulse, id.clone(), Change { workspace: Some(id.clone()), terminal: None, data: json!({}) }, cx);
             }));
         }
         subs.push(cx.observe(&shell, |this, _, cx| this.shell_changed(cx)));
@@ -356,11 +356,11 @@ mod tests {
         let (tx, rx) = sync_channel(2);
         let mut out = Outbox::new(tx);
         for _ in 0..3 {
-            out.push(Topic::Layout, json!({}));
+            out.push(Topic::Pulse, json!({}));
         }
         let got = read(&rx);
         assert_eq!(got.iter().map(|m| m["params"]["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2], "the third was dropped");
-        out.push(Topic::Layout, json!({}));
+        out.push(Topic::Pulse, json!({}));
         let got = read(&rx);
         assert_eq!(got[0]["method"], "events.lagged");
         assert_eq!(got[0]["params"]["seq"], 3, "the first one missed");

@@ -88,7 +88,7 @@ fn notes_and_toasts_say_which_changed(cx: &mut TestAppContext) {
     let (shell, api) = start(cx, "events-notes");
     let me = agent("work", 3);
     let (conn, rx) = connect(&api, &me, cx);
-    call(&me, conn, "events.subscribe", json!({"topics": ["notes", "toasts", "layout"]}), cx).unwrap();
+    call(&me, conn, "events.subscribe", json!({"topics": ["notes", "toasts", "pulse"]}), cx).unwrap();
     let notes = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).notes.clone());
     let id = cx.update(|cx| notes.update(cx, |n, cx| n.create("eventservice", "todo", cx))).unwrap();
     cx.update(|cx| notes.update(cx, |n, cx| n.write(&id, "x".into(), cx))).unwrap();
@@ -123,14 +123,14 @@ fn closing_or_an_ended_shell_stops_the_watching(cx: &mut TestAppContext) {
     let (shell, api) = start(cx, "events-end");
     let me = agent("work", 3);
     let (conn, _rx) = connect(&api, &me, cx);
-    call(&me, conn, "events.subscribe", json!({"topics": ["layout"]}), cx).unwrap();
+    call(&me, conn, "events.subscribe", json!({"topics": ["pulse"]}), cx).unwrap();
     assert!(cx.read(|cx| api.read(cx).watching()));
     cx.update(|cx| api.update(cx, |s, cx| s.close_connection(conn, cx)));
     assert!(!cx.read(|cx| api.read(cx).watching()), "its connection closed");
     // A caller whose shell ended (99 here) follows nothing once something changes.
     let gone = agent("work", 99);
     let (conn, rx) = connect(&api, &gone, cx);
-    call(&gone, conn, "events.subscribe", json!({"topics": ["layout"]}), cx).unwrap();
+    call(&gone, conn, "events.subscribe", json!({"topics": ["pulse"]}), cx).unwrap();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     cx.update(|cx| deck.update(cx, |_, cx| cx.notify()));
     tick(cx);

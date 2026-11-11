@@ -895,7 +895,7 @@ impl Render for WindowView {
                     bar_control(button("layout", current, &t))
                         .child(button_icon(Icon::Open, &t))
                         .debug_selector(|| "layout-button".into())
-                        .tooltip(tip("layouts"))
+                        .tooltip(tip("pulses"))
                         .on_click(move |e, window, cx| {
                             let items = crate::layouts::menu(&deck, cx);
                             open_menu(e.position(), items, window, cx);

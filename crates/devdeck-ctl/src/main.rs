@@ -8,7 +8,7 @@
 //! devdeck-ctl [--socket PATH] [--json] watch TOPIC...
 //! ```
 //!
-//! `watch` follows topics (`runs`, `output`, `notes`, `layout`…: `api.describe
+//! `watch` follows topics (`runs`, `output`, `notes`, `pulse`…: `api.describe
 //! events.subscribe`) and prints each event as it comes, one per line, until devdeck goes
 //! or it's interrupted.
 //!
@@ -101,7 +101,7 @@ fn plain(command: &Command, v: &Value) -> String {
                     out += &format!("terminal: {} (uid {})\n", t.n, t.uid);
                 }
                 for p in w.shown {
-                    out += &format!("shown: layout {} · window {} · pane {}\n", p.layout, p.window, p.pane);
+                    out += &format!("shown: pulse {} · window {} · pane {}\n", p.pulse, p.window, p.pane);
                 }
                 out
             }

@@ -66,7 +66,7 @@ fn edge(e: Edge) -> CoreEdge {
 fn live(w: &WsRef, layout: &str, app: &App) -> Result<(), ApiError> {
     let current = &w.deck.read(app).book.current;
     if current != layout {
-        return Err(ApiError::new(ErrorKind::Conflict, format!("layout {layout} isn't shown (layout {current} is): read ui.get again")));
+        return Err(ApiError::new(ErrorKind::Conflict, format!("pulse {layout} isn't shown (pulse {current} is): read ui.get again")));
     }
     Ok(())
 }
@@ -77,7 +77,7 @@ fn place(w: &WsRef, layout: Option<&str>, pane: Option<u64>, e: Option<Edge>, ap
     let l = w.deck.read(app).layout();
     let p = match pane {
         Some(p) => {
-            live(w, layout.ok_or_else(|| ApiError::invalid("layout: needed with pane"))?, app)?;
+            live(w, layout.ok_or_else(|| ApiError::invalid("pulse: needed with pane"))?, app)?;
             let p = PaneId(p);
             l.pane(p).map_err(|_| ApiError::not_found(format!("no pane {}", p.0)))?;
             p
@@ -141,7 +141,7 @@ pub const VIEWS_MAX: usize = 100;
 /// Refused when the live layout holds [`VIEWS_MAX`] views: a caller can't bury the user's.
 pub(super) fn room(w: &WsRef, app: &App) -> Result<(), ApiError> {
     if w.deck.read(app).layout().views().len() >= VIEWS_MAX {
-        return Err(ApiError::new(ErrorKind::Refused, format!("the layout holds {VIEWS_MAX} views: close some first")));
+        return Err(ApiError::new(ErrorKind::Refused, format!("the pulse holds {VIEWS_MAX} views: close some first")));
     }
     Ok(())
 }
@@ -170,13 +170,13 @@ fn open(w: &WsRef, r: ViewRef, drop: Drop, placed: bool, activate: bool, app: &m
 
 pub fn view_open(cx: &CallCx, p: ViewOpenParams, app: &mut App) -> Result<Task<Result<Ui, ApiError>>, ApiError> {
     if let View::File { path } = &p.view {
-        let f = FileOpenParams { workspace: p.workspace.clone(), path: path.0.clone(), line: None, layout: p.layout.clone(), pane: p.pane, edge: p.edge };
+        let f = FileOpenParams { workspace: p.workspace.clone(), path: path.0.clone(), line: None, pulse: p.pulse.clone(), pane: p.pane, edge: p.edge };
         return open_file(cx, f, p.activate.unwrap_or(false), app);
     }
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let a = addr(&p.view)?;
     exists(&w, &a, app)?;
-    let drop = place(&w, p.layout.as_deref(), p.pane, p.edge, app)?;
+    let drop = place(&w, p.pulse.as_deref(), p.pane, p.edge, app)?;
     let title = a.to_ref();
     open(&w, a.to_ref(), drop, p.pane.is_some() || p.edge.is_some(), p.activate.unwrap_or(false), app)?;
     say(cx, "opened", &w.deck.read(app).title(&title, app), app);
@@ -195,7 +195,7 @@ fn open_file(cx: &CallCx, p: FileOpenParams, activate: bool, app: &mut App) -> R
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let roots = file_roots(w.services.read(app));
     let own = devdecks_own();
-    let drop = place(&w, p.layout.as_deref(), p.pane, p.edge, app)?;
+    let drop = place(&w, p.pulse.as_deref(), p.pane, p.edge, app)?;
     let asked = std::path::PathBuf::from(&p.path);
     if !asked.is_absolute() {
         return Err(ApiError::invalid("path: absolute"));
@@ -282,7 +282,7 @@ fn pane_of(w: &WsRef, layout: &str, pane: u64, app: &App) -> Result<PaneId, ApiE
 
 pub fn pane_split(cx: &CallCx, p: PaneSplitParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let pane = pane_of(&w, &p.layout, p.pane, app)?;
+    let pane = pane_of(&w, &p.pulse, p.pane, app)?;
     let (tabs, active) = w.deck.read(app).layout().pane(pane).map(|x| (x.tabs.len(), x.active)).unwrap_or_default();
     if tabs < 2 {
         return Err(ApiError::invalid("a pane of one tab has nothing to split off"));
@@ -294,7 +294,7 @@ pub fn pane_split(cx: &CallCx, p: PaneSplitParams, app: &mut App) -> Result<Ui, 
 
 pub fn pane_close(cx: &CallCx, p: PaneParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let pane = pane_of(&w, &p.layout, p.pane, app)?;
+    let pane = pane_of(&w, &p.pulse, p.pane, app)?;
     let refs = w.deck.read(app).layout().pane(pane).map(|x| x.tabs.clone()).unwrap_or_default();
     keeps_terminals(&w, &refs, app)?;
     quietly(&w, None, app, |l| refs.iter().try_for_each(|r| l.close_view(r)))?;
@@ -304,7 +304,7 @@ pub fn pane_close(cx: &CallCx, p: PaneParams, app: &mut App) -> Result<Ui, ApiEr
 
 pub fn pane_collapse(cx: &CallCx, p: PaneCollapseParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let pane = pane_of(&w, &p.layout, p.pane, app)?;
+    let pane = pane_of(&w, &p.pulse, p.pane, app)?;
     let now = w.deck.read(app).layout().pane(pane).is_ok_and(|x| x.collapsed);
     if now != p.collapsed {
         quietly(&w, None, app, |l| l.toggle_collapse(pane))?;
@@ -314,7 +314,7 @@ pub fn pane_collapse(cx: &CallCx, p: PaneCollapseParams, app: &mut App) -> Resul
 
 pub fn pane_maximize(cx: &CallCx, p: PaneMaximizeParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let pane = pane_of(&w, &p.layout, p.pane, app)?;
+    let pane = pane_of(&w, &p.pulse, p.pane, app)?;
     let l = w.deck.read(app).layout();
     let now = l.window_of(pane).ok().and_then(|id| l.window(id).ok()).is_some_and(|win| win.maximized == Some(pane));
     if now != p.maximized {
@@ -325,7 +325,7 @@ pub fn pane_maximize(cx: &CallCx, p: PaneMaximizeParams, app: &mut App) -> Resul
 
 pub fn pane_resize(cx: &CallCx, p: PaneResizeParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    live(&w, &p.layout, app)?;
+    live(&w, &p.pulse, app)?;
     if !(p.fraction > 0.0 && p.fraction < 1.0) {
         return Err(ApiError::invalid("fraction: between 0 and 1"));
     }
@@ -335,7 +335,7 @@ pub fn pane_resize(cx: &CallCx, p: PaneResizeParams, app: &mut App) -> Result<Ui
 
 pub fn pane_move_tab(cx: &CallCx, p: MoveTabParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let to = pane_of(&w, &p.layout, p.pane, app)?;
+    let to = pane_of(&w, &p.pulse, p.pane, app)?;
     let (_, from, i) = find(&w, &p.view, app)?;
     match p.edge {
         Some(e) => quietly(&w, None, app, |l| l.move_tab(from, i, Drop::Edge(to, edge(e))))?,
@@ -361,15 +361,15 @@ fn window_of(w: &WsRef, layout: &str, window: u64, app: &App) -> Result<WindowId
 
 pub fn window_attach(cx: &CallCx, p: WindowAttachParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let id = window_of(&w, &p.layout, p.window, app)?;
-    let to = pane_of(&w, &p.layout, p.pane, app)?;
+    let id = window_of(&w, &p.pulse, p.window, app)?;
+    let to = pane_of(&w, &p.pulse, p.pane, app)?;
     quietly(&w, None, app, |l| l.attach(id, Drop::Into(to)))?;
     ui(cx, &w, app)
 }
 
 pub fn window_close(cx: &CallCx, p: WindowParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
-    let id = window_of(&w, &p.layout, p.window, app)?;
+    let id = window_of(&w, &p.pulse, p.window, app)?;
     let l = w.deck.read(app).layout();
     let refs: Vec<ViewRef> = l.panes_in(id).unwrap_or_default().into_iter().flat_map(|p| l.pane(p).map(|x| x.tabs.clone()).unwrap_or_default()).collect();
     keeps_terminals(&w, &refs, app)?;
@@ -380,20 +380,20 @@ pub fn window_close(cx: &CallCx, p: WindowParams, app: &mut App) -> Result<Ui, A
 
 /// A switch shows other panes: it asks while the user's keys are in one, and when
 /// either layout has a detached window (a new window may take the keyboard).
-pub fn layout_switch(cx: &CallCx, p: IdParams, app: &mut App) -> Result<Ui, ApiError> {
+pub fn pulse_switch(cx: &CallCx, p: IdParams, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let d = w.deck.read(app);
     if d.book.current == p.id {
         return ui(cx, &w, app);
     }
-    let target = d.book.layouts.get(&p.id).ok_or_else(|| ApiError::not_found(format!("no layout {}", p.id)))?;
+    let target = d.book.layouts.get(&p.id).ok_or_else(|| ApiError::not_found(format!("no pulse {}", p.id)))?;
     let windows = d.layout().windows.len() > 1 || target.layout.as_ref().is_some_and(|l| l.windows.len() > 1);
     let keys = crate::window_view::keys(&w.deck, app).ok_or_else(|| ApiError::new(ErrorKind::Busy, "a window is being drawn: try again"))?;
     if !keys.is_empty() || windows {
-        return Err(asks("switching layouts takes the screen the user is using"));
+        return Err(asks("switching pulses takes the screen the user is using"));
     }
     w.deck.update(app, |d, cx| d.switch_layout(&p.id, cx)).map_err(|e| ApiError::new(ErrorKind::Refused, e.to_string()))?;
-    say(cx, "switched to layout", &p.id, app);
+    say(cx, "switched to pulse", &p.id, app);
     ui(cx, &w, app)
 }
 

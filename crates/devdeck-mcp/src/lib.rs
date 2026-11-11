@@ -69,8 +69,8 @@ fn purpose(class: Class) -> &'static str {
     match class {
         Class::Observe => "Look at devdeck's state (read only)",
         Class::Read => "Read content from devdeck: output, logs, notes, files",
-        Class::Present => "Change what devdeck shows (tabs, panes, windows, layouts, settings), never the user's keyboard; what would move it needs the user's approval",
-        Class::Organize => "Change devdeck's own data: notes, saved layouts, sidebar pins and groups",
+        Class::Present => "Change what devdeck shows (tabs, panes, windows, pulses, settings), never the user's keyboard; what would move it needs the user's approval",
+        Class::Organize => "Change devdeck's own data: notes, saved pulses, sidebar pins and groups",
         Class::Run => "Start an app's main commands, open shells of your own, set the current env; stop or restart what you started",
         Class::Type => "Type into a devdeck terminal or process",
         Class::Remote => "Git writes through devdeck",

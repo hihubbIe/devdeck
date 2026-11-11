@@ -18,7 +18,7 @@ pub enum Class {
     Read,
     /// Only what the user sees.
     Present,
-    /// devdeck's own data: notes, layouts, pins, groups.
+    /// devdeck's own data: notes, pulses, pins, groups.
     Organize,
     /// Configured commands and shells.
     Run,
@@ -150,7 +150,7 @@ pub enum View {
     Git { root: Untrusted },
     File { path: Untrusted },
     Note { id: String },
-    /// A view devdeck doesn't know (an older layout's), as saved.
+    /// A view devdeck doesn't know (an older pulse's), as saved.
     Other {
         #[serde(rename = "ref")]
         reference: Untrusted,
@@ -273,10 +273,10 @@ pub struct Hello {
     pub policy: Vec<ClassPolicy>,
 }
 
-/// Where a pane is: a window of a layout.
+/// Where a pane is: a window of a pulse.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Place {
-    pub layout: String,
+    pub pulse: String,
     pub window: u64,
     pub pane: u64,
 }
@@ -293,7 +293,7 @@ pub struct Whoami {
     pub caller: Caller,
     pub workspace: Option<String>,
     pub terminal: Option<TerminalRef>,
-    /// Where the caller's terminal shows in the current layout.
+    /// Where the caller's terminal shows in the current pulse.
     pub shown: Vec<Place>,
 }
 
@@ -675,7 +675,7 @@ pub struct Terminal {
     pub dir: Untrusted,
     pub running: bool,
     pub program: Option<Untrusted>,
-    /// Where it shows in the current layout.
+    /// Where it shows in the current pulse.
     pub shown: Vec<Place>,
 }
 
@@ -693,7 +693,7 @@ pub enum Axis {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Tab {
     pub view: View,
-    /// None for a layout not shown.
+    /// None for a pulse not shown.
     pub title: Option<Untrusted>,
     /// The pane's active tab.
     pub active: bool,
@@ -710,7 +710,7 @@ pub struct Child {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Node {
     Split {
-        /// Names it for `pane.resize` (with the layout's id).
+        /// Names it for `pane.resize` (with the pulse's id).
         #[serde(default)]
         id: u64,
         axis: Axis,
@@ -733,25 +733,25 @@ pub struct Window {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Ui {
-    /// The current layout.
-    pub layout: String,
+    /// The current pulse.
+    pub pulse: String,
     pub windows: Vec<Window>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct LayoutSummary {
+pub struct PulseSummary {
     pub id: String,
     pub name: Untrusted,
     pub current: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Layouts {
-    pub layouts: Vec<LayoutSummary>,
+pub struct Pulses {
+    pub pulses: Vec<PulseSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Layout {
+pub struct Pulse {
     pub id: String,
     pub name: Untrusted,
     pub current: bool,
@@ -881,8 +881,8 @@ pub enum Topic {
     /// New output: `{app, cmd}` for a run, `{n}` for the caller's own terminal; at most
     /// every 100 ms each.
     Output,
-    /// The live layout changed (tabs, panes, windows, the current layout): `{}`.
-    Layout,
+    /// The live pulse changed (tabs, panes, windows, the current pulse): `{}`.
+    Pulse,
     /// A note's text, name or list changed: `{id, revision}`, `{id, deleted: true}`.
     Notes,
     /// The caller's workspace was shown or hidden: `{shown}`.
@@ -1075,7 +1075,7 @@ pub struct ViewParams {
 }
 
 /// Opens a view (an app, a run, a file, a note, a port) into a pane or beside it; the
-/// main window's focused pane when none is given. Pane ids hold for the layout named.
+/// main window's focused pane when none is given. Pane ids hold for the pulse named.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ViewOpenParams {
@@ -1083,7 +1083,7 @@ pub struct ViewOpenParams {
     pub workspace: Option<String>,
     pub view: View,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout: Option<String>,
+    pub pulse: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1104,7 +1104,7 @@ pub struct FileOpenParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout: Option<String>,
+    pub pulse: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1120,13 +1120,13 @@ pub struct RenderedParams {
     pub rendered: bool,
 }
 
-/// A pane of the live layout, named with the layout's id (`ui.get`).
+/// A pane of the live pulse, named with the pulse's id (`ui.get`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PaneParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub pane: u64,
 }
 
@@ -1135,7 +1135,7 @@ pub struct PaneParams {
 pub struct PaneSplitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub pane: u64,
     pub edge: Edge,
 }
@@ -1145,7 +1145,7 @@ pub struct PaneSplitParams {
 pub struct PaneCollapseParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub pane: u64,
     pub collapsed: bool,
 }
@@ -1155,7 +1155,7 @@ pub struct PaneCollapseParams {
 pub struct PaneMaximizeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub pane: u64,
     pub maximized: bool,
 }
@@ -1166,7 +1166,7 @@ pub struct PaneMaximizeParams {
 pub struct PaneResizeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub split: u64,
     pub index: u32,
     pub fraction: f32,
@@ -1179,7 +1179,7 @@ pub struct MoveTabParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     pub view: View,
-    pub layout: String,
+    pub pulse: String,
     pub pane: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u32>,
@@ -1192,7 +1192,7 @@ pub struct MoveTabParams {
 pub struct WindowParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub window: u64,
 }
 
@@ -1201,7 +1201,7 @@ pub struct WindowParams {
 pub struct WindowAttachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    pub layout: String,
+    pub pulse: String,
     pub window: u64,
     pub pane: u64,
 }
@@ -1270,7 +1270,7 @@ pub struct TerminalOpenParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout: Option<String>,
+    pub pulse: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1354,7 +1354,7 @@ pub struct RenameParams {
     pub name: String,
 }
 
-/// An item of a sidebar list (`apps`, `cluster`, `ports`, `layouts`, `notes`) pinned or not.
+/// An item of a sidebar list (`apps`, `cluster`, `ports`, `pulses`, `notes`) pinned or not.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PinParams {

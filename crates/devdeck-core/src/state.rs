@@ -206,7 +206,7 @@ impl StateStore {
                 }
                 Ok(_) => {
                     set_aside(&path);
-                    Loaded::Broken(format!("{}: a saved layout is invalid (kept as layouts.json.bad)", path.display()))
+                    Loaded::Broken(format!("{}: a saved pulse is invalid (kept as layouts.json.bad)", path.display()))
                 }
                 Err(e) => {
                     set_aside(&path);

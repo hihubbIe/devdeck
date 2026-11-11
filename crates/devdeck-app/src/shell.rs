@@ -132,7 +132,7 @@ impl Shell {
                 let layout = match store.as_ref().map(|s| s.load_layout(&spec.id)) {
                     Some(Loaded::Ok(l)) => l,
                     Some(Loaded::Broken(e)) => {
-                        problems.push(format!("{e}; using the default {} layout.", spec.name));
+                        problems.push(format!("{e}; using the default {} pulse.", spec.name));
                         (spec.layout)()
                     }
                     _ => (spec.layout)(),

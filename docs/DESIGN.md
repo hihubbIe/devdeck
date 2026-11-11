@@ -8,7 +8,7 @@ The interactive HTML prototype that was approved is the visual reference
 ## Window anatomy
 
 ```
-┌ title bar ── workspace ▾ · layout ▾ ── search (ctrl k) ── env ▾ · ● 3 running · ? ─────────┐
+┌ title bar ── workspace ▾ · pulse ▾ ─── search (ctrl k) ── env ▾ · ● 3 running · ? ─────────┐
 │ activity │ sidebar (list) │ split tree of panes ……………………………………………………………………………………… │
 │   bar    │  Pinned        │ ┌ pane: tabs ───────────┐┌ pane: tabs ─────────────────────────┐ │
 │          │  All           │ │ view                  ││ view                                │ │
@@ -19,7 +19,7 @@ The interactive HTML prototype that was approved is the visual reference
 ```
 
 - **Activity bar**: one icon per activity contributed by the workspace (Apps; Cluster
-  only when configured; Ports; Layouts; Terminals; Notes). Clicking the active one hides
+  only when configured; Ports; Pulses; Terminals; Notes). Clicking the active one hides
   the sidebar.
 - **Sidebar**: the activity's list. Always Pinned + All, alphabetical, filter field.
   Both sections fold from their header. All holds the groups the user makes (folders,
@@ -167,11 +167,13 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   tooltips. The last expanded pane of a window cannot collapse.
 - Detach: a new `Window` whose root is a single pane holding the tab. Detached windows
   belong to the workspace that created them and hide when you switch workspace.
-- Layouts are snapshots of the main window tree plus detached windows.
+- Pulses are snapshots of the main window tree plus detached windows. "Pulse" is the
+  user's word, the only one the app, the API and MCP show (R3.10); in the code a pulse is a
+  `Layout`, kept with its name in the `LayoutBook`.
 
 ### Workspaces
 
-- Each workspace has its own config file, state, process table, layout and windows.
+- Each workspace has its own config file, state, process table, pulses and windows.
 - All workspaces are loaded at start; only the active one renders. Processes of
   inactive workspaces keep running; their output keeps buffering.
 
@@ -316,7 +318,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   button: a stray Enter cancels. The git modal does so only for a dangerous op.
 - Not dangerous: fetch, switch, pull, new branch, publish and plain pushes, stopping
   devdeck's own runs, ending terminals, logs, port-forward, the leftovers dialog at start
-  (devdeck's own processes), deleting a layout. Commands and terminals can still run
+  (devdeck's own processes), deleting a pulse. Commands and terminals can still run
   anything themselves (kubectl, deploy scripts): this guards devdeck's own actions.
 - devdeck never pushes `main` or `master` (any case), confirmed or not. A remote whose
   default branch has another name (`develop`, `trunk`) isn't protected by that rule: a
@@ -465,7 +467,7 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   `Deck::apply_quietly` (each window keeps its focused pane and each pane its tab unless
   asked; the panes holding the keys, now or when Settings closes or the workspace shows
   again, keep their tab and stay shown). What would move them asks the user
-  (`approval_required`, the card in phase 4): a tab shown where the user types, a layout
+  (`approval_required`, the card in phase 4): a tab shown where the user types, a pulse
   switch, a new window.
 - Answers can come later: a handler gives a task the UI thread finishes (a wait, a git
   read, a file read in the background); the connection watches for its client hanging
@@ -478,7 +480,7 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 - One-off reads hold what views hold (a repository looked at, a port scan with its ports
   watched) until they answer, and count among the caller's waits.
 - Caps everywhere a caller could grow something: waits, connections, shells, notes,
-  layouts, pins, groups, toasts, a rate for changes.
+  pulses, pins, groups, toasts, a rate for changes.
 
 ## Toolbars (R9.9)
 
@@ -709,6 +711,13 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   `danger::Confirmed` of its modal, which opens on Cancel. The API dropped `editmode.get`
   and its `edit_mode` topic at level 5: a removed feature takes its methods with it (R13.2's
   exception). Replaces "Edit mode gates destructive actions" (2026-11-08).
+- 2026-11-11 (user) Layouts are called pulses everywhere the user or an agent sees them:
+  the app, the API (`pulse.*`, the `pulse` topic, `pulse` fields, the `pulses` list,
+  level 6), MCP and `devdeck-ctl`. The code keeps `Layout`, `LayoutBook` and `Deck`
+  (internal names, not renamed), and the state files keep theirs; a sidebar saved on the
+  old `layouts` activity opens on Pulses. The API may change, renames included, when every
+  consumer devdeck builds changes with it (R13.2, replacing "it only grows"). First step of
+  moving pulses to the first activity, the other activities getting full views of their own.
 
 ## Open questions
 

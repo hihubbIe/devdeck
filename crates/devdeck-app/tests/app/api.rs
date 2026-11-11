@@ -164,7 +164,7 @@ fn a_terminal_sees_its_own_workspace_only(cx: &mut TestAppContext) {
     let _shell = start(cx, "api-scope");
     let w: devdeck_api::types::Workspaces = get("workspace.list", json!({}), cx);
     assert_eq!(w.workspaces.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), ["work"]);
-    for m in ["workspace.get", "app.list", "run.list", "terminal.list", "ui.get", "layout.list", "note.list", "env.list", "devdeck.problems"] {
+    for m in ["workspace.get", "app.list", "run.list", "terminal.list", "ui.get", "pulse.list", "note.list", "env.list", "devdeck.problems"] {
         let e = call(&terminal(1), m, json!({ "workspace": "personal" }), cx).unwrap_err();
         assert_eq!(e.kind, ErrorKind::NotFound, "{m}");
         assert!(call(&terminal(1), m, json!({ "workspace": "work" }), cx).is_ok(), "{m}");
@@ -226,10 +226,10 @@ fn the_screen_layouts_notes_envs_and_settings(cx: &mut TestAppContext) {
     let mut all = Vec::new();
     tabs(&ui.windows[0].root, &mut all);
     assert!(!all.is_empty() && all.iter().all(|t| t.title.as_ref().is_some_and(|t| !t.0.is_empty())), "titled tabs");
-    let layouts: devdeck_api::types::Layouts = get("layout.list", json!({}), cx);
-    let current = layouts.layouts.iter().find(|l| l.current).expect("a current layout");
-    assert_eq!(current.id, ui.layout);
-    let l: devdeck_api::types::Layout = get("layout.get", json!({ "id": ui.layout }), cx);
+    let pulses: devdeck_api::types::Pulses = get("pulse.list", json!({}), cx);
+    let current = pulses.pulses.iter().find(|l| l.current).expect("a current pulse");
+    assert_eq!(current.id, ui.pulse);
+    let l: devdeck_api::types::Pulse = get("pulse.get", json!({ "id": ui.pulse }), cx);
     assert_eq!(l.windows, ui.windows);
     // A note.
     let notes = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).notes.clone());

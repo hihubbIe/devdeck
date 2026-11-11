@@ -48,7 +48,7 @@ pub fn places(layout: &CoreLayout, layout_id: &str, wanted: impl Fn(&ViewAddr) -
         for p in layout.panes_in(w.id).unwrap_or_default() {
             let Ok(pane) = layout.pane(p) else { continue };
             if pane.tabs.iter().any(|v| wanted(&ViewAddr::parse(v))) {
-                out.push(Place { layout: layout_id.to_string(), window: w.id.0, pane: p.0 });
+                out.push(Place { pulse: layout_id.to_string(), window: w.id.0, pane: p.0 });
             }
         }
     }
@@ -502,26 +502,26 @@ pub fn terminal_get(cx: &CallCx, p: TerminalParams, app: &mut App) -> Result<Ter
     Ok(Terminal { n: t.n, uid: t.uid, dir: t.dir, running: t.running, program: t.program, shown })
 }
 
-// ---- Screen and layouts ----
+// ---- Screen and pulses ----
 
 pub fn ui_get(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let deck = w.deck.read(app);
-    Ok(Ui { layout: deck.book.current.clone(), windows: windows(deck.layout(), Some(deck), app) })
+    Ok(Ui { pulse: deck.book.current.clone(), windows: windows(deck.layout(), Some(deck), app) })
 }
 
-pub fn layout_list(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Layouts, ApiError> {
+pub fn pulse_list(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Pulses, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let book = &w.deck.read(app).book;
-    let mut layouts: Vec<LayoutSummary> = book.layouts.iter().map(|(id, n)| LayoutSummary { id: id.clone(), name: n.name.as_str().into(), current: *id == book.current }).collect();
-    layouts.sort_by(|a, b| a.name.0.to_lowercase().cmp(&b.name.0.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
-    Ok(Layouts { layouts })
+    let mut pulses: Vec<PulseSummary> = book.layouts.iter().map(|(id, n)| PulseSummary { id: id.clone(), name: n.name.as_str().into(), current: *id == book.current }).collect();
+    pulses.sort_by(|a, b| a.name.0.to_lowercase().cmp(&b.name.0.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
+    Ok(Pulses { pulses })
 }
 
-pub fn layout_get(cx: &CallCx, p: IdParams, app: &mut App) -> Result<Layout, ApiError> {
+pub fn pulse_get(cx: &CallCx, p: IdParams, app: &mut App) -> Result<Pulse, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let deck = w.deck.read(app);
-    let named = deck.book.layouts.get(&p.id).ok_or_else(|| ApiError::not_found(format!("no layout {}", p.id)))?;
+    let named = deck.book.layouts.get(&p.id).ok_or_else(|| ApiError::not_found(format!("no pulse {}", p.id)))?;
     let current = p.id == deck.book.current;
     // The live layout is the truth for the current one (its saved copy may be stale).
     let windows = match (current, &named.layout) {
@@ -529,7 +529,7 @@ pub fn layout_get(cx: &CallCx, p: IdParams, app: &mut App) -> Result<Layout, Api
         (false, Some(l)) => windows(l, None, app),
         (false, None) => Vec::new(),
     };
-    Ok(Layout { id: p.id, name: named.name.as_str().into(), current, windows })
+    Ok(Pulse { id: p.id, name: named.name.as_str().into(), current, windows })
 }
 
 // ---- Notes, envs, settings ----

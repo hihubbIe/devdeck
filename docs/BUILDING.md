@@ -187,7 +187,7 @@ Desktop makes macOS ask whether Terminal may access it: allow it, or devdeck can
 it.
 
 `target/release/devdeck --demo` shows a demo instead: sample workspaces with simulated
-commands, kept apart from your own settings and layouts.
+commands, kept apart from your own settings and pulses.
 
 Quit with ctrl+Q, or close the window. Closing the terminal that started devdeck quits it
 too.
@@ -230,7 +230,7 @@ rebuilds everything and would leave the old build in `target/`, taking space.
 | What | Where |
 |---|---|
 | Settings; workspace files (`workspaces/*.toml`); paths of this machine such as Node folders and PATH additions (`machine.toml`) | `~/.config/devdeck` (or `$XDG_CONFIG_HOME/devdeck`) |
-| Layouts, pins, history (the demo keeps its own in `demo/`) | `~/.local/state/devdeck` (or `$XDG_STATE_HOME/devdeck`) |
+| Pulses, pins, history (the demo keeps its own in `demo/`) | `~/.local/state/devdeck` (or `$XDG_STATE_HOME/devdeck`) |
 | Notes | `~/.local/share/devdeck` (or `$XDG_DATA_HOME/devdeck`) |
 
 `DEVDECK_CONFIG_DIR`, `DEVDECK_STATE_DIR` and `DEVDECK_DATA_DIR` replace these folders.
@@ -382,7 +382,7 @@ welcome screen shows more options. Restart devdeck after creating the first file
 then on it follows changes to the files and the folders.
 
 `target/release/devdeck --demo` shows a demo instead: sample workspaces with simulated
-commands, kept apart from your own settings and layouts.
+commands, kept apart from your own settings and pulses.
 
 Quit with ctrl+Q, or close the window. Closing the terminal that started devdeck quits it
 too.
@@ -430,7 +430,7 @@ and would leave the old build in `target/`, taking space.
 | What | Where |
 |---|---|
 | Settings; workspace files (`workspaces/*.toml`); paths of this machine such as Node folders and PATH additions (`machine.toml`) | `~/.config/devdeck` (or `$XDG_CONFIG_HOME/devdeck`) |
-| Layouts, pins, history (the demo keeps its own in `demo/`) | `~/.local/state/devdeck` (or `$XDG_STATE_HOME/devdeck`) |
+| Pulses, pins, history (the demo keeps its own in `demo/`) | `~/.local/state/devdeck` (or `$XDG_STATE_HOME/devdeck`) |
 | Notes | `~/.local/share/devdeck` (or `$XDG_DATA_HOME/devdeck`) |
 | The control API's socket | `$XDG_RUNTIME_DIR/devdeck` |
 

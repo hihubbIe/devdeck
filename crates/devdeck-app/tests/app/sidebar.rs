@@ -280,6 +280,19 @@ fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
     assert!(back.pins["deployments"].contains("proxyapi") && back.pins["deployments"].contains("gone-service"));
 }
 
+#[gpui::test]
+fn a_sidebar_saved_on_layouts_opens_on_pulses(cx: &mut TestAppContext) {
+    let dir = temp(cx, "pulses");
+    let store = StateStore::new(dir.clone());
+    store.save_sidebar("work", &SidebarState { activity: "layouts".into(), visible: true, ..Default::default() }).unwrap();
+    let shell = start(cx, Some(store), "pulses");
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let s = sidebar(&shell, cx);
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Layouts, "the id saved before the rename");
+    assert_eq!(cx.read(|cx| s.read(cx).state.activity.clone()), "pulses", "and the new one saved from now on");
+}
+
 #[test]
 fn rows_dropped_on_a_pane_open_there() {
     let mut l = Layout::new();

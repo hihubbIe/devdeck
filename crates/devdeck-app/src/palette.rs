@@ -71,7 +71,7 @@ pub struct Palette {
 
 impl Palette {
     fn new(shell: Entity<Shell>, restore: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new("search apps, commands, services, envs, layouts, actions", cx));
+        let input = cx.new(|cx| TextInput::new("search apps, commands, services, envs, pulses, actions", cx));
         let sub = cx.subscribe_in(&input, window, |this, _, e: &InputEvent, window, cx| match e {
             InputEvent::Changed(_) => {
                 this.selected = 0;
@@ -165,8 +165,8 @@ impl Palette {
             let current = id == book.current;
             out.push(Entry {
                 running: false,
-                label: format!("layout {name}"),
-                detail: if current { "current".into() } else { "switch layout".into() },
+                label: format!("pulse {name}"),
+                detail: if current { "current".into() } else { "switch pulse".into() },
                 item: Item::Layout(id),
                 disabled: None,
             });

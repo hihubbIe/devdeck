@@ -57,10 +57,10 @@ pub enum BookError {
 impl std::fmt::Display for BookError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BookError::EmptyName => write!(f, "a layout needs a name"),
-            BookError::NameTaken(n) => write!(f, "a layout called {n} exists"),
-            BookError::Unknown(n) => write!(f, "no such layout: {n}"),
-            BookError::DeleteCurrent => write!(f, "switch to another layout before deleting this one"),
+            BookError::EmptyName => write!(f, "a pulse needs a name"),
+            BookError::NameTaken(n) => write!(f, "a pulse called {n} exists"),
+            BookError::Unknown(n) => write!(f, "no such pulse: {n}"),
+            BookError::DeleteCurrent => write!(f, "switch to another pulse before deleting this one"),
         }
     }
 }
@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(book.rename(&x, "Default"), Err(BookError::NameTaken("default".into())));
         book.delete(&x).unwrap();
         assert_eq!(names(&book), ["default"]);
-        assert_eq!(BookError::DeleteCurrent.to_string(), "switch to another layout before deleting this one");
+        assert_eq!(BookError::DeleteCurrent.to_string(), "switch to another pulse before deleting this one");
     }
 
     #[test]

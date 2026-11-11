@@ -36,7 +36,7 @@ fn stub(tag: &str) -> Stub {
                     "session.whoami" => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {
                         "caller": { "kind": "terminal", "workspace": "work", "n": 3, "uid": "u-1" },
                         "workspace": "work", "terminal": { "n": 3, "uid": "u-1" },
-                        "shown": [{ "layout": "default", "window": 0, "pane": 2 }] } }),
+                        "shown": [{ "pulse": "default", "window": 0, "pane": 2 }] } }),
                     "run.get" => serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "no", "data": { "kind": "permission_denied" } } }),
                     m => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": { "method": m, "params": req["params"] } }),
                 };
@@ -59,7 +59,7 @@ fn whoami_reads_as_text_or_json() {
     let sock = s.path.to_str().unwrap();
     let (code, out, _) = ctl(&["--socket", sock, "whoami"]);
     assert_eq!(code, 0);
-    assert_eq!(out, "caller: terminal 3 of workspace work\nterminal: 3 (uid u-1)\nshown: layout default · window 0 · pane 2\n");
+    assert_eq!(out, "caller: terminal 3 of workspace work\nterminal: 3 (uid u-1)\nshown: pulse default · window 0 · pane 2\n");
     let (code, out, _) = ctl(&["--socket", sock, "--json", "whoami"]);
     assert_eq!(code, 0);
     assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap()["terminal"]["n"], 3);

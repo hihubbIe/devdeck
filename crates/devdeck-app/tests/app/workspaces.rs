@@ -447,7 +447,7 @@ fn layouts_save_switch_and_persist(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| work.read(cx).saves), saves);
     // Unknown ones are refused with the reason.
     let err = cx.update(|cx| work.update(cx, |d, cx| d.switch_layout("nope", cx))).unwrap_err();
-    assert_eq!(err.to_string(), "no such layout: nope");
+    assert_eq!(err.to_string(), "no such pulse: nope");
     let _ = main;
 }
 

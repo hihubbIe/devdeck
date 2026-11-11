@@ -84,7 +84,7 @@ fn views_open_in_the_background_and_never_take_the_keys(cx: &mut TestAppContext)
     // Shown elsewhere: fine.
     let layout = layout_id(&deck, cx);
     let other = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().into_iter().find(|p| *p != keys).unwrap());
-    let _: Ui = call("view.open", json!({"view": {"kind": "app", "app": "graphservice"}, "layout": layout, "pane": other.0, "activate": true}), cx).unwrap();
+    let _: Ui = call("view.open", json!({"view": {"kind": "app", "app": "graphservice"}, "pulse": layout, "pane": other.0, "activate": true}), cx).unwrap();
     assert_eq!(active(&deck, other, cx), Some(ViewRef::new("app/graphservice")));
     assert_eq!(cx.read(|cx| deck.read(cx).layout().main().focused), keys, "the focused pane stayed");
     // Things the workspace hasn't: no junk tabs.
@@ -99,13 +99,13 @@ fn panes_are_named_with_the_live_layout_and_states_are_asked_for(cx: &mut TestAp
     let (_shell, deck) = start(cx, "present-panes");
     let layout = layout_id(&deck, cx);
     let pane = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap()[1]);
-    let stale = call::<Ui>("pane.collapse", json!({"layout": "elsewhere", "pane": pane.0, "collapsed": true}), cx).unwrap_err();
+    let stale = call::<Ui>("pane.collapse", json!({"pulse": "elsewhere", "pane": pane.0, "collapsed": true}), cx).unwrap_err();
     assert_eq!(stale.kind, ErrorKind::Conflict);
     for _ in 0..2 {
-        let _: Ui = call("pane.collapse", json!({"layout": layout, "pane": pane.0, "collapsed": true}), cx).unwrap();
+        let _: Ui = call("pane.collapse", json!({"pulse": layout, "pane": pane.0, "collapsed": true}), cx).unwrap();
         assert!(cx.read(|cx| deck.read(cx).layout().pane(pane).unwrap().collapsed), "asking twice keeps it collapsed");
     }
-    let main = call::<Ui>("window.close", json!({"layout": layout, "window": MAIN_WINDOW.0}), cx).unwrap_err();
+    let main = call::<Ui>("window.close", json!({"pulse": layout, "window": MAIN_WINDOW.0}), cx).unwrap_err();
     assert_eq!(main.kind, ErrorKind::Invalid, "closing the main window quits: not through the API");
 }
 
@@ -134,9 +134,9 @@ fn a_layout_switch_asks_while_the_user_types(cx: &mut TestAppContext) {
     give_keys(&deck, cx);
     // Saving as makes the copy current: the one to switch to is the default one.
     cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("other", cx))).unwrap();
-    let err = call::<Ui>("layout.switch", json!({"id": devdeck_core::layout_book::DEFAULT_ID}), cx).unwrap_err();
+    let err = call::<Ui>("pulse.switch", json!({"id": devdeck_core::layout_book::DEFAULT_ID}), cx).unwrap_err();
     assert_eq!(err.kind, ErrorKind::ApprovalRequired);
-    assert_eq!(call::<Ui>("layout.switch", json!({"id": "nope"}), cx).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(call::<Ui>("pulse.switch", json!({"id": "nope"}), cx).unwrap_err().kind, ErrorKind::NotFound);
 }
 
 #[gpui::test]
@@ -156,7 +156,7 @@ fn a_caller_changes_things_at_a_bounded_rate(cx: &mut TestAppContext) {
     let layout = layout_id(&deck, cx);
     let pane = cx.read(|cx| deck.read(cx).layout().main().focused);
     let limited = (0..devdeck_app::api::dispatch::CALLS_PER_WINDOW + 1)
-        .map(|_| call::<Ui>("pane.collapse", json!({"layout": layout, "pane": pane.0, "collapsed": false}), cx))
+        .map(|_| call::<Ui>("pane.collapse", json!({"pulse": layout, "pane": pane.0, "collapsed": false}), cx))
         .filter(|r| r.as_ref().is_err_and(|e| e.kind == ErrorKind::RateLimited))
         .count();
     assert_eq!(limited, 1, "the call past the rate");

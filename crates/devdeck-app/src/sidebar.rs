@@ -57,6 +57,7 @@ pub enum Activity {
     Apps,
     Cluster,
     Ports,
+    /// The saved layouts, "pulses" to the user.
     Layouts,
     /// Every shell of the workspace, shown or not.
     Terminals,
@@ -72,7 +73,7 @@ impl Activity {
             Activity::Apps => "apps",
             Activity::Cluster => "cluster",
             Activity::Ports => "ports",
-            Activity::Layouts => "layouts",
+            Activity::Layouts => "pulses",
             Activity::Terminals => "terminals",
             Activity::Notes => "notes",
         }
@@ -99,7 +100,7 @@ impl Activity {
             Activity::Apps => "Apps",
             Activity::Cluster => "Cluster",
             Activity::Ports => "Ports",
-            Activity::Layouts => "Layouts",
+            Activity::Layouts => "Pulses",
             Activity::Terminals => "Terminals",
             Activity::Notes => "Notes",
         }
@@ -207,7 +208,9 @@ impl Sidebar {
         // Repair what the workspace can't honour (no cluster, unknown activity); the
         // services already settled the env.
         let has_cluster = services.read(cx).cluster.is_some();
-        let activity = Activity::from_id(&state.activity).unwrap_or(Activity::Apps);
+        // "layouts": saved before layouts were named pulses.
+        let activity = if state.activity == "layouts" { Some(Activity::Layouts) } else { Activity::from_id(&state.activity) };
+        let activity = activity.unwrap_or(Activity::Apps);
         let activity = if activity == Activity::Cluster && !has_cluster { Activity::Apps } else { activity };
         state.activity = activity.id().into();
         state.env = services.read(cx).env.clone();
@@ -1121,7 +1124,7 @@ impl Sidebar {
                 })
             });
             if current {
-                delete = delete.disabled("switch to another layout first");
+                delete = delete.disabled("switch to another pulse first");
             }
             return vec![
                 MenuItem::new("Switch to it", move |_, cx| {

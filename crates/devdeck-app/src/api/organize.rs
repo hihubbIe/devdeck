@@ -5,12 +5,12 @@
 //! sidebar, the layouts or the notes.
 
 use super::dispatch::CallCx;
-use super::handlers::{file_roots, layout_list, say, starter, terminal_get, workspace, workspace_get, WsRef};
+use super::handlers::{file_roots, pulse_list, say, starter, terminal_get, workspace, workspace_get, WsRef};
 use crate::runner::{RunKey, Starter};
 use crate::sidebar::{Activity, Sidebar};
 use devdeck_api::types::{
-    Done, EnvParams, GroupCreateParams, GroupMoveParams, GroupParams, GroupPath, GroupPutParams, GroupRenameParams, InWorkspace, Layouts, NameParams,
-    NoteAppendParams, NoteCreateParams, NoteRenameParams, NoteRevision, NoteWriteParams, PinParams, RenameParams, Terminal, TerminalOpenParams, TerminalParams,
+    Done, EnvParams, GroupCreateParams, GroupMoveParams, GroupParams, GroupPath, GroupPutParams, GroupRenameParams, InWorkspace, NameParams,
+    NoteAppendParams, NoteCreateParams, NoteRenameParams, NoteRevision, NoteWriteParams, PinParams, Pulses, RenameParams, Terminal, TerminalOpenParams, TerminalParams,
     TerminalStopParams, Workspace,
 };
 use devdeck_api::{ApiError, ErrorKind};
@@ -90,9 +90,9 @@ pub fn terminal_open(cx: &CallCx, p: TerminalOpenParams, app: &mut App) -> Resul
     let l = w.deck.read(app).layout();
     let pane = match p.pane {
         Some(pane) => {
-            let layout = p.layout.as_deref().ok_or_else(|| ApiError::invalid("layout: needed with pane"))?;
+            let layout = p.pulse.as_deref().ok_or_else(|| ApiError::invalid("pulse: needed with pane"))?;
             if w.deck.read(app).book.current != layout {
-                return Err(ApiError::new(ErrorKind::Conflict, "that layout isn't shown: read ui.get again"));
+                return Err(ApiError::new(ErrorKind::Conflict, "that pulse isn't shown: read ui.get again"));
             }
             l.pane(PaneId(pane)).map_err(|_| ApiError::not_found(format!("no pane {pane}")))?;
             PaneId(pane)
@@ -276,25 +276,25 @@ pub fn note_rename(cx: &CallCx, p: NoteRenameParams, app: &mut App) -> Result<No
     Ok(revision(&w, &p.id, app))
 }
 
-// ---- Layouts ----
+// ---- Pulses ----
 
-pub fn layout_save_as(cx: &CallCx, p: NameParams, app: &mut App) -> Result<Layouts, ApiError> {
+pub fn pulse_save_as(cx: &CallCx, p: NameParams, app: &mut App) -> Result<Pulses, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let n = name(&p.name)?;
     if w.deck.read(app).book.entries().len() >= LAYOUTS_MAX {
-        return Err(ApiError::new(ErrorKind::Refused, format!("{LAYOUTS_MAX} layouts at most")));
+        return Err(ApiError::new(ErrorKind::Refused, format!("{LAYOUTS_MAX} pulses at most")));
     }
     w.deck.update(app, |d, cx| d.save_layout_as(&n, cx)).map_err(|e| ApiError::new(ErrorKind::Refused, e.to_string()))?;
-    say(cx, "saved the layout as", &n, app);
-    layout_list(cx, InWorkspace { workspace: Some(w.id.clone()) }, app)
+    say(cx, "saved the pulse as", &n, app);
+    pulse_list(cx, InWorkspace { workspace: Some(w.id.clone()) }, app)
 }
 
-pub fn layout_rename(cx: &CallCx, p: RenameParams, app: &mut App) -> Result<Layouts, ApiError> {
+pub fn pulse_rename(cx: &CallCx, p: RenameParams, app: &mut App) -> Result<Pulses, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let n = name(&p.name)?;
     w.deck.update(app, |d, cx| d.rename_layout(&p.id, &n, cx)).map_err(|e| ApiError::new(ErrorKind::Refused, e.to_string()))?;
-    say(cx, "renamed a layout to", &n, app);
-    layout_list(cx, InWorkspace { workspace: Some(w.id.clone()) }, app)
+    say(cx, "renamed a pulse to", &n, app);
+    pulse_list(cx, InWorkspace { workspace: Some(w.id.clone()) }, app)
 }
 
 // ---- Pins and groups ----

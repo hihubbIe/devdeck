@@ -3,7 +3,7 @@
 //! what the user started, protects or types in asks the user.
 
 use devdeck_api::ErrorKind;
-use devdeck_api::types::{GroupPath, Layouts, NoteRevision, Terminal};
+use devdeck_api::types::{GroupPath, NoteRevision, Pulses, Terminal};
 use devdeck_app::api::Who;
 use devdeck_app::api::dispatch::{self, CallCx};
 use devdeck_app::runner::RunKey;
@@ -109,14 +109,14 @@ fn envs_notes_layouts_pins_and_groups(cx: &mut TestAppContext) {
     assert_eq!(call::<NoteRevision>("note.write", json!({"id": n.id, "text": "c", "base_revision": a.revision + 1}), cx).unwrap_err().kind, ErrorKind::ApprovalRequired);
     assert_eq!(call::<NoteRevision>("note.create", json!({"name": " "}), cx).unwrap_err().kind, ErrorKind::Invalid);
     assert_eq!(call::<NoteRevision>("note.create", json!({"app": "nope", "name": "x"}), cx).unwrap_err().kind, ErrorKind::NotFound);
-    // Layouts.
-    let l: Layouts = call("layout.save_as", json!({"name": "triage"}), cx).unwrap();
-    let triage = l.layouts.iter().find(|x| x.name.as_str() == "triage").unwrap().id.clone();
-    let l: Layouts = call("layout.rename", json!({"id": triage, "name": "Triage"}), cx).unwrap();
-    assert!(l.layouts.iter().any(|x| x.name.as_str() == "Triage"));
+    // Pulses.
+    let l: Pulses = call("pulse.save_as", json!({"name": "triage"}), cx).unwrap();
+    let triage = l.pulses.iter().find(|x| x.name.as_str() == "triage").unwrap().id.clone();
+    let l: Pulses = call("pulse.rename", json!({"id": triage, "name": "Triage"}), cx).unwrap();
+    assert!(l.pulses.iter().any(|x| x.name.as_str() == "Triage"));
     // Pins and groups, by list.
     for _ in 0..2 {
-        call::<Value>("sidebar.pin", json!({"list": "layouts", "key": triage, "pinned": true}), cx).unwrap();
+        call::<Value>("sidebar.pin", json!({"list": "pulses", "key": triage, "pinned": true}), cx).unwrap();
     }
     assert_eq!(call::<Value>("sidebar.pin", json!({"list": "terminals", "key": "1", "pinned": true}), cx).unwrap_err().kind, ErrorKind::Refused);
     let g: GroupPath = call("group.create", json!({"list": "apps", "name": "back"}), cx).unwrap();

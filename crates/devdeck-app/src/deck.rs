@@ -892,7 +892,7 @@ impl Deck {
             Ok(()) => self.save_failed = false,
             Err(e) if !self.save_failed => {
                 self.save_failed = true;
-                let text = format!("Could not save the {} layout: {e}", self.workspace);
+                let text = format!("Could not save the {} pulse: {e}", self.workspace);
                 toasts(cx).update(cx, |t, cx| t.push(ToastKind::Err, text, vec![], cx));
             }
             Err(_) => {}

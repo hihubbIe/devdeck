@@ -218,7 +218,7 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     // Save as from the palette's action; an existing name is refused in the modal.
     cx.simulate_keystrokes(main, "ctrl-k");
-    cx.simulate_input(main, "save layout as");
+    cx.simulate_input(main, "save pulse as");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 1, "the name modal");
@@ -232,7 +232,7 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 0);
     assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "triage");
-    // Change the live layout, then switch back to default from the Layouts list.
+    // Change the live layout, then switch back to default from the Pulses list.
     cx.simulate_keystrokes(main, "ctrl-w");
     cx.run_until_parked();
     let fewer = cx.read(|cx| deck.read(cx).layout().views().len());
@@ -242,7 +242,7 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| deck.read(cx).layout().views().len()), fewer + 1, "default has the closed tab");
     // From the palette, back to triage.
     cx.simulate_keystrokes(main, "escape ctrl-k");
-    cx.simulate_input(main, "layout triage");
+    cx.simulate_input(main, "pulse triage");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "triage");
@@ -251,10 +251,10 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "ctrl-\\");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len()), panes + 1);
-    // New layout from the palette: an empty one, current; triage keeps its tabs.
+    // New pulse from the palette: an empty one, current; triage keeps its tabs.
     let triage = cx.read(|cx| deck.read(cx).layout().clone());
     cx.simulate_keystrokes(main, "ctrl-k");
-    cx.simulate_input(main, "new layout");
+    cx.simulate_input(main, "new pulse");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 1, "the name modal");

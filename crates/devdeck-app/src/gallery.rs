@@ -88,7 +88,7 @@ impl Render for Gallery {
             .child(div().flex().gap_2().child(button("open-modal", "open a modal", &t).debug_selector(|| "open-modal".into()).on_click(|_, window, cx| open_demo_modal(window, cx))))
             .child(section("Toasts", &t))
             .child(div().flex().gap_2().children([
-                (ToastKind::Info, "info", "Layout: Geo work."),
+                (ToastKind::Info, "info", "Pulse: Geo work."),
                 (ToastKind::Ok, "ok", "dev35 › entityservice now runs lan-160."),
                 (ToastKind::Warn, "warn", "Port 5800 is held by node (pid 7712)."),
                 (ToastKind::Err, "err", "boardservice · start:watch exited 1."),
@@ -117,7 +117,7 @@ pub struct DemoModal {
 
 impl DemoModal {
     fn new(restore: Option<WeakFocusHandle>, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new("layout name", cx));
+        let input = cx.new(|cx| TextInput::new("pulse name", cx));
         let handles = vec![input.read(cx).focus_handle(cx), cx.focus_handle(), cx.focus_handle()];
         Self { focus: ModalFocus(handles), input, restore }
     }
@@ -146,7 +146,7 @@ impl Render for DemoModal {
             .on_action(cx.listener(|this, _: &ModalNext, window, cx| this.focus.cycle(1, window, cx)))
             .on_action(cx.listener(|this, _: &ModalPrev, window, cx| this.focus.cycle(-1, window, cx)))
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
-            .child(div().text_color(t.hi).child("Save current layout"))
+            .child(div().text_color(t.hi).child("Save current pulse"))
             .child(self.input.clone())
             .child(
                 div()

@@ -21,8 +21,10 @@ pub use types::{Caller, Class, Policy, Untrusted, View};
 /// run.stop, run.restart; a run says who started it. 3: reading output, the screen,
 /// notes and files. 5: `editmode.get` and the `edit_mode` topic removed, with edit mode
 /// itself (R13.2's exception: a dropped feature takes its methods and topics with it); a
-/// subscription naming it is refused, as for any unknown topic.
-pub const API_LEVEL: u32 = 5;
+/// subscription naming it is refused, as for any unknown topic. 6: layouts are pulses
+/// (the user's name for them): `layout.*` became `pulse.*`, the `layout` topic `pulse`,
+/// every `layout` field `pulse`, and the `layouts` list `pulses` (R13.2).
+pub const API_LEVEL: u32 = 6;
 
 /// Set in a devdeck shell: the socket of the devdeck that started it.
 pub const SOCKET_ENV: &str = "DEVDECK_SOCKET";

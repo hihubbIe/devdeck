@@ -51,7 +51,7 @@ fn gallery_menu_and_toasts(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shel
         let filled = g.read(cx).filled.clone();
         filled.read(cx).focus_handle(cx).focus(window, cx);
         for (kind, text) in [
-            (ToastKind::Info, "Layout: Geo work."),
+            (ToastKind::Info, "Pulse: Geo work."),
             (ToastKind::Ok, "dev35 › entityservice now runs lan-160."),
             (ToastKind::Warn, "Port 5800 is held by node (pid 7712)."),
             (ToastKind::Err, "boardservice · start:watch exited 1."),
@@ -489,7 +489,7 @@ fn note(kind: ToastKind, text: &str, source: Option<&str>) -> NewToast {
 }
 
 fn bell_unread(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, _shell: &Entity<Shell>) {
-    notify(cx, note(ToastKind::Info, "Layout: Geo work.", None), Duration::from_secs(60));
+    notify(cx, note(ToastKind::Info, "Pulse: Geo work.", None), Duration::from_secs(60));
     notify(cx, note(ToastKind::Warn, "Port 5800 is held by node (pid 7712).", Some("work")), Duration::from_secs(60));
 }
 
@@ -508,7 +508,7 @@ fn toasts_long(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, _shell: &Entity
     notify(cx, note(ToastKind::Ok, "rollout finished: 3 of 3 pods ready on lan-160", Some("work")).title("graphservice on dev35").note(open), Duration::ZERO);
     let long = "dev35 › entityservice: not deployed: the cluster refused the change because the image registry/entityservice:feature-a-very-long-branch-name-that-goes-on could not be pulled (manifest unknown), and the previous replica set is still serving every request while the new one waits";
     notify(cx, note(ToastKind::Err, long, Some("work")), Duration::ZERO);
-    notify(cx, note(ToastKind::Info, "Layout: Geo work.", None), Duration::ZERO);
+    notify(cx, note(ToastKind::Info, "Pulse: Geo work.", None), Duration::ZERO);
     notify(cx, note(ToastKind::Warn, "Port 5800 is held by node (pid 7712).", Some("work")), Duration::ZERO);
     notify(cx, note(ToastKind::Info, "personal · blog · build succeeded in 4 s", Some("personal")), Duration::ZERO);
 }
@@ -517,7 +517,7 @@ fn toasts_long(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, _shell: &Entity
 /// wrapped text, actions, sources.
 fn center_rows(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     let main = cx.update(|cx| shell.read(cx).main_window().expect("main"));
-    notify(cx, note(ToastKind::Info, "Layout: Geo work.", None), Duration::from_secs(3 * 3600));
+    notify(cx, note(ToastKind::Info, "Pulse: Geo work.", None), Duration::from_secs(3 * 3600));
     notify(cx, note(ToastKind::Ok, "personal · blog · build succeeded in 4 s", Some("personal")), Duration::from_secs(40 * 60));
     let _ = cx.update(|cx| main.update(cx, |w, window, cx| w.open_notifications(None, window, cx)));
     cx.run_until_parked();
@@ -1236,7 +1236,7 @@ fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &En
         let input = m.read(cx).input.clone();
         input.update(cx, |i, cx| i.set_text("Triage", cx));
         m.update(cx, |m, cx| {
-            m.error = Some("a layout called triage exists".into());
+            m.error = Some("a pulse called triage exists".into());
             cx.notify();
         });
     });

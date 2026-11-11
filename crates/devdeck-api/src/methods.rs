@@ -82,10 +82,10 @@ methods! {
         "A terminal, and where it shows.";
     UiGet = "ui.get", Observe, InWorkspace => Ui,
         "What's on screen: windows, the pane tree, tabs with their view and title, focused and maximized panes.";
-    LayoutList = "layout.list", Observe, InWorkspace => Layouts,
-        "The workspace's saved layouts, and which is current.";
-    LayoutGet = "layout.get", Observe, IdParams => Layout,
-        "A layout's windows, panes and tabs.";
+    PulseList = "pulse.list", Observe, InWorkspace => Pulses,
+        "The workspace's saved pulses, and which is current.", since 6;
+    PulseGet = "pulse.get", Observe, IdParams => Pulse,
+        "A pulse's windows, panes and tabs.", since 6;
     NoteList = "note.list", Observe, NoteListParams => Notes,
         "The workspace's notes (names only), or one app's.";
     NoteGet = "note.get", Observe, IdParams => Note,
@@ -168,8 +168,8 @@ methods! {
         "Moves a detached window's tabs into a pane and closes it.", since 4;
     WindowClose = "window.close", Present, WindowParams => Ui,
         "Closes a detached window and its tabs (terminals' shells go on).", since 4;
-    LayoutSwitch = "layout.switch", Present, IdParams => Ui,
-        "Shows another saved layout (asks the user while their keys are in a pane).", since 4;
+    PulseSwitch = "pulse.switch", Present, IdParams => Ui,
+        "Shows another saved pulse (asks the user while their keys are in a pane).", since 6;
     SettingsSet = "settings.set", Present, SettingsSetParams => Settings,
         "Sets the UI scale or the theme.", since 4;
     WorkspaceRescan = "workspace.rescan", Present, InWorkspace => Done,
@@ -192,10 +192,10 @@ methods! {
         "Adds text at a note's end.", since 4;
     NoteRename = "note.rename", Organize, NoteRenameParams => NoteRevision,
         "Renames a note.", since 4;
-    LayoutSaveAs = "layout.save_as", Organize, NameParams => Layouts,
-        "Saves the live layout under a new name (it becomes the current one).", since 4;
-    LayoutRename = "layout.rename", Organize, RenameParams => Layouts,
-        "Renames a saved layout.", since 4;
+    PulseSaveAs = "pulse.save_as", Organize, NameParams => Pulses,
+        "Saves the live pulse under a new name (it becomes the current one).", since 6;
+    PulseRename = "pulse.rename", Organize, RenameParams => Pulses,
+        "Renames a saved pulse.", since 6;
     SidebarPin = "sidebar.pin", Organize, PinParams => Done,
         "Pins or unpins an item of a sidebar list.", since 4;
     GroupCreate = "group.create", Organize, GroupCreateParams => GroupPath,
@@ -282,10 +282,19 @@ mod tests {
     }
 
     #[test]
+    fn the_catalog_says_pulse_never_layout() {
+        for m in catalog() {
+            let all = format!("{} {} {} {}", m.name, m.summary, m.params, m.result).to_lowercase();
+            assert!(!all.contains("layout"), "{}: the user calls them pulses", m.name);
+        }
+    }
+
+    #[test]
     fn methods_look_or_run_and_levels_say_when() {
         for m in catalog() {
             assert!(matches!(m.class, Class::Observe | Class::Run | Class::Read | Class::Present | Class::Organize) && m.escalates_to.is_empty(), "{}", m.name);
             let since = match m.class {
+                _ if m.name.starts_with("pulse.") => 6,
                 Class::Run if ["terminal.", "env."].iter().any(|d| m.name.starts_with(d)) => 4,
                 Class::Run => 2,
                 Class::Organize => 4,
