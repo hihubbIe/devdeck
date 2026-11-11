@@ -92,6 +92,20 @@ pub fn set_theme(name: &str, cx: &mut App) {
     apply_theme(cx);
 }
 
+/// Who deploys from this machine, when set (none without settings: tests).
+pub fn short_name(cx: &App) -> Option<String> {
+    cx.try_global::<AppSettingsHandle>().and_then(|h| h.0.read(cx).store.settings.short_name.clone())
+}
+
+/// Checks and saves the short name typed; why not when refused (nothing changes then).
+pub fn set_short_name(typed: &str, cx: &mut App) -> Result<(), String> {
+    settings(cx).update(cx, |s, cx| {
+        let result = s.store.set_short_name(typed);
+        cx.notify();
+        result
+    })
+}
+
 pub fn increase(cx: &mut App) {
     set_scale(scale_up(scale(cx)), cx);
 }

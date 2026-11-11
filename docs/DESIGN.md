@@ -267,7 +267,8 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Deploys (`cluster_deploys.rs`, `devdeck_kube::set_image`): the main container's image
   only (refused when several containers run and none is named like the deployment), as a
   JSON Patch that tests the image confirmed is still there, then replaces it, with field
-  manager `devdeck`; refused if edit mode is off, the account may not (a
+  manager "<short name> via Kugelblitz"; refused if edit mode is off, no short name is set
+  (Settings › Deploys: one printable word, at most 32 characters; no default), the account may not (a
   `SelfSubjectAccessReview` asked when a service view opens, per env and log
   generation), a protected env isn't unlocked, a write of the service is in flight, or
   its rollouts are paused. A failing rollout never blocks the next deploy.
@@ -278,13 +279,19 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
   warns when the main container's effective pull policy won't fetch a newer build (or the
   image is pinned to a digest). One write per service until the watch has seen it.
 - Every deploy is spotted on the deployment watch (a growing revision, or a changed
-  image), whoever made it (devdeck's write in flight, else the last manager of the pod
-  template in `managedFields`, else "seen"), and followed (`cluster::assess`): nothing
+  image), whoever made it, recorded as written (the field manager this window sent, else
+  the last manager of the pod template in `managedFields`, else "seen"), and followed (`cluster::assess`): nothing
   counts before `observedGeneration` reaches it; done once settled with the new
   template's pods ready; failing (keeps following) on an image that can't be pulled, a
   crash loop from 2 restarts, a container that can't be made, an unschedulable pod, a
   `ReplicaFailure`; stuck past the deadline; replaced by a later deploy. devdeck's own
   deploys hold their service's pods while followed.
+- Who deployed (user, 2026-11-11): Kugelblitz is devdeck's name on the cluster; every write
+  carries "<short name> via Kugelblitz", so the history names a colleague's deploys the
+  same way ("j.doe via Kugelblitz"). The user's own are theirs by that name (from any
+  machine) or by the old `devdeck` of history kept from before: they never notify that
+  they began and always say how they ended; a colleague's follow the notify ticks. The
+  demo deploys as "demo" when Settings names nobody.
 - The user's RBAC cannot read ReplicaSets or events, so the deploy history is kept by
   devdeck (`deploys.json` in the workspace's state folder, the last 10 per service), and
   failure reasons come from pod container states. A deploy left open when devdeck closed

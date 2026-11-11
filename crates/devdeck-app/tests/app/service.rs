@@ -83,7 +83,7 @@ fn tag_edit_confirm_rollout_ready(cx: &mut TestAppContext) {
     assert_eq!(after.tag(), "lan-160");
     assert!(!cx.read(|cx| view.read(cx).dirty(cx)), "the editor now shows the deployed tag");
     let history = cx.read(|cx| c.read(cx).history("dev35", "entityservice").to_vec());
-    assert_eq!((history.len(), history[0].from.as_str(), history[0].by.as_str(), history[0].outcome.as_str()), (1, before.tag().as_str(), "devdeck", "done"));
+    assert_eq!((history.len(), history[0].from.as_str(), history[0].by.as_str(), history[0].outcome.as_str()), (1, before.tag().as_str(), "demo via Kugelblitz", "done"));
     let suggestions = cx.read(|cx| c.read(cx).tag_suggestions("dev35", "entityservice"));
     assert!(suggestions.iter().any(|(t, why)| *t == before.tag() && why == "previous"), "the previous tag is suggested");
     assert_eq!(cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").map(|r| r.state.clone())), Some(RolloutState::Done));
@@ -284,7 +284,7 @@ fn r_redeploys_the_same_branch_and_the_fake_rolls_new_pods(cx: &mut TestAppConte
     cx.run_until_parked();
     assert_eq!(modals(main, cx), 0, "closed once the cluster took it");
     let r = cx.read(|cx| c.read(cx).rollout("dev35", "entityservice").cloned()).expect("followed");
-    assert!(r.redeploy() && r.by == "devdeck" && matches!(r.state, RolloutState::Rolling { .. }), "{r:?}");
+    assert!(r.redeploy() && r.by == "demo via Kugelblitz" && matches!(r.state, RolloutState::Rolling { .. }), "{r:?}");
     advance(cx, ROLLOUT_STEP * before.replicas);
     let after = cx.read(|cx| c.read(cx).deployment("dev35", "entityservice").unwrap().clone());
     assert_eq!((after.tag(), after.revision), (before.tag(), before.revision + 1), "the same tag, a new revision");
@@ -293,7 +293,7 @@ fn r_redeploys_the_same_branch_and_the_fake_rolls_new_pods(cx: &mut TestAppConte
     let pods = cx.read(|cx| c.read(cx).pods("dev35", "entityservice").to_vec());
     assert!(pods.iter().all(|p| !old_pods.contains(&p.name)), "every pod replaced");
     let history = cx.read(|cx| c.read(cx).history("dev35", "entityservice").to_vec());
-    assert_eq!((history.len(), history[0].redeploy(), history[0].by.as_str(), history[0].outcome.as_str()), (1, true, "devdeck", "done"));
+    assert_eq!((history.len(), history[0].redeploy(), history[0].by.as_str(), history[0].outcome.as_str()), (1, true, "demo via Kugelblitz", "done"));
 }
 
 #[gpui::test]

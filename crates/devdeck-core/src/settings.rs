@@ -20,12 +20,39 @@ pub const SETTINGS_FILE: &str = "settings.toml";
 pub struct Settings {
     pub ui_scale: f32,
     pub theme: String,
+    /// Who deploys from this machine (`i.alglave`): devdeck's deploys carry it as their field
+    /// manager ([`crate::cluster::field_manager`]). No default: deploys wait for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { ui_scale: DEFAULT_SCALE, theme: DEFAULT_THEME.into() }
+        Self { ui_scale: DEFAULT_SCALE, theme: DEFAULT_THEME.into(), short_name: None }
     }
+}
+
+/// The longest short name.
+pub const SHORT_NAME_MAX: usize = 32;
+
+/// A short name as typed, checked (surrounding spaces dropped): not empty, no whitespace,
+/// printable characters only, at most [`SHORT_NAME_MAX`]. It becomes a field manager,
+/// which Kubernetes wants printable and at most 128 characters.
+pub fn check_short_name(typed: &str) -> Result<String, String> {
+    let name = typed.trim();
+    if name.is_empty() {
+        return Err("a short name can't be empty".into());
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Err("a short name has no spaces".into());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("a short name has printable characters only".into());
+    }
+    if name.chars().count() > SHORT_NAME_MAX {
+        return Err(format!("a short name has at most {SHORT_NAME_MAX} characters"));
+    }
+    Ok(name.to_string())
 }
 
 impl Settings {
@@ -102,6 +129,12 @@ impl SettingsStore {
         self.settings.ui_scale = snap_scale(scale);
         self.save()
     }
+
+    /// Checks and saves the short name; refused as typed, nothing changes.
+    pub fn set_short_name(&mut self, typed: &str) -> Result<(), String> {
+        self.settings.short_name = Some(check_short_name(typed)?);
+        self.save()
+    }
 }
 
 fn first_line(s: &str) -> String {
@@ -112,6 +145,28 @@ fn first_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_name_is_one_printable_word_of_32_at_most() {
+        assert_eq!(check_short_name("  i.alglave "), Ok("i.alglave".into()), "surrounding spaces dropped");
+        assert_eq!(check_short_name(""), Err("a short name can't be empty".into()));
+        assert_eq!(check_short_name("   "), Err("a short name can't be empty".into()));
+        assert_eq!(check_short_name("i alglave"), Err("a short name has no spaces".into()));
+        assert_eq!(check_short_name("i\talglave"), Err("a short name has no spaces".into()));
+        assert_eq!(check_short_name("i\u{7}alglave"), Err("a short name has printable characters only".into()));
+        assert_eq!(check_short_name(&"a".repeat(33)), Err("a short name has at most 32 characters".into()));
+        assert_eq!(check_short_name(&"é".repeat(32)), Ok("é".repeat(32)), "characters, not bytes");
+    }
+
+    #[test]
+    fn a_short_name_is_kept_and_a_refused_one_changes_nothing() {
+        let d = tmp_dir("short-name");
+        let mut s = SettingsStore::load(d.path());
+        assert_eq!(s.settings.short_name, None, "no default");
+        s.set_short_name("i.alglave").unwrap();
+        assert!(s.set_short_name("not ok").is_err());
+        assert_eq!(SettingsStore::load(d.path()).settings.short_name.as_deref(), Some("i.alglave"));
+    }
 
     fn tmp_dir(name: &str) -> crate::testing::TempDir {
         crate::testing::TempDir::new(name)

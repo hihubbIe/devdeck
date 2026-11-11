@@ -29,9 +29,18 @@ pub const NO_METRICS_ENV: &str = "lab";
 
 pub struct FakeCluster {
     pub spec: ClusterSpec,
+    /// Who its deploys are made by when Settings names nobody (the demo's
+    /// [`DEMO_SHORT_NAME`]).
+    pub short_name: Option<String>,
 }
 
+/// Who the demo's deploys are made by when Settings names nobody.
+pub const DEMO_SHORT_NAME: &str = "demo";
+
 impl ClusterDriver for FakeCluster {
+    fn short_name(&self) -> Option<String> {
+        self.short_name.clone()
+    }
     fn watch(&self, env: &str, cx: &mut Context<Cluster>) -> Option<Task<()>> {
         let env = env.to_string();
         let services = self.spec.services.clone();

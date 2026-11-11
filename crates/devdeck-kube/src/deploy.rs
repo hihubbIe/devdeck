@@ -30,9 +30,6 @@ use std::time::Duration;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an access review may take.
 const CAN_TIMEOUT: Duration = Duration::from_secs(10);
-/// The field manager devdeck's writes carry (the deployment's `managedFields` say who
-/// changed it).
-pub const FIELD_MANAGER: &str = "devdeck";
 /// What an image change does, for messages.
 const DOING: &str = "change deployments";
 /// What an access review does, for messages.
@@ -49,6 +46,9 @@ pub struct ImageChange {
     pub container: String,
     pub from: String,
     pub to: String,
+    /// The field manager it is sent with: who made it ("<short name> via Kugelblitz"),
+    /// what the deployment's `managedFields` will say.
+    pub manager: String,
 }
 
 /// One redeploy, as confirmed: the main container (its index and name) and the image it
@@ -63,6 +63,8 @@ pub struct Restart {
     pub at: String,
     pub generation: u64,
     pub annotated: bool,
+    /// The field manager it is sent with (see [`ImageChange::manager`]).
+    pub manager: String,
 }
 
 /// Why an image change was refused.
@@ -90,7 +92,7 @@ impl std::fmt::Display for DeployError {
 
 /// Sets the image: a JSON Patch that tests `/spec/template/spec/containers/<index>/image`
 /// equals `from` and the container at that index is named `container`, then replaces the
-/// image with `to`; sent with field manager `devdeck`. Answers once with the generation
+/// image with `to`; sent with the change's field manager. Answers once with the generation
 /// the cluster gave the changed spec.
 ///
 /// The write goes on when the receiver is dropped: a request sent can't be taken back, so
@@ -114,7 +116,7 @@ pub fn set_image(target: &Target, deployment: &str, change: &ImageChange) -> asy
 /// runs `image`, then adds `restartedAt` = `at` to the pod template's annotations, or, when
 /// it has none, adds the annotations whole (which replaces them, so it also tests
 /// `/metadata/generation` is still the one seen: annotations added meanwhile came with a
-/// newer generation). Sent with field manager `devdeck`; answers once with the generation
+/// newer generation). Sent with the restart's field manager; answers once with the generation
 /// the cluster gave the changed spec. Same errors and timeout as [`set_image`].
 pub fn restart(target: &Target, deployment: &str, restart: &Restart) -> async_channel::Receiver<Result<u64, DeployError>> {
     let (tx, rx) = async_channel::bounded(1);
@@ -122,7 +124,7 @@ pub fn restart(target: &Target, deployment: &str, restart: &Restart) -> async_ch
     runtime().spawn(async move {
         let write = async {
             match client(&target).await {
-                Ok((client, _user)) => patch(client, &target, &deployment, restart_patch(&restart)).await,
+                Ok((client, _user)) => patch(client, &target, &deployment, &restart.manager, restart_patch(&restart)).await,
                 Err(e) => Err(DeployError::Other(describe(&e, &target, DOING))),
             }
         };
@@ -165,15 +167,15 @@ fn image_patch(change: &ImageChange) -> serde_json::Value {
 
 /// Sends `change` to `deployment` of `target` through `client`.
 async fn patch_image(client: Client, target: &Target, deployment: &str, change: &ImageChange) -> Result<u64, DeployError> {
-    patch(client, target, deployment, image_patch(change)).await
+    patch(client, target, deployment, &change.manager, image_patch(change)).await
 }
 
 /// Sends the JSON Patch `operations` to `deployment` of `target` through `client`, with
-/// field manager `devdeck`; the generation of the changed spec.
-async fn patch(client: Client, target: &Target, deployment: &str, operations: serde_json::Value) -> Result<u64, DeployError> {
+/// field manager `manager`; the generation of the changed spec.
+async fn patch(client: Client, target: &Target, deployment: &str, manager: &str, operations: serde_json::Value) -> Result<u64, DeployError> {
     // kube's `Patch::Json` holds a `json_patch::Patch`, read from the JSON it is.
     let operations = serde_json::from_value(operations).map_err(|e| DeployError::Other(e.to_string()))?;
-    let params = PatchParams { field_manager: Some(FIELD_MANAGER.into()), ..Default::default() };
+    let params = PatchParams { field_manager: Some(manager.into()), ..Default::default() };
     let api: Api<apps::Deployment> = Api::namespaced(client, &target.namespace);
     match api.patch(deployment, &params, &Patch::Json::<()>(operations)).await {
         Ok(changed) => Ok(changed.metadata.generation.unwrap_or(0).max(0) as u64),

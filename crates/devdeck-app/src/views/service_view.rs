@@ -564,7 +564,7 @@ impl Render for ServiceView {
         let repo_line = repo_text.map(|text| div().flex_none().px_3().pb_1().child(label(text).text_color(t.dim)).debug_selector(|| "svc-repo".into()));
 
         let rollout_line = rollout.map(|r| {
-            let who = if r.by == "devdeck" { String::new() } else { format!(" (by {})", r.by) };
+            let who = if c.mine(&r.by, cx) { String::new() } else { format!(" (by {})", r.by) };
             let (mark, text, color) = match &r.state {
                 RolloutState::Rolling { ready, of } if r.redeploy() => (Icon::Busy, format!("redeploying {}{who}: {ready}/{of} pods ready", r.to), t.accent),
                 RolloutState::Failing { ready, of, reason } if r.redeploy() => (Icon::Error, format!("redeploy of {}{who} failing ({ready}/{of} ready): {reason}", r.to), t.err),

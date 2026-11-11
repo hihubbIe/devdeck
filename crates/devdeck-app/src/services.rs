@@ -97,7 +97,7 @@ impl Services {
         let env = catalog.pick_env(env);
         let runner = fake_runner(workspace, catalog.clone(), env.clone(), cx);
         let clock = Some(devdeck_core::demo::NOW_S);
-        let cluster = catalog.cluster.clone().map(|spec| new_cluster(catalog.envs.clone(), Rc::new(FakeCluster { spec }), clock, cx));
+        let cluster = catalog.cluster.clone().map(|spec| new_cluster(catalog.envs.clone(), Rc::new(FakeCluster { spec, short_name: Some(crate::fake_cluster::DEMO_SHORT_NAME.into()) }), clock, cx));
         if let Some(c) = &cluster {
             c.update(cx, |c, _| c.workspace = Some(workspace.to_string()));
         }

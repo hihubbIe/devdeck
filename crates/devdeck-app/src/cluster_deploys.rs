@@ -9,9 +9,11 @@
 //!   the same service in flight, not paused, a container that is clearly the main one; a
 //!   branch change also needs another image.
 //! - Deploys are spotted on the deployment watch: a revision that grows (or an image that
-//!   changes) is one, whoever made it: devdeck's own when it matches the write in flight
-//!   (its image; a redeploy's `restartedAt`, which has fractional seconds), else the tool that changed the spec (`managedFields`), else "seen". The first list of
-//!   an env is the baseline: nothing before it is a deploy.
+//!   changes) is one, whoever made it, `by` as written: the field manager this window
+//!   sent ("<short name> via Kugelblitz") when it matches the write in flight (its image; a
+//!   redeploy's `restartedAt`, which has fractional seconds), else the manager that changed
+//!   the spec (`managedFields`), else "seen". The first list of an env is the baseline:
+//!   nothing before it is a deploy. No write without a short name ([`Cluster::writes`]).
 //! - Each deploy is followed ([`assess`]) on every update of its deployment and pods until
 //!   done, stuck or replaced; failing keeps following. devdeck's own hold their service's
 //!   pods while followed; others are followed from what's known (pods when someone holds
@@ -60,6 +62,8 @@ struct Pending {
     /// A redeploy: the `restartedAt` it sets (devdeck's own is known by it, not by the
     /// image, which any redeploy keeps), and the generation seen when it was sent.
     redeploy: Option<(String, u64)>,
+    /// The field manager it was sent with: its record's `by`.
+    manager: String,
 }
 
 #[derive(Default)]
@@ -227,8 +231,9 @@ impl Cluster {
         }
         let d = self.deployment(env, name).ok_or_else(|| format!("{name} isn't deployed in {env}"))?;
         let (index, c) = d.deploy_target()?;
-        let change = ImageChange { index, container: c.name.clone(), from: from.to_string(), to: format!("{}:{to}", c.image.repo) };
-        let pending = Pending { to_image: change.to.clone(), generation: None, redeploy: None };
+        let manager = self.field_manager(cx)?;
+        let change = ImageChange { index, container: c.name.clone(), from: from.to_string(), to: format!("{}:{to}", c.image.repo), manager: manager.clone() };
+        let pending = Pending { to_image: change.to.clone(), generation: None, redeploy: None, manager };
         let driver = self.driver.clone();
         self.send(env, name, pending, move |cx| driver.set_image(env, name, change, cx), cx);
         Ok(())
@@ -244,9 +249,10 @@ impl Cluster {
         let d = self.deployment(env, name).ok_or_else(|| format!("{name} isn't deployed in {env}"))?;
         let (index, c) = d.deploy_target()?;
         let (container, generation, annotated) = (c.name.clone(), d.generation, d.template_annotated);
+        let manager = self.field_manager(cx)?;
         let at = self.stamp();
-        let restart = Restart { index, container, image: image.to_string(), at: at.clone(), generation, annotated };
-        let pending = Pending { to_image: image.to_string(), generation: None, redeploy: Some((at, generation)) };
+        let restart = Restart { index, container, image: image.to_string(), at: at.clone(), generation, annotated, manager: manager.clone() };
+        let pending = Pending { to_image: image.to_string(), generation: None, redeploy: Some((at, generation)), manager };
         let driver = self.driver.clone();
         self.send(env, name, pending, move |cx| driver.restart(env, name, restart, cx), cx);
         Ok(())
@@ -296,10 +302,8 @@ impl Cluster {
                     p.generation = Some(generation);
                 }
                 // The watch may have seen it first.
-                if let Some(r) = self.dep.rollouts.get_mut(&key)
-                    && r.by == "devdeck"
-                    && !r.finished()
-                {
+                let mine = self.dep.rollouts.get(&key).is_some_and(|r| self.mine(&r.by, cx) && !r.finished());
+                if mine && let Some(r) = self.dep.rollouts.get_mut(&key) {
                     r.generation = r.generation.max(generation);
                 }
                 if self.dep.watched.contains(&key) {
@@ -312,7 +316,7 @@ impl Cluster {
             Err(why) => {
                 let redeploy = self.dep.pending.remove(&key).is_some_and(|p| p.redeploy.is_some());
                 // Seen already on the watch: it's followed as anyone's deploy would be.
-                if !self.dep.rollouts.get(&key).is_some_and(|r| r.by == "devdeck" && !r.finished()) {
+                if !self.dep.rollouts.get(&key).is_some_and(|r| self.mine(&r.by, cx) && !r.finished()) {
                     self.dep.following.remove(&key);
                 }
                 if self.dep.watched.contains(&key) {
@@ -360,7 +364,9 @@ impl Cluster {
                 Some((at, _)) => p.to_image == image && d.restarted_at.as_deref() == Some(at.as_str()),
                 None => p.to_image == image,
             });
-            let by = if ours { "devdeck".to_string() } else { d.manager.clone().unwrap_or_else(|| "seen".into()) };
+            // As written: the field manager this window sent, or the one the cluster says.
+            let sent = self.dep.pending.get(&key).map(|p| p.manager.clone()).filter(|_| ours);
+            let by = sent.unwrap_or_else(|| d.manager.clone().unwrap_or_else(|| "seen".into()));
             let generation = if ours { self.dep.pending.get(&key).and_then(|p| p.generation).unwrap_or(d.generation) } else { d.generation };
             if ours {
                 self.dep.pending.remove(&key);

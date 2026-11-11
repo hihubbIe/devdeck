@@ -1,11 +1,12 @@
 //! Full-window Settings view (R9.4). Replaces the pane area of the main window while
-//! open; the title bar stays. Esc or the gear button closes it.
+//! open; the title bar stays. Esc or the gear button closes it. The short name (who
+//! deploys from here) is typed and saved with Enter or "save", checked first.
 
 use crate::api::{ApiState, Status};
 use crate::app_settings::{self, AppSettings};
 use devdeck_api::Class;
 use devdeck_core::settings::SCALE_STEPS;
-use devdeck_ui::{Icon, button, icon_button, label, section, theme, toggle_button};
+use devdeck_ui::{Icon, InputEvent, TextInput, button, icon_button, label, section, theme, toggle_button};
 use gpui::{
     Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     Subscription, Window, div, prelude::*,
@@ -13,7 +14,12 @@ use gpui::{
 
 pub struct SettingsView {
     focus: FocusHandle,
+    /// The short name as typed.
+    pub short_name: Entity<TextInput>,
+    /// Why the short name typed was refused.
+    pub short_name_error: Option<String>,
     _observe: Subscription,
+    _typed: Subscription,
     /// The control API's state, followed once it exists (it starts after the window).
     api: Option<(Entity<ApiState>, Subscription)>,
 }
@@ -22,7 +28,32 @@ impl SettingsView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let settings: Entity<AppSettings> = app_settings::settings(cx);
         let observe = cx.observe(&settings, |_, _, cx| cx.notify());
-        Self { focus: cx.focus_handle(), _observe: observe, api: None }
+        let saved = app_settings::short_name(cx).unwrap_or_default();
+        let short_name = cx.new(|cx| {
+            let mut i = TextInput::new("i.alglave", cx);
+            i.set_text(&saved, cx);
+            i
+        });
+        let typed = cx.subscribe(&short_name, |this: &mut Self, _, e: &InputEvent, cx| match e {
+            InputEvent::Submit(_) => this.save_short_name(cx),
+            InputEvent::Changed(_) | InputEvent::Cancel => {
+                this.short_name_error = None;
+                cx.notify();
+            }
+        });
+        Self { focus: cx.focus_handle(), short_name, short_name_error: None, _observe: observe, _typed: typed, api: None }
+    }
+
+    /// Saves the short name typed, or says why not.
+    pub fn save_short_name(&mut self, cx: &mut Context<Self>) {
+        let typed = self.short_name.read(cx).text().to_string();
+        self.short_name_error = app_settings::set_short_name(&typed, cx).err();
+        if self.short_name_error.is_none()
+            && let Some(saved) = app_settings::short_name(cx)
+        {
+            self.short_name.update(cx, |i, cx| i.set_text(&saved, cx));
+        }
+        cx.notify();
     }
 }
 
@@ -195,6 +226,27 @@ impl Render for SettingsView {
                     .child(theme_row),
             )
             .child(theme_notes)
+            .child(section("Deploys", &t))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(label_w).flex_none().child("short name"))
+                    .child(div().w(t.size(220.)).flex_none().debug_selector(|| "short-name".into()).child(self.short_name.clone()))
+                    .child(button("save-short-name", "save", &t).debug_selector(|| "save-short-name".into()).on_click(cx.listener(|this, _, _, cx| this.save_short_name(cx)))),
+            )
+            .child(
+                div().flex().mt_1().child(div().w(label_w).flex_none()).child(match &self.short_name_error {
+                    Some(why) => label(why.clone()).text_color(t.err).debug_selector(|| "short-name-error".into()).into_any_element(),
+                    None => label(match &store.settings.short_name {
+                        Some(n) => format!("deploys are made by \"{}\"", devdeck_core::cluster::field_manager(n)),
+                        None => "who deploys from here: needed before any deploy".to_string(),
+                    })
+                    .text_color(t.mute)
+                    .into_any_element(),
+                }),
+            )
             .child(section("Files", &t))
             .child(files)
             .child(section("API", &t))

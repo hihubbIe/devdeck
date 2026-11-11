@@ -11,7 +11,10 @@
 //! Pods and metrics: [`crate::cluster_pods`]; deploys, their follow-up and history:
 //! [`crate::cluster_deploys`]; a service's notifications: [`crate::cluster_notes`].
 
-use devdeck_core::cluster::{Deployment, Env, Remote, restart_command, set_image_command};
+use devdeck_core::cluster::{Deployment, Env, Remote, by_me, field_manager, restart_command, set_image_command};
+
+/// Why nothing can be deployed before the short name is set.
+pub const NO_SHORT_NAME: &str = "set your short name in Settings first";
 pub use devdeck_kube::{ImageChange, Restart};
 pub use crate::cluster_deploys::{Access, WriteState};
 pub use crate::cluster_pods::{MetricsRead, PodScope, PodUpdate, PodsInterest, Sampling};
@@ -70,6 +73,11 @@ pub trait ClusterDriver {
     /// Redeploys a deployment (`kubectl rollout restart`, R7.3, R7.5); the answer goes to
     /// [`Cluster::write_done`]. `None`: this driver can't deploy.
     fn restart(&self, _env: &str, _name: &str, _restart: Restart, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
+        None
+    }
+    /// A short name of its own, used when Settings has none (the demo's): who its deploys
+    /// are made by.
+    fn short_name(&self) -> Option<String> {
         None
     }
     /// Asks whether deployments may be changed in `env`; the answer goes to
@@ -364,14 +372,31 @@ impl Cluster {
         (self.log_gens.0, self.log_gens.1.get(env).copied().unwrap_or(0))
     }
 
-    /// Why deploys can't be made now, if they can't: the driver can't, or edit mode is off
-    /// (R5.6). Every write to the cluster goes through it.
+    /// Why deploys can't be made now, if they can't: the driver can't, edit mode is off
+    /// (R5.6), or nobody is named to make them (the short name, Settings). Every write to
+    /// the cluster goes through it.
     pub fn writes(&self, cx: &gpui::App) -> Result<(), String> {
         self.driver.writes()?;
-        match crate::edit_mode::refusal(cx) {
-            Some(why) => Err(why),
-            None => Ok(()),
+        if let Some(why) = crate::edit_mode::refusal(cx) {
+            return Err(why);
         }
+        self.field_manager(cx).map(|_| ())
+    }
+
+    /// Who deploys from here: the short name in Settings, else the driver's own (the demo's).
+    pub fn short_name(&self, cx: &gpui::App) -> Option<String> {
+        crate::app_settings::short_name(cx).or_else(|| self.driver.short_name())
+    }
+
+    /// The field manager this window's writes carry ("<short name> via Kugelblitz"), or why
+    /// there is none.
+    pub fn field_manager(&self, cx: &gpui::App) -> Result<String, String> {
+        self.short_name(cx).map(|n| field_manager(&n)).ok_or_else(|| NO_SHORT_NAME.to_string())
+    }
+
+    /// Whether a deploy made by `by` is the user's own (see [`by_me`]).
+    pub fn mine(&self, by: &str, cx: &gpui::App) -> bool {
+        by_me(by, self.short_name(cx).as_deref())
     }
 
     /// Tags of `name` on every loaded env plus devdeck's history, newest history first,

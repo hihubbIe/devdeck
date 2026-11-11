@@ -16,6 +16,8 @@ use std::rc::Rc;
 
 const ENV: &str = "dev33";
 const SVC: &str = "graphservice";
+/// The field manager these writes carry.
+const ME: &str = "i.alglave via Kugelblitz";
 
 /// Records writes and access reviews; the test answers them and plays the watch.
 #[derive(Default)]
@@ -23,6 +25,8 @@ struct Scripted {
     writes: RefCell<Vec<(String, ImageChange)>>,
     restarts: RefCell<Vec<(String, Restart)>>,
     reviews: RefCell<usize>,
+    /// No short name of its own (and Settings names nobody here).
+    nameless: bool,
 }
 
 impl ClusterDriver for Scripted {
@@ -34,6 +38,9 @@ impl ClusterDriver for Scripted {
     }
     fn writes(&self) -> Result<(), String> {
         Ok(())
+    }
+    fn short_name(&self) -> Option<String> {
+        (!self.nameless).then(|| "i.alglave".into())
     }
     fn watch_pods(&self, _env: &str, _scope: PodScope, _selector: Option<&str>, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
         Some(Task::ready(()))
@@ -130,6 +137,34 @@ fn guards_come_in_order_below_the_ui(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn nothing_is_written_without_a_short_name(cx: &mut TestAppContext) {
+    let driver = Rc::new(Scripted { nameless: true, ..Default::default() });
+    let d = driver.clone();
+    let cluster = cx.update(|cx| new_cluster(vec![Env { name: ENV.into(), protected: false }], d, Some(1_000), cx));
+    cx.update(|cx| devdeck_app::edit_mode::set(true, cx));
+    cx.update(|cx| cluster.update(cx, |c, cx| c.want(ENV, cx)));
+    let t = T { cluster, driver };
+    watch(&t, cx, dep("main", 3, 5, 5, Progress::Settled));
+    let why = devdeck_app::cluster::NO_SHORT_NAME.to_string();
+    assert_eq!(cx.read(|cx| t.cluster.read(cx).deploy_blocked(ENV, SVC, "feature", false, cx)), Some(why.clone()));
+    assert_eq!(deploy(&t, cx, "main", "feature"), Err(why.clone()));
+    assert_eq!(cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, MAIN, false, cx))), Err(why), "a redeploy too");
+    assert!(t.driver.writes.borrow().is_empty() && t.driver.restarts.borrow().is_empty(), "nothing sent");
+}
+
+#[gpui::test]
+fn writes_carry_who_made_them_and_the_history_says_it(cx: &mut TestAppContext) {
+    let t = setup(cx, false);
+    deploy(&t, cx, "main", "feature").unwrap();
+    assert_eq!(t.driver.writes.borrow()[0].1.manager, ME, "the field manager sent: <short name> via Kugelblitz");
+    answer(&t, cx, Ok(6));
+    watch(&t, cx, dep("feature", 4, 6, 6, Progress::Settled));
+    assert_eq!(history(&t, cx).last().map(|r| r.1.clone()), Some(ME.into()), "the history says it as written");
+    cx.update(|cx| t.cluster.update(cx, |c, cx| c.redeploy(ENV, SVC, "registry/graphservice:feature", false, cx))).unwrap();
+    assert_eq!(t.driver.restarts.borrow()[0].1.manager, ME, "a redeploy too");
+}
+
+#[gpui::test]
 fn a_deploy_is_pinned_to_what_was_confirmed_and_followed_to_done(cx: &mut TestAppContext) {
     let t = setup(cx, false);
     deploy(&t, cx, "main", "feature").unwrap();
@@ -142,7 +177,7 @@ fn a_deploy_is_pinned_to_what_was_confirmed_and_followed_to_done(cx: &mut TestAp
     watch(&t, cx, dep("feature", 4, 6, 5, Progress::Stuck));
     answer(&t, cx, Ok(6));
     assert_eq!(state(&t, cx), Some(RolloutState::Rolling { ready: 0, of: 2 }), "an old stuck state isn't this deploy's until observed");
-    assert_eq!(history(&t, cx), [("feature".to_string(), "devdeck".to_string(), String::new())]);
+    assert_eq!(history(&t, cx), [("feature".to_string(), ME.to_string(), String::new())]);
     watch(&t, cx, dep("feature", 4, 6, 6, Progress::Rolling));
     pods(&t, cx, vec![pod("feature", "a", true, "running", 0, None), pod("main", "b", true, "running", 0, None)]);
     assert_eq!(state(&t, cx), Some(RolloutState::Rolling { ready: 1, of: 2 }));
@@ -207,7 +242,7 @@ fn deploys_seen_from_elsewhere_are_followed_and_replace_ours(cx: &mut TestAppCon
     let mut other = dep("hotfix", 5, 7, 6, Progress::Rolling);
     other.manager = Some("kubectl-set".into());
     watch(&t, cx, other);
-    assert_eq!(history(&t, cx), [("feature".to_string(), "devdeck".to_string(), "replaced by hotfix".to_string()), ("hotfix".to_string(), "kubectl-set".to_string(), String::new())]);
+    assert_eq!(history(&t, cx), [("feature".to_string(), ME.to_string(), "replaced by hotfix".to_string()), ("hotfix".to_string(), "kubectl-set".to_string(), String::new())]);
     assert_eq!(cx.read(|cx| t.cluster.read(cx).following()), 0, "a deploy seen elsewhere doesn't hold pods");
     // The same branch again: a revision that grows is a deploy too.
     watch(&t, cx, dep("hotfix", 6, 8, 8, Progress::Rolling));
@@ -272,7 +307,7 @@ fn the_image_changes_before_the_revision_moves(cx: &mut TestAppContext) {
     assert!(history(&t, cx).is_empty(), "not a deploy until the revision moves");
     watch(&t, cx, dep("feature", 4, 6, 6, Progress::Rolling));
     let r = cx.read(|cx| t.cluster.read(cx).rollout(ENV, SVC).cloned()).unwrap();
-    assert_eq!((r.from.as_str(), r.to.as_str(), r.by.as_str()), ("main", "feature", "devdeck"));
+    assert_eq!((r.from.as_str(), r.to.as_str(), r.by.as_str()), ("main", "feature", ME));
 }
 
 #[gpui::test]
@@ -399,7 +434,7 @@ fn a_redeploy_is_pinned_to_the_image_shown_and_followed_to_done(cx: &mut TestApp
     redeploy(&t, cx).unwrap();
     let (name, restart) = t.driver.restarts.borrow()[0].clone();
     assert_eq!(name, SVC);
-    assert_eq!(restart, Restart { index: 0, container: SVC.into(), image: MAIN.into(), at: first_stamp(), generation: 5, annotated: false });
+    assert_eq!(restart, Restart { index: 0, container: SVC.into(), image: MAIN.into(), at: first_stamp(), generation: 5, annotated: false, manager: ME.into() });
     assert_eq!(first_stamp(), "1970-01-01T00:16:40.000000001Z", "RFC 3339 with fractional seconds");
     assert!(t.driver.writes.borrow().is_empty(), "no image change");
     assert_eq!(cx.read(|cx| t.cluster.read(cx).following()), 1, "its pods are held while followed");
@@ -411,7 +446,7 @@ fn a_redeploy_is_pinned_to_the_image_shown_and_followed_to_done(cx: &mut TestApp
     answer(&t, cx, Ok(6));
     watch(&t, cx, redeployed(4, 6, Progress::Rolling, &first_stamp()));
     let r = cx.read(|cx| t.cluster.read(cx).rollout(ENV, SVC).cloned()).unwrap();
-    assert_eq!((r.from.as_str(), r.to.as_str(), r.by.as_str(), r.redeploy()), ("main", "main", "devdeck", true));
+    assert_eq!((r.from.as_str(), r.to.as_str(), r.by.as_str(), r.redeploy()), ("main", "main", ME, true));
     pods(&t, cx, vec![pod_of("t-main-4", "a", true), pod_of("t-main", "b", true)]);
     assert_eq!(state(&t, cx), Some(RolloutState::Rolling { ready: 1, of: 2 }), "the old pods run the same tag, but not the new template");
     assert_eq!(cx.read(|cx| t.cluster.read(cx).rollout(ENV, SVC).and_then(|r| r.label())), Some("redeploying main 1/2".into()));
@@ -419,7 +454,7 @@ fn a_redeploy_is_pinned_to_the_image_shown_and_followed_to_done(cx: &mut TestApp
     pods(&t, cx, vec![pod_of("t-main-4", "a", true), pod_of("t-main-4", "c", true)]);
     assert_eq!(state(&t, cx), Some(RolloutState::Done));
     let record = cx.read(|cx| t.cluster.read(cx).history(ENV, SVC)[0].clone());
-    assert_eq!((record.from.as_str(), record.to.as_str(), record.by.as_str(), record.outcome.as_str(), record.redeploy()), ("main", "main", "devdeck", "done", true));
+    assert_eq!((record.from.as_str(), record.to.as_str(), record.by.as_str(), record.outcome.as_str(), record.redeploy()), ("main", "main", ME, "done", true));
     assert_eq!((record.revision, record.restarted_at), (Some(4), Some(first_stamp())));
     assert_eq!(cx.read(|cx| t.cluster.read(cx).following()), 0, "done: its pods go");
 }
@@ -439,7 +474,7 @@ fn a_redeploy_seen_while_devdecks_is_sending_isnt_devdecks(cx: &mut TestAppConte
     watch(&t, cx, redeployed(5, 7, Progress::Rolling, &first_stamp()));
     assert_eq!(
         history(&t, cx),
-        [("main".to_string(), "kubectl-rollout".to_string(), "replaced by a redeploy".to_string()), ("main".to_string(), "devdeck".to_string(), String::new())]
+        [("main".to_string(), "kubectl-rollout".to_string(), "replaced by a redeploy".to_string()), ("main".to_string(), ME.to_string(), String::new())]
     );
 }
 
@@ -501,7 +536,7 @@ fn a_redeploy_without_a_revision_is_known_by_its_stamp(cx: &mut TestAppContext) 
     let mut d = redeployed(0, 6, Progress::Rolling, &first_stamp());
     d.revision = 0;
     watch(&t, cx, d);
-    assert_eq!(history(&t, cx).last().map(|r| r.1.clone()), Some("devdeck".into()), "recorded, nothing left pending");
+    assert_eq!(history(&t, cx).last().map(|r| r.1.clone()), Some(ME.into()), "recorded, nothing left pending");
     assert_eq!(cx.read(|cx| t.cluster.read(cx).write_blocked(ENV, SVC, false, cx)), None);
 }
 

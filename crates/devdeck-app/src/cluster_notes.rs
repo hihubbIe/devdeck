@@ -7,8 +7,10 @@
 //! - One notification per (env, service, rollout, kind), whatever caused it: failing and
 //!   stuck are one kind, a rollout replaced is no event. A rollout is told apart by a
 //!   number it gets when it is spotted (or followed again after a restart).
-//! - devdeck's own deploys and redeploys always say how they end (finished, failing or
-//!   stuck), ticked or not, and never that they began (the user just did it).
+//! - The user's own deploys and redeploys ([`Cluster::mine`]: their field manager, from any
+//!   machine with their short name) always say how they end (finished, failing or stuck),
+//!   ticked or not, and never that they began (the user just did it); a colleague's follow
+//!   the ticks.
 //! - Pods crashing outside a rollout: once per (service, template), from `pod_failure`'s
 //!   threshold, until every pod of that template has been ready, its restarts unchanged,
 //!   for [`STEADY`] (a pod without a readiness probe turns ready after every restart: that
@@ -81,8 +83,9 @@ struct Event {
     key: Key,
     what: Notify,
     text: String,
-    /// devdeck's own deploy: its outcome is told ticked or not.
-    own: bool,
+    /// Who made the deploy (its field manager); the user's own outcome is told ticked or
+    /// not, and their own deploy never said to begin. Empty for a crash.
+    by: String,
     /// What it marks as told when it is: (rollout, kind) or (template) for a crash.
     mark: Mark,
 }
@@ -180,15 +183,12 @@ impl Cluster {
         }
         self.notes.resumed.remove(key);
         let Some(r) = self.rollout(&key.0, &key.1) else { return };
-        if r.by == "devdeck" {
-            return;
-        }
         let (what, text) = if r.redeploy() {
             (Notify::Redeployed, format!("{} redeployed by {}", r.to, r.by))
         } else {
             (Notify::BranchDeployed, format!("{} deployed by {} (was {})", r.to, r.by, r.from))
         };
-        self.notes.outbox.push(Event { key: key.clone(), what, text, own: false, mark: Mark::Rollout(serial) });
+        self.notes.outbox.push(Event { key: key.clone(), what, text, by: r.by.clone(), mark: Mark::Rollout(serial) });
     }
 
     /// `key`'s rollout changed state: finished, failing or stuck are events.
@@ -210,8 +210,7 @@ impl Cluster {
             }
             self.notes.resumed.remove(key);
         }
-        let own = r.by == "devdeck";
-        self.notes.outbox.push(Event { key: key.clone(), what: kind, text, own, mark: Mark::Rollout(serial) });
+        self.notes.outbox.push(Event { key: key.clone(), what: kind, text, by: r.by, mark: Mark::Rollout(serial) });
     }
 
     /// Pods crashing outside a rollout, for the services that watch them in `env`, at `now`
@@ -263,18 +262,22 @@ impl Cluster {
                 let told = self.notes.crashed.contains_key(&(key.clone(), template.clone()));
                 let waiting = self.notes.outbox.iter().any(|e| e.key == key && matches!(&e.mark, Mark::Template(t) if *t == template));
                 if !told && !waiting {
-                    self.notes.outbox.push(Event { key: key.clone(), what: Notify::Crashing, text, own: false, mark: Mark::Template(template) });
+                    self.notes.outbox.push(Event { key: key.clone(), what: Notify::Crashing, text, by: String::new(), mark: Mark::Template(template) });
                 }
             }
         }
     }
 
-    /// Tells the events waiting: each once, when ticked (or devdeck's own outcome), as a
+    /// Tells the events waiting: each once, when ticked (or the user's own outcome), as a
     /// toast of the cluster's workspace with Open and, for a failure, Logs.
     pub(crate) fn tell(&mut self, cx: &mut Context<Self>) {
         for e in std::mem::take(&mut self.notes.outbox) {
             let ticked = self.notes.subs.get(&e.key).is_some_and(|s| s.contains(&e.what));
-            if !ticked && !(e.own && matches!(e.what, Notify::Finished | Notify::Failed)) {
+            let own = !e.by.is_empty() && self.mine(&e.by, cx);
+            if own && matches!(e.what, Notify::BranchDeployed | Notify::Redeployed) {
+                continue;
+            }
+            if !ticked && !(own && matches!(e.what, Notify::Finished | Notify::Failed)) {
                 continue;
             }
             match &e.mark {

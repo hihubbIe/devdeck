@@ -394,6 +394,21 @@ pub fn remember(history: &mut Vec<DeployRecord>, r: DeployRecord) {
     history.drain(..over);
 }
 
+/// What a field manager of devdeck's ends with: "<short name> via Kugelblitz".
+pub const VIA: &str = " via Kugelblitz";
+
+/// The field manager devdeck's deploys and redeploys carry for `short_name`: who made them,
+/// as the deployment's `managedFields` (and so its history) will say.
+pub fn field_manager(short_name: &str) -> String {
+    format!("{short_name}{VIA}")
+}
+
+/// Whether a deploy made by `by` is the user's own: their field manager (from any machine
+/// with their short name), or devdeck's old one (`devdeck`, in history kept from before).
+pub fn by_me(by: &str, short_name: Option<&str>) -> bool {
+    by == "devdeck" || short_name.is_some_and(|n| by == field_manager(n))
+}
+
 /// The exact command a tag change runs (R7.3 states it before confirming).
 pub fn set_image_command(namespace: &str, d: &Deployment, tag: &str) -> String {
     let c = d.main();
@@ -623,6 +638,17 @@ mod tests {
             since: Some(60),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_deploy_is_mine_by_my_field_manager_or_devdecks_old_one() {
+        assert_eq!(field_manager("i.alglave"), "i.alglave via Kugelblitz");
+        assert!(by_me("i.alglave via Kugelblitz", Some("i.alglave")));
+        assert!(by_me("devdeck", Some("i.alglave")), "history kept from before");
+        assert!(by_me("devdeck", None));
+        assert!(!by_me("j.doe via Kugelblitz", Some("i.alglave")), "a colleague's");
+        assert!(!by_me("i.alglave via Kugelblitz", None), "nobody named here");
+        assert!(!by_me("kubectl-set", Some("i.alglave")));
     }
 
     #[test]

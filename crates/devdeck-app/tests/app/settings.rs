@@ -157,3 +157,35 @@ fn settings_show_the_control_api(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("settings-api").is_some(), "the API section is drawn");
 }
+
+/// The short name: typed in Settings, refused with its reason (whitespace, control
+/// characters, too long, empty), saved when fine.
+#[gpui::test]
+fn the_short_name_is_checked_before_it_is_saved(cx: &mut TestAppContext) {
+    let (_deck, dir) = setup(cx, "short-name");
+    let main = cx.windows()[0];
+    assert_eq!(cx.read(app_settings::short_name), None, "no default");
+    cx.simulate_keystrokes(main, "ctrl-,");
+    cx.run_until_parked();
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    let field = vcx.debug_bounds("short-name").expect("shown in Settings");
+    let try_name = |vcx: &mut VisualTestContext, typed: &str| {
+        vcx.simulate_click(field.center(), Modifiers::none());
+        vcx.simulate_keystrokes("ctrl-a backspace");
+        vcx.simulate_input(typed);
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        vcx.debug_bounds("short-name-error").is_some()
+    };
+    for bad in ["i alglave", "i\u{7}alglave", &"a".repeat(33)] {
+        assert!(try_name(&mut vcx, bad), "{bad:?} refused, said");
+    }
+    vcx.simulate_click(field.center(), Modifiers::none());
+    vcx.simulate_keystrokes("ctrl-a backspace enter");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("short-name-error").is_some(), "empty refused");
+    assert_eq!(vcx.read(app_settings::short_name), None, "nothing saved");
+    assert!(!try_name(&mut vcx, "i.alglave"));
+    assert_eq!(vcx.read(app_settings::short_name).as_deref(), Some("i.alglave"));
+    assert!(saved(&dir).contains("short_name = \"i.alglave\""), "saved: {}", saved(&dir));
+}
