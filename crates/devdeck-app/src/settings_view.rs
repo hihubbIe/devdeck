@@ -30,7 +30,7 @@ impl SettingsView {
         let observe = cx.observe(&settings, |_, _, cx| cx.notify());
         let saved = app_settings::short_name(cx).unwrap_or_default();
         let short_name = cx.new(|cx| {
-            let mut i = TextInput::new("i.alglave", cx);
+            let mut i = TextInput::new("f.lastname", cx);
             i.set_text(&saved, cx);
             i
         });

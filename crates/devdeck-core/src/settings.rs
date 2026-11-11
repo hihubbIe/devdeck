@@ -20,7 +20,7 @@ pub const SETTINGS_FILE: &str = "settings.toml";
 pub struct Settings {
     pub ui_scale: f32,
     pub theme: String,
-    /// Who deploys from this machine (`i.alglave`): devdeck's deploys carry it as their field
+    /// Who deploys from this machine (`f.lastname`): devdeck's deploys carry it as their field
     /// manager ([`crate::cluster::field_manager`]). No default: deploys wait for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short_name: Option<String>,
@@ -148,12 +148,12 @@ mod tests {
 
     #[test]
     fn a_short_name_is_one_printable_word_of_32_at_most() {
-        assert_eq!(check_short_name("  i.alglave "), Ok("i.alglave".into()), "surrounding spaces dropped");
+        assert_eq!(check_short_name("  f.lastname "), Ok("f.lastname".into()), "surrounding spaces dropped");
         assert_eq!(check_short_name(""), Err("a short name can't be empty".into()));
         assert_eq!(check_short_name("   "), Err("a short name can't be empty".into()));
-        assert_eq!(check_short_name("i alglave"), Err("a short name has no spaces".into()));
-        assert_eq!(check_short_name("i\talglave"), Err("a short name has no spaces".into()));
-        assert_eq!(check_short_name("i\u{7}alglave"), Err("a short name has printable characters only".into()));
+        assert_eq!(check_short_name("j doe"), Err("a short name has no spaces".into()));
+        assert_eq!(check_short_name("j\tdoe"), Err("a short name has no spaces".into()));
+        assert_eq!(check_short_name("j\u{7}doe"), Err("a short name has printable characters only".into()));
         assert_eq!(check_short_name(&"a".repeat(33)), Err("a short name has at most 32 characters".into()));
         assert_eq!(check_short_name(&"é".repeat(32)), Ok("é".repeat(32)), "characters, not bytes");
     }
@@ -163,9 +163,9 @@ mod tests {
         let d = tmp_dir("short-name");
         let mut s = SettingsStore::load(d.path());
         assert_eq!(s.settings.short_name, None, "no default");
-        s.set_short_name("i.alglave").unwrap();
+        s.set_short_name("f.lastname").unwrap();
         assert!(s.set_short_name("not ok").is_err());
-        assert_eq!(SettingsStore::load(d.path()).settings.short_name.as_deref(), Some("i.alglave"));
+        assert_eq!(SettingsStore::load(d.path()).settings.short_name.as_deref(), Some("f.lastname"));
     }
 
     fn tmp_dir(name: &str) -> crate::testing::TempDir {

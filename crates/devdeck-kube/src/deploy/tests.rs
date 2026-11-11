@@ -63,7 +63,7 @@ fn status(code: u16, reason: &str, message: &str) -> Reply {
 }
 
 fn change() -> ImageChange {
-    ImageChange { index: 1, container: "api".into(), from: "registry/api:main".into(), to: "registry/api:feature-y".into(), manager: "i.alglave via Kugelblitz".into() }
+    ImageChange { index: 1, container: "api".into(), from: "registry/api:main".into(), to: "registry/api:feature-y".into(), manager: "j.doe via Kugelblitz".into() }
 }
 
 /// The deployment the API answers a patch with: the changed spec, generation 8.
@@ -92,7 +92,7 @@ async fn set(reply: Reply) -> (Result<u64, DeployError>, Vec<Request>) {
 }
 
 fn restart_of(annotated: bool) -> Restart {
-    Restart { index: 1, container: "api".into(), image: "registry/api:main".into(), at: "2026-11-10T09:12:44.512345678Z".into(), generation: 7, annotated, manager: "i.alglave via Kugelblitz".into() }
+    Restart { index: 1, container: "api".into(), image: "registry/api:main".into(), at: "2026-11-10T09:12:44.512345678Z".into(), generation: 7, annotated, manager: "j.doe via Kugelblitz".into() }
 }
 
 /// The redeploy `r` of `api` on dev35, as [`restart`] runs it, against a mock answering
@@ -118,7 +118,7 @@ async fn the_patch_tests_the_confirmed_container_then_replaces_its_image() {
     let [request] = requests.as_slice() else { panic!("one request: {requests:?}") };
     assert_eq!((request.method.as_str(), request.path.as_str()), ("PATCH", "/apis/apps/v1/namespaces/dev35/deployments/api"));
     let query: Vec<&str> = request.query.split('&').filter(|p| !p.is_empty()).collect();
-    assert_eq!(query, ["fieldManager=i.alglave+via+Kugelblitz"], "kube-core writes it `&fieldManager=…`: who made it");
+    assert_eq!(query, ["fieldManager=j.doe+via+Kugelblitz"], "kube-core writes it `&fieldManager=…`: who made it");
     assert_eq!(request.content_type, "application/json-patch+json");
     let body = json!([
         {"op": "test", "path": "/spec/template/spec/containers/1/name", "value": "api"},
@@ -227,7 +227,7 @@ async fn a_redeploy_tests_the_container_then_adds_restarted_at_to_the_annotation
     let [request] = requests.as_slice() else { panic!("one request: {requests:?}") };
     assert_eq!((request.method.as_str(), request.path.as_str()), ("PATCH", "/apis/apps/v1/namespaces/dev35/deployments/api"));
     let query: Vec<&str> = request.query.split('&').filter(|p| !p.is_empty()).collect();
-    assert_eq!(query, ["fieldManager=i.alglave+via+Kugelblitz"]);
+    assert_eq!(query, ["fieldManager=j.doe+via+Kugelblitz"]);
     assert_eq!(request.content_type, "application/json-patch+json");
     let body = json!([
         {"op": "test", "path": "/spec/template/spec/containers/1/name", "value": "api"},

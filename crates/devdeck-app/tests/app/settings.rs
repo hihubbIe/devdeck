@@ -177,7 +177,7 @@ fn the_short_name_is_checked_before_it_is_saved(cx: &mut TestAppContext) {
         vcx.run_until_parked();
         vcx.debug_bounds("short-name-error").is_some()
     };
-    for bad in ["i alglave", "i\u{7}alglave", &"a".repeat(33)] {
+    for bad in ["j doe", "j\u{7}doe", &"a".repeat(33)] {
         assert!(try_name(&mut vcx, bad), "{bad:?} refused, said");
     }
     vcx.simulate_click(field.center(), Modifiers::none());
@@ -185,7 +185,7 @@ fn the_short_name_is_checked_before_it_is_saved(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("short-name-error").is_some(), "empty refused");
     assert_eq!(vcx.read(app_settings::short_name), None, "nothing saved");
-    assert!(!try_name(&mut vcx, "i.alglave"));
-    assert_eq!(vcx.read(app_settings::short_name).as_deref(), Some("i.alglave"));
-    assert!(saved(&dir).contains("short_name = \"i.alglave\""), "saved: {}", saved(&dir));
+    assert!(!try_name(&mut vcx, "j.doe"));
+    assert_eq!(vcx.read(app_settings::short_name).as_deref(), Some("j.doe"));
+    assert!(saved(&dir).contains("short_name = \"j.doe\""), "saved: {}", saved(&dir));
 }

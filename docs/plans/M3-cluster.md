@@ -2051,14 +2051,14 @@ Every point accepted; defaults (2) and (3) change with points 1–3, for the use
 
 ### Manual test (M3 close), on dev33
 
-1. Settings → Deploys: set your short name (`i.alglave`). Without it the rocket is dim
+1. Settings → Deploys: set your short name (`f.lastname`). Without it the rocket is dim
    with "set your short name in Settings first", and ctrl+s says so.
 2. Open a service on dev33: header, pods, metrics, container, history; no k9s button.
 3. `l` logs: several pods, level filter, text filter (only matching lines), wrap, pause,
    follow; scroll up: older lines load as far as the cluster kept.
 4. Type another tag, click the rocket (or ctrl+s): the confirmation shows the exact
    command; Deploy; the rollout is followed to "now running", a toast says it with Open.
-   The history reads "by i.alglave via Kugelblitz".
+   The history reads "by f.lastname via Kugelblitz".
 5. `r` redeploy: confirmation, rollout restart followed, toast "redeployed …".
 6. `b` notify dropdown: five options colored by severity, ticking keeps it open. Tick
    "branch deployed" and have someone (or kubectl) deploy: a toast "… deployed by …".

@@ -17,7 +17,7 @@ use std::rc::Rc;
 const ENV: &str = "dev33";
 const SVC: &str = "graphservice";
 /// The field manager these writes carry.
-const ME: &str = "i.alglave via Kugelblitz";
+const ME: &str = "j.doe via Kugelblitz";
 
 /// Records writes and access reviews; the test answers them and plays the watch.
 #[derive(Default)]
@@ -40,7 +40,7 @@ impl ClusterDriver for Scripted {
         Ok(())
     }
     fn short_name(&self) -> Option<String> {
-        (!self.nameless).then(|| "i.alglave".into())
+        (!self.nameless).then(|| "j.doe".into())
     }
     fn watch_pods(&self, _env: &str, _scope: PodScope, _selector: Option<&str>, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
         Some(Task::ready(()))

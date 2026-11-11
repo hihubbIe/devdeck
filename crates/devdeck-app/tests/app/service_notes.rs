@@ -37,7 +37,7 @@ impl ClusterDriver for Scripted {
         Ok(())
     }
     fn short_name(&self) -> Option<String> {
-        Some("i.alglave".into())
+        Some("j.doe".into())
     }
     fn watch_pods(&self, _env: &str, _scope: PodScope, _selector: Option<&str>, _cx: &mut Context<Cluster>) -> Option<Task<()>> {
         Some(Task::ready(()))
@@ -364,8 +364,8 @@ fn a_colleagues_deploy_follows_the_ticks(cx: &mut TestAppContext) {
 fn my_deploys_from_anywhere_never_say_they_began(cx: &mut TestAppContext) {
     let c = setup(cx);
     tick(&c, cx, &[Notify::BranchDeployed, Notify::Redeployed]);
-    watch(&c, cx, by(dep("feature", 4, 6, 5, Progress::Rolling), "i.alglave via Kugelblitz"));
-    watch(&c, cx, by(dep("feature", 4, 6, 6, Progress::Settled), "i.alglave via Kugelblitz"));
+    watch(&c, cx, by(dep("feature", 4, 6, 5, Progress::Rolling), "j.doe via Kugelblitz"));
+    watch(&c, cx, by(dep("feature", 4, 6, 6, Progress::Settled), "j.doe via Kugelblitz"));
     watch(&c, cx, by(dep("other", 5, 7, 6, Progress::Rolling), "devdeck"));
     watch(&c, cx, by(dep("other", 5, 7, 7, Progress::Settled), "devdeck"));
     assert_eq!(texts(cx), ["now running feature (was main)", "now running other (was feature)"], "only how they ended, though not ticked");
@@ -638,7 +638,7 @@ fn the_rocket_waits_for_a_short_name(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(cx.update(|cx| layer_state(main, cx).1), 0, "through the picker, refused too");
     assert!(cx.read(|cx| c.read(cx).rollout(DEMO_ENV, DEMO_SVC).is_none()), "nothing written");
-    cx.update(|cx| devdeck_app::app_settings::set_short_name("i.alglave", cx)).unwrap();
+    cx.update(|cx| devdeck_app::app_settings::set_short_name("j.doe", cx)).unwrap();
     assert_eq!(cx.read(|cx| view.read(cx).save_blocked(cx)), None, "named: ready");
     cx.update(|cx| view.update(cx, |v, cx| v.save(cx)));
     cx.run_until_parked();

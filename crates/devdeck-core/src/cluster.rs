@@ -691,13 +691,13 @@ mod tests {
 
     #[test]
     fn a_deploy_is_mine_by_my_field_manager_or_devdecks_old_one() {
-        assert_eq!(field_manager("i.alglave"), "i.alglave via Kugelblitz");
-        assert!(by_me("i.alglave via Kugelblitz", Some("i.alglave")));
-        assert!(by_me("devdeck", Some("i.alglave")), "history kept from before");
+        assert_eq!(field_manager("j.doe"), "j.doe via Kugelblitz");
+        assert!(by_me("j.doe via Kugelblitz", Some("j.doe")));
+        assert!(by_me("devdeck", Some("j.doe")), "history kept from before");
         assert!(by_me("devdeck", None));
-        assert!(!by_me("j.doe via Kugelblitz", Some("i.alglave")), "a colleague's");
-        assert!(!by_me("i.alglave via Kugelblitz", None), "nobody named here");
-        assert!(!by_me("kubectl-set", Some("i.alglave")));
+        assert!(!by_me("j.doe via Kugelblitz", Some("j.doe")), "a colleague's");
+        assert!(!by_me("j.doe via Kugelblitz", None), "nobody named here");
+        assert!(!by_me("kubectl-set", Some("j.doe")));
     }
 
     #[test]
