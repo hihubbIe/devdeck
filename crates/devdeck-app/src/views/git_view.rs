@@ -523,7 +523,6 @@ impl Render for GitView {
             (_, None) => return root.child(message(format!("reading {}…", devdeck_core::config::shown(&self.root)), t.mute)),
         };
         let busy = repo.busy_text();
-        let last = repo.last.clone();
         let now = now_s();
         let status = &snapshot.status;
         let head = match &status.head {
@@ -581,14 +580,7 @@ impl Render for GitView {
                     }),
                 )
             })
-            .when_some(busy.clone(), |d, b| d.child(icon_text(Icon::Busy, t.accent, b, &t)))
-            .when_some(last, |d, o| {
-                let (text, color, full) = match &o.result {
-                    Ok(out) => (format!("{}: done", o.what), t.dim, out.clone()),
-                    Err(e) => (format!("{}: {e}", o.what), t.warn, e.clone()),
-                };
-                d.child(div().id("git-last").child(label(text).text_color(color)).tooltip(tip(if full.is_empty() { "nothing to say".to_string() } else { full })))
-            });
+            .when_some(busy.clone(), |d, b| d.child(icon_text(Icon::Busy, t.accent, b, &t)));
 
         // Icon buttons, so the row fits any pane: each names itself, or says why it can't
         // run, in its tooltip.

@@ -1,7 +1,8 @@
 //! A git repository as views see it (R6.10): its state and branches as last read, the
-//! operation running, the last one's outcome. One per repository root and workspace, shared
-//! by every view showing it (the services keep weak ones by root); an operation's task holds
-//! it until git exits. The core allows one write at a time per repository, whatever holds it.
+//! operation running (a failed one says so in a toast). One per repository root and
+//! workspace, shared by every view showing it (the services keep weak ones by root); an
+//! operation's task holds it until git exits. The core allows one write at a time per
+//! repository, whatever holds it.
 //!
 //! Read only while a view holding it is visible ([`Looking`]): when git's files change
 //! (the app's watcher, [`crate::watcher`]) or after an operation; changes while nobody looks
@@ -33,13 +34,6 @@ pub struct Snapshot {
     pub full: bool,
 }
 
-/// How the last operation went: what it was, in words, and git's output or message.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Outcome {
-    pub what: String,
-    pub result: Result<String, String>,
-}
-
 /// Held by a view while it's on screen: the repository is read while one lives.
 pub struct Looking(#[allow(dead_code)] Rc<()>);
 
@@ -53,7 +47,6 @@ pub struct Repo {
     pub state: Remote<Snapshot>,
     /// The operation running, in words ("fetching…"), and since when.
     pub busy: Option<(String, Instant)>,
-    pub last: Option<Outcome>,
     /// A push plan asked for and just decided, for the view that asked.
     pub plan: Option<Result<PushPlan, String>>,
     /// Views wanting the full state, and those wanting the branches only.
@@ -101,7 +94,6 @@ impl Repo {
             dirs: None,
             state: Remote::Loading,
             busy: None,
-            last: None,
             plan: None,
             full: Rc::new(()),
             light: Rc::new(()),
@@ -279,7 +271,6 @@ impl Repo {
                 if let Err(e) = &result {
                     devdeck_ui::toasts(cx).update(cx, |t, cx| t.push(devdeck_ui::ToastKind::Warn, format!("{what}: {e}"), vec![], cx));
                 }
-                r.last = Some(Outcome { what, result });
                 r.refresh(cx);
                 cx.notify();
             });
