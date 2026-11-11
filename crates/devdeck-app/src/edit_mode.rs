@@ -1,8 +1,8 @@
 //! Edit mode (R5.6): potentially destructive actions run only while it's on — a deploy
 //! (set image, redeploy, replicas), a git replace push or abort, stopping a process
-//! devdeck didn't start, a shell in a pod; k9s opens read only otherwise. A title bar
-//! button turns it on after a modal saying what it allows, and off at once. Off at every
-//! start; one switch for the whole app.
+//! devdeck didn't start, a shell in a pod. A title bar button turns it on after a modal
+//! saying what it allows, and off at once. Off at every start; one switch for the whole
+//! app.
 //!
 //! The gated places check [`refusal`] themselves, below the UI, so no button, menu, key or
 //! modal left open can get around it.
@@ -18,7 +18,7 @@ pub const ALLOWS: [&str; 5] = [
     "Deploys: changing the branch a service runs, redeploys and replicas.",
     "Git: replacing a rewritten branch on the remote, aborting a rebase, merge, cherry-pick, revert or am.",
     "Stopping a process Kugelblitz didn't start (one holding a port).",
-    "A shell in a pod, and k9s with its write actions.",
+    "A shell in a pod.",
     "Protected envs still ask for their name; main and master are never pushed.",
 ];
 

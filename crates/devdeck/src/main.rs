@@ -156,13 +156,17 @@ fn spawn_stats_printer(shell: Entity<Shell>, every: Duration, cx: &mut App) {
             cx.background_executor().timer(every).await;
             let now = stats::renders();
             let m = stats::memory();
-            let (views, windows, layers) = cx.update(|cx| {
+            let (views, windows, layers, watched, envs) = cx.update(|cx| {
                 let s = shell.read(cx);
                 let views: usize = s.workspaces.iter().map(|w| w.deck.read(cx).live_views()).sum();
-                (views, cx.windows().len(), devdeck_ui::overlay::layer_count(cx))
+                // The cluster envs watched, of all the workspaces' envs.
+                let clusters: Vec<_> = s.workspaces.iter().filter_map(|w| w.services.read(cx).cluster.clone()).collect();
+                let watched: usize = clusters.iter().map(|c| c.read(cx).wanted().len()).sum();
+                let envs: usize = clusters.iter().map(|c| c.read(cx).envs.len()).sum();
+                (views, cx.windows().len(), devdeck_ui::overlay::layer_count(cx), watched, envs)
             });
             eprintln!(
-                "devdeck-stats renders_delta={} rss_kb={} pss_kb={} uss_kb={} views={views} windows={windows} layers={layers}",
+                "devdeck-stats renders_delta={} rss_kb={} pss_kb={} uss_kb={} views={views} windows={windows} layers={layers} envs_watched={watched}/{envs}",
                 now - last,
                 m.rss,
                 m.pss,

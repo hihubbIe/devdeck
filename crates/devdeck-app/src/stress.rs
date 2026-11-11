@@ -1,8 +1,11 @@
 //! The leak run (`DEVDECK_STRESS=<cycles>`, R11.4). Every cycle does one of everything
 //! the app does, so a short run already goes through every path:
-//! - opens each view type (app, run, service, service logs, matrix, port, a demo view, a
-//!   file and a note, R12) and presses Esc in an input inside the service view;
+//! - opens each view type (app, run, service, service logs, pod, matrix, port, a demo
+//!   view, a file and a note, R12) and presses Esc in an input inside the service view;
 //! - starts and stops a run;
+//! - shows the Cluster list with its pod watch on, then off;
+//! - posts a notification about the service view, opens the notification center on it,
+//!   runs its Open (the view revealed, with its flash) and closes the center;
 //! - splits, collapses, maximizes, detaches (a real OS window, with a menu opened in it)
 //!   and re-attaches a tab;
 //! - opens and closes the palette, the cheat sheet and a menu in the main window;
@@ -15,12 +18,15 @@
 //! see what grows per cycle). Run it with temporary `DEVDECK_STATE_DIR` and
 //! `DEVDECK_CONFIG_DIR` (`scripts/measure.py` does).
 
+use crate::app_settings::{self, Cover};
 use crate::deck::Deck;
+use crate::notifications::{self, ToggleNotifications};
 use crate::runner::RunKey;
 use crate::shell::Shell;
 use crate::stats;
 use devdeck_core::layout::{Drop, Edge, Layout, ViewRef};
 use devdeck_core::view_addr::ViewAddr;
+use devdeck_ui::{NewToast, ToastKind, toasts};
 use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Keystroke};
 use std::time::Duration;
 
@@ -158,6 +164,9 @@ impl Stress {
                 self.escape_from_an_input(n, cx).await;
             }
         }
+        if let Some(v) = opened.get(SERVICE) {
+            self.notification_center(n, v, cx).await;
+        }
         self.run_once(cx).await;
         self.watch_pods(cx).await;
         self.layout_moves(n, opened.last().expect("a demo view").clone(), cx).await;
@@ -177,19 +186,55 @@ impl Stress {
         self.frame(cx).await;
     }
 
-    /// The Cluster list's **watch** on, then off: its env-wide pod watch comes and goes.
+    /// The Cluster list shown, its **watch** on, then off: its env-wide pod watch comes
+    /// and goes. A frame at each step, so the list renders with and without pods.
     async fn watch_pods(&self, cx: &mut AsyncApp) {
         let sidebar = cx.update(|cx| self.shell.read(cx).active_sidebar());
-        cx.update(|cx| {
+        let back = cx.update(|cx| {
             sidebar.update(cx, |s, cx| {
                 let back = s.activity();
                 s.show(crate::sidebar::Activity::Cluster, cx);
-                s.toggle_watch_pods(cx);
-                s.toggle_watch_pods(cx);
-                s.show(back, cx);
+                back
             })
         });
         self.frame(cx).await;
+        for _ in 0..2 {
+            cx.update(|cx| sidebar.update(cx, |s, cx| s.toggle_watch_pods(cx)));
+            self.frame(cx).await;
+        }
+        cx.update(|cx| sidebar.update(cx, |s, cx| s.show(back, cx)));
+        self.frame(cx).await;
+    }
+
+    /// A notification about `view` (the toast and the center's row), the center opened
+    /// by its key's action, its Open run (the view revealed and flashed), the center
+    /// closed, the toast taken off the screen.
+    async fn notification_center(&self, n: u64, view: &ViewRef, cx: &mut AsyncApp) {
+        let action = cx.update(|cx| {
+            let s = self.shell.read(cx);
+            notifications::reveal_action(&s.workspaces[self.home].id, view, cx)
+        });
+        let note = NewToast::new(ToastKind::Err, format!("stress {n}: graphservice on dev35 failed")).title("rollout").note(action.clone());
+        let id = cx.update(|cx| toasts(cx).update(cx, |t, cx| t.push_new(note, cx)));
+        self.frame(cx).await;
+        let toggle = |cx: &mut AsyncApp| {
+            let _ = self.main.update(cx, |_, window, cx| window.dispatch_action(Box::new(ToggleNotifications), cx));
+        };
+        toggle(cx);
+        self.frame(cx).await;
+        if cx.update(|cx| app_settings::cover(cx)) != Cover::Notifications {
+            eprintln!("devdeck-stress cycle={n} step failed: the notification center didn't open");
+        }
+        let _ = self.main.update(cx, |_, window, cx| notifications::resolve(&action, window, cx));
+        self.frame(cx).await;
+        if cx.update(|cx| app_settings::cover(cx)) == Cover::Notifications {
+            toggle(cx);
+            self.frame(cx).await;
+        }
+        cx.update(|cx| toasts(cx).update(cx, |t, cx| t.close(id, cx)));
+        if cx.update(|cx| app_settings::cover(cx)) != Cover::None {
+            eprintln!("devdeck-stress cycle={n} step failed: the notification center didn't close");
+        }
     }
 
     /// `t` focuses the service view's tag editor, Esc must give the keys back to the

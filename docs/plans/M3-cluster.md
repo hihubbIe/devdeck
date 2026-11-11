@@ -2038,3 +2038,33 @@ Every point accepted; defaults (2) and (3) change with points 1–3, for the use
 12. Smaller ones. **Accepted**: deploys during a reconnect's new baseline are missed (said
     in DESIGN); two workspaces on one env notify twice (accepted, said); the module is
     `desktop_note`; the 3 s grouping on a timer the tests advance.
+
+## Step 8 · Close (2026-11-11)
+
+- Suite 1057/1057, clippy clean. The leak cycle (`stress.rs`) now shows the Cluster list
+  with its pod watch on and off, and a notification's center and Open each cycle; the
+  stats line counts the envs watched; `scripts/measure.py cluster` is the idle scenario
+  with every demo env watched (the matrix open).
+- Not run yet: the window measurements (`measure.py idle`, `cluster`, `leak`) open a window
+  on the user's screen, and no headless display is installed: run when the user says,
+  then `docs/perf/M3.md`.
+
+### Manual test (M3 close), on dev33
+
+1. Settings → Deploys: set your short name (`i.alglave`). Without it the rocket is dim
+   with "set your short name in Settings first", and ctrl+s says so.
+2. Open a service on dev33: header, pods, metrics, container, history; no k9s button.
+3. `l` logs: several pods, level filter, text filter (only matching lines), wrap, pause,
+   follow; scroll up: older lines load as far as the cluster kept.
+4. Type another tag, click the rocket (or ctrl+s): the confirmation shows the exact
+   command; Deploy; the rollout is followed to "now running", a toast says it with Open.
+   The history reads "by i.alglave via Kugelblitz".
+5. `r` redeploy: confirmation, rollout restart followed, toast "redeployed …".
+6. `b` notify dropdown: five options colored by severity, ticking keeps it open. Tick
+   "branch deployed" and have someone (or kubectl) deploy: a toast "… deployed by …".
+   Your own deploys never say "deployed", only how they ended.
+7. Bell next to settings: a blue dot when unread, a red count for errors; the center
+   filters (unread/all, workspace), mark read, clear; Open switches workspace and layout
+   to the view and flashes it; "Open here" opens it in the focused pane.
+8. A protected env asks for its name before a deploy; edit mode off refuses deploys.
+9. Palette → "service notifications": lists what's ticked; "turn all off".

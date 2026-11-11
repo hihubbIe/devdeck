@@ -423,7 +423,6 @@ impl Render for ServiceView {
         let usage = |p: &Pod| c.usage(&self.env, &p.name);
         let history = c.history(&self.env, &self.name).to_vec();
         let metrics = c.metrics_allowed(&self.env);
-        let k9s_missing = !self.ctx.services.read(cx).catalog.tools.found.contains("k9s");
         let dirty = self.dirty(cx);
         let blocked = self.save_blocked(cx);
         let redeploy_blocked = self.redeploy_blocked(cx);
@@ -489,7 +488,6 @@ impl Render for ServiceView {
             .child(action("scale", "replicas", later()))
             .child(action("port-forward", "port-forward", later()))
             .child(action("shell", "shell", later()))
-            .child(action("k9s", "k9s", if k9s_missing { Some("k9s not found".into()) } else { later() }))
             .when(protected, |a| {
                 a.child(div().flex_1()).child(
                     action("lock", if self.unlocked { "lock" } else { "unlock…" }, None).on_click(cx.listener(|this, _, _, cx| {

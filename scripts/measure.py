@@ -5,6 +5,8 @@ Usage: scripts/measure.py <scenario> [options]
 
 Scenarios
   idle      start, 20 s streaming a 50k-line log, then 10 s idle (Wayland or X11)
+  cluster   the idle scenario with the demo cluster's every env watched: the branch
+            matrix opened at start (it wants every env), so the log list is hidden
   latency   X11 only: sends real key presses with xdotool and reads GPUI's
             input-to-frame histogram (needs the `profile` build:
             cargo build --release --features devdeck/profile)
@@ -487,7 +489,7 @@ def scenario_heapdiff(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["idle", "latency", "leak", "heapdiff", "terminal", "real", "leftovers"])
+    ap.add_argument("scenario", choices=["idle", "cluster", "latency", "leak", "heapdiff", "terminal", "real", "leftovers"])
     ap.add_argument("--x11", action="store_true")
     ap.add_argument("--bin", default="target/release/devdeck")
     ap.add_argument("--cycles", type=int, default=1000)
@@ -500,6 +502,8 @@ def main():
     report("session", "x11" if args.x11 else os.environ.get("XDG_SESSION_TYPE", "?"))
     if args.scenario == "idle":
         scenario_idle(args)
+    elif args.scenario == "cluster":
+        scenario_idle(args, {"DEVDECK_OPEN": "matrix"}, "cluster")
     elif args.scenario == "latency":
         scenario_latency(args)
     elif args.scenario == "terminal":

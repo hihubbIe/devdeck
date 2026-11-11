@@ -99,8 +99,10 @@ metrics, protected envs. Plan:
 4. Logs — done 2026-11-10.
 5. Change the deployed branch — done 2026-11-10.
 6. Redeploy the same branch — done 2026-11-10.
-7. Notifications.
-8. Close.
+7. Notifications — done 2026-11-11 ([plans/notifications.md](plans/notifications.md); OS notifications
+   postponed).
+8. Close — the suite, the leak cycle and the manual test written 2026-11-11; the
+   window measurements wait for the user (no headless display).
 
 Later, when wanted: shell in a pod, port-forward, replicas, restart, delete a pod, jobs,
 config maps and secrets, services and ingresses, YAML, cluster methods in the control API.
