@@ -90,6 +90,8 @@ pub struct Picker {
     pub kind: Option<&'static str>,
     pub selected: usize,
     restore: Option<WeakFocusHandle>,
+    /// Its scroll, read by its scrollbar.
+    scroll: gpui::ScrollHandle,
     _sub: Subscription,
 }
 
@@ -104,7 +106,7 @@ impl Picker {
             InputEvent::Submit(_) => this.pick(this.selected, window, cx),
             InputEvent::Cancel => this.close(window, cx),
         });
-        Self { input, spec, kind: None, selected: 0, restore, _sub: sub }
+        Self { input, spec, kind: None, selected: 0, restore, scroll: gpui::ScrollHandle::new(), _sub: sub }
     }
 
     /// The groups as shown: matching what's typed and the kind, empty groups left out;
@@ -179,7 +181,7 @@ impl Render for Picker {
                 );
             }
         }
-        let mut list = div().id("pick-list").max_h(t.size(380.)).scroll_y().flex().flex_col();
+        let mut list = div().id("pick-list").max_h(t.size(380.)).scroll_y().track_scroll(&self.scroll).flex().flex_col();
         let mut n = 0;
         for g in &shown {
             if !g.label.is_empty() {
@@ -223,7 +225,7 @@ impl Render for Picker {
             .child(div().text_color(t.hi).child(self.spec.title.clone()))
             .child(div().debug_selector(|| "pick-search".into()).child(self.input.clone()))
             .when(!self.spec.kinds.is_empty(), |d| d.child(chips))
-            .child(list);
+            .child(crate::with_scrollbar("pick-scrollbar", list, &self.scroll));
         modal_frame(content.into_any_element(), window, &t)
     }
 }

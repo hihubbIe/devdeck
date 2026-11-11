@@ -1437,6 +1437,7 @@ impl Render for Sidebar {
         .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
+        let list = devdeck_ui::with_scrollbar("sidebar-scrollbar", list, &devdeck_ui::list_handle(&self.scroll)).flex_1();
 
         div()
             .id("sidebar")

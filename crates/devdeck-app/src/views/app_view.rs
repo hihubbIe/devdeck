@@ -45,6 +45,8 @@ pub struct AppView {
     git: Option<gpui::Entity<super::git_view::GitView>>,
     /// While on screen: redraws now and then, so how long a run has run moves.
     tick: Option<gpui::Task<()>>,
+    /// Its scroll, read by its scrollbar.
+    scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -87,7 +89,7 @@ impl AppView {
             let (root, r, ctx) = (r.read(cx).root.clone(), r.clone(), ctx.clone());
             cx.new(|cx| super::git_view::GitView::new(root, r, ctx, cx))
         });
-        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, git, tick: None, _subs: subs }
+        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, git, tick: None, scroll: gpui::ScrollHandle::new(), _subs: subs }
     }
 
     /// A new terminal in its folder, opened as its other views are.
@@ -696,9 +698,11 @@ impl Render for AppView {
             .flex_1()
             .min_h_0()
             .scroll_y()
+            .track_scroll(&self.scroll)
             .flex()
             .flex_col()
             .child(div().px_3().pt_3().pb_3().flex().flex_wrap().gap_3().child(left).child(right));
+        let body = devdeck_ui::with_scrollbar("app-scrollbar", body, &self.scroll).flex_1();
 
         div()
             .id("app-view")

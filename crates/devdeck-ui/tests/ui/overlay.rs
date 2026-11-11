@@ -697,17 +697,20 @@ fn field(vcx: &mut VisualTestContext, modal: &Entity<TestModal>) -> Option<usize
 }
 
 #[gpui::test]
-fn a_modal_blocks_clicks_to_what_is_under_it(cx: &mut TestAppContext) {
+fn a_press_outside_a_modal_closes_it_and_reaches_nothing_under_it(cx: &mut TestAppContext) {
     let (mut vcx, window, under) = setup(cx);
     let t = the_theme(&mut vcx);
     let modal = push(&mut vcx, 1, false, "ok");
-    vcx.simulate_click(point(t.size(20.), t.size(20.)), Modifiers::none());
-    assert_eq!(under.reached(), (0, 0), "the backdrop took the click");
-    assert_eq!(modals(&mut vcx, window), 1, "and a backdrop click doesn't close the modal");
     let ok = vcx.debug_bounds("ok").expect("drawn");
     vcx.simulate_click(ok.center(), Modifiers::none());
     assert_eq!(vcx.read(|cx| modal.read(cx).clicks.get()), 1, "the modal's own controls take clicks");
-    assert_eq!(under.reached(), (0, 0));
+    let panel = vcx.debug_bounds("modal-panel").expect("drawn");
+    vcx.simulate_click(panel.origin + point(t.size(4.), t.size(4.)), Modifiers::none());
+    assert_eq!(modals(&mut vcx, window), 1, "a press in its panel, off its controls, keeps it");
+    vcx.simulate_click(point(t.size(20.), t.size(20.)), Modifiers::none());
+    assert_eq!(under.reached(), (0, 0), "the backdrop took the click");
+    assert_eq!(modals(&mut vcx, window), 0, "and closed the modal, as Esc");
+    assert!(focused(&mut vcx, &under.focus), "the focus back where it was");
 }
 
 #[gpui::test]

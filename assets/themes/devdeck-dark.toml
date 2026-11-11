@@ -27,7 +27,7 @@ backdrop = "#00000073" # dims the window behind modals
 focus = "#64a6e3"      # keyboard focus ring
 selection = "#64a6e34d" # selected text
 caret = "#e1e2e5"      # text caret
-scrollbar = "#ffffff1f" # scrollbar thumb
+scrollbar = "#ffffff38" # scrollbar thumb
 
 # Terminal colors for command output (16 ANSI colors plus defaults).
 [ansi]

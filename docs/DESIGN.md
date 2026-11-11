@@ -807,6 +807,14 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   page gets an Apps panel (each part's tag, its Deploy…, its app); a page with parts has
   no Envs (the server's tag is the same everywhere). An app's Deployments in Apps are its
   part's tag "in frontendapp" (`links::part_app`), a row going to that page.
+- 2026-11-11 (user) Scrollbars: `devdeck_ui::scrollbar` draws one over the right edge of
+  whatever scrolls (lists, pages, logs, the picker, help, notes, files): read from its
+  scroll handle as it paints, draggable, a press on the track brings the thumb there;
+  nothing when everything shows, the same width hovered or not (R9.10). Its thumb is the
+  theme's `scrollbar` color, made more visible. A press outside a modal closes it as Esc
+  does (its `ModalClose`; `ModalDismiss` for one whose Esc steps back first, the
+  palette). Fields read as captions over values: the caption small, dim, in capitals (as
+  a table's header), the value in the text's color; a panel's title in the text's color.
 
 ## Open questions
 

@@ -6,6 +6,7 @@ use devdeck_core::fuzzy;
 use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::ModalClose;
 use devdeck_ui::{InputEvent, TextInput, label, modal_frame, pop_modal, push_modal, section, theme};
+use gpui::StatefulInteractiveElement;
 use gpui::{
     App, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     Subscription, WeakFocusHandle, Window, div,
@@ -22,6 +23,8 @@ pub fn open(window: &mut Window, cx: &mut App) {
 pub struct CheatSheet {
     pub filter: Entity<TextInput>,
     restore: Option<WeakFocusHandle>,
+    /// Its scroll, read by its scrollbar.
+    scroll: gpui::ScrollHandle,
     _sub: Subscription,
 }
 
@@ -32,7 +35,7 @@ impl CheatSheet {
             InputEvent::Cancel => this.close(window, cx),
             _ => cx.notify(),
         });
-        Self { filter, restore, _sub: sub }
+        Self { filter, restore, scroll: gpui::ScrollHandle::new(), _sub: sub }
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -58,7 +61,7 @@ impl Render for CheatSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let entries = self.entries(cx);
-        let mut list = div().id("cheat-list").max_h(t.size(560.)).w(t.size(640.)).scroll_y().flex().flex_col();
+        let mut list = div().id("cheat-list").max_h(t.size(560.)).w(t.size(640.)).scroll_y().track_scroll(&self.scroll).flex().flex_col();
         let mut group = "";
         for s in &entries {
             if s.group != group {
@@ -87,7 +90,7 @@ impl Render for CheatSheet {
             .on_action(cx.listener(|this, _: &ModalClose, window, cx| this.close(window, cx)))
             .child(div().text_color(t.hi).child("Keys"))
             .child(div().debug_selector(|| "cheat-filter".into()).child(self.filter.clone()))
-            .child(list);
+            .child(devdeck_ui::with_scrollbar("cheat-scrollbar", list, &self.scroll));
         modal_frame(content.into_any_element(), window, &t)
     }
 }

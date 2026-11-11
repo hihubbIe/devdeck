@@ -122,6 +122,15 @@ fn the_palette_finds_drills_runs_on_an_env_and_dispatches_actions(cx: &mut TestA
     cx.simulate_keystrokes(main, "escape");
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 0);
+    // A press outside closes it, drilled in or not.
+    cx.simulate_keystrokes(main, "ctrl-k");
+    cx.simulate_input(main, "proxy");
+    cx.simulate_keystrokes(main, "tab");
+    cx.run_until_parked();
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.simulate_click(gpui::point(devdeck_ui::logical(8.), devdeck_ui::logical(300.)), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(overlay(&shell, cx).1, 0, "closed by a press outside");
     // An action runs where focus was (the panes).
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let panes = cx.read(|cx| deck.read(cx).layout().panes_in(MAIN_WINDOW).unwrap().len());

@@ -792,7 +792,7 @@ impl Render for ServiceLogsView {
                     } else {
                         list.scroll_xy().with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained).with_width_from_item(self.feed.buffer.longest_row().map(|r| r + 1))
                     };
-                    list.flex_1().min_h_0().into_any_element()
+                    devdeck_ui::with_scrollbar("logs-scrollbar", list.flex_1().min_h_0(), &devdeck_ui::list_handle(&self.scroll)).flex_1().into_any_element()
                 }
             }
         };

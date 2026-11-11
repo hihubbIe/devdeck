@@ -114,3 +114,43 @@ fn the_wheel_leaves_a_sideways_only_area_alone(cx: &mut TestAppContext) {
     gesture(&mut vcx, &[ScrollDelta::Lines(point(-1., 0.))]);
     assert!(handle.offset().x < logical(0.), "a sideways wheel (shift+wheel) scrolls it");
 }
+
+/// A 200×100 area over `content` px of rows, with its scrollbar.
+fn with_bar(cx: &mut TestAppContext, content: f32) -> (AnyWindowHandle, ScrollHandle) {
+    let handle = ScrollHandle::new();
+    let h = handle.clone();
+    let window = host(cx, move |_, _| {
+        let area = div().id("barred").w(logical(200.)).h(logical(100.)).scroll_y().track_scroll(&h).child(div().h(logical(content)));
+        div().w(logical(200.)).h(logical(100.)).child(devdeck_ui::with_scrollbar("bar", area, &h)).into_any_element()
+    });
+    (window, handle)
+}
+
+#[gpui::test]
+fn dragging_the_scrollbar_scrolls_and_a_press_on_its_track_jumps_there(cx: &mut TestAppContext) {
+    let (window, handle) = with_bar(cx, 1000.);
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.run_until_parked();
+    assert!(handle.max_offset().y > logical(0.), "more than shows");
+    let x = logical(196.);
+    // The thumb starts at the top: dragged to the bottom, the content's end shows.
+    vcx.simulate_mouse_down(point(x, logical(6.)), gpui::MouseButton::Left, Modifiers::none());
+    vcx.simulate_mouse_move(point(x, logical(150.)), Some(gpui::MouseButton::Left), Modifiers::none());
+    vcx.simulate_mouse_up(point(x, logical(150.)), gpui::MouseButton::Left, Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(handle.offset().y, -handle.max_offset().y, "dragged to the end");
+    // A press high on the track: the thumb comes there.
+    vcx.simulate_click(point(x, logical(4.)), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(handle.offset().y, logical(0.), "back at the top");
+}
+
+#[gpui::test]
+fn a_scrollbar_with_nothing_to_scroll_takes_no_press(cx: &mut TestAppContext) {
+    let (window, handle) = with_bar(cx, 50.);
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    vcx.run_until_parked();
+    vcx.simulate_click(point(logical(196.), logical(90.)), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!((handle.max_offset().y, handle.offset().y), (logical(0.), logical(0.)));
+}

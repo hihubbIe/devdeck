@@ -61,6 +61,8 @@ pub struct ServiceView {
     pub logs: Entity<ServiceLogsView>,
     /// The pods whose row is open.
     pub open_pods: BTreeSet<String>,
+    /// Its scroll, read by its scrollbar.
+    scroll: gpui::ScrollHandle,
     /// Why it isn't linked to an app, when it isn't.
     unlinked: Option<String>,
     visible: bool,
@@ -101,6 +103,7 @@ impl ServiceView {
             app: None,
             logs,
             open_pods: BTreeSet::new(),
+            scroll: gpui::ScrollHandle::new(),
             cluster,
             focus: cx.focus_handle(),
             tag,
@@ -623,9 +626,9 @@ impl Render for ServiceView {
                 Some(by) => format!("{} ago · {by}", fmt_age(now.saturating_sub(since))),
                 None => format!("{} ago", fmt_age(now.saturating_sub(since))),
             };
-            facts.push(("Deployed".into(), label(text).text_color(t.mute).into_any_element()));
+            facts.push(("Deployed".into(), label(text).into_any_element()));
         }
-        facts.push(("Revision".into(), label(d.revision.to_string()).text_color(t.mute).into_any_element()));
+        facts.push(("Revision".into(), label(d.revision.to_string()).into_any_element()));
         // What its ready pods use, against what they ask and may take.
         let res = d.main().resources;
         let n = d.replicas.max(1);
@@ -814,7 +817,7 @@ impl Render for ServiceView {
             "Logs",
             vec![open_logs.into_any_element()],
             // A fixed height: its lines scroll in it.
-            div().h(t.size(320.)).min_w_0().flex().flex_col().child(self.logs.clone()),
+            div().h(t.size(560.)).min_w_0().flex().flex_col().child(self.logs.clone()),
             &t,
         );
 
@@ -879,7 +882,7 @@ impl Render for ServiceView {
             let r = k.resources;
             let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
             let ports: Vec<String> = k.ports.iter().map(u16::to_string).collect();
-            let value = |text: String| label(text).text_color(t.mute).into_any_element();
+            let value = |text: String| label(text).into_any_element();
             containers = containers.child(
                 div()
                     .min_w_0()
@@ -915,13 +918,14 @@ impl Render for ServiceView {
             .flex_1()
             .min_h_0()
             .scroll_y()
+            .track_scroll(&self.scroll)
             .flex()
             .flex_col()
             .children(problem_line)
             .child(div().p_3().flex().flex_wrap().gap_3().child(left).child(right));
 
         self.window = Some(window.window_handle());
-        root.child(body)
+        root.child(devdeck_ui::with_scrollbar("service-scrollbar", body, &self.scroll).flex_1())
     }
 }
 
@@ -930,9 +934,9 @@ impl ServiceView {
     /// first), and its logs.
     fn pod_more(&self, p: &Pod, i: usize, now: u64, me: Entity<Self>, t: &Theme) -> gpui::Div {
         let mut facts: Vec<(SharedString, AnyElement)> = vec![
-            ("Node".into(), label(if p.node.is_empty() { "—".to_string() } else { p.node.clone() }).text_color(t.mute).into_any_element()),
-            ("Started".into(), label(p.started.map_or_else(|| "not yet".into(), |s| format!("{} ago", fmt_age(now.saturating_sub(s))))).text_color(t.mute).into_any_element()),
-            ("Tag".into(), label(p.tag.clone()).text_color(t.mute).into_any_element()),
+            ("Node".into(), label(if p.node.is_empty() { "—".to_string() } else { p.node.clone() }).into_any_element()),
+            ("Started".into(), label(p.started.map_or_else(|| "not yet".into(), |s| format!("{} ago", fmt_age(now.saturating_sub(s))))).into_any_element()),
+            ("Tag".into(), label(p.tag.clone()).into_any_element()),
         ];
         if let Some(l) = &p.last_termination {
             let at = l.at.map(|at| format!(" · {} ago", fmt_age(now.saturating_sub(at)))).unwrap_or_default();

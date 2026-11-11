@@ -641,6 +641,7 @@ impl Render for GitView {
         .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
+        let list = devdeck_ui::with_scrollbar("git-scrollbar", list, &devdeck_ui::list_handle(&self.scroll)).flex_1();
 
         root.child(header).child(actions).child(
             div()

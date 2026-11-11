@@ -161,6 +161,7 @@ impl Render for MatrixView {
         .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
+        let list = devdeck_ui::with_scrollbar("matrix-scrollbar", list, &devdeck_ui::list_handle(&self.scroll)).flex_1();
         div()
             .id("matrix-view")
             .key_context("MatrixView")

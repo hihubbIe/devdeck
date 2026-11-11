@@ -37,6 +37,8 @@ pub struct NoteView {
     /// The note was written other than in this editor: it takes the text at the next draw
     /// (setting it needs the window).
     reload: bool,
+    /// Its scroll, read by its scrollbar.
+    scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -63,7 +65,7 @@ impl NoteView {
                 }
             }),
         ];
-        Self { id, ctx: keep, notes, code: None, rendered_view: None, rendered, focus: cx.focus_handle(), leaving: false, reload: false, _subs: subs }
+        Self { id, ctx: keep, notes, code: None, rendered_view: None, rendered, focus: cx.focus_handle(), leaving: false, reload: false, scroll: gpui::ScrollHandle::new(), _subs: subs }
     }
 
     /// The editor, made now if it isn't yet, holding the note's text. Focus on the view
@@ -229,7 +231,11 @@ impl Render for NoteView {
                 self.rendered_view(&text, cx).into_any_element()
             };
             return root
-                .child(div().id("note-rendered").debug_selector(|| "note-rendered".into()).flex_1().min_h_0().scroll_y().px_3().py_2().child(body))
+                .child(devdeck_ui::with_scrollbar(
+                    "note-scrollbar",
+                    div().id("note-rendered").debug_selector(|| "note-rendered".into()).flex_1().min_h_0().scroll_y().track_scroll(&self.scroll).px_3().py_2().child(body),
+                    &self.scroll,
+                ).flex_1())
                 .into_any_element();
         }
         let code = self.editor(window, cx);

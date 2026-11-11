@@ -21,6 +21,7 @@ use crate::components::label;
 use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
+    MouseButton,
     Anchor, AnyElement, AnyView, AnyWindowHandle, App, AppContext, Context, Entity, FocusHandle, Global, Hsla,
     Pixels, Point, Render, ScrollHandle, SharedString, Subscription, Task, WeakFocusHandle, Window, WindowId, actions, anchored,
     deferred, div, point, prelude::*, px,
@@ -36,6 +37,16 @@ pub const PRIORITY_MENU: usize = 20;
 pub const PRIORITY_TOAST: usize = 30;
 
 actions!(overlay, [MenuUp, MenuDown, MenuConfirm, MenuClose, MenuOpenSub, MenuCloseSub, ModalNext, ModalPrev, ModalClose]);
+
+actions!(
+    overlay,
+    [
+        /// A press outside a modal, when the modal tells it from Esc (its `ModalClose`
+        /// steps back before closing, as the palette's out of a drill-down); bound to no
+        /// key. A modal without it gets `ModalClose`.
+        ModalDismiss
+    ]
+);
 
 /// How long the pointer rests on an item before its submenu opens.
 pub const SUBMENU_DELAY: Duration = Duration::from_millis(300);
@@ -473,7 +484,9 @@ impl ModalFocus {
     }
 }
 
-/// Backdrop and centered panel for a modal's content.
+/// Backdrop and centered panel for a modal's content. A press outside the panel closes
+/// the modal as Esc does (its own [`ModalClose`], or [`ModalDismiss`] when it has one, so
+/// it cleans up and gives the focus back); one inside stays there.
 pub fn modal_frame(content: AnyElement, window: &Window, t: &Theme) -> AnyElement {
     let viewport = window.viewport_size();
     deferred(
@@ -483,6 +496,10 @@ pub fn modal_frame(content: AnyElement, window: &Window, t: &Theme) -> AnyElemen
                 .w(viewport.width)
                 .h(viewport.height)
                 .occlude()
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    let close: Box<dyn gpui::Action> = if window.is_action_available(&ModalDismiss, cx) { Box::new(ModalDismiss) } else { Box::new(ModalClose) };
+                    window.dispatch_action(close, cx)
+                })
                 .bg(t.backdrop)
                 .flex()
                 .items_start()
@@ -490,6 +507,8 @@ pub fn modal_frame(content: AnyElement, window: &Window, t: &Theme) -> AnyElemen
                 .pt(viewport.height * 0.15)
                 .child(
                     div()
+                        .debug_selector(|| "modal-panel".into())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .min_w(t.size(420.))
                         .max_w(viewport.width - t.size(48.))
                         .bg(t.raised)

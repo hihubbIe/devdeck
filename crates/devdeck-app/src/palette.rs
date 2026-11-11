@@ -381,8 +381,11 @@ impl Render for Palette {
         )
         .track_scroll(&self.scroll)
         .h(t.size(360.));
+        let list = devdeck_ui::with_scrollbar("palette-scrollbar", list, &devdeck_ui::list_handle(&self.scroll));
         let content = div()
             .key_context("Modal")
+            // A press outside: closed, drilled in or not (Esc leaves a drill-down first).
+            .on_action(cx.listener(|this, _: &devdeck_ui::overlay::ModalDismiss, window, cx| this.close(window, cx)))
             .w(t.size(720.))
             .flex()
             .flex_col()

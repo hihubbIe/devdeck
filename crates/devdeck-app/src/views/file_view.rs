@@ -13,6 +13,7 @@ use crate::open_file::OpenFile;
 use devdeck_core::files::{FileText, read_text};
 use devdeck_ui::code::{self, Code};
 use devdeck_ui::{Icon, Rendered, Scrolls, label, theme};
+use gpui::StatefulInteractiveElement;
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled,
     Subscription, Task, Window, div, point, prelude::FluentBuilder,
@@ -59,6 +60,8 @@ pub struct FileView {
     restore_scroll: Option<Point<Pixels>>,
     /// The line to go to once the editor has the text.
     go_to: Option<usize>,
+    /// Its scroll, read by its scrollbar.
+    scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -92,6 +95,7 @@ impl FileView {
             loading: None,
             restore_scroll: None,
             go_to: None,
+            scroll: gpui::ScrollHandle::new(),
             _subs: subs,
         };
         view.load(cx);
@@ -336,17 +340,8 @@ impl Render for FileView {
                 .into_any_element(),
             Shown::Text { .. } if self.markdown && self.rendered => {
                 let rendered = self.rendered_view(cx);
-                root.child(
-                    div()
-                        .id("rendered")
-                        .debug_selector(|| "file-rendered".into())
-                        .flex_1()
-                        .min_h_0()
-                        .scroll_y()
-                        .px_3()
-                        .py_2()
-                        .child(rendered),
-                )
+                let scroller = div().id("rendered").debug_selector(|| "file-rendered".into()).flex_1().min_h_0().scroll_y().track_scroll(&self.scroll).px_3().py_2().child(rendered);
+                root.child(devdeck_ui::with_scrollbar("file-scrollbar", scroller, &self.scroll).flex_1())
                 .into_any_element()
             }
             Shown::Text { .. } => root
