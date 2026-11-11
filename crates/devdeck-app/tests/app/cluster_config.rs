@@ -220,7 +220,9 @@ fn start(cx: &mut TestAppContext, cluster: Option<ClusterConfig>, folder: &Path)
 
 #[gpui::test]
 fn a_cluster_section_brings_the_cluster_area_and_its_kubeconfig_problems(cx: &mut TestAppContext) {
-    let folder = kubeconfigs(cx, &[("dev-km011gcp", &kubeconfig(&["dev35"])), ("broken", "contexts: [[["), ("README.md", "* not yaml")]);
+    // The valid file has no context: the service page opened below reads every env (its
+    // Envs), and one there would dial its server for real.
+    let folder = kubeconfigs(cx, &[("dev-km011gcp", &kubeconfig(&[])), ("broken", "contexts: [[["), ("README.md", "* not yaml")]);
     let contexts = BTreeMap::from([("hades".to_string(), "hades00-hecate".to_string())]);
     let shell = start(cx, Some(ClusterConfig { kubeconfigs: folder.clone(), contexts }), &folder);
     let s = cx.read(|cx| shell.read(cx).workspaces[0].services.clone());

@@ -42,7 +42,6 @@ pub enum PodMark {
 pub fn pods_bar(name: &str, pods: &[PodMark], t: &Theme) -> gpui::Stateful<gpui::Div> {
     let wanted = pods.iter().filter(|p| **p != PodMark::Old).count();
     let ready = pods.iter().filter(|p| **p == PodMark::Ready).count();
-    let side = t.size(9.);
     let mut row = div()
         .id(SharedString::from(format!("{name}-pods")))
         .debug_selector({
@@ -56,13 +55,18 @@ pub fn pods_bar(name: &str, pods: &[PodMark], t: &Theme) -> gpui::Stateful<gpui:
         .tooltip(crate::tip(format!("{ready} of {wanted} ready")));
     for (i, p) in pods.iter().enumerate() {
         let part = format!("{name}-{i}");
-        let square = div().debug_selector(move || part).flex_none().size(side).rounded(t.hairline);
-        row = row.child(match p {
-            PodMark::Ready => square.bg(t.ok),
-            PodMark::Starting => square.border_1().border_dashed().border_color(t.warn),
-            PodMark::Failing => square.bg(t.err),
-            PodMark::Old => square.bg(t.dim),
-        });
+        row = row.child(pod_square(*p, t).debug_selector(move || part));
     }
     row
+}
+
+/// One pod's square, as a [`pods_bar`] draws it (a pod's row starts with it).
+pub fn pod_square(mark: PodMark, t: &Theme) -> gpui::Div {
+    let square = div().flex_none().size(t.size(9.)).rounded(t.hairline);
+    match mark {
+        PodMark::Ready => square.bg(t.ok),
+        PodMark::Starting => square.border_1().border_dashed().border_color(t.warn),
+        PodMark::Failing => square.bg(t.err),
+        PodMark::Old => square.bg(t.dim),
+    }
 }

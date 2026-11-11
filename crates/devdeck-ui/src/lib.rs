@@ -16,7 +16,7 @@ pub mod text_input;
 pub mod theme;
 pub mod toolbar;
 
-pub use bars::{PodMark, pods_bar, usage_bar};
+pub use bars::{PodMark, pod_square, pods_bar, usage_bar};
 pub use code::{Code, CodeEvent, MenuOpener, Rendered};
 pub use components::*;
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};

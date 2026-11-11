@@ -1228,6 +1228,26 @@ fn apps_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Sh
     cx.run_until_parked();
 }
 
+/// Cluster with a service's page: its panels, its first pod's row open, logs read.
+fn cluster_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Cluster, "graphservice", cx)));
+    cx.advance_clock(devdeck_app::cluster::LOAD_DELAY);
+    cx.run_until_parked();
+    cx.advance_clock(Duration::from_secs(6));
+    cx.run_until_parked();
+    let deck = cx.update(|cx| shell.read(cx).active_deck());
+    let top = cx.update(|cx| deck.read(cx).outside().and_then(|o| o.last().cloned())).expect("a page");
+    let view = cx.update(|cx| deck.read(cx).view(&top)).and_then(|v| v.downcast::<devdeck_app::views::service_view::ServiceView>().ok()).expect("its page");
+    let c = work_cluster(cx, shell);
+    let env = cx.update(|cx| s.read(cx).list_env(cx)).expect("the list's env");
+    let pod = cx.update(|cx| c.read(cx).pods(&env, "graphservice").first().map(|p| p.name.clone()));
+    if let Some(pod) = pod {
+        cx.update(|cx| view.update(cx, |v, cx| v.toggle_pod(&pod, cx)));
+    }
+    cx.run_until_parked();
+}
+
 fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     let deck = with_layouts(cx, shell);
     let _ = cx.update_window(w, |_, window, cx| devdeck_app::layouts::open_save_as(deck.clone(), window, cx));
@@ -1485,6 +1505,7 @@ fn states() -> Vec<State> {
         w("B1-layouts-list", "work", 1.0, Some(layouts_list)),
         w("B2-layout-save-error", "work", 1.0, Some(layout_save_error)),
         w("B3-apps-view", "work", 1.0, Some(apps_view)),
+        w("B4-cluster-view", "work", 1.0, Some(cluster_view)),
         w("C0-file-rust", "work", 1.0, Some(file_rust)),
         w("C1-file-md-rendered", "work", 1.0, Some(file_md_rendered)),
         w("C2-file-md-source", "work", 1.0, Some(file_md_source)),

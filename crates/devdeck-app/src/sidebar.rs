@@ -83,7 +83,7 @@ impl Activity {
     /// Whether it shows as a full view: its list, then its selection's details instead
     /// of the pulse's panes (Apps; the others, their list beside the panes, for now).
     pub fn full_view(self) -> bool {
-        self == Activity::Apps
+        matches!(self, Activity::Apps | Activity::Cluster)
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
@@ -192,6 +192,8 @@ pub struct Sidebar {
     pub selected: Option<String>,
     /// Each list's selection while another shows: back to it, it's where it was.
     left: std::collections::HashMap<Activity, String>,
+    /// Cluster: the branch matrix the whole width, the list hidden.
+    pub matrix: bool,
     scroll: UniformListScrollHandle,
     save_failed: bool,
     /// The list env's pods, while the Cluster list shows with **watch** on.
@@ -261,6 +263,7 @@ impl Sidebar {
             list_focus: cx.focus_handle(),
             selected: None,
             left: Default::default(),
+            matrix: false,
             scroll: UniformListScrollHandle::new(),
             save_failed: false,
             pods: None,
@@ -276,7 +279,10 @@ impl Sidebar {
     /// On a full view the details show its selection (none for a folder); elsewhere the
     /// pulse's panes show.
     fn follow(&mut self, cx: &mut Context<Self>) {
-        let base = self.activity().full_view().then(|| self.selected.as_deref().filter(|k| !k.ends_with('/')).and_then(|k| self.view_ref(k, cx)));
+        let base = self.activity().full_view().then(|| match self.activity() {
+            Activity::Cluster if self.matrix => Some(ViewAddr::Matrix.to_ref()),
+            _ => self.selected.as_deref().filter(|k| !k.ends_with('/')).and_then(|k| self.view_ref(k, cx)),
+        });
         self.deck.update(cx, |d, cx| match base {
             Some(base) => d.show_outside(base, cx),
             None => d.hide_outside(cx),
@@ -477,11 +483,6 @@ impl Sidebar {
                                 .map(|d| {
                                     let rollout = c.rollout(env, &d.name).filter(|r| !r.finished());
                                     let rolling = rollout.is_some_and(|r| matches!(r.state, devdeck_core::cluster::RolloutState::Rolling { .. }));
-                                    let mut tag = if d.others() > 0 { format!("{} +{}", d.tag(), d.others()) } else { d.tag() };
-                                    // A rollout can last (a stuck one forever): said, not spun; a followed one says how far.
-                                    if let Some(state) = rollout.and_then(|r| r.label()).or_else(|| d.progress.label().map(str::to_string)) {
-                                        tag.push_str(&format!(" · {state}"));
-                                    }
                                     let failing = rollout.and_then(|r| match &r.state {
                                         devdeck_core::cluster::RolloutState::Failing { reason, .. } | devdeck_core::cluster::RolloutState::Stuck { reason } => Some(reason.clone()),
                                         _ => None,
@@ -502,7 +503,12 @@ impl Sidebar {
                                     let hint = (!hint.is_empty()).then(|| format!("{} {} · {}", d.name, d.tag(), hint.join(" · ")));
                                     // Watching pods: a pod in trouble marks the row with its reason.
                                     let trouble = failing.or_else(|| pods.iter().find_map(|p| p.trouble()).map(str::to_string));
-                                    ListItem::new(d.name.clone(), d.name.clone()).detail(tag).busy(rolling).running(d.ready == d.replicas).hint(hint).warning(trouble)
+                                    ListItem::new(d.name.clone(), d.name.clone())
+                                        .busy(rolling)
+                                        .running(d.ready == d.replicas)
+                                        .hint(hint)
+                                        .pods(d.ready, d.replicas, trouble.is_some())
+                                        .warning(trouble)
                                 })
                                 .collect()
                         })
@@ -1056,10 +1062,19 @@ impl Sidebar {
         true
     }
 
+    /// Cluster: the branch matrix the whole width, or the list and its selection again.
+    pub fn toggle_matrix(&mut self, cx: &mut Context<Self>) {
+        self.matrix = !self.matrix;
+        cx.notify();
+    }
+
     /// "Go there" from another view: `activity` shown with `key` selected (a Cluster
     /// deployment on `env`, the list's env then); until that activity has its own full
     /// view, its item also opens in the pulse, as a click on its row does.
     pub fn pivot(&mut self, activity: Activity, key: &str, env: Option<&str>, cx: &mut Context<Self>) -> bool {
+        if activity == Activity::Cluster {
+            self.matrix = false;
+        }
         if env.is_some() && activity == Activity::Cluster {
             let follows = env == self.services.read(cx).env.as_deref();
             self.set_list_env(if follows { None } else { env }, cx);
@@ -1364,18 +1379,9 @@ impl Render for Sidebar {
                 )
 
                     .child(
-                        devdeck_ui::button("open-matrix", "matrix", &t)
-                            .tooltip(tip("tags of every service on every env"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let view = ViewAddr::Matrix.to_ref();
-                                this.deck.update(cx, |d, cx| {
-                                    d.apply(cx, |l| {
-                                        let p = l.main().focused;
-                                        l.open(view, p).map(|_| ())
-                                    });
-                                });
-                            })),
-                    )
+                        devdeck_ui::icon_action("open-matrix", Icon::Matrix, "the branch matrix: every service on every env", true, &t)
+                            .debug_selector(|| "open-matrix".into())
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_matrix(cx))),                    )
             })
             .when(activity == Activity::Cluster, |d| {
                 d.child(
@@ -1676,6 +1682,11 @@ fn render_row(
                 .child(div().flex_1().min_w_0().truncate().text_color(text_color).child(label_text))
                 .when_some(kids.filter(|k| !k.open), |d, k| d.child(holds(k, t)))
                 .when(item.busy, |d| d.child(icon(Icon::Busy, t.accent, t)))
+                .when_some(item.pods, |d, (ready, wanted, failing)| {
+                    let other = if failing { devdeck_ui::PodMark::Failing } else { devdeck_ui::PodMark::Starting };
+                    let marks: Vec<devdeck_ui::PodMark> = (0..wanted.min(12)).map(|i| if i < ready { devdeck_ui::PodMark::Ready } else { other }).collect();
+                    d.child(devdeck_ui::pods_bar(&format!("row-pods-{key}"), &marks, t))
+                })
                 .when_some(item.warning.clone().filter(|_| !look.quiet_warning).map(|w| (w, t.warn)).or((!item.detail.is_empty()).then(|| (item.detail.clone(), t.dim))), |d, (detail, color)| {
                     d.child(div().flex_none().max_w(gpui::relative(0.6)).truncate().text_color(color).child(detail))
                 })

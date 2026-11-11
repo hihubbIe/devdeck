@@ -44,11 +44,18 @@ pub struct ListItem {
     pub dim: bool,
     /// Shown on hover instead of the label (what the detail leaves out).
     pub hint: Option<String>,
+    /// Its pods, drawn as squares at the row's end: ready, wanted, whether the others fail.
+    pub pods: Option<(u32, u32, bool)>,
 }
 
 impl ListItem {
     pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, busy: false, warning: None, path: None, dim: false, hint: None }
+        Self { key: key.into(), label: label.into(), detail: String::new(), running: false, busy: false, warning: None, path: None, dim: false, hint: None, pods: None }
+    }
+
+    pub fn pods(mut self, ready: u32, wanted: u32, failing: bool) -> Self {
+        self.pods = Some((ready, wanted, failing));
+        self
     }
 
     pub fn hint(mut self, h: Option<String>) -> Self {

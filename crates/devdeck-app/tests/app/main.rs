@@ -12,6 +12,7 @@ mod api_runs;
 mod api_waits;
 mod apps_view;
 mod cluster_config;
+mod cluster_page;
 mod cluster_pods;
 mod cluster_views;
 mod components;

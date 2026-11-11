@@ -1063,7 +1063,9 @@ impl Render for WindowView {
                 Some(sidebar) => {
                     // A full view: its list always, then its selection's details instead of the panes.
                     let full = sidebar.read(cx).activity().full_view();
-                    let visible = full || sidebar.read(cx).state.visible;
+                    // The branch matrix takes the whole width: no list beside it.
+                    let matrix = full && sidebar.read(cx).activity() == Activity::Cluster && sidebar.read(cx).matrix;
+                    let visible = (full || sidebar.read(cx).state.visible) && !matrix;
                     let width = self.sidebar_w(window, &t, cx);
                     let (shell, drag_shell) = (self.shell.clone(), self.shell.clone());
                     let (activity_w, grab, scale) = (t.activity_w, t.divider_grab, t.scale);
@@ -1088,7 +1090,7 @@ impl Render for WindowView {
                             shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
                             window.refresh();
                         })
-                        .child(if full { details(&self.deck, &t, cx) } else { panes.into_any_element() })
+                        .child(if full { details(&self.deck, matrix.then(|| sidebar.clone()), &t, cx) } else { panes.into_any_element() })
                         .into_any_element()
                 }
                 None => panes.into_any_element(),
@@ -1182,7 +1184,7 @@ impl Render for WindowView {
 /// A full view's details (Apps): a header saying where they are (each part goes back to
 /// it, the back icon to the one before), then the view on top; a word with nothing
 /// selected.
-fn details(deck: &Entity<Deck>, t: &Theme, cx: &App) -> AnyElement {
+fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, t: &Theme, cx: &App) -> AnyElement {
     let d = deck.read(cx);
     let stack = d.outside().unwrap_or_default();
     let Some(top) = stack.last() else {
@@ -1212,6 +1214,14 @@ fn details(deck: &Entity<Deck>, t: &Theme, cx: &App) -> AnyElement {
         .bg(t.bar)
         .border_b_1()
         .border_color(t.line);
+    // The matrix shown alone: the list comes back from here.
+    if let Some(s) = matrix_of {
+        head = head.child(
+            devdeck_ui::icon_action("details-list", Icon::Back, "back to the services", true, t)
+                .debug_selector(|| "details-list".into())
+                .on_click(move |_, _, cx| s.update(cx, |s, cx| s.toggle_matrix(cx))),
+        );
+    }
     if stack.len() > 1 {
         let (back, to) = (deck.clone(), stack.len() - 2);
         head = head.child(devdeck_ui::icon_action("details-back", Icon::Back, "back", true, t).debug_selector(|| "details-back".into()).on_click(move |_, _, cx| back.update(cx, |d, cx| d.back_to(to, cx))));

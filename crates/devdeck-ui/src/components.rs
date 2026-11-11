@@ -327,6 +327,23 @@ pub fn panel(name: &str, title: impl Into<SharedString>, actions: Vec<AnyElement
         .child(div().px_1().py_1().flex().flex_col().min_w_0().child(body))
 }
 
+/// Fields of a summary: each a small caption over its value, side by side, wrapping to the
+/// next line when the room runs out (a dashboard's facts: state, tag, revision…).
+pub fn fields(items: Vec<(SharedString, AnyElement)>, t: &Theme) -> gpui::Div {
+    let mut row = div().flex().flex_wrap().gap_x_6().gap_y_1().px_2().py_1();
+    for (caption, value) in items {
+        row = row.child(
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_size(t.text_small).text_color(t.dim).child(caption))
+                .child(div().min_h(t.row_h).flex().items_center().min_w_0().child(value)),
+        );
+    }
+    row
+}
+
 /// Section heading inside a view: muted text over a soft hairline.
 pub fn section(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
     div()

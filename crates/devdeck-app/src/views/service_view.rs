@@ -1,35 +1,42 @@
-//! Service inspector (`svc/<env>/<name>`, R7.2–R7.6, R7.8): header, actions (redeploy the
-//! same branch among them), the tag row (the tag editor with its suggestions, the deploy
-//! rocket or ctrl+s → confirmation stating the exact command, waiting for the cluster's
-//! answer; the notify dropdown; the unsaved marker), the deploy followed to its end,
-//! protected-env unlock, then metrics, pods, container and the deploy history. Opening it
-//! asks the cluster whether the account may change deployments there.
+//! Service page (`svc/<env>/<name>`, R7.2–R7.6, R7.8): one page of panels, its title the
+//! header's (a tab's, Cluster's details). Deployment: its facts (state, tag, pods, when and
+//! by whom, revision, usage, the protected env), the rollout under way, then Deploy… (the
+//! picker, then the confirmation stating the exact command, waiting for the cluster's
+//! answer), Redeploy, the notify dropdown and the lock, together. Pods: a table whose rows
+//! open in place (node, last end, containers, init ones first). Logs: the service's logs
+//! view, in it. Envs: its tag and pods on each, a row shows that env. History, Containers.
+//! Opening it asks the cluster whether the account may change deployments there.
 //!
 //! Metrics are sampled only while the view is visible (it holds a [`Sampling`] handle).
-//! Keys (`ServiceView`): ctrl+s deploy, l logs, t edit tag, r redeploy, b notify; Esc in the
-//! tag editor reverts it (the pane then gives the keys back to the view). What the notify
-//! dropdown ticks is the cluster's ([`crate::cluster_notes`]): it outlives the view.
+//! Keys (`ServiceView`): ctrl+s deploy, l logs on their own, r redeploy, b notify. What the
+//! notify dropdown ticks is the cluster's ([`crate::cluster_notes`]): it outlives the view.
 
+use super::logs_view::ServiceLogsView;
 use super::{ViewCx, fmt_age};
+use crate::sidebar::Activity;
 use crate::cluster::{Cluster, PodScope, PodsInterest, Sampling, WriteState};
 use crate::danger::{self, Confirmed, DangerModal};
 use crate::repo::{Looking, Repo};
-use devdeck_core::cluster::{Deployment, Pod, Remote, RolloutState, redeploy_warning, unlock_matches};
+use devdeck_core::cluster::{Deployment, Pod, PodPhase, Remote, RolloutState, redeploy_warning, unlock_matches};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::Scrolls;
 use devdeck_ui::overlay::{ModalClose, ModalNext, ModalPrev};
 use devdeck_ui::{
-    Icon, InputEvent, MenuItem, ModalFocus, PickGroup, PickOption, PickerSpec, TextInput, Theme, ToastKind, button, dot, icon, icon_text, label, modal_frame,
-    notify_button, open_menu, open_picker, pop_modal, push_modal, section, theme, tip, toasts, under,
+    Column, Icon, InputEvent, MenuItem, ModalFocus, PickGroup, PickOption, PickerSpec, PodMark, TextInput, Theme, ToastKind, button, dot, icon, icon_action, icon_text,
+    label, modal_frame, notify_button, open_menu, open_picker, pop_modal, push_modal, table_head, table_more, table_row, theme, tip, toasts, under,
 };
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use gpui::{
-    AnyWindowHandle, App, AppContext, Bounds, Pixels, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
+    AnyElement, AnyWindowHandle, App, AppContext, Bounds, Pixels, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, WeakFocusHandle, Window, actions, div, prelude::*,
 };
 
-actions!(service_view, [SaveTag, OpenLogs, Redeploy, NotifyMenu, ConfirmModal]);
+actions!(service_view, [SaveTag, OpenLogs, Redeploy, NotifyMenu, ConfirmModal, OpenApp]);
+
+/// Its header's action (a tab's, Cluster's details): the registry's id.
+pub const OPEN_APP: &str = "svc.app";
 
 pub struct ServiceView {
     pub env: String,
@@ -45,8 +52,13 @@ pub struct ServiceView {
     sampling: Option<Sampling>,
     /// Its pods are watched while it's open.
     _pods: PodsInterest,
-    /// The app it's deployed from and its repository, once linked (M3 step 3).
+    /// The app it's deployed from, once linked, and its repository (M3 step 3).
+    app: Option<String>,
     repo: Option<(String, Entity<Repo>)>,
+    /// Its logs, in the page (read while it shows, as a `logs/…` tab would).
+    pub logs: Entity<ServiceLogsView>,
+    /// The pods whose row is open.
+    pub open_pods: BTreeSet<String>,
     /// Why it isn't linked to an app, when it isn't.
     unlinked: Option<String>,
     visible: bool,
@@ -72,12 +84,21 @@ impl ServiceView {
         subs.extend(ctx.on_visibility(cx, |this, visible, cx| this.set_visible(visible, cx)));
         let pods = cluster.update(cx, |c, cx| {
             c.check_access(&env, cx);
+            // Its Envs panel: every env read, as the matrix does.
+            c.want_all(cx);
             c.pods_interest(&env, PodScope::Service(name.clone()), cx)
         });
+        let logs = {
+            let (env, name, ctx, cluster) = (env.clone(), name.clone(), ctx.clone(), cluster.clone());
+            cx.new(|cx| ServiceLogsView::new(env, name, ctx, cluster, cx))
+        };
         let mut this = Self {
             env,
             name,
             ctx,
+            app: None,
+            logs,
+            open_pods: BTreeSet::new(),
             cluster,
             focus: cx.focus_handle(),
             tag,
@@ -129,6 +150,11 @@ impl ServiceView {
                 return;
             }
         };
+        if self.app.as_ref() != Some(&id) {
+            self.app = Some(id.clone());
+            self.unlinked = None;
+            cx.notify();
+        }
         let Some(dir) = self.ctx.services.read(cx).catalog.app(&id).map(|a| a.dir.clone()) else { return };
         let Some(repo) = self.ctx.services.update(cx, |s, cx| s.repo(&dir, cx)) else {
             self.unlinked = Some(format!("{id} isn't in a git repository"));
@@ -142,10 +168,35 @@ impl ServiceView {
         self.repo = Some((id, repo));
     }
 
-    fn open_git(&mut self, cx: &mut Context<Self>) {
-        let Some((_, repo)) = &self.repo else { return };
-        let root = repo.read(cx).root.display().to_string();
-        self.ctx.open(ViewAddr::Git { root }, cx);
+    /// Its app in Apps.
+    fn open_app(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.app.clone() {
+            self.ctx.pivot(Activity::Apps, id, None, cx);
+        }
+    }
+
+    /// Opens or closes a pod's row.
+    pub fn toggle_pod(&mut self, pod: &str, cx: &mut Context<Self>) {
+        if !self.open_pods.remove(pod) {
+            self.open_pods.insert(pod.to_string());
+        }
+        cx.notify();
+    }
+
+    /// Its logs panel shows `pod`'s lines only (`None`: every pod's).
+    pub fn logs_of(&mut self, pod: Option<SharedString>, cx: &mut Context<Self>) {
+        self.logs.update(cx, |l, cx| l.set_pod(pod, cx));
+    }
+
+    /// A pod row's menu: the pod on its own, its lines in the logs panel.
+    fn pod_menu(this: &Entity<Self>, pod: &str, cx: &App) -> Vec<MenuItem> {
+        let s = this.read(cx);
+        let (ctx, addr) = (s.ctx.clone(), ViewAddr::Pod { env: s.env.clone(), pod: pod.to_string() });
+        let (me, name) = (this.clone(), SharedString::from(pod.to_string()));
+        vec![
+            MenuItem::new("Open pod", move |_, cx| ctx.open(addr.clone(), cx)),
+            MenuItem::new("Logs", move |_, cx| me.update(cx, |s, cx| s.logs_of(Some(name.clone()), cx))),
+        ]
     }
 
     /// Keeps the editor on the deployed tag unless the user changed it.
@@ -375,8 +426,49 @@ fn quantity(v: Option<u32>, unit: &str) -> String {
     v.map_or_else(|| "none".into(), |v| format!("{v}{unit}"))
 }
 
-fn phase_text(p: &Pod) -> (String, bool) {
-    (p.phase.text(), p.phase.ok())
+/// A pod in a word, colored by how much it matters: what a row of the pods says.
+fn pod_state(p: &Pod, t: &Theme) -> (String, Hsla) {
+    match &p.phase {
+        PodPhase::Running if p.ready => ("running".into(), t.ok),
+        PodPhase::Running => ("starting".into(), t.warn),
+        PodPhase::Pending => ("pending".into(), t.warn),
+        PodPhase::Terminating => ("terminating".into(), t.mute),
+        PodPhase::Succeeded => ("ended".into(), t.mute),
+        PodPhase::Waiting(r) if p.trouble().is_none() => (r.clone(), t.warn),
+        PodPhase::Waiting(r) | PodPhase::Failed(r) => (r.clone(), t.err),
+    }
+}
+
+/// A pod's square, as its state says.
+fn pod_mark(p: &Pod) -> PodMark {
+    match &p.phase {
+        _ if p.ready => PodMark::Ready,
+        PodPhase::Failed(_) => PodMark::Failing,
+        PodPhase::Waiting(_) if p.trouble().is_some() => PodMark::Failing,
+        PodPhase::Terminating | PodPhase::Succeeded => PodMark::Old,
+        _ => PodMark::Starting,
+    }
+}
+
+/// The pods' table: the name takes the room left, the data columns don't move.
+const POD_COLS: [Column; 6] =
+    [Column::rest("POD"), Column::fixed("STATE", 110.), Column::fixed("AGE", 50.), Column::fixed("RESTARTS", 64.).right(), Column::fixed("CPU", 64.), Column::fixed("MEMORY", 70.)];
+/// A pod's containers, under its row.
+const CONTAINER_COLS: [Column; 3] = [Column::rest("CONTAINER"), Column::fixed("STATE", 220.), Column::fixed("RESTARTS", 64.).right()];
+const ENV_COLS: [Column; 3] = [Column::rest("ENV"), Column::fixed("TAG", 130.), Column::fixed("PODS", 90.)];
+const HISTORY_COLS: [Column; 3] = [Column::fixed("WHEN", 56.), Column::fixed("WHO", 110.), Column::rest("CHANGE")];
+
+/// Its header's icon: its app in Apps, once linked.
+impl super::Live for ServiceView {
+    fn actions(&self, _cx: &App) -> Vec<super::ViewAction> {
+        self.app.as_ref().map(|_| super::ViewAction { id: OPEN_APP, icon: Icon::Apps, on: false }).into_iter().collect()
+    }
+
+    fn run(&mut self, id: &str, _window: &mut Window, cx: &mut Context<Self>) {
+        if id == OPEN_APP {
+            self.open_app(cx);
+        }
+    }
 }
 
 impl Render for ServiceView {
@@ -401,6 +493,7 @@ impl Render for ServiceView {
             }))
             .on_action(cx.listener(|this, _: &OpenLogs, _, cx| this.open_logs(cx)))
             .on_action(cx.listener(|this, _: &Redeploy, _, cx| this.redeploy(cx)))
+            .on_action(cx.listener(|this, _: &OpenApp, _, cx| this.open_app(cx)))
             .on_action(cx.listener(|this, _: &NotifyMenu, window, cx| this.open_notify(window, cx)));
         let message = |text: String, color: Hsla| div().flex_1().flex().items_center().justify_center().text_color(color).child(label(text));
         let d = match (&state, c.deployment(&self.env, &self.name)) {
@@ -411,126 +504,67 @@ impl Render for ServiceView {
             (Remote::Ready(_), None) => return root.child(message(format!("{} isn't deployed in {}.", self.name, self.env), t.mute)),
             (Remote::Ready(_), Some(d)) => d.clone(),
         };
+        let now = c.now_s();
         let rollout = c.rollout(&self.env, &self.name).cloned();
         let pods_state = c.pods_state(&self.env, &self.name);
         let pods: Vec<Pod> = pods_state.ready().map(|p| p.to_vec()).unwrap_or_default();
         let usage = |p: &Pod| c.usage(&self.env, &p.name);
         let history = c.history(&self.env, &self.name).to_vec();
-        let metrics = c.metrics_allowed(&self.env);
         let redeploy_blocked = self.redeploy_blocked(cx);
-        let (status_mark, status, status_color) = match rollout.as_ref().map(|r| &r.state) {
-            Some(RolloutState::Rolling { ready, of }) => (icon(Icon::Busy, t.accent, &t).into_any_element(), format!("rolling {ready}/{of}"), t.accent),
-            Some(RolloutState::Failing { .. }) => (icon(Icon::Error, t.err, &t).into_any_element(), "rollout failing".to_string(), t.err),
-            Some(RolloutState::Stuck { .. }) => (icon(Icon::Error, t.err, &t).into_any_element(), "rollout stuck".to_string(), t.err),
-            _ if d.ready == d.replicas => (dot(t.ok, true, &t).into_any_element(), format!("ready {}/{}", d.ready, d.replicas), t.ok),
-            _ => (icon(Icon::Warning, t.warn, &t).into_any_element(), format!("ready {}/{}", d.ready, d.replicas), t.warn),
-        };
+        let small = t.icon_small;
 
-        let header = div()
-            .flex_none()
-            .px_3()
-            .py_2()
-            .flex()
-            .items_center()
-            .gap_3()
-            .border_b_1()
-            .border_color(t.line_soft)
-            .child(div().flex_none().text_color(t.hi).child(d.name.clone()))
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .text_color(if protected { t.err } else { t.env })
-                    .when(protected, |d| d.child(icon(Icon::Protected, t.err, &t)))
-                    .child(format!("@{}", self.env)),
-            )
-            .when(protected, |h| {
-                h.child(div().flex_none().text_color(if self.unlocked { t.warn } else { t.mute }).child(if self.unlocked { "unlocked" } else { "locked" }))
-            })
-            .child(div().flex_none().flex().items_center().gap_1().text_color(status_color).child(status_mark).child(status))
-            .child(
-                label(match (d.progress.label(), c.since(&self.env, &d)) {
-                    (Some(state), _) => format!("{} · {state}", d.tag()),
-                    (None, Some(since)) => format!("{} · since {}", d.tag(), fmt_age(c.now_s().saturating_sub(since))),
-                    (None, None) => d.tag(),
-                })
-                .text_color(t.mute)
-                .flex_1(),
-            );
-
-        let action = |id: &'static str, text: &'static str, why: Option<String>| {
-            let enabled = why.is_none();
-            button(id, text, &t).when(!enabled, |b| b.text_color(t.dim)).tooltip(tip(why.unwrap_or_else(|| text.to_string())))
+        // ---- Deployment: its facts, the rollout under way, then what can be done with it.
+        let (mark, word, color) = match rollout.as_ref().map(|r| &r.state) {
+            Some(RolloutState::Rolling { .. }) => (icon(Icon::Busy, t.accent, &t).size(small).into_any_element(), "rolling out", t.accent),
+            Some(RolloutState::Failing { .. }) => (icon(Icon::Error, t.err, &t).size(small).into_any_element(), "failing", t.err),
+            Some(RolloutState::Stuck { .. }) => (icon(Icon::Error, t.err, &t).size(small).into_any_element(), "stuck", t.err),
+            _ if d.replicas == 0 => (dot(t.dim, false, &t).into_any_element(), "stopped", t.mute),
+            _ if d.ready == d.replicas => (dot(t.ok, true, &t).into_any_element(), "running", t.ok),
+            _ => (icon(Icon::Warning, t.warn, &t).size(small).into_any_element(), "not ready", t.warn),
         };
-        // Deploying's actions together (deploy, redeploy, notify), then where to look.
-        let actions = div()
-            .flex_none()
-            .px_3()
-            .py_1()
-            .flex()
-            .items_center()
-            .gap_1()
-            .border_b_1()
-            .border_color(t.line_soft)
-            .child({
-                let me = me.clone();
-                devdeck_ui::labeled_button("svc-deploy", Icon::Deploy, "Deploy…", &t)
-                    .debug_selector(|| "svc-deploy".into())
-                    .on_click(move |_, window, cx| ServiceView::open_deploy(&me, window, cx))
-            })
-            .child(action("redeploy", "Redeploy", redeploy_blocked).debug_selector(|| "svc-redeploy".into()).on_click(cx.listener(|this, _, _, cx| this.redeploy(cx))))
-            .child({
-                let ticked = !c.notify_options(&self.env, &self.name).is_empty();
-                notify_button("notify", ticked, self.notify_at.clone(), &t)
-                    .debug_selector(|| "tag-notify".into())
-                    .on_click(cx.listener(|this, _, window, cx| this.open_notify(window, cx)))
-            })
-            .child(div().w(t.size(12.)))
-            .child(action("logs", "Logs", None).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))))
-            .child(action("git", "Git", self.repo.is_none().then(|| self.unlinked.clone().unwrap_or_else(|| "linking to its app…".into()))).on_click(cx.listener(|this, _, _, cx| this.open_git(cx))))
-            .when(protected, |a| {
-                a.child(div().flex_1()).child(
-                    action("lock", if self.unlocked { "Lock" } else { "Unlock…" }, None).on_click(cx.listener(|this, _, _, cx| {
-                        if this.unlocked {
-                            this.unlocked = false;
-                            cx.notify();
-                        } else {
-                            this.request_unlock(cx);
-                        }
-                    })),
-                )
-            });
-
-        // A list kept over a lost connection: what's wrong, above it.
-        let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pb_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
-        // Its app's repository: the branch checked out, and the running tag's branch on the
-        // remote (its last commit, and when the remote was last fetched).
-        let repo_text = match (&self.repo, &self.unlinked) {
-            (Some((id, repo)), _) => Some(match repo.read(cx).snapshot() {
-                None => format!("app {id} · reading its repository…"),
-                Some(s) => {
-                    let now = c.now_s();
-                    let head = match &s.status.head {
-                        devdeck_core::git::Head::Branch(b) => format!("on {b} locally"),
-                        devdeck_core::git::Head::Detached(commit) => format!("detached at {commit} locally"),
-                        devdeck_core::git::Head::Unborn(b) => format!("on {b} (no commit) locally"),
-                    };
-                    let tag = d.tag();
-                    let remote = s.branches.iter().find(|b| b.remote.as_ref().is_some_and(|r| b.name == format!("{r}/{tag}")));
-                    let running = match remote {
-                        Some(b) => format!("{}: last commit {} ago", b.name, fmt_age(now.saturating_sub(b.at))),
-                        None => format!("no branch {tag} on the remote"),
-                    };
-                    let fetched = s.fetched.map_or_else(|| "never fetched".to_string(), |f| format!("fetched {} ago", fmt_age(now.saturating_sub(f))));
-                    format!("app {id} · {head} · {running} · {fetched}")
-                }
-            }),
-            (None, Some(why)) => Some(why.clone()),
-            (None, None) => None,
-        };
-        let repo_line = repo_text.map(|text| div().flex_none().px_3().pb_1().child(label(text).text_color(t.dim)).debug_selector(|| "svc-repo".into()));
+        let row = || div().flex().items_center().gap_1().min_w_0();
+        let marks: Vec<PodMark> = if pods.is_empty() { super::app_view::pod_marks(&d) } else { pods.iter().map(pod_mark).collect() };
+        let mut facts: Vec<(SharedString, AnyElement)> = vec![
+            ("State".into(), row().debug_selector(|| "svc-state".into()).text_color(color).child(mark).child(word).into_any_element()),
+            ("Tag".into(), label(d.tag()).text_color(t.fg).into_any_element()),
+            ("Pods".into(), devdeck_ui::pods_bar("svc-pods", &marks, &t).into_any_element()),
+        ];
+        // When it got this version, and who changed it last (devdeck's own record).
+        if let Some(since) = c.since(&self.env, &d) {
+            let by = history.iter().rev().find(|r| r.to == d.tag()).map(|r| r.by.clone()).filter(|b| !b.is_empty() && b != "seen");
+            let text = match by {
+                Some(by) => format!("{} ago · {by}", fmt_age(now.saturating_sub(since))),
+                None => format!("{} ago", fmt_age(now.saturating_sub(since))),
+            };
+            facts.push(("Deployed".into(), label(text).text_color(t.mute).into_any_element()));
+        }
+        facts.push(("Revision".into(), label(d.revision.to_string()).text_color(t.mute).into_any_element()));
+        // What its ready pods use, against what they ask and may take.
+        let res = d.main().resources;
+        let n = d.replicas.max(1);
+        let times = |v: Option<u32>| v.map(|v| v * n);
+        match c.metrics_allowed(&self.env) {
+            Err(e) => facts.push(("Usage".into(), icon_text(Icon::Warning, t.warn, e, &t).into_any_element())),
+            Ok(()) if !c.usage_read(&self.env) => {}
+            Ok(()) => {
+                let (cpu, mem) = pods.iter().filter(|p| p.ready).filter_map(usage).fold((0u32, 0u32), |(c, m), u| (c + u.cpu_m, m + u.mem_mi));
+                let bar = |name: &'static str, used: u32, req: Option<u32>, lim: Option<u32>, unit: &str| {
+                    row()
+                        .id(name)
+                        .gap_2()
+                        .child(devdeck_ui::usage_bar(name, used, req, lim, &t))
+                        .child(label(format!("{used}{unit} / {}", quantity(lim.or(req), unit))).text_color(t.mute))
+                        .tooltip(tip(format!("request {} · limit {}", quantity(req, unit), quantity(lim, unit))))
+                        .into_any_element()
+                };
+                facts.push(("CPU".into(), bar("cpu", cpu, times(res.cpu_request_m), times(res.cpu_limit_m), "m")));
+                facts.push(("Memory".into(), bar("mem", mem, times(res.mem_request_mi), times(res.mem_limit_mi), "Mi")));
+            }
+        }
+        if protected {
+            let (text, color) = if self.unlocked { ("protected · unlocked", t.warn) } else { ("protected", t.err) };
+            facts.push(("Env".into(), row().text_color(color).child(icon(Icon::Protected, color, &t).size(small)).child(text).into_any_element()));
+        }
 
         let rollout_line = rollout.map(|r| {
             let who = if c.mine(&r.by, cx) { String::new() } else { format!(" (by {})", r.by) };
@@ -546,189 +580,281 @@ impl Render for ServiceView {
                 RolloutState::Done => (Icon::Ok, format!("now running {} (was {}){who}", r.to, r.from), t.ok),
                 RolloutState::Replaced { by } => (Icon::Info, format!("rollout to {} replaced by {by}", r.to), t.mute),
             };
-            div().flex_none().px_3().pb_2().flex().items_center().gap_2().debug_selector(|| "svc-rollout".into()).child(icon_text(mark, color, text, &t).flex_1())
+            div().px_2().py_1().flex().items_center().min_w_0().debug_selector(|| "svc-rollout".into()).child(icon_text(mark, color, text, &t).flex_1())
         });
 
-        let res = d.main().resources;
-        let (cpu, mem) = pods.iter().filter(|p| p.ready).filter_map(usage).fold((0u32, 0u32), |(c, m), u| (c + u.cpu_m, m + u.mem_mi));
-        let n = d.replicas.max(1);
-        let times = |v: Option<u32>| v.map(|v| v * n);
-        let metrics_el = match metrics {
-            Err(e) => icon_text(Icon::Warning, t.warn, e, &t).into_any_element(),
-            Ok(()) if !c.usage_read(&self.env) => label("cpu and memory: not read yet").text_color(t.dim).into_any_element(),
-            Ok(()) => div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(div().w(t.size(40.)).text_color(t.mute).child("cpu"))
-                        .child(devdeck_ui::usage_bar("cpu", cpu, times(res.cpu_request_m), times(res.cpu_limit_m), &t))
-                        .child(label(format!("{cpu}m · request {} · limit {}", quantity(times(res.cpu_request_m), "m"), quantity(times(res.cpu_limit_m), "m"))).text_color(t.mute)),
+        // Deploying's actions together: Deploy…, Redeploy, notify; the lock at the end.
+        let enabled = redeploy_blocked.is_none();
+        let actions = div()
+            .px_2()
+            .py_1()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child({
+                let me = me.clone();
+                devdeck_ui::labeled_button("svc-deploy", Icon::Deploy, "Deploy…", &t)
+                    .debug_selector(|| "svc-deploy".into())
+                    .on_click(move |_, window, cx| ServiceView::open_deploy(&me, window, cx))
+            })
+            .child(
+                devdeck_ui::labeled_button("redeploy", Icon::Restart, "Redeploy", &t)
+                    .debug_selector(|| "svc-redeploy".into())
+                    .when(!enabled, |b| b.text_color(t.dim))
+                    .tooltip(tip(redeploy_blocked.unwrap_or_else(|| "the same tag again, new pods".into())))
+                    .on_click(cx.listener(|this, _, _, cx| this.redeploy(cx))),
+            )
+            .child({
+                let ticked = !c.notify_options(&self.env, &self.name).is_empty();
+                notify_button("notify", ticked, self.notify_at.clone(), &t)
+                    .debug_selector(|| "tag-notify".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_notify(window, cx)))
+            })
+            .when(protected, |a| {
+                a.child(div().flex_1()).child(
+                    devdeck_ui::labeled_button("lock", Icon::Protected, if self.unlocked { "Lock" } else { "Unlock…" }, &t).on_click(cx.listener(|this, _, _, cx| {
+                        if this.unlocked {
+                            this.unlocked = false;
+                            cx.notify();
+                        } else {
+                            this.request_unlock(cx);
+                        }
+                    })),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(div().w(t.size(40.)).text_color(t.mute).child("mem"))
-                        .child(devdeck_ui::usage_bar("mem", mem, times(res.mem_request_mi), times(res.mem_limit_mi), &t))
-                        .child(label(format!("{mem}Mi · request {} · limit {}", quantity(times(res.mem_request_mi), "Mi"), quantity(times(res.mem_limit_mi), "Mi"))).text_color(t.mute)),
-                )
-                .into_any_element(),
-        };
-
-        let col = |w: f32, text: String, color: Hsla| div().flex_none().w(t.size(w)).truncate().text_color(color).child(text);
-        let mut pod_rows = div().flex().flex_col().child(
-            div()
-                .h(t.row_h)
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_color(t.dim)
-                .child(col(300., "pod".into(), t.dim))
-                .child(col(150., "status".into(), t.dim))
-                .child(col(60., "ready".into(), t.dim))
-                .child(col(70., "restarts".into(), t.dim))
-                .child(col(50., "age".into(), t.dim))
-                .child(col(60., "cpu".into(), t.dim))
-                .child(col(60., "mem".into(), t.dim))
-                .child(col(100., "tag".into(), t.dim))
-                .child(div().flex_1().min_w_0().truncate().child("node · last termination")),
+            });
+        // Why its app isn't known (its branches aren't offered then).
+        let unlinked = self.unlinked.clone().map(|why| div().px_2().py_1().min_w_0().debug_selector(|| "svc-unlinked".into()).child(icon_text(Icon::Info, t.mute, why, &t)));
+        let deployment = devdeck_ui::panel(
+            "svc-deployment",
+            "Deployment",
+            Vec::new(),
+            div().flex().flex_col().min_w_0().child(devdeck_ui::fields(facts, &t)).children(rollout_line).child(actions).children(unlinked),
+            &t,
         );
+
+        // ---- Pods: one row each; a row opens in place on what it's made of.
+        let mut pod_block = div().flex().flex_col().min_w_0();
+        let note = |el: AnyElement| div().px_2().h(t.row_h).flex().items_center().min_w_0().child(el);
         match &pods_state {
-            Remote::Loading => pod_rows = pod_rows.child(label("loading pods…").text_color(t.dim)),
-            Remote::Error(why) => pod_rows = pod_rows.child(icon_text(Icon::Warning, t.warn, why.clone(), &t)),
+            Remote::Loading => pod_block = pod_block.child(note(label("loading…").text_color(t.dim).into_any_element())),
+            Remote::Error(why) => pod_block = pod_block.child(note(icon_text(Icon::Warning, t.warn, why.clone(), &t).into_any_element())),
             Remote::Ready(list) => {
                 // A watch that failed after listing: its last pods, with what's wrong.
                 if let Some(why) = c.pods_problem(&self.env) {
-                    pod_rows = pod_rows.child(icon_text(Icon::Warning, t.warn, why.to_string(), &t));
+                    pod_block = pod_block.child(note(icon_text(Icon::Warning, t.warn, why.to_string(), &t).into_any_element()));
                 }
                 if list.is_empty() {
-                    pod_rows = pod_rows.child(label("no pods").text_color(t.dim));
+                    pod_block = pod_block.child(note(label("no pod").text_color(t.dim).into_any_element()));
                 }
             }
         }
-        let now = c.now_s();
+        if !pods.is_empty() {
+            pod_block = pod_block.child(table_head(&POD_COLS, &t));
+        }
+        let prefix = format!("{}-", self.name);
         for (i, p) in pods.iter().enumerate() {
-            let (phase, ok) = phase_text(p);
-            let addr = ViewAddr::Pod { env: self.env.clone(), pod: p.name.clone() };
-            let ctx = self.ctx.clone();
-            let hover = t.hover;
-            pod_rows = pod_rows.child(
-                div()
-                    .id(("pod", i))
-                    .h(t.row_h)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(t.radius_s)
-                    .hover(move |s| s.bg(hover))
+            let open = self.open_pods.contains(&p.name);
+            let (word, color) = pod_state(p, &t);
+            let short = p.name.strip_prefix(&prefix).unwrap_or(&p.name).to_string();
+            let use_of = usage(p);
+            let cells = vec![
+                row()
+                    .child(icon(if open { Icon::Open } else { Icon::Expand }, t.dim, &t).size(small))
+                    .child(devdeck_ui::pod_square(pod_mark(p), &t))
+                    .child(label(short).text_color(t.fg))
+                    .into_any_element(),
+                label(word).text_color(color).into_any_element(),
+                label(p.started.map_or_else(|| "—".into(), |s| fmt_age(now.saturating_sub(s)))).text_color(t.mute).into_any_element(),
+                label(if p.restarts > 0 { format!("↻ {}", p.restarts) } else { String::new() }).text_color(t.warn).into_any_element(),
+                label(use_of.map_or_else(|| "—".into(), |u| format!("{}m", u.cpu_m))).text_color(t.mute).into_any_element(),
+                label(use_of.map_or_else(|| "—".into(), |u| format!("{}Mi", u.mem_mi))).text_color(t.mute).into_any_element(),
+            ];
+            let name = p.name.clone();
+            pod_block = pod_block.child(
+                table_row(("pod", i), &POD_COLS, cells, &t)
+                    .debug_selector(move || format!("pod-{i}"))
                     .cursor_pointer()
+                    .hover(|s| s.bg(t.hover))
                     .on_mouse_down(gpui::MouseButton::Right, {
-                        let (ctx, pod, logs) = (self.ctx.clone(), addr.clone(), ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() });
+                        let (me, pod) = (me.clone(), p.name.clone());
                         move |e, window, cx| {
-                            let (c1, c2) = (ctx.clone(), ctx.clone());
-                            let (pod, logs) = (pod.clone(), logs.clone());
-                            let pod_name = match &pod {
-                                ViewAddr::Pod { pod, .. } => pod.clone(),
-                                _ => String::new(),
-                            };
-                            open_menu(
-                                e.position,
-                                vec![
-                                    MenuItem::new("Open pod", move |_, cx| c1.open(pod.clone(), cx)),
-                                    MenuItem::new("Logs", move |_, cx| super::logs_view::open_for_pod(&c2, logs.clone(), &pod_name, cx)),
-                                ],
-                                window,
-                                cx,
-                            );
+                            let items = ServiceView::pod_menu(&me, &pod, cx);
+                            open_menu(e.position, items, window, cx);
                         }
                     })
-                    .on_click(move |_, _, cx| ctx.open(addr.clone(), cx))
-                    .child(col(300., p.name.clone(), t.fg))
-                    .child(col(150., phase, if ok { t.ok } else { t.err }))
-                    .child(div().flex_none().w(t.size(60.)).child(if p.ready { icon(Icon::Check, t.ok, &t) } else { icon(Icon::Close, t.err, &t) }))
-                    .child(col(70., p.restarts.to_string(), if p.restarts > 3 { t.warn } else { t.mute }))
-                    .child(col(50., p.started.map_or_else(|| "—".into(), |s| fmt_age(now.saturating_sub(s))), t.mute))
-                    .child(col(60., usage(p).map_or_else(|| "—".into(), |u| format!("{}m", u.cpu_m)), t.mute))
-                    .child(col(60., usage(p).map_or_else(|| "—".into(), |u| format!("{}Mi", u.mem_mi)), t.mute))
-                    .child(col(100., p.tag.clone(), t.mute))
-                    .child(label(format!("{}{}", p.node, p.last_termination.as_ref().map(|l| format!(" · {}{}", l.text(), l.at.map(|at| format!(" {} ago", fmt_age(now.saturating_sub(at)))).unwrap_or_default())).unwrap_or_default())).flex_1().text_color(if p.last_termination.is_some() { t.warn } else { t.dim })),
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_pod(&name, cx))),
+            );
+            if open {
+                pod_block = pod_block.child(table_more(self.pod_more(p, i, now, me.clone(), &t), &t));
+            }
+        }
+        let pods_panel = devdeck_ui::panel("svc-pods-panel", format!("Pods · {}", pods.len()), Vec::new(), pod_block, &t);
+
+        // ---- Logs: the service's, read while the page shows; on their own from its icon.
+        let open_logs = icon_action("svc-logs-open", Icon::Logs, "the logs on their own", true, &t).on_click(cx.listener(|this, _, _, cx| this.open_logs(cx)));
+        let logs = devdeck_ui::panel(
+            "svc-logs",
+            "Logs",
+            vec![open_logs.into_any_element()],
+            // A fixed height: its lines scroll in it.
+            div().h(t.size(320.)).min_w_0().flex().flex_col().child(self.logs.clone()),
+            &t,
+        );
+
+        // ---- Envs: its tag and pods on each; a row shows that env.
+        let mut env_block = div().flex().flex_col().min_w_0().child(table_head(&ENV_COLS, &t));
+        for (i, e) in c.envs.iter().enumerate() {
+            let here = e.name == self.env;
+            let (tag, pods_el): (AnyElement, AnyElement) = match (c.peek(&e.name), c.deployment(&e.name, &self.name)) {
+                (_, Some(dep)) => (
+                    label(dep.tag()).text_color(if dep.tag() == d.tag() { t.fg } else { t.mute }).into_any_element(),
+                    devdeck_ui::pods_bar(&format!("env-pods-{}", e.name), &super::app_view::pod_marks(dep), &t).into_any_element(),
+                ),
+                (Remote::Loading, None) => (label("loading…").text_color(t.dim).into_any_element(), div().into_any_element()),
+                (Remote::Error(_), None) => (label("can't read").text_color(t.warn).into_any_element(), div().into_any_element()),
+                (Remote::Ready(_), None) => (label("not deployed").text_color(t.dim).into_any_element(), div().into_any_element()),
+            };
+            let env_el = row()
+                .text_color(if e.protected { t.err } else { t.env })
+                .child(label(format!("@{}", e.name)))
+                .when(e.protected, |r| r.child(icon(Icon::Protected, t.err, &t).size(small)));
+            let (ctx, name, to) = (self.ctx.clone(), self.name.clone(), e.name.clone());
+            env_block = env_block.child(
+                table_row(("env", i), &ENV_COLS, vec![env_el.into_any_element(), tag, pods_el], &t)
+                    .debug_selector({
+                        let n = e.name.clone();
+                        move || format!("env-{n}")
+                    })
+                    .when(here, |r| r.bg(t.selection))
+                    .when(!here, |r| r.cursor_pointer().hover(|s| s.bg(t.hover)).on_click(move |_, _, cx| ctx.pivot(Activity::Cluster, name.clone(), Some(to.clone()), cx))),
             );
         }
+        let envs = devdeck_ui::panel("svc-envs", "Envs", Vec::new(), env_block, &t);
 
-        let mut containers = div().flex().flex_col().gap_1();
+        // ---- History: what devdeck saw deployed here, newest first.
+        let mut hist = div().flex().flex_col().min_w_0();
+        if history.is_empty() {
+            hist = hist.child(note(label("no deploy seen yet").text_color(t.dim).into_any_element()));
+        } else {
+            hist = hist.child(table_head(&HISTORY_COLS, &t));
+        }
+        for (i, r) in history.iter().rev().enumerate() {
+            let bad = r.outcome.starts_with("failing") || r.outcome.starts_with("stuck");
+            let outcome = if r.outcome.is_empty() { "rolling out".to_string() } else { r.outcome.clone() };
+            let what = if r.redeploy() { format!("{} again", r.to) } else { format!("{} → {}", r.from, r.to) };
+            let color = if bad { t.err } else if r.outcome.is_empty() { t.accent } else { t.fg };
+            hist = hist.child(
+                table_row(("history", i), &HISTORY_COLS, vec![
+                    label(fmt_age(now.saturating_sub(r.at_s))).text_color(t.mute).into_any_element(),
+                    label(r.by.clone()).text_color(t.mute).into_any_element(),
+                    label(what).text_color(color).into_any_element(),
+                ], &t)
+                .tooltip(tip(outcome)),
+            );
+        }
+        let history_panel = devdeck_ui::panel("svc-history", "History", Vec::new(), hist, &t);
+
+        // ---- Containers: what its pods run, from its spec.
+        let mut containers = div().flex().flex_col().min_w_0();
         for k in &d.containers {
             let r = k.resources;
             let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
             let ports: Vec<String> = k.ports.iter().map(u16::to_string).collect();
+            let value = |text: String| label(text).text_color(t.mute).into_any_element();
             containers = containers.child(
                 div()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .debug_selector({
                         let id = format!("container-{}", k.name);
                         move || id.clone()
                     })
-                    .child(label(format!("container {} · image {}", k.name, k.image)).text_color(t.fg))
-                    .child(label(format!("ports {}", list(&ports))).text_color(t.mute))
-                    .child(
-                        label(format!(
-                            "request {} / {} · limit {} / {}",
-                            quantity(r.cpu_request_m, "m"),
-                            quantity(r.mem_request_mi, "Mi"),
-                            quantity(r.cpu_limit_m, "m"),
-                            quantity(r.mem_limit_mi, "Mi")
-                        ))
-                        .text_color(t.mute),
-                    )
-                    .child(label(format!("configmaps {}", list(&k.config_maps))).text_color(t.mute)),
+                    .child(div().px_2().pt_1().min_w_0().child(label(k.name.clone()).text_color(t.fg)))
+                    .child(devdeck_ui::fields(
+                        vec![
+                            ("Image".into(), value(k.image.to_string())),
+                            ("Ports".into(), value(list(&ports))),
+                            ("CPU".into(), value(format!("{} / {}", quantity(r.cpu_request_m, "m"), quantity(r.cpu_limit_m, "m")))),
+                            ("Memory".into(), value(format!("{} / {}", quantity(r.mem_request_mi, "Mi"), quantity(r.mem_limit_mi, "Mi")))),
+                            ("Config maps".into(), value(list(&k.config_maps))),
+                        ],
+                        &t,
+                    )),
             );
         }
+        let containers = devdeck_ui::panel("svc-containers", format!("Containers · {}", d.containers.len()), Vec::new(), containers, &t);
 
-        let mut hist = div().flex().flex_col();
-        if history.is_empty() {
-            hist = hist.child(label("no deploy seen yet").text_color(t.dim));
-        }
-        let now = c.now_s();
-        for r in history.iter().rev() {
-            let bad = r.outcome.starts_with("failing") || r.outcome.starts_with("stuck");
-            let outcome = if r.outcome.is_empty() { "rolling out" } else { r.outcome.as_str() };
-            let what = match (r.redeploy(), r.outcome.is_empty()) {
-                (true, true) => format!("redeploying {}", r.to),
-                (true, false) => format!("redeployed {}", r.to),
-                (false, _) => format!("{} → {}", r.from, r.to),
-            };
-            let text = format!("{} ago · {what} · by {} · {outcome}", fmt_age(now.saturating_sub(r.at_s)), r.by);
-            hist = hist.child(label(text).text_color(if bad { t.err } else { t.mute }));
-        }
-
+        // A list kept over a lost connection: what's wrong, above it.
+        let problem_line = c.problem(&self.env).map(|p| div().flex_none().px_3().pt_2().child(icon_text(Icon::Warning, t.warn, p.to_string(), &t)));
+        // Panels on the page's background: what runs on the left (the most room), where
+        // and what it ran on the right; one under the other when narrow.
+        let left = div().flex_grow(3.).flex_basis(gpui::relative(0.)).min_w(t.size(440.)).flex().flex_col().gap_3().child(deployment).child(pods_panel).child(logs);
+        let right = div().flex_grow(2.).flex_basis(gpui::relative(0.)).min_w(t.size(300.)).flex().flex_col().gap_3().child(envs).child(history_panel).child(containers);
         let body = div()
             .id("service-body")
             .flex_1()
             .min_h_0()
             .scroll_y()
-            .px_3()
-            .pb_3()
             .flex()
             .flex_col()
-            .gap_1()
-            .child(section("Metrics", &t))
-            .child(metrics_el)
-            .child(section("Pods", &t))
-            // Wider than a narrow pane: scrolls sideways instead of clipping (R3.9).
-            .child(div().id("pods-scroll").w_full().scroll_x().child(pod_rows.min_w(t.size(1100.))))
-            .child(section(if d.containers.len() > 1 { "Containers" } else { "Container" }, &t))
-            .child(containers)
-            .child(section("Deploy history", &t))
-            .child(hist);
+            .children(problem_line)
+            .child(div().p_3().flex().flex_wrap().gap_3().child(left).child(right));
 
         self.window = Some(window.window_handle());
-        root.child(header).child(actions).children(repo_line).children(problem_line).children(rollout_line).child(body)
+        root.child(body)
+    }
+}
+
+impl ServiceView {
+    /// A pod's row opened: where it runs, how it ended last, its containers (the init ones
+    /// first), and its logs.
+    fn pod_more(&self, p: &Pod, i: usize, now: u64, me: Entity<Self>, t: &Theme) -> gpui::Div {
+        let mut facts: Vec<(SharedString, AnyElement)> = vec![
+            ("Node".into(), label(if p.node.is_empty() { "—".to_string() } else { p.node.clone() }).text_color(t.mute).into_any_element()),
+            ("Started".into(), label(p.started.map_or_else(|| "not yet".into(), |s| format!("{} ago", fmt_age(now.saturating_sub(s))))).text_color(t.mute).into_any_element()),
+            ("Tag".into(), label(p.tag.clone()).text_color(t.mute).into_any_element()),
+        ];
+        if let Some(l) = &p.last_termination {
+            let at = l.at.map(|at| format!(" · {} ago", fmt_age(now.saturating_sub(at)))).unwrap_or_default();
+            facts.push(("Last ended".into(), label(format!("{}{at}", l.text())).text_color(t.warn).into_any_element()));
+        }
+        if let Some(why) = &p.unschedulable {
+            facts.push(("Can't be placed".into(), label(why.clone()).text_color(t.err).into_any_element()));
+        }
+        let mut block = div().flex().flex_col().min_w_0().child(devdeck_ui::fields(facts, t));
+        if !p.containers.is_empty() {
+            block = block.child(table_head(&CONTAINER_COLS, t));
+        }
+        let mut containers: Vec<_> = p.containers.iter().collect();
+        containers.sort_by_key(|k| !k.init);
+        for (j, k) in containers.into_iter().enumerate() {
+            let color = if k.ready || k.state.starts_with("terminated: Completed") { t.ok } else if k.state.starts_with("running") { t.warn } else { t.err };
+            let name = div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .child(label(k.name.clone()).text_color(t.fg))
+                .when(k.init, |d| d.child(div().flex_none().text_size(t.text_small).text_color(t.dim).child("init")));
+            let state = match &k.message {
+                Some(m) => format!("{} · {m}", k.state),
+                None => k.state.clone(),
+            };
+            block = block.child(table_row(("pod-container", i * 64 + j), &CONTAINER_COLS, vec![
+                name.into_any_element(),
+                label(state).text_color(color).into_any_element(),
+                label(if k.restarts > 0 { format!("↻ {}", k.restarts) } else { String::new() }).text_color(t.warn).into_any_element(),
+            ], t));
+        }
+        let pod: SharedString = p.name.clone().into();
+        block.child(
+            div().px_2().py_1().flex().items_center().gap_1().child(
+                devdeck_ui::labeled_button(("pod-logs", i), Icon::Logs, "Logs", t)
+                    .debug_selector(move || format!("pod-logs-{i}"))
+                    .on_click(move |_, _, cx| me.update(cx, |s, cx| s.logs_of(Some(pod.clone()), cx))),
+            ),
+        )
     }
 }
 

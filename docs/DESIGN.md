@@ -783,6 +783,19 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   the confirmation as the rocket did. The tag field and its suggestions menu go; deploy,
   redeploy and notify sit together; no button for what doesn't work yet (scale,
   port-forward, shell). `pods_bar` drops its count (its tooltip says it).
+- 2026-11-11 (user) Cluster is a full view (R4.10): its list (a row: its state's dot, the
+  name, its pods as squares at the right end; no tag), then the selected service's page on
+  the list's env. The branch matrix shows from the list's header the whole width, the list
+  hidden, a back icon in its header giving it back. The service view is one page of
+  panels, no navigation for its own parts and no header of its own (the pane's or the
+  details' says its name; its icon goes to its app in Apps, `svc.app`): Deployment (fields:
+  a small caption over each value, `devdeck_ui::fields`; the rollout under way; Deploy…,
+  Redeploy, notify and the lock together), Pods (a table, a row opens in place on its
+  node, last end and containers, init ones first, and its Logs), Logs (the service's logs
+  view itself, in a fixed-height panel, reading as the page shows), Envs (its tag and pods
+  on every env, so a page reads every env as the matrix does; a row shows that env),
+  History, Containers. The Git and Logs buttons go (its app's git is in Apps; the logs
+  are on the page, `l` still opens them on their own).
 
 ## Open questions
 

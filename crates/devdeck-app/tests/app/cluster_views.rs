@@ -158,7 +158,8 @@ fn the_cluster_list_follows_a_rollout(cx: &mut TestAppContext) {
     let replicas = cx.read(|cx| c.read(cx).deployment("dev35", "proxyapi").unwrap().replicas);
     advance(cx, ROLLOUT_STEP * replicas);
     assert!(!item(cx).busy, "done");
-    assert_eq!(item(cx).detail, "lan-190");
+    assert!(item(cx).running && item(cx).pods.is_some_and(|(ready, wanted, failing)| ready == wanted && !failing), "its pods, all ready");
+    assert_eq!(cx.read(|cx| c.read(cx).deployment("dev35", "proxyapi").unwrap().tag()), "lan-190");
 }
 
 /// Deploys `tag`, pinned to the image running now.

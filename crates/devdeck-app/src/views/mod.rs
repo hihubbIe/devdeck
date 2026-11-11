@@ -256,7 +256,8 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 return message(format!("{env} isn't an env of this workspace."), cx);
             }
             let v = cx.new(|cx| service_view::ServiceView::new(env, name, ctx.clone(), cluster, cx));
-            focusable(v, cx)
+            let built = focusable(v.clone(), cx);
+            live(built, &v, ctx, cx)
         }
         (ViewAddr::Logs { env, name }, Some(ctx)) => match cluster_env(ctx, &env, cx) {
             Err(text) => message(text, cx),

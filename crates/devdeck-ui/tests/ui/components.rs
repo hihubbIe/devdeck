@@ -249,3 +249,18 @@ fn a_panel_heads_its_body_with_its_title_and_actions(cx: &mut TestAppContext) {
     assert!(panel.contains(&body.origin) && panel.contains(&body.bottom_right()), "the body inside the panel");
     assert!(act.origin.x > head.origin.x + head.size.width / 2., "its actions on the right");
 }
+
+#[gpui::test]
+fn fields_put_each_caption_over_its_value_and_wrap_when_narrow(cx: &mut TestAppContext) {
+    let field = |name: &'static str| (gpui::SharedString::from(name), div().debug_selector(move || format!("v-{name}")).w(logical(120.)).child(name).into_any_element());
+    let window = host(cx, move |_, cx| {
+        let t = devdeck_ui::theme(cx).clone();
+        div().w(logical(300.)).child(devdeck_ui::fields(vec![field("State"), field("Tag"), field("Pods")], &t)).into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let (state, tag, pods) = (vcx.debug_bounds("v-State").unwrap(), vcx.debug_bounds("v-Tag").unwrap(), vcx.debug_bounds("v-Pods").unwrap());
+    assert!(state.origin.y > logical(8.), "the caption over it");
+    assert_eq!(state.origin.y, tag.origin.y, "side by side while they fit");
+    assert!(tag.origin.x > state.right());
+    assert!(pods.origin.y > state.bottom(), "the next line when the room runs out");
+}

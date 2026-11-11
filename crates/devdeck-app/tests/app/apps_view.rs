@@ -186,8 +186,8 @@ fn a_deployment_row_goes_to_it_in_cluster(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| s.read(cx).selected.clone()).as_deref(), Some("graphservice"), "it selected");
     let svc = ViewAddr::Svc { env: "dev33".into(), name: "graphservice".into() }.to_ref();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&svc).is_some()), "its service view in the pulse, as a click on its row does");
-    assert_eq!(details(&shell, cx), None, "Cluster shows the pulse's panes, for now");
+    assert_eq!(details(&shell, cx), Some(vec![svc.clone()]), "its page in Cluster's details");
+    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&svc).is_none()), "no tab in the pulse");
 }
 
 #[gpui::test]
@@ -259,7 +259,7 @@ fn coming_back_to_apps_shows_the_app_left(cx: &mut TestAppContext) {
     for away in [Activity::Cluster, Activity::Layouts] {
         cx.update(|cx| s.update(cx, |s, cx| s.show(away, cx)));
         cx.run_until_parked();
-        assert_eq!(details(&shell, cx), None);
+        assert!(!details(&shell, cx).is_some_and(|d| d.contains(&app("graphservice"))), "{away:?} shows its own");
         cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
         cx.run_until_parked();
         assert_eq!(details(&shell, cx), Some(vec![app("graphservice")]), "back from {away:?}: where it was");

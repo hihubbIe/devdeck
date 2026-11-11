@@ -510,11 +510,11 @@ fn app_rows_show_a_missing_tool_as_a_mark_at_their_right(cx: &mut TestAppContext
     let mark = vcx.debug_bounds("row-warning").expect("⚠ drawn");
     let right = row.origin.x + row.size.width;
     assert!(mark.origin.x > row.center().x && right - (mark.origin.x + mark.size.width) < logical(16.), "⚠ at the right end: {mark:?} in {row:?}");
-    // The Cluster list keeps its right text.
+    // The Cluster list's rows end with their pods.
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
-    assert!(cx.read(|cx| s.read(cx).items(cx).iter().any(|i| !i.detail.is_empty())), "tags stay");
+    assert!(cx.read(|cx| s.read(cx).items(cx).iter().all(|i| i.pods.is_some())), "pods on every row");
 }
 
 /// The Cluster list's own env (user, 2026-11-09): it follows the workspace's until

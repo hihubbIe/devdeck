@@ -377,7 +377,7 @@ impl super::KeepsState for AppView {
 
 /// A deployment's pods as the cluster counts them: the ready ones, then the others,
 /// failing when it says why (at most a dozen drawn).
-fn pod_marks(d: &devdeck_core::cluster::Deployment) -> Vec<devdeck_ui::PodMark> {
+pub(super) fn pod_marks(d: &devdeck_core::cluster::Deployment) -> Vec<devdeck_ui::PodMark> {
     use devdeck_ui::PodMark;
     let wanted = d.replicas.min(12) as usize;
     let ready = (d.ready as usize).min(wanted);

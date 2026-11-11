@@ -176,6 +176,7 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("svc.logs", "logs", "Service", Some("ServiceView && !TextInput"), ["l"], sv::OpenLogs),
         spec!("svc.redeploy", "redeploy", "Service", Some("ServiceView && !TextInput"), ["r"], sv::Redeploy),
         spec!("svc.notify", "notify", "Service", Some("ServiceView && !TextInput"), ["b"], sv::NotifyMenu),
+        spec!("svc.app", "its app in Apps", "Service", Some("ServiceView && !TextInput"), [], sv::OpenApp),
         spec!("svc.confirm", "confirm", "Service", Some("Modal && ServiceModal"), ["enter"], sv::ConfirmModal),
         spec!("git.next", "next branch", "Git", Some("GitView && !TextInput"), ["down"], gv::SelectNext),
         spec!("git.prev", "previous branch", "Git", Some("GitView && !TextInput"), ["up"], gv::SelectPrev),

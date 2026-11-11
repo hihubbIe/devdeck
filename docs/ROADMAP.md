@@ -124,7 +124,7 @@ list, which can also open as a tab in a pulse. One activity at a time.
    pulse menu — done 2026-11-11. Manual test now.
 4. Cluster ([plans/cluster-view.md](plans/cluster-view.md)): 4a the picker and the table,
    deploying through the picker — done 2026-11-11; 4b Cluster as a full view, the service
-   as one page; 4c front-end apps inside frontendapp. Manual test after 4c.
+   as one page — done 2026-11-11; 4c front-end apps inside frontendapp. Manual test after 4c.
 5. The others, one by one: Ports, Terminals, Notes; then Agents.
 
 ## M4 · Shareable
