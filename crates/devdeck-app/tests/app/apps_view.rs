@@ -166,3 +166,85 @@ fn a_run_says_how_long_it_has_run(cx: &mut TestAppContext) {
     assert!(ran >= std::time::Duration::from_secs(61), "{ran:?}");
     assert_eq!(cx.read(|cx| runner.read(cx).running_for(&devdeck_app::runner::RunKey::new("vesselservice", "go:test"), now)), None, "not running");
 }
+
+// ------------------------------------------------------------------ 3b: what it links to
+
+#[gpui::test]
+fn a_deployment_row_goes_to_it_in_cluster(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-deploy");
+    select(&shell, cx, "graphservice");
+    cx.executor().advance_clock(devdeck_app::cluster::LOAD_DELAY);
+    cx.run_until_parked();
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    let row = vcx.debug_bounds("deployment-dev33").expect("graphservice runs on dev33");
+    assert!(vcx.debug_bounds("pods-dev33").is_some(), "its pods");
+    vcx.simulate_click(row.center(), Modifiers::none());
+    vcx.run_until_parked();
+    let s = sidebar(&shell, cx);
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Cluster, "a pivot to Cluster");
+    assert_eq!(cx.read(|cx| s.read(cx).list_env(cx)).as_deref(), Some("dev33"), "on its env");
+    assert_eq!(cx.read(|cx| s.read(cx).selected.clone()).as_deref(), Some("graphservice"), "it selected");
+    let svc = ViewAddr::Svc { env: "dev33".into(), name: "graphservice".into() }.to_ref();
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&svc).is_some()), "its service view in the pulse, as a click on its row does");
+    assert_eq!(details(&shell, cx), None, "Cluster shows the pulse's panes, for now");
+}
+
+#[gpui::test]
+fn its_terminals_and_ports_go_to_their_activities(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-pivots");
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let dir = cx.read(|cx| shell.read(cx).workspaces[shell.read(cx).active].services.read(cx).catalog.app("entityservice").unwrap().dir.clone());
+    let pane = cx.read(|cx| deck.read(cx).layout().main().focused);
+    cx.update(|cx| deck.update(cx, |d, cx| d.open_terminal(&dir, devdeck_app::places::Place::Pane(pane), cx))).expect("opened");
+    let n = cx.read(|cx| deck.read(cx).terminals(cx).into_keys().max()).unwrap();
+    select(&shell, cx, "entityservice");
+    let s = sidebar(&shell, cx);
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    // `debug_bounds` takes a name for good: this test's one is leaked.
+    let name: &'static str = Box::leak(format!("terminal-{n}").into_boxed_str());
+    let row = vcx.debug_bounds(name).expect("the shell in its folder");
+    vcx.simulate_click(row.center(), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Terminals);
+    assert_eq!(cx.read(|cx| s.read(cx).selected.clone()), Some(n.to_string()));
+    select(&shell, cx, "entityservice");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    let port = vcx.debug_bounds("port-5720").expect("its command's port");
+    vcx.simulate_click(port.center(), Modifiers::none());
+    vcx.run_until_parked();
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Ports);
+}
+
+#[gpui::test]
+fn open_in_pulse_joins_a_pulses_first_pane(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-pulse");
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let triage = cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("triage", cx))).unwrap();
+    let default = cx.read(|cx| deck.read(cx).book.id_named("default")).expect("the default pulse");
+    cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(&default, cx))).unwrap();
+    select(&shell, cx, "entityservice");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    assert!(vcx.debug_bounds("details-pulse").is_some(), "the details say where it can go");
+    let view = app("entityservice");
+    // A saved pulse: into its book, the live one untouched.
+    let name = cx.update(|cx| deck.update(cx, |d, cx| d.open_in_pulse(&triage, view.clone(), cx))).unwrap();
+    assert_eq!(name, "triage");
+    let saved = cx.read(|cx| deck.read(cx).book.layouts[&triage].layout.clone()).unwrap();
+    let first = saved.panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap()[0];
+    assert_eq!(saved.find_view(&view).map(|(p, _)| p), Some(first), "its main window's first pane");
+    assert!(cx.read(|cx| deck.read(cx).layout().find_view(&view)).is_none());
+    // The live one.
+    cx.update(|cx| deck.update(cx, |d, cx| d.open_in_pulse(&default, view.clone(), cx))).unwrap();
+    let live = cx.read(|cx| deck.read(cx).layout().clone());
+    assert_eq!(live.find_view(&view).map(|(p, _)| p), Some(live.panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap()[0]));
+    assert_eq!(details(&shell, cx), Some(vec![view]), "the Apps view stays");
+}
+
+#[gpui::test]
+fn the_title_bar_has_no_pulse_menu(cx: &mut TestAppContext) {
+    let shell = start(cx, "apps-title");
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    assert!(vcx.debug_bounds("search-button").is_some());
+    assert!(vcx.debug_bounds("layout-button").is_none(), "Pulses is ctrl+1, its list says which is current");
+}

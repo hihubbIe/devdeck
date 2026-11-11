@@ -57,3 +57,34 @@ pub fn split_bar(name: &str, behind: u32, ahead: u32, t: &Theme) -> gpui::Div {
         .child(side(format!("{name}-ahead"), ahead, t.ok, true))
         .child(count(format!("↑{ahead}"), ahead, t.ok))
 }
+
+/// One pod of a [`pods_bar`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PodMark {
+    Ready,
+    /// Not ready yet (starting, or waiting).
+    Starting,
+    Failing,
+    /// Of the version a rollout replaces.
+    Old,
+}
+
+/// One small square per pod, ready / starting / failing / old (a rollout's), then
+/// `ready/wanted`.
+pub fn pods_bar(name: &str, pods: &[PodMark], t: &Theme) -> gpui::Div {
+    let wanted = pods.iter().filter(|p| **p != PodMark::Old).count();
+    let ready = pods.iter().filter(|p| **p == PodMark::Ready).count();
+    let side = t.size(9.);
+    let mut row = div().debug_selector(|| name.to_string()).flex_none().flex().items_center().gap(t.hairline * 2.);
+    for (i, p) in pods.iter().enumerate() {
+        let part = format!("{name}-{i}");
+        let square = div().debug_selector(move || part).flex_none().size(side).rounded(t.hairline);
+        row = row.child(match p {
+            PodMark::Ready => square.bg(t.ok),
+            PodMark::Starting => square.border_1().border_dashed().border_color(t.warn),
+            PodMark::Failing => square.bg(t.err),
+            PodMark::Old => square.bg(t.dim),
+        });
+    }
+    row.child(div().flex_none().ml_1().text_color(if ready == wanted { t.mute } else { t.warn }).child(format!("{ready}/{wanted}")))
+}

@@ -1225,10 +1225,12 @@ fn layouts_list(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Layouts, cx)));
 }
 
-/// The Apps view: the list, then a running app's details.
+/// The Apps view: the list, then a deployed app's details.
 fn apps_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
     let s = sidebar(cx, shell);
-    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Apps, "entityservice", cx)));
+    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Apps, "graphservice", cx)));
+    cx.advance_clock(devdeck_app::cluster::LOAD_DELAY);
+    cx.run_until_parked();
 }
 
 fn layout_save_error(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {

@@ -61,9 +61,9 @@ Requirements: R3.10, R4.1, R4.4, R5.1, R5.6, R6.3–R6.7, R9.3, R9.10, R13.1 (3b
 ## 3b: what it links to
 
 - Deployments (a cluster service): one row per env of the workspace with its deployed tag,
-  a pods bar (`devdeck-ui::pods_bar`: one segment per pod, ready / starting / failing, the
-  old ones of a rollout grey) and `ready/wanted`; a rocket per env deploying the current
-  branch there through today's confirmation (R5.6, opens on Cancel); a pivot to Cluster.
+  a pods bar (`devdeck-ui::pods_bar`: one square per pod, ready / starting / failing) and
+  `ready/wanted`, its rollout's state; the row goes to it in Cluster. No deploy here (user,
+  2026-11-11): deploying, choosing the branch and all, is the Cluster view's.
 - Pivots, "go there": the target activity's icon with a small corner arrow; deployments to
   Cluster (that service and env selected), terminals in its folder to Terminals, a running
   command's port to Ports. Until a target has its full view, a pivot shows that activity

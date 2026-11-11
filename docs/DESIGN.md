@@ -733,7 +733,17 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   (branch, a behind/ahead bar from the light read's `upstream:track`, fetch, and pull,
   push, new branch handed to the git panel, whose confirmations stay the only ones) and
   the tools its commands need. New `devdeck-ui` charts: `usage_bar` (from the service
-  view) and `split_bar`. Pivots, deployments and open in pulse come in step 3b.
+  view) and `split_bar`.
+- 2026-11-11 (user) Apps 3b: the app view links rather than duplicates. Deployments: one
+  row per env (tag, `pods_bar`, rollout state) going to it in Cluster; no deploy there
+  (the user: deploying, choosing the branch, is the Cluster view's). Terminals in its
+  folder go to Terminals, a command's port to Ports (`Sidebar::pivot`, through
+  `ViewCx::pivot`: the activity shown with the item selected, its view opened in the
+  pulse until that activity is a full view). "Go there" is `devdeck_ui::go_action`: the
+  target's icon with a corner arrow. Open in pulse (`Deck::open_in_pulse`, the details
+  header and a row's menu): the view joins the first pane of the chosen pulse's main
+  window, the live one or a saved one in its book. The title bar's pulse menu is gone.
+  API level 7: a `Ui` says the main window's `activity`.
 
 ## Open questions
 

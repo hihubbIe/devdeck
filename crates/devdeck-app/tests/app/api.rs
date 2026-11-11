@@ -231,6 +231,12 @@ fn the_screen_layouts_notes_envs_and_settings(cx: &mut TestAppContext) {
     assert_eq!(current.id, ui.pulse);
     let l: devdeck_api::types::Pulse = get("pulse.get", json!({ "id": ui.pulse }), cx);
     assert_eq!(l.windows, ui.windows);
+    // What the main window shows: Pulses, then the Apps view (its panes then hidden).
+    assert_eq!(ui.activity, "pulses");
+    let sidebar = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().sidebar.clone());
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.show(devdeck_app::sidebar::Activity::Apps, cx)));
+    let ui: devdeck_api::types::Ui = get("ui.get", json!({}), cx);
+    assert_eq!(ui.activity, "apps");
     // A note.
     let notes = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.read(cx).notes.clone());
     let id = cx.update(|cx| notes.update(cx, |n, cx| n.create("eventservice", "todo", cx))).unwrap();

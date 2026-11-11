@@ -735,6 +735,10 @@ pub struct Window {
 pub struct Ui {
     /// The current pulse.
     pub pulse: String,
+    /// The activity the main window shows: `pulses` and the others but `apps` show their
+    /// list beside the pulse's panes; `apps` is a full view, its list then an app's
+    /// details instead of the panes (the panes then aren't on screen).
+    pub activity: String,
     pub windows: Vec<Window>,
 }
 
@@ -881,7 +885,8 @@ pub enum Topic {
     /// New output: `{app, cmd}` for a run, `{n}` for the caller's own terminal; at most
     /// every 100 ms each.
     Output,
-    /// The live pulse changed (tabs, panes, windows, the current pulse): `{}`.
+    /// The live pulse changed (tabs, panes, windows, the current pulse), or a full view
+    /// came or went (`ui.get`'s `activity`): `{}`.
     Pulse,
     /// A note's text, name or list changed: `{id, revision}`, `{id, deleted: true}`.
     Notes,

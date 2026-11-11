@@ -53,3 +53,15 @@ fn a_split_bar_side_is_full_at_its_cap_and_no_wider(cx: &mut TestAppContext) {
     let ahead = vcx.debug_bounds("s-ahead").expect("drawn");
     assert!(near(f32::from(behind.size.width), f32::from(ahead.size.width)), "both full, the same width");
 }
+
+#[gpui::test]
+fn a_pods_bar_draws_one_square_per_pod_in_order(cx: &mut TestAppContext) {
+    use devdeck_ui::{PodMark, pods_bar};
+    let pods = [PodMark::Ready, PodMark::Starting, PodMark::Failing, PodMark::Old];
+    let window = host(cx, move |_, cx| pods_bar("p", &pods, devdeck_ui::theme(cx)).into_any_element());
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let squares: Vec<_> = ["p-0", "p-1", "p-2", "p-3"].into_iter().map(|n| vcx.debug_bounds(n).expect("drawn")).collect();
+    assert!(squares.windows(2).all(|w| w[0].origin.x < w[1].origin.x), "in order, left to right");
+    assert!(squares.iter().all(|s| s.size == squares[0].size), "the same size whatever their state (R9.10)");
+    assert!(vcx.debug_bounds("p-4").is_none(), "one per pod");
+}

@@ -914,20 +914,6 @@ impl Render for WindowView {
                         }),
                 )
             })
-            .when(is_main, |d| {
-                let deck = self.deck.clone();
-                let current = deck.read(cx).book.current_name().to_string();
-                d.child(
-                    bar_control(button("layout", current, &t))
-                        .child(button_icon(Icon::Open, &t))
-                        .debug_selector(|| "layout-button".into())
-                        .tooltip(tip("pulses"))
-                        .on_click(move |e, window, cx| {
-                            let items = crate::layouts::menu(&deck, cx);
-                            open_menu(e.position(), items, window, cx);
-                        }),
-                )
-            })
             .when(!is_main, |d| d.child(div().text_color(t.mute).child(format!("{ws_name} · detached window"))))
             .child(div().flex_1())
             .when(is_main, |d| {
@@ -1253,6 +1239,13 @@ fn details(deck: &Entity<Deck>, t: &Theme, cx: &App) -> AnyElement {
                 .on_click(move |_, _, cx| back.update(cx, |d, cx| d.back_to(i, cx)))
         });
     }
+    // What's on top, into a pulse.
+    let (pick, view) = (deck.clone(), top.clone());
+    head = head.child(
+        devdeck_ui::go_action("details-pulse", Icon::Layouts, "open in pulse…", t)
+            .debug_selector(|| "details-pulse".into())
+            .on_click(move |e, window, cx| open_menu(e.position(), crate::layouts::open_in_pulse(&pick, &view, cx), window, cx)),
+    );
     div()
         .id("details")
         .debug_selector(|| "details".into())

@@ -212,3 +212,23 @@ fn ready_actions_and_notify_buttons_click_in_any_state_and_keep_their_size(cx: &
     vcx.run_until_parked();
     assert_eq!((vcx.debug_bounds("deploy"), vcx.debug_bounds("notify")), (Some(deploy), Some(notify)), "ready, ticked: nothing moved or resized");
 }
+
+#[gpui::test]
+fn a_go_action_clicks_and_says_where_it_leads(cx: &mut TestAppContext) {
+    let clicks = Rc::new(Cell::new(0));
+    let c = clicks.clone();
+    let window = host(cx, move |_, cx| {
+        let c = c.clone();
+        let t = devdeck_ui::theme(cx).clone();
+        devdeck_ui::go_action("go", Icon::Cluster, "in Cluster", &t).debug_selector(|| "go".into()).on_click(move |_, _, _| c.set(c.get() + 1)).into_any_element()
+    });
+    let mut vcx = VisualTestContext::from_window(window, cx);
+    let b = vcx.debug_bounds("go").expect("drawn");
+    let size = b.size;
+    vcx.simulate_mouse_move(b.center(), None, Modifiers::none());
+    vcx.executor().advance_clock(HOVER);
+    vcx.run_until_parked();
+    assert_eq!(vcx.debug_bounds("go").expect("drawn").size, size, "hover moves nothing (R9.10)");
+    vcx.simulate_click(b.center(), Modifiers::none());
+    assert_eq!(clicks.get(), 1);
+}

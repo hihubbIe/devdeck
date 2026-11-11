@@ -7,6 +7,7 @@
 
 use super::{ViewCx, run_mark};
 use crate::runner::RunKey;
+use crate::sidebar::Activity;
 use devdeck_core::apps::{Command, Tier};
 use devdeck_core::view_addr::ViewAddr;
 use devdeck_ui::Scrolls;
@@ -47,6 +48,11 @@ impl AppView {
         let repo = dir.and_then(|d| ctx.services.update(cx, |s, cx| s.repo(&d, cx)));
         if let Some(r) = &repo {
             subs.push(cx.observe(r, |_, _, cx| cx.notify()));
+        }
+        // Its deployments on every env (like the matrix): the cluster's changes redraw.
+        if let Some(cluster) = ctx.services.read(cx).cluster.clone() {
+            cluster.update(cx, |c, cx| c.want_all(cx));
+            subs.push(cx.observe(&cluster, |_, _, cx| cx.notify()));
         }
         subs.extend(ctx.on_visibility(cx, |this: &mut Self, visible, cx| {
             this.looking = visible.then(|| this.repo.as_ref().map(|r| r.update(cx, |r, cx| r.glance(cx)))).flatten();
@@ -124,6 +130,108 @@ impl AppView {
                 None => div().flex_none().text_color(t.dim).child("no upstream").into_any_element(),
             });
         Some(div().flex().flex_col().child(section("Git", t).flex().items_center().justify_between().child(actions)).child(branch_row))
+    }
+
+    /// Where the workspace's cluster runs it, one row per env: the tag, its pods. A row
+    /// goes to it in Cluster, where it's deployed, its logs and history are. `None`
+    /// without a cluster.
+    fn deployments_block(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let services = self.ctx.services.read(cx);
+        let cluster = services.cluster.clone()?;
+        let all = services.catalog.apps.clone();
+        let c = cluster.read(cx);
+        let mut rows: Vec<(devdeck_core::catalog::Env, devdeck_core::cluster::Deployment)> = Vec::new();
+        for env in &c.envs {
+            let Some(deps) = c.state(&env.name).and_then(|s| s.deployments.as_ref()) else { continue };
+            for d in deps.values() {
+                if devdeck_core::links::app_for(&d.name, d.main().image.short_name(), &all).ok().flatten().as_deref() == Some(self.app.as_str()) {
+                    rows.push((env.clone(), d.clone()));
+                }
+            }
+        }
+        let mut block = div().flex().flex_col().child(section(format!("Deployments · {}", rows.len()), t));
+        if rows.is_empty() {
+            return Some(block.child(div().px_2().h(t.row_h).flex().items_center().text_color(t.dim).child("not deployed")));
+        }
+        for (i, (env, d)) in rows.into_iter().enumerate() {
+            let (ctx, name, env_name) = (self.ctx.clone(), d.name.clone(), env.name.clone());
+            let (ctx2, name2, env2) = (ctx.clone(), name.clone(), env_name.clone());
+            let progress = d.progress.label();
+            block = block.child(
+                div()
+                    .id(("deployment", i))
+                    .debug_selector({
+                        let env = env_name.clone();
+                        move || format!("deployment-{env}")
+                    })
+                    .h(t.row_h)
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(t.radius_s)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.hover))
+                    .on_click(move |_, _, cx| ctx.pivot(Activity::Cluster, name.clone(), Some(env_name.clone()), cx))
+                    .child(div().flex_none().w(t.size(64.)).truncate().text_color(if env.protected { t.err } else { t.env }).child(format!("@{}", env.name)))
+                    .when(env.protected, |r| r.child(icon(Icon::Protected, t.err, t).size(t.icon_small)))
+                    .child(label(d.tag()).flex_1().min_w_0())
+                    .child(devdeck_ui::pods_bar(&format!("pods-{}", env.name), &pod_marks(&d), t))
+                    .when_some(progress, |r, p| r.child(div().flex_none().text_color(t.warn).child(p.to_string())))
+                    .child(
+                        devdeck_ui::go_action(("deployment-go", i), Icon::Cluster, format!("{} on {} in Cluster", d.name, env.name), t)
+                            .on_click(move |_, _, cx| ctx2.pivot(Activity::Cluster, name2.clone(), Some(env2.clone()), cx)),
+                    ),
+            );
+        }
+        Some(block)
+    }
+
+    /// The shells in its folder and what they run; a row goes to it in Terminals.
+    fn terminals_block(&self, app: &devdeck_core::apps::App, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let dir = app.dir.display().to_string();
+        let terminals: Vec<u32> = self
+            .ctx
+            .deck
+            .upgrade()
+            .map(|d| d.read(cx).terminals(cx))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, tabs)| matches!(ViewAddr::parse(&tabs.view), ViewAddr::Terminal { dir: d, .. } if d == dir))
+            .map(|(n, _)| n)
+            .collect();
+        let runner = self.ctx.services.read(cx).runner.read(cx);
+        let mut block = div().flex().flex_col().child(section(format!("Terminals · {}", terminals.len()), t));
+        if terminals.is_empty() {
+            block = block.child(div().px_2().h(t.row_h).flex().items_center().text_color(t.dim).child("none in its folder"));
+        }
+        for n in terminals {
+            let key = RunKey::terminal(n);
+            let running = runner.state(&key).is_some_and(|s| s.is_running());
+            let doing = runner.terminal_program(&key).unwrap_or_else(|| if running { "idle".into() } else { "not running".into() });
+            let (ctx, ctx2) = (self.ctx.clone(), self.ctx.clone());
+            block = block.child(
+                div()
+                    .id(("terminal", n as usize))
+                    .debug_selector(move || format!("terminal-{n}"))
+                    .h(t.row_h)
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded(t.radius_s)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.hover))
+                    .on_click(move |_, _, cx| ctx.pivot(Activity::Terminals, n.to_string(), None, cx))
+                    .child(devdeck_ui::dot(if running { t.ok } else { t.dim }, running, t))
+                    .child(div().flex_none().w(t.size(40.)).text_color(t.mute).child(n.to_string()))
+                    .child(label(doing).flex_1().min_w_0())
+                    .child(devdeck_ui::go_action(("terminal-go", n as usize), Icon::Terminals, format!("terminal {n} in Terminals"), t).on_click(move |_, _, cx| {
+                        ctx2.pivot(Activity::Terminals, n.to_string(), None, cx)
+                    })),
+            );
+        }
+        block
     }
 
     /// Opens its repository's git panel.
@@ -263,6 +371,16 @@ impl super::KeepsState for AppView {
         self.show_hidden = state["show_hidden"].as_bool().unwrap_or(false);
         cx.notify();
     }
+}
+
+/// A deployment's pods as the cluster counts them: the ready ones, then the others,
+/// failing when it says why (at most a dozen drawn).
+fn pod_marks(d: &devdeck_core::cluster::Deployment) -> Vec<devdeck_ui::PodMark> {
+    use devdeck_ui::PodMark;
+    let wanted = d.replicas.min(12) as usize;
+    let ready = (d.ready as usize).min(wanted);
+    let other = if d.failure.is_some() { PodMark::Failing } else { PodMark::Starting };
+    std::iter::repeat_n(PodMark::Ready, ready).chain(std::iter::repeat_n(other, wanted - ready)).collect()
 }
 
 /// "12 min": how long something has run (it runs: no "ago").
@@ -426,7 +544,22 @@ impl Render for AppView {
                         .child(div().flex_none().w(t.size(56.)).truncate().text_color(t.mute).debug_selector(move || format!("cmd-ran-{r6}")).children(ran))
                         .child(label(c.line.clone()).flex_1().min_w_0().text_color(t.dim))
                         .when(!c.ports.is_empty(), |d| {
-                            d.child(div().flex_none().text_color(t.mute).child(c.ports.iter().map(|p| format!(":{p}")).collect::<Vec<_>>().join(" ")))
+                            d.children(c.ports.iter().enumerate().map(|(j, p)| {
+                                let (ctx, port) = (self.ctx.clone(), p.to_string());
+                                div()
+                                    .id(("port", n * 16 + j))
+                                    .debug_selector({
+                                        let port = port.clone();
+                                        move || format!("port-{port}")
+                                    })
+                                    .flex_none()
+                                    .text_color(t.mute)
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(t.accent))
+                                    .tooltip(devdeck_ui::tip(format!(":{port} in Ports")))
+                                    .child(format!(":{p}"))
+                                    .on_click(move |_, _, cx| ctx.pivot(Activity::Ports, port.clone(), None, cx))
+                            }))
                         })
                         .when_some(refusal.clone(), |d, r| d.child(div().flex_none().text_color(t.warn).child(r)))
                         .child(action_button(("run", n), Icon::Run, t.icon_small, can_run, run_tip, &t).when(can_run, |d| d.on_click(cx.listener(move |this, _, _, cx| this.run(&r2, cx)))))
@@ -496,7 +629,14 @@ impl Render for AppView {
             .child(commands)
             .when_some(self.git_block(&t, cx), |d, g| d.child(g))
             .child(notes_block);
-        let right = div().flex_1().min_w(t.size(300.)).flex().flex_col().child(tools_block(&app, &tools, &t));
+        let right = div()
+            .flex_1()
+            .min_w(t.size(300.))
+            .flex()
+            .flex_col()
+            .when_some(self.deployments_block(&t, cx), |d, b| d.child(b))
+            .child(self.terminals_block(&app, &t, cx))
+            .child(tools_block(&app, &tools, &t));
         let body = div().id("app-body").flex_1().min_h_0().scroll_y().px_3().pb_2().flex().flex_wrap().gap_x_6().child(left).child(right);
 
         div()

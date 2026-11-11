@@ -728,6 +728,29 @@ impl Deck {
         cx.notify();
     }
 
+    /// Opens `view` in pulse `id`'s first pane (its main window's first, in tree order):
+    /// the live pulse as any change, a saved one in its book. Returns the pulse's name.
+    pub fn open_in_pulse(&mut self, id: &str, view: ViewRef, cx: &mut Context<Self>) -> Result<String, String> {
+        let name = self.book.name(id).ok_or_else(|| format!("no pulse {id}"))?.to_string();
+        let first = |l: &Layout| l.panes_in(MAIN_WINDOW).ok().and_then(|p| p.first().copied()).unwrap_or(l.main().focused);
+        if id == self.book.current {
+            self.apply(cx, |l| {
+                let p = first(l);
+                l.open(view, p).map(|_| ())
+            })
+            .ok_or_else(|| self.last_error.clone().unwrap_or_else(|| "refused".into()))?;
+        } else {
+            let named = self.book.layouts.get_mut(id).ok_or_else(|| format!("no pulse {id}"))?;
+            let mut l = named.layout.clone().unwrap_or_default();
+            let p = first(&l);
+            l.open(view, p).map_err(|e| e.to_string())?;
+            named.layout = Some(l);
+            self.save_book(cx);
+            cx.notify();
+        }
+        Ok(name)
+    }
+
     pub fn rename_layout(&mut self, id: &str, to: &str, cx: &mut Context<Self>) -> Result<(), BookError> {
         self.book.rename(id, to)?;
         self.save_book(cx);

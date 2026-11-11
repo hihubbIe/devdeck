@@ -68,6 +68,8 @@ icons! {
     Close => "x",
     /// Back to what was shown before (a full view's details). From gpui-kit-assets' Lucide set.
     Back => "arrow-left",
+    /// The corner of a "go there" icon ([`crate::go_action`]). From gpui-kit-assets' Lucide set.
+    GoCorner => "arrow-up-right",
     Open => "chevron-down",
     Expand => "chevron-right",
     Collapse => "chevron-up",

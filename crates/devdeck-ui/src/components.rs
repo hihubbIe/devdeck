@@ -133,6 +133,17 @@ pub fn icon_action(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedS
     icon_frame(id, t).tooltip(tip(tooltip)).child(child)
 }
 
+/// "Go there": where it leads (an activity's icon, a pulse's) with a small arrow in its
+/// corner. Pivots from one view to another, and "open in pulse".
+pub fn go_action(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedString>, t: &Theme) -> Stateful<gpui::Div> {
+    let corner = t.icon_small * 0.6;
+    icon_frame(id, t)
+        .relative()
+        .tooltip(tip(tooltip))
+        .child(button_icon(i, t))
+        .child(div().absolute().top(t.hairline * 2.).right(t.hairline * 2.).child(icon(Icon::GoCorner, t.mute, t).size(corner)))
+}
+
 /// [`icon_action`] whose icon is in the accent when it can run: the one thing to do now
 /// (the tag row's deploy once another tag is typed); dim with its reason when not.
 pub fn icon_action_ready(id: impl Into<ElementId>, i: Icon, tooltip: impl Into<SharedString>, ready: bool, t: &Theme) -> Stateful<gpui::Div> {

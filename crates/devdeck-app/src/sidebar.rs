@@ -1048,6 +1048,21 @@ impl Sidebar {
         true
     }
 
+    /// "Go there" from another view: `activity` shown with `key` selected (a Cluster
+    /// deployment on `env`, the list's env then); until that activity has its own full
+    /// view, its item also opens in the pulse, as a click on its row does.
+    pub fn pivot(&mut self, activity: Activity, key: &str, env: Option<&str>, cx: &mut Context<Self>) -> bool {
+        if env.is_some() && activity == Activity::Cluster {
+            let follows = env == self.services.read(cx).env.as_deref();
+            self.set_list_env(if follows { None } else { env }, cx);
+        }
+        if !self.show_item(activity, key, cx) {
+            return false;
+        }
+        self.open(key, cx);
+        true
+    }
+
     /// Shows Pulses when a full view hides the pulse's panes: what opens there next is
     /// seen.
     pub fn show_pulses(&mut self, cx: &mut Context<Self>) {
@@ -1202,7 +1217,12 @@ impl Sidebar {
         // A full view shows a row's details: nothing to open.
         let full = this.read(cx).activity().full_view();
         let mut items = if full {
-            vec![pin_item, Sidebar::move_menu(this, Moving::Node(key.to_string()), cx)]
+            let mut items = vec![pin_item, Sidebar::move_menu(this, Moving::Node(key.to_string()), cx)];
+            if let Some(view) = this.read(cx).view_ref(key, cx) {
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
+            }
+            items
         } else {
             vec![
                 MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),

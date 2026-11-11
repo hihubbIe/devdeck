@@ -507,7 +507,11 @@ pub fn terminal_get(cx: &CallCx, p: TerminalParams, app: &mut App) -> Result<Ter
 pub fn ui_get(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Ui, ApiError> {
     let w = workspace(cx, p.workspace.as_deref(), app)?;
     let deck = w.deck.read(app);
-    Ok(Ui { pulse: deck.book.current.clone(), windows: windows(deck.layout(), Some(deck), app) })
+    let activity = crate::shell::try_shell(app)
+        .and_then(|s| s.read(app).workspaces.iter().find(|x| x.id == w.id).map(|x| x.sidebar.read(app).activity().id()))
+        .unwrap_or("pulses")
+        .to_string();
+    Ok(Ui { pulse: deck.book.current.clone(), activity, windows: windows(deck.layout(), Some(deck), app) })
 }
 
 pub fn pulse_list(cx: &CallCx, p: InWorkspace, app: &mut App) -> Result<Pulses, ApiError> {

@@ -66,6 +66,18 @@ impl ViewCx {
         }))
     }
 
+    /// "Go there": `activity` with `key` selected ([`crate::sidebar::Sidebar::pivot`]),
+    /// once the view asking is done (the details it sits in may go).
+    pub fn pivot(&self, activity: crate::sidebar::Activity, key: String, env: Option<String>, cx: &mut App) {
+        let Some(deck) = self.deck.upgrade() else { return };
+        let sidebar = crate::shell::try_shell(cx).and_then(|s| s.read(cx).workspaces.iter().find(|w| w.deck == deck).map(|w| w.sidebar.clone()));
+        if let Some(sidebar) = sidebar {
+            cx.defer(move |cx| {
+                sidebar.update(cx, |s, cx| s.pivot(activity, &key, env.as_deref(), cx));
+            });
+        }
+    }
+
     /// Opens (or activates) a view: over this one when it's in a full view's details
     /// ([`Deck::drill`]), else in the main window's focused pane.
     pub fn open(&self, addr: ViewAddr, cx: &mut App) {

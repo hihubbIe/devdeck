@@ -326,7 +326,7 @@ function deployBlock(a) {
     const tag = a.deploy[env], rolling = a.rolling === env, prot = env === 'dev31';
     const state = rolling ? `${podsBar(['ok', 'ok', 'start', 'old'], 2)} <span class="warn">rolling out</span>` : podsBar(['ok', 'ok', 'ok'], 3);
     return `<div class="line click" data-pivot="cluster" data-env="${env}"><span class="dot ${rolling ? 'busy' : 'on'}"></span><span class="chip" style="width:62px;text-align:center">${env}</span>${prot ? `<span class="errc" data-tip="protected: asks first">${ic('lock')}</span>` : ''}<span class="n" style="width:150px;overflow:hidden;text-overflow:ellipsis">${tag}</span><span class="s">${state}</span>
-      <span class="ibs keep">${ib('rocket', `deploy ${a.branch || 'main'} to ${env}…`, `data-deploy="${env}"`, 'danger')}${pivot('cluster', `${a.id} on ${env} in Cluster`, `data-env="${env}"`)}</span></div>`;
+      <span class="ibs keep">${pivot('cluster', `${a.id} on ${env} in Cluster: deploy, logs, history`, `data-env="${env}"`)}</span></div>`;
   }).join('');
   return `<div class="block"><div class="label">DEPLOYMENTS<span class="ibs">${ib('bell', 'notify me on…')}</span></div>${rows}</div>`;
 }
