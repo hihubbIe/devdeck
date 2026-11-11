@@ -1120,6 +1120,14 @@ fn port(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>)
     open_view(cx, shell, ViewAddr::Port { port: "5720".into() });
 }
 
+/// Ports with a run's port selected: its page (who, its output, who wants it).
+fn ports_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<Shell>) {
+    let s = sidebar(cx, shell);
+    cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Ports, "5720", cx)));
+    cx.advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+}
+
 fn cheat_sheet(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _shell: &Entity<Shell>) {
     let _ = cx.update_window(w, |_, window, cx| devdeck_app::cheat_sheet::open(window, cx));
     cx.run_until_parked();
@@ -1523,6 +1531,7 @@ fn states() -> Vec<State> {
         w("B3-apps-view", "work", 1.0, Some(apps_view)),
         w("B4-cluster-view", "work", 1.0, Some(cluster_view)),
         w("B5-cluster-parts", "work", 1.0, Some(cluster_parts)),
+        w("B6-ports-view", "work", 1.0, Some(ports_view)),
         w("C0-file-rust", "work", 1.0, Some(file_rust)),
         w("C1-file-md-rendered", "work", 1.0, Some(file_md_rendered)),
         w("C2-file-md-source", "work", 1.0, Some(file_md_source)),

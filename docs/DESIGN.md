@@ -821,6 +821,18 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   Pin as before, and "Open in pulse". A note made from the Notes list is selected there.
   A service page's Envs list only the envs it's deployed on. Each workspace opens on
   Pulses, whatever it showed last; every list keeps its selection.
+- 2026-11-11 (user) Ports is a full view (`docs/plans/ports-view.md`). The list: every port
+  held by a run, a program in one of our terminals (its own process holds it: stopping it
+  never stops the shell) or a holder the catalog names, and every port the workspace
+  knows (declared, or seen by the port memory) even free; "machine" (kept in the
+  sidebar's state) adds every other listener of the machine (`devdeck_sys::ports::all`,
+  one walk of the processes, only while asked; several watched ports share one walk). A
+  port's page: Listening (holder, pid, up, the address it's bound to, an HTTP `HEAD /`
+  every 3 s while shown, the command line; Open, Copy URL, Restart, Stop holder…
+  together), Output (the run's or terminal's own view), Wants it (who declares it or was
+  seen on it, "port held" when a start would be refused; Run, its app), Forward (a
+  `kubectl port-forward` read from its command line; its service in Cluster), Not
+  devdeck's. Every activity but Pulses is now a full view.
 
 ## Open questions
 

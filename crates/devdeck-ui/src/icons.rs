@@ -134,6 +134,10 @@ icons! {
     // Deploys.
     /// Deploy the tag typed (the service view's tag row).
     Deploy => "rocket",
+    /// Open elsewhere (a port in the browser).
+    OpenOut => "arrow-up-right",
+    /// Copy (a URL).
+    Copy => "copy",
     // Window controls.
     WindowMinimize => "minus",
     WindowMaximize => "square",

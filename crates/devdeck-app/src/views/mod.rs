@@ -277,7 +277,11 @@ pub fn build(r: &ViewRef, ctx: Option<&ViewCx>, saved: Option<&serde_json::Value
                 focusable(v, cx)
             }
         },
-        (ViewAddr::Port { port }, Some(ctx)) => Built { view: cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx)).into(), focus: None, save: None, missing: false, live: None },
+        (ViewAddr::Port { port }, Some(ctx)) => {
+            let v = cx.new(|cx| port_view::PortView::new(port, ctx.clone(), cx));
+            let built = focusable(v.clone(), cx);
+            live(built, &v, ctx, cx)
+        }
         (ViewAddr::Problems, Some(ctx)) => Built { view: cx.new(|cx| info_view::ProblemsView::new(ctx.clone(), cx)).into(), focus: None, save: None, missing: false, live: None },
         (ViewAddr::Git { root }, Some(ctx)) => {
             let root = std::path::PathBuf::from(root);

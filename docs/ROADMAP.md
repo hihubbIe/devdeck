@@ -127,7 +127,8 @@ list, which can also open as a tab in a pulse. One activity at a time.
    as one page — done 2026-11-11; 4c front-end apps inside frontendapp — done 2026-11-11.
    Manual test now.
 5. The others: Terminals and Notes as full views (the list, then the terminal or the note
-   itself) — done 2026-11-11; Ports: mockup first; then Agents.
+   itself) — done 2026-11-11; Ports ([plans/ports-view.md](plans/ports-view.md)): 5a what the
+   list knows, 5b the page — done 2026-11-11. Manual test now. Then Agents.
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,

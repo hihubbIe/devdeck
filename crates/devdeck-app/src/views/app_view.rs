@@ -398,7 +398,7 @@ pub(super) fn pod_marks(d: &devdeck_core::cluster::Deployment) -> Vec<devdeck_ui
 }
 
 /// "12 min": how long something has run (it runs: no "ago").
-fn lasted(d: std::time::Duration) -> String {
+pub(super) fn lasted(d: std::time::Duration) -> String {
     match d.as_secs() {
         0..60 => "<1 min".into(),
         s @ 60..3600 => format!("{} min", s / 60),

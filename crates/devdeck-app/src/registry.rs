@@ -11,7 +11,7 @@ use crate::actions::*;
 use crate::shell::ConfirmQuit;
 use crate::notifications as nt;
 use crate::sidebar as sb;
-use crate::views::{app_view as av, git_view as gv, logs_view as lv, matrix_view as mv, run_view as rv, service_view as sv};
+use crate::views::{app_view as av, git_view as gv, logs_view as lv, matrix_view as mv, port_view as pv, run_view as rv, service_view as sv};
 use devdeck_ui::overlay as ov;
 use devdeck_ui::terminal as term;
 use devdeck_ui::text_input as ti;
@@ -177,6 +177,8 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("svc.redeploy", "redeploy", "Service", Some("ServiceView && !TextInput"), ["r"], sv::Redeploy),
         spec!("svc.notify", "notify", "Service", Some("ServiceView && !TextInput"), ["b"], sv::NotifyMenu),
         spec!("svc.app", "its app in Apps", "Service", Some("ServiceView && !TextInput"), [], sv::OpenApp),
+        spec!("port.app", "its app in Apps", "Port", Some("PortView"), [], pv::OpenApp),
+        spec!("port.terminal", "its terminal in Terminals", "Port", Some("PortView"), [], pv::OpenTerminal),
         spec!("svc.confirm", "confirm", "Service", Some("Modal && ServiceModal"), ["enter"], sv::ConfirmModal),
         spec!("git.next", "next branch", "Git", Some("GitView && !TextInput"), ["down"], gv::SelectNext),
         spec!("git.prev", "previous branch", "Git", Some("GitView && !TextInput"), ["up"], gv::SelectPrev),

@@ -81,10 +81,10 @@ impl Activity {
     }
 
     /// Whether it shows as a full view: its list, then its selection's details instead
-    /// of the pulse's panes (Pulses and Ports: their list beside the panes, for now).
+    /// of the pulse's panes (Pulses: its list beside the panes).
     /// Terminals and Notes show the terminal or the note itself.
     pub fn full_view(self) -> bool {
-        matches!(self, Activity::Apps | Activity::Cluster | Activity::Terminals | Activity::Notes)
+        matches!(self, Activity::Apps | Activity::Cluster | Activity::Ports | Activity::Terminals | Activity::Notes)
     }
 
     /// What a full view's details say while nothing is selected.
@@ -93,6 +93,7 @@ impl Activity {
             Activity::Cluster => "pick a service",
             Activity::Terminals => "pick a terminal",
             Activity::Notes => "pick a note",
+            Activity::Ports => "pick a port",
             _ => "pick an app",
         }
     }
