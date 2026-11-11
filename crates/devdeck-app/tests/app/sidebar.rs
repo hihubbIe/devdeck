@@ -281,7 +281,9 @@ fn sidebar_state_is_saved_and_restored(cx: &mut TestAppContext) {
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
     let s = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Cluster);
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Layouts, "it opens on Pulses, whatever was shown last");
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
+    cx.run_until_parked();
     assert_eq!(cx.read(|cx| s.read(cx).state.env.clone()).as_deref(), Some("dev33"));
     assert_eq!(pinned(&s, cx), ["vesselservice"], "unknown pins are kept but not shown");
     assert!(dir.join("workspaces/personal/sidebar.json.bad").exists(), "broken file kept aside");

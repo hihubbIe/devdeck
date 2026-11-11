@@ -105,7 +105,7 @@ fn n_makes_a_note_without_a_project_and_opens_it(cx: &mut TestAppContext) {
     let all = s.store.list().unwrap();
     assert_eq!((all.len(), all[0].app.as_str(), all[0].name.as_str()), (1, "", "todo"));
     let r = note_ref(&all[0].id);
-    assert!(vcx.read(|cx| s.deck.read(cx).layout().find_view(&r).is_some()), "opened");
+    assert_eq!(vcx.read(|cx| s.deck.read(cx).outside().map(<[ViewRef]>::to_vec)), Some(vec![r.clone()]), "selected, its full view shows it");
     assert_eq!(vcx.read(|cx| s.deck.read(cx).title(&r, cx)), "todo", "no project in its title");
     assert_eq!(rows(&s, cx)[3..], ["todo"]);
 }
@@ -150,14 +150,14 @@ fn open_pin_rename_delete_from_the_list(cx: &mut TestAppContext) {
     let s = setup(cx);
     let id = make(&s, "", "todo", cx);
     let menu = cx.update(|cx| Sidebar::item_menu(&s.sidebar, &id, false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu, ["Open", "Pin", "Rename…", "Delete…"], "no groups in Notes");
+    assert_eq!(menu, ["Pin", "Rename…", "Delete…", "", "Open in pulse"], "no groups in Notes; its full view shows it");
 
-    // ⏎ opens the selected note.
+    // The selected note is the full view's.
     let mut vcx = window(cx);
     vcx.update(|window, cx| s.sidebar.read(cx).list_focus.clone().focus(window, cx));
     vcx.simulate_keystrokes("down enter");
     vcx.run_until_parked();
-    assert!(vcx.read(|cx| s.deck.read(cx).layout().find_view(&note_ref(&id)).is_some()));
+    assert_eq!(vcx.read(|cx| s.deck.read(cx).outside().map(<[ViewRef]>::to_vec)), Some(vec![note_ref(&id)]));
 
     // Pinned by key, flat; a drop on All unpins it, one on a row of All does nothing more.
     vcx.update(|window, cx| s.sidebar.read(cx).list_focus.clone().focus(window, cx));

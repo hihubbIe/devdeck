@@ -171,25 +171,20 @@ fn the_terminals_list_has_every_shell_shown_or_not(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| sidebar.read(cx).activity()), Activity::Terminals);
     let listed = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).items(cx).into_iter().map(|i| (i.key, i.detail)).collect::<Vec<_>>());
     assert_eq!(listed(cx), [(n.to_string(), "idle · in other".to_string())], "listed though not shown here");
-    // Open: into this layout, the same shell.
+    // Selected: its full view shows it, the same shell; no tab added to this pulse.
     cx.update(|cx| sidebar.update(cx, |s, cx| s.open(&n.to_string(), cx)));
     cx.run_until_parked();
-    assert_eq!(terminal_tabs(&deck, cx).len(), 1);
-    assert_eq!(listed(cx)[0].1, "idle · here");
+    let shown = cx.read(|cx| deck.read(cx).outside().map(<[ViewRef]>::to_vec)).unwrap_or_default();
+    assert!(matches!(shown.as_slice(), [r] if matches!(ViewAddr::parse(r), ViewAddr::Terminal { n: m, .. } if m == n)), "{shown:?}");
+    assert!(terminal_tabs(&deck, cx).is_empty(), "this pulse untouched");
     assert_eq!(cx.read(|cx| r.read(cx).run(&RunKey::terminal(n)).map(|run| run.runs)), Some(1));
-    // Stop: its shell ends, its tab stays and says so, it stays listed.
+    // Stop: its shell ends, it stays listed ("other" shows it).
     let menu = |cx: &mut TestAppContext| cx.update(|cx| Sidebar::item_menu(&sidebar, &n.to_string(), false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu(cx), ["Open", "Stop"]);
+    assert_eq!(menu(cx), ["Stop", "", "Open in pulse"]);
     cx.update(|cx| sidebar.update(cx, |s, cx| s.stop_terminal(n, cx)));
     settle(cx);
-    assert_eq!(terminal_tabs(&deck, cx).len(), 1, "the layout is untouched");
-    assert_eq!(listed(cx), [(n.to_string(), "ended · here".to_string())]);
-    assert_eq!(menu(cx), ["Open"], "nothing to stop");
-    // Its tab closed here: "other" still shows it, so it stays (ended).
-    let tab = terminal_tabs(&deck, cx)[0].clone();
-    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.close_view(&tab))));
-    settle(cx);
     assert_eq!(listed(cx), [(n.to_string(), "ended · in other".to_string())]);
+    assert_eq!(menu(cx), ["Open in pulse"], "nothing to stop");
 }
 
 #[gpui::test]
@@ -268,11 +263,11 @@ fn after_a_restart_a_hidden_layouts_terminal_is_listed_and_opens(cx: &mut TestAp
     cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Terminals, cx)));
     let listed = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().map(|i| (i.key, i.detail)).collect::<Vec<_>>());
     assert_eq!(listed, [("7".to_string(), "not started · in other".to_string())]);
-    assert_eq!(cx.update(|cx| Sidebar::item_menu(&sidebar, "7", false, cx).len()), 1, "Open, nothing to stop");
+    assert_eq!(cx.update(|cx| Sidebar::item_menu(&sidebar, "7", false, cx).len()), 1, "Open in pulse, nothing to stop");
     cx.update(|cx| sidebar.update(cx, |s, cx| s.open("7", cx)));
     settle(cx);
     let deck = deck(&shell, cx);
-    assert_eq!(terminal_tabs(&deck, cx), [term], "its own tab, opened here");
+    assert_eq!(cx.read(|cx| deck.read(cx).outside().map(<[ViewRef]>::to_vec)), Some(vec![term]), "its own view, in the full view");
     let r = runner(&shell, cx);
     assert_eq!(cx.read(|cx| r.read(cx).state(&RunKey::terminal(7))), Some(RunState::Running), "started");
 }
@@ -404,27 +399,22 @@ fn open_terminal_here_from_a_tab_and_in_a_new_window(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_terminals_list_opens_a_shell_in_another_pane(cx: &mut TestAppContext) {
+fn the_terminals_full_view_shows_the_shell_a_pulse_shows_too(cx: &mut TestAppContext) {
     use devdeck_app::places::Place;
     let shell = start(cx, "term-places");
     let main = main_window(&shell, cx);
     let deck = deck(&shell, cx);
     let r = runner(&shell, cx);
-    let panes = cx.read(|cx| deck.read(cx).layout().numbered_panes());
-    assert!(panes.len() >= 2, "the demo has several panes: {panes:?}");
-    let (first, second) = (panes[0].0, panes[1].0);
+    let first = cx.read(|cx| deck.read(cx).layout().numbered_panes())[0].0;
     cx.update(|cx| deck.update(cx, |d, cx| d.open_terminal(std::path::Path::new("/tmp"), Place::Pane(first), cx)));
     cx.run_until_parked();
     let tab = terminal_tabs(&deck, cx)[0].clone();
     let ViewAddr::Terminal { n, .. } = ViewAddr::parse(&tab) else { unreachable!() };
-    // Its row's menu: "Open" → its places; the first is where it is (refused), the
-    // second takes it.
-    cx.simulate_keystrokes(main, "ctrl-5 down shift-f10 right enter");
+    // Selected in Terminals: the same view and shell as its tab in the pulse, which stays.
+    cx.simulate_keystrokes(main, "ctrl-5 down");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tab).map(|(p, _)| p)), Some(first), "already here: nothing moved");
-    cx.simulate_keystrokes(main, "down enter");
-    cx.run_until_parked();
-    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tab).map(|(p, _)| p)), Some(second), "moved to the second pane");
+    assert_eq!(cx.read(|cx| deck.read(cx).outside().map(<[ViewRef]>::to_vec)), Some(vec![tab.clone()]));
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tab).map(|(p, _)| p)), Some(first), "its tab stays where it was");
     assert_eq!(cx.read(|cx| r.read(cx).run(&RunKey::terminal(n)).map(|run| run.runs)), Some(1), "the same shell");
 }
 

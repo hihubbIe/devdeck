@@ -1090,7 +1090,7 @@ impl Render for WindowView {
                             shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
                             window.refresh();
                         })
-                        .child(if full { details(&self.deck, matrix.then(|| sidebar.clone()), &t, cx) } else { panes.into_any_element() })
+                        .child(if full { details(&self.deck, matrix.then(|| sidebar.clone()), sidebar.read(cx).activity().pick(), &t, cx) } else { panes.into_any_element() })
                         .into_any_element()
                 }
                 None => panes.into_any_element(),
@@ -1184,7 +1184,7 @@ impl Render for WindowView {
 /// A full view's details (Apps): a header saying where they are (each part goes back to
 /// it, the back icon to the one before), then the view on top; a word with nothing
 /// selected.
-fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, t: &Theme, cx: &App) -> AnyElement {
+fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, pick: &'static str, t: &Theme, cx: &App) -> AnyElement {
     let d = deck.read(cx);
     let stack = d.outside().unwrap_or_default();
     let Some(top) = stack.last() else {
@@ -1198,7 +1198,7 @@ fn details(deck: &Entity<Deck>, matrix_of: Option<Entity<Sidebar>>, t: &Theme, c
             .items_center()
             .justify_center()
             .text_color(t.dim)
-            .child("pick an app")
+            .child(pick)
             .into_any_element();
     };
     let mut head = div()

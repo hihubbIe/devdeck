@@ -406,6 +406,13 @@ fn terminals_list(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entit
     terminals(cx, w, shell);
     let s = sidebar(cx, shell);
     cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Terminals, cx)));
+    // Its full view shows the first one.
+    let first = cx.update(|cx| s.read(cx).items(cx).first().map(|i| i.key.clone()));
+    if let Some(key) = first {
+        cx.update(|cx| s.update(cx, |s, cx| s.show_item(Activity::Terminals, &key, cx)));
+    }
+    cx.advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
 }
 
 /// mastertadaapp's dev server output with two lines selected and the right-click menu:

@@ -207,3 +207,33 @@ fn a_front_end_apps_deployments_are_its_part_in_frontendapp(cx: &mut TestAppCont
     assert_eq!(details(&shell, cx), Some(vec![svc("dev35", "frontendapp")]), "the deployment it's in");
     assert!(!tag.is_empty());
 }
+
+#[gpui::test]
+fn an_env_it_isnt_deployed_on_has_no_row(cx: &mut TestAppContext) {
+    let shell = start(cx, "cl-env-rows");
+    select(&shell, cx, "graphservice");
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let c = cluster(&shell, cx);
+    // A service missing from some env read (the demo leaves some out of dls).
+    let (name, on, off) = cx.read(|cx| {
+        let c = c.read(cx);
+        let read: Vec<String> = c.envs.iter().filter(|e| c.peek(&e.name).ready().is_some()).map(|e| e.name.clone()).collect();
+        c.names()
+            .into_iter()
+            .map(|n| {
+                let (on, off): (Vec<String>, Vec<String>) = read.iter().cloned().partition(|e| c.deployment(e, n).is_some());
+                (n.to_string(), on, off)
+            })
+            .find(|(_, on, off)| !off.is_empty() && on.contains(&"dev35".to_string()))
+            .expect("the demo has a service missing from an env")
+    });
+    select(&shell, cx, &name);
+    let mut vcx = VisualTestContext::from_window(main_window(&shell, cx), cx);
+    for e in &on {
+        assert!(vcx.debug_bounds(Box::leak(format!("env-{e}").into_boxed_str())).is_some(), "deployed on {e}: a row");
+    }
+    for e in &off {
+        assert!(vcx.debug_bounds(Box::leak(format!("env-{e}").into_boxed_str())).is_none(), "not on {e}: no row");
+    }
+}

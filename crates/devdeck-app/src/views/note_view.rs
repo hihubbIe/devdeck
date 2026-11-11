@@ -261,9 +261,9 @@ pub fn make_note(notes: Entity<Notes>, deck: gpui::WeakEntity<crate::deck::Deck>
     ask_note(notes, app, Rc::new(move |addr, cx| super::open_in(&deck, addr, cx)), window, cx);
 }
 
-type Opener = Rc<dyn Fn(devdeck_core::view_addr::ViewAddr, &mut App)>;
+pub type Opener = Rc<dyn Fn(devdeck_core::view_addr::ViewAddr, &mut App)>;
 
-fn ask_note(notes: Entity<Notes>, app: &str, open: Opener, window: &mut Window, cx: &mut App) {
+pub fn ask_note(notes: Entity<Notes>, app: &str, open: Opener, window: &mut Window, cx: &mut App) {
     let app = app.to_string();
     let submit: crate::name_prompt::Submit = Rc::new(move |name, cx| {
         let id = notes.update(cx, |n, cx| n.create(&app, name, cx)).ok_or("the note wasn't made")?;

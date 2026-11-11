@@ -126,7 +126,8 @@ list, which can also open as a tab in a pulse. One activity at a time.
    deploying through the picker — done 2026-11-11; 4b Cluster as a full view, the service
    as one page — done 2026-11-11; 4c front-end apps inside frontendapp — done 2026-11-11.
    Manual test now.
-5. The others, one by one: Ports, Terminals, Notes; then Agents.
+5. The others: Terminals and Notes as full views (the list, then the terminal or the note
+   itself) — done 2026-11-11; Ports: mockup first; then Agents.
 
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,

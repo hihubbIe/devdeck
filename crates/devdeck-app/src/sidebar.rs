@@ -81,9 +81,20 @@ impl Activity {
     }
 
     /// Whether it shows as a full view: its list, then its selection's details instead
-    /// of the pulse's panes (Apps; the others, their list beside the panes, for now).
+    /// of the pulse's panes (Pulses and Ports: their list beside the panes, for now).
+    /// Terminals and Notes show the terminal or the note itself.
     pub fn full_view(self) -> bool {
-        matches!(self, Activity::Apps | Activity::Cluster)
+        matches!(self, Activity::Apps | Activity::Cluster | Activity::Terminals | Activity::Notes)
+    }
+
+    /// What a full view's details say while nothing is selected.
+    pub fn pick(self) -> &'static str {
+        match self {
+            Activity::Cluster => "pick a service",
+            Activity::Terminals => "pick a terminal",
+            Activity::Notes => "pick a note",
+            _ => "pick an app",
+        }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
@@ -219,10 +230,9 @@ impl Sidebar {
         // Repair what the workspace can't honour (no cluster, unknown activity, such as
         // "layouts" saved before they were named pulses): the first activity, pulses. The
         // services already settled the env.
-        let has_cluster = services.read(cx).cluster.is_some();
-        let activity = Activity::from_id(&state.activity).unwrap_or(Activity::ALL[0]);
-        let activity = if activity == Activity::Cluster && !has_cluster { Activity::ALL[0] } else { activity };
-        state.activity = activity.id().into();
+        // It opens on Pulses whatever was shown last (user, 2026-11-11): where a workspace
+        // lands. Each list keeps what it had selected.
+        state.activity = Activity::ALL[0].id().into();
         state.env = services.read(cx).env.clone();
         // An env the catalog no longer has: back to following the workspace's.
         if state.cluster_env.as_ref().is_some_and(|e| services.read(cx).catalog.env(e).is_none()) {
@@ -577,8 +587,15 @@ impl Sidebar {
     /// Asks a name and makes a note for `app` (empty: no project), opened in this deck.
     pub fn new_note(this: &Entity<Self>, app: &str, window: &mut Window, cx: &mut App) {
         let s = this.read(cx);
-        let (notes, deck) = (s.services.read(cx).notes.clone(), s.deck.downgrade());
-        crate::views::note_view::make_note(notes, deck, app, window, cx);
+        let notes = s.services.read(cx).notes.clone();
+        // Made from the Notes list: selected there, so its full view shows it.
+        let me = this.downgrade();
+        let open: crate::views::note_view::Opener = std::rc::Rc::new(move |addr, cx| {
+            if let ViewAddr::Note { id } = addr {
+                let _ = me.update(cx, |s, cx| s.show_item(Activity::Notes, &id, cx));
+            }
+        });
+        crate::views::note_view::ask_note(notes, app, open, window, cx);
     }
 
     /// A project row's menu in the Notes list.
@@ -1185,17 +1202,15 @@ impl Sidebar {
             let stop = this.clone();
             let n = key.parse::<u32>().unwrap_or_default();
             let Some(view) = this.read(cx).view_ref(key, cx) else { return Vec::new() };
-            // Opened where it shows, else in the main window's focused pane (the same
-            // shell; one not started starts there).
-            let here = places::showing(deck.read(cx).layout(), &view);
-            let v = view.clone();
-            let mut items = vec![places::item("Open", Place::Pane(here), MAIN_WINDOW, &deck, Some(&view), cx, move |d, place, cx| {
-                d.apply(cx, |l| places::open(l, v.clone(), place))
-            })];
+            // Its full view shows it (the same shell; one not started starts there):
+            // elsewhere, into a pulse.
+            let mut items = Vec::new();
             let runs = this.read(cx).services.read(cx).runner.read(cx).state(&RunKey::terminal(n)).is_some_and(|s| s == devdeck_core::runs::RunState::Running);
             if runs {
                 items.push(MenuItem::new("Stop", move |_, cx| stop.update(cx, |s, cx| s.stop_terminal(n, cx))));
+                items.push(MenuItem::separator());
             }
+            items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
             return items;
         }
         if this.read(cx).activity() == Activity::Layouts {
@@ -1232,12 +1247,17 @@ impl Sidebar {
             }
             let notes = this.read(cx).services.read(cx).notes.clone();
             let (n1, n2, k3, k4) = (notes.clone(), notes, key.to_string(), key.to_string());
-            return vec![
-                MenuItem::new("Open", move |_, cx| open.update(cx, |s, cx| s.open(&k1, cx))),
+            let mut items = vec![
                 MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
                 MenuItem::new("Rename…", move |window, cx| crate::views::note_view::rename_note(&n1, &k3, window, cx)),
                 MenuItem::new("Delete…", move |window, cx| crate::views::note_view::delete_note(&n2, &k4, window, cx)),
             ];
+            // Its full view shows it: elsewhere, into a pulse.
+            if let Some(view) = this.read(cx).view_ref(key, cx) {
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
+            }
+            return items;
         }
         let pin_item = MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx)));
         // A full view shows a row's details: nothing to open.
@@ -1324,12 +1344,12 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         let activity = self.activity();
-        if activity == Activity::Terminals && self.state.visible && self.tick.is_none() {
+        if activity == Activity::Terminals && (activity.full_view() || self.state.visible) && self.tick.is_none() {
             self.tick = Some(cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(TERMINALS_TICK).await;
                     let shown = this.update(cx, |s, cx| {
-                        let on = s.activity() == Activity::Terminals && s.state.visible;
+                        let on = s.activity() == Activity::Terminals;
                         if on {
                             cx.notify();
                         } else {

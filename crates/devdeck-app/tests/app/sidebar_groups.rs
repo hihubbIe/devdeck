@@ -115,9 +115,11 @@ fn folded_sections_and_groups_come_back(cx: &mut TestAppContext) {
     };
     store.save_sidebar("work", &saved).unwrap();
     let shell = start(cx, Some(store), "restore");
+    let s = sidebar(&shell, cx);
+    // It opens on Pulses: Cluster's list as it was left.
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Cluster, cx)));
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
-    let s = sidebar(&shell, cx);
     let r = rows(&s, cx);
     assert_eq!(r[0], "[Pinned 0 folded]");
     assert_eq!(&r[2..4], ["#back ▾1", "  vesselservice"], "groups first, open as saved");

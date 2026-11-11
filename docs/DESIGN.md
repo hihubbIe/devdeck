@@ -815,6 +815,12 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   does (its `ModalClose`; `ModalDismiss` for one whose Esc steps back first, the
   palette). Fields read as captions over values: the caption small, dim, in capitals (as
   a table's header), the value in the text's color; a panel's title in the text's color.
+- 2026-11-11 (user) Terminals and Notes are full views with no view of their own: the list,
+  then the selected terminal or note itself (the same view and shell a pulse's tab shows;
+  selecting one adds no tab). Their row menus: Stop (a running shell), Rename, Delete,
+  Pin as before, and "Open in pulse". A note made from the Notes list is selected there.
+  A service page's Envs list only the envs it's deployed on. Each workspace opens on
+  Pulses, whatever it showed last; every list keeps its selection.
 
 ## Open questions
 

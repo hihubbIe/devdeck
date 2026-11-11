@@ -821,7 +821,7 @@ impl Render for ServiceView {
             &t,
         );
 
-        // ---- Envs: its tag and pods on each; a row shows that env.
+        // ---- Envs: its tag and pods on each env it's deployed on; a row shows that env.
         let mut env_block = div().flex().flex_col().min_w_0().child(table_head(&ENV_COLS, &t));
         for (i, e) in c.envs.iter().enumerate() {
             let here = e.name == self.env;
@@ -832,7 +832,8 @@ impl Render for ServiceView {
                 ),
                 (Remote::Loading, None) => (label("loading…").text_color(t.dim).into_any_element(), div().into_any_element()),
                 (Remote::Error(_), None) => (label("can't read").text_color(t.warn).into_any_element(), div().into_any_element()),
-                (Remote::Ready(_), None) => (label("not deployed").text_color(t.dim).into_any_element(), div().into_any_element()),
+                // Not deployed there: no row.
+                (Remote::Ready(_), None) => continue,
             };
             let env_el = row()
                 .text_color(if e.protected { t.err } else { t.env })
