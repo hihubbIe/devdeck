@@ -95,11 +95,11 @@ static SPECS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
         spec!("ws.8", "workspace 8", "Workspaces", DECK, ["ctrl-alt-8"], SwitchWorkspace(7)),
         spec!("ws.9", "workspace 9", "Workspaces", DECK, ["ctrl-alt-9"], SwitchWorkspace(8)),
         spec!("ws.env", "env", "Workspaces", DECK, ["ctrl-e"], OpenEnvMenu),
-        // Sidebar
-        spec!("sidebar.apps", "apps", "Sidebar", DECK, ["ctrl-1"], ShowApps),
-        spec!("sidebar.cluster", "cluster", "Sidebar", DECK, ["ctrl-2"], ShowCluster),
-        spec!("sidebar.ports", "ports", "Sidebar", DECK, ["ctrl-3"], ShowPorts),
-        spec!("sidebar.layouts", "pulses", "Sidebar", DECK, ["ctrl-4"], ShowLayouts),
+        // Sidebar, in the activity bar's order
+        spec!("sidebar.layouts", "pulses", "Sidebar", DECK, ["ctrl-1"], ShowLayouts),
+        spec!("sidebar.apps", "apps", "Sidebar", DECK, ["ctrl-2"], ShowApps),
+        spec!("sidebar.cluster", "cluster", "Sidebar", DECK, ["ctrl-3"], ShowCluster),
+        spec!("sidebar.ports", "ports", "Sidebar", DECK, ["ctrl-4"], ShowPorts),
         spec!("sidebar.terminals", "terminals", "Sidebar", DECK, ["ctrl-5"], ShowTerminals),
         spec!("sidebar.notes", "notes", "Sidebar", DECK, ["ctrl-6"], ShowNotes),
         spec!("sidebar.toggle", "sidebar", "Sidebar", DECK, ["ctrl-b"], ToggleSidebar),

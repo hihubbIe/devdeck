@@ -5,6 +5,7 @@
 use devdeck_app::fake_driver::{CRASH_AFTER, LINE_GAP, STOP_DELAY};
 use devdeck_app::runner::RunKey;
 use devdeck_app::shell::Shell;
+use devdeck_app::sidebar::Activity;
 use devdeck_app::views::run_view::RunView;
 use devdeck_core::layout::{Layout, ViewRef};
 use devdeck_core::runs::RunState;
@@ -108,6 +109,7 @@ fn missing_tools_refuse_with_the_reason(cx: &mut TestAppContext) {
         let w = &shell.read(cx).workspaces[i];
         (w.services.read(cx).runner.clone(), w.sidebar.clone())
     });
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Apps, cx)));
     let err = cx.update(|cx| runner.update(cx, |r, cx| r.start(&RunKey::new("remotedesktopapp", "compose:up"), None, cx)));
     assert_eq!(err, Err("docker not found".into()));
     let item = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "remotedesktopapp").unwrap());
@@ -134,6 +136,7 @@ fn sidebar_and_quit_guard_follow_the_runner(cx: &mut TestAppContext) {
         let w = &shell.read(cx).workspaces[i];
         (w.services.read(cx).runner.clone(), w.sidebar.clone())
     });
+    cx.update(|cx| sidebar.update(cx, |s, cx| s.show(Activity::Apps, cx)));
     let running_row = |cx: &TestAppContext| cx.read(|cx| sidebar.read(cx).items(cx).into_iter().find(|i| i.key == "entityservice").unwrap().running);
     assert!(running_row(cx));
     cx.update(|cx| runner.update(cx, |r, cx| r.stop(&RunKey::new("entityservice", "go:run"), cx)));
@@ -228,7 +231,7 @@ fn follow_keys_reach_the_view_after_any_way_back_to_the_panes(cx: &mut TestAppCo
     let view = cx.read(|cx| deck.read(cx).view(&r).unwrap().downcast::<RunView>().unwrap());
     assert!(cx.read(|cx| view.read(cx).follow));
     // Into the sidebar and back with Esc: the run view has the keys again.
-    cx.simulate_keystrokes(main, "ctrl-1 escape alt-f");
+    cx.simulate_keystrokes(main, "ctrl-2 escape alt-f");
     cx.run_until_parked();
     assert!(!cx.read(|cx| view.read(cx).follow), "alt+f toggled follow");
 }

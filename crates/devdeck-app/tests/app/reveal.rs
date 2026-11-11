@@ -214,7 +214,7 @@ fn focused(shell: &Entity<Shell>, cx: &mut TestAppContext) -> Option<gpui::Focus
 fn the_keys_reach_the_view_after_a_workspace_switch(cx: &mut TestAppContext) {
     let shell = start(cx, "reveal-keys-ws");
     let main = main_window(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.simulate_keystrokes(main, "ctrl-2");
     reveal(&shell, cx, "personal", "demo/gallery").unwrap();
     let personal = deck(&shell, cx, "personal");
     assert_eq!(keys_on(&personal, cx), [Some(ViewRef::new("demo/gallery"))], "not back where the keys were in personal");
@@ -225,7 +225,7 @@ fn the_keys_reach_a_view_opened_here(cx: &mut TestAppContext) {
     let shell = start(cx, "reveal-keys-here");
     let work = deck(&shell, cx, "work");
     change(&work, cx, |l| l.close_view(&ViewRef::new("demo/long")));
-    cx.simulate_keystrokes(main_window(&shell, cx), "ctrl-1");
+    cx.simulate_keystrokes(main_window(&shell, cx), "ctrl-2");
     assert_eq!(reveal(&shell, cx, "work", "demo/long"), Ok(Revealed::OpenedHere));
     assert_eq!(keys_on(&work, cx), [Some(ViewRef::new("demo/long"))]);
 }
@@ -245,7 +245,7 @@ fn the_keys_reach_the_view_in_a_detached_window(cx: &mut TestAppContext) {
     let shell = start(cx, "reveal-keys-detached");
     let work = deck(&shell, cx, "work");
     let (w, h) = detach(&work, cx, "demo/notes");
-    cx.simulate_keystrokes(main_window(&shell, cx), "ctrl-1");
+    cx.simulate_keystrokes(main_window(&shell, cx), "ctrl-2");
     cx.update_window(h, |_, window, cx| window.blur(cx)).unwrap();
     reveal(&shell, cx, "work", "demo/notes").unwrap();
     let held = cx.update(|cx| devdeck_app::window_view::keys(&work, cx)).unwrap();

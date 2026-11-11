@@ -43,7 +43,8 @@ icons! {
     Apps => "boxes",
     Cluster => "cloud",
     Ports => "ethernet-port",
-    Layouts => "panels-top-left",
+    /// Pulses: a heartbeat. From gpui-kit-assets' Lucide set.
+    Layouts => "activity",
     Terminals => "square-terminal",
     /// A group the user made in a list.
     Group => "folder",

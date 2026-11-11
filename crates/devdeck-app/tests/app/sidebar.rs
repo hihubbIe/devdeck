@@ -36,6 +36,13 @@ fn sidebar(shell: &Entity<Shell>, cx: &TestAppContext) -> Entity<Sidebar> {
     cx.read(|cx| shell.read(cx).active_sidebar())
 }
 
+/// The sidebar on the Apps list: a workspace lands on pulses.
+fn apps(shell: &Entity<Shell>, cx: &mut TestAppContext) -> Entity<Sidebar> {
+    let s = sidebar(shell, cx);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
+    s
+}
+
 fn switch_to(shell: &Entity<Shell>, cx: &mut TestAppContext, id: &str) {
     let i = cx.read(|cx| shell.read(cx).workspaces.iter().position(|w| w.id == id).unwrap());
     cx.update(|cx| shell.update(cx, |s, cx| s.switch(i, cx)));
@@ -67,15 +74,15 @@ fn list_focused(s: &Entity<Sidebar>, w: AnyWindowHandle, cx: &mut TestAppContext
 fn cluster_and_env_only_where_configured(cx: &mut TestAppContext) {
     let shell = start(cx, None, "r23");
     let work = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals, Activity::Notes]);
+    assert_eq!(cx.read(|cx| work.read(cx).activities(cx)), [Activity::Layouts, Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Terminals, Activity::Notes]);
     switch_to(&shell, cx, "personal");
     let personal = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Apps, Activity::Ports, Activity::Layouts, Activity::Terminals, Activity::Notes]);
+    assert_eq!(cx.read(|cx| personal.read(cx).activities(cx)), [Activity::Layouts, Activity::Apps, Activity::Ports, Activity::Terminals, Activity::Notes]);
     assert!(cx.read(|cx| personal.read(cx).env(cx).is_none()), "no env button without envs");
     let main = main_window(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-2");
+    cx.simulate_keystrokes(main, "ctrl-3");
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| personal.read(cx).activity()), Activity::Apps, "ctrl+2 does nothing without a cluster");
+    assert_eq!(cx.read(|cx| personal.read(cx).activity()), Activity::Layouts, "ctrl+3 does nothing without a cluster");
     cx.simulate_keystrokes(main, "ctrl-e");
     cx.run_until_parked();
     assert!(!cx.update(|cx| layer_state(main, cx).0), "no env menu without envs");
@@ -85,13 +92,13 @@ fn cluster_and_env_only_where_configured(cx: &mut TestAppContext) {
 fn each_workspace_keeps_its_own_sidebar(cx: &mut TestAppContext) {
     let shell = start(cx, None, "per-ws");
     let main = main_window(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-3");
+    cx.simulate_keystrokes(main, "ctrl-4");
     cx.run_until_parked();
     let work = sidebar(&shell, cx);
     assert_eq!(cx.read(|cx| work.read(cx).activity()), Activity::Ports);
     assert!(list_focused(&work, main, cx), "the activity key focuses its list");
     switch_to(&shell, cx, "personal");
-    assert_eq!(cx.read(|cx| shell.read(cx).active_sidebar().read(cx).activity()), Activity::Apps);
+    assert_eq!(cx.read(|cx| shell.read(cx).active_sidebar().read(cx).activity()), Activity::Layouts, "a workspace lands on pulses");
     switch_to(&shell, cx, "work");
     assert_eq!(cx.read(|cx| shell.read(cx).active_sidebar().read(cx).activity()), Activity::Ports);
     assert!(list_focused(&work, main, cx), "focus comes back to the list");
@@ -103,7 +110,7 @@ fn list_keys_select_pin_and_open(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
     let deck = cx.read(|cx| shell.read(cx).active_deck());
-    cx.simulate_keystrokes(main, "ctrl-1 down");
+    cx.simulate_keystrokes(main, "ctrl-2 down");
     cx.run_until_parked();
     let first = "a-service-with-a-name-long-enough-to-truncate-in-the-sidebar".to_string();
     assert_eq!(selected(&s, cx), Some(first.clone()), "alphabetical first, headers skipped");
@@ -130,7 +137,7 @@ fn filter_typing_never_triggers_row_keys(cx: &mut TestAppContext) {
     let shell = start(cx, None, "filter");
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-1 /");
+    cx.simulate_keystrokes(main, "ctrl-2 /");
     cx.simulate_input(main, "proxp");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| s.read(cx).filter.read(cx).text().to_string()), "proxp");
@@ -156,7 +163,7 @@ fn hiding_a_focused_sidebar_returns_focus_to_the_panes(cx: &mut TestAppContext) 
     let shell = start(cx, None, "hide");
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-1 ctrl-b");
+    cx.simulate_keystrokes(main, "ctrl-2 ctrl-b");
     cx.run_until_parked();
     assert!(!list_focused(&s, main, cx));
     let deck = cx.read(|cx| shell.read(cx).active_deck());
@@ -170,7 +177,7 @@ fn hiding_a_focused_sidebar_returns_focus_to_the_panes(cx: &mut TestAppContext) 
 fn mouse_right_click_menu_and_drop_on_header(cx: &mut TestAppContext) {
     let shell = start(cx, None, "mouse");
     let main = main_window(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     let mut vcx = VisualTestContext::from_window(main, cx);
     let row = vcx.debug_bounds("row-graphservice").expect("row drawn");
     vcx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::none());
@@ -197,9 +204,9 @@ fn the_current_activitys_icon_stays_in_line(cx: &mut TestAppContext) {
     let shell = start(cx, None, "activity-line");
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Apps);
+    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Layouts);
     let mut vcx = VisualTestContext::from_window(main, cx);
-    let on = vcx.debug_bounds("activity-icon-apps").expect("drawn");
+    let on = vcx.debug_bounds("activity-icon-pulses").expect("drawn");
     let off = vcx.debug_bounds("activity-icon-ports").expect("drawn");
     assert_eq!(on.origin.x, off.origin.x, "the current one isn't pushed aside");
     assert_eq!(on.size, off.size);
@@ -210,7 +217,7 @@ fn env_menu_changes_the_cluster_list(cx: &mut TestAppContext) {
     let shell = start(cx, None, "env");
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-2 ctrl-e");
+    cx.simulate_keystrokes(main, "ctrl-3 ctrl-e");
     cx.run_until_parked();
     assert!(cx.update(|cx| layer_state(main, cx).0), "ctrl+e opens the env menu");
     cx.simulate_keystrokes(main, "escape");
@@ -293,6 +300,28 @@ fn a_sidebar_saved_on_layouts_opens_on_pulses(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| s.read(cx).state.activity.clone()), "pulses", "and the new one saved from now on");
 }
 
+#[gpui::test]
+fn a_workspace_lands_on_pulses_and_ctrl_1_shows_them(cx: &mut TestAppContext) {
+    let dir = temp(cx, "land");
+    let store = StateStore::new(dir.clone());
+    store.save_sidebar("personal", &SidebarState { activity: "cluster".into(), visible: true, ..Default::default() }).unwrap();
+    let shell = start(cx, Some(store), "land");
+    cx.executor().advance_clock(LOAD_DELAY);
+    cx.run_until_parked();
+    let work = sidebar(&shell, cx);
+    let main = main_window(&shell, cx);
+    assert_eq!(cx.read(|cx| work.read(cx).activity()), Activity::Layouts, "nothing saved: pulses, the first activity");
+    cx.simulate_keystrokes(main, "ctrl-2");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| work.read(cx).activity()), Activity::Apps);
+    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| work.read(cx).activity()), Activity::Layouts);
+    assert!(list_focused(&work, main, cx), "ctrl+1 focuses the pulses");
+    switch_to(&shell, cx, "personal");
+    assert_eq!(cx.read(|cx| shell.read(cx).active_sidebar().read(cx).activity()), Activity::Layouts, "saved on a cluster it hasn't: pulses");
+}
+
 #[test]
 fn rows_dropped_on_a_pane_open_there() {
     let mut l = Layout::new();
@@ -341,9 +370,9 @@ fn apps_are_a_tree_that_arrows_open_and_close(cx: &mut TestAppContext) {
     let shell = start(cx, None, "tree-keys");
     with_tree(&shell, cx);
     let main = main_window(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     assert_eq!(tree(&s, cx), ["mono ▸"], "closed at first");
-    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.simulate_keystrokes(main, "ctrl-2");
     cx.update(|cx| s.update(cx, |s, cx| {
         s.selected = Some("mono".into());
         cx.notify();
@@ -382,7 +411,7 @@ fn the_chevron_and_a_double_click_toggle_and_a_closing_folder_takes_the_selectio
     let shell = start(cx, None, "tree-mouse");
     with_tree(&shell, cx);
     let main = main_window(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     let mut vcx = VisualTestContext::from_window(main, cx);
     let chevron = vcx.debug_bounds("row-mono-chevron").expect("drawn");
     vcx.simulate_click(chevron.center(), Modifiers::none());
@@ -409,7 +438,7 @@ fn whats_open_is_saved_and_a_filter_leaves_it_as_it_was(cx: &mut TestAppContext)
     let dir = temp(cx, "tree-save");
     let shell = start(cx, Some(StateStore::new(dir.clone())), "tree-save");
     with_tree(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     cx.update(|cx| s.update(cx, |s, cx| s.toggle_open("mono", cx)));
     cx.run_until_parked();
     let Loaded::Ok(saved) = StateStore::new(dir).load_sidebar("work") else { panic!("saved") };
@@ -463,7 +492,7 @@ fn the_watch_toggle_holds_the_envs_pods_and_marks_trouble(cx: &mut TestAppContex
 fn app_rows_show_a_missing_tool_as_a_mark_at_their_right(cx: &mut TestAppContext) {
     let shell = start(cx, None, "quiet");
     let main = main_window(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     let items = cx.read(|cx| s.read(cx).items(cx));
     assert!(items.iter().all(|i| i.detail.is_empty()), "no app has right text");
     let blocked = items.iter().find(|i| i.warning.is_some()).expect("the demo has an app missing a tool");
@@ -491,7 +520,7 @@ fn the_cluster_list_can_show_another_env_than_the_workspaces(cx: &mut TestAppCon
     let s = sidebar(&shell, cx);
     let services = cx.read(|cx| shell.read(cx).workspaces.iter().find(|w| w.id == "work").unwrap().services.clone());
     let workspace_env = |cx: &TestAppContext| cx.read(|cx| services.read(cx).env.clone());
-    cx.simulate_keystrokes(main, "ctrl-2");
+    cx.simulate_keystrokes(main, "ctrl-3");
     cx.executor().advance_clock(LOAD_DELAY);
     cx.run_until_parked();
     let first = workspace_env(cx);

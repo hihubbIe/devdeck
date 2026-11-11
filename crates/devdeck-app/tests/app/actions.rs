@@ -62,7 +62,7 @@ fn app_keys_wait_while_a_modal_is_open(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 0);
     // `?` in a text input is a character.
-    cx.simulate_keystrokes(main, "ctrl-1 /");
+    cx.simulate_keystrokes(main, "ctrl-2 /");
     cx.simulate_input(main, "?");
     cx.run_until_parked();
     assert_eq!(overlay(&shell, cx).1, 0);
@@ -200,7 +200,7 @@ fn shift_f10_and_right_click_open_menus(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "shift-f10");
     cx.run_until_parked();
     assert!(overlay(&shell, cx).0, "the focused tab's menu");
-    cx.simulate_keystrokes(main, "escape ctrl-1 down shift-f10");
+    cx.simulate_keystrokes(main, "escape ctrl-2 down shift-f10");
     cx.run_until_parked();
     assert!(overlay(&shell, cx).0, "the selected row's menu");
     cx.simulate_keystrokes(main, "escape");
@@ -236,7 +236,7 @@ fn layouts_from_the_modal_the_sidebar_and_the_palette(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "ctrl-w");
     cx.run_until_parked();
     let fewer = cx.read(|cx| deck.read(cx).layout().views().len());
-    cx.simulate_keystrokes(main, "ctrl-4 down enter");
+    cx.simulate_keystrokes(main, "ctrl-1 down enter");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| deck.read(cx).book.current_name().to_string()), "default", "first row (alphabetical) is default");
     assert_eq!(cx.read(|cx| deck.read(cx).layout().views().len()), fewer + 1, "default has the closed tab");

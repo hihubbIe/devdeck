@@ -1532,6 +1532,11 @@ fn main() -> Result<(), String> {
         }
         let shell = cx.update(|cx| Shell::start(specs, state.workspaces.unwrap_or("work"), None, cx));
         cx.update(|cx| shell.update(cx, |s, _| s.quit_for_real = false));
+        // The states were made on the Apps list (groups, running dots); a workspace lands on Pulses.
+        let sidebars: Vec<_> = cx.update(|cx| shell.read(cx).workspaces.iter().map(|w| w.sidebar.clone()).collect());
+        for s in sidebars {
+            cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
+        }
         cx.run_until_parked();
         cx.advance_clock(state.settle);
         cx.run_until_parked();

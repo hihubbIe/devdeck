@@ -18,9 +18,10 @@ The interactive HTML prototype that was approved is the visual reference
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Activity bar**: one icon per activity contributed by the workspace (Apps; Cluster
-  only when configured; Ports; Pulses; Terminals; Notes). Clicking the active one hides
-  the sidebar.
+- **Activity bar**: one icon per activity contributed by the workspace, in this order and
+  on ctrl+1…6: Pulses (where a workspace lands, and where an unknown or unavailable saved
+  activity goes), Apps, Cluster (only when configured), Ports, Terminals, Notes. Clicking
+  the active one hides the sidebar.
 - **Sidebar**: the activity's list. Always Pinned + All, alphabetical, filter field.
   Both sections fold from their header. All holds the groups the user makes (folders,
   nested, first at each level, each list but Terminals and Notes; Cluster groups shared by every
@@ -718,6 +719,11 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   old `layouts` activity opens on Pulses. The API may change, renames included, when every
   consumer devdeck builds changes with it (R13.2, replacing "it only grows"). First step of
   moving pulses to the first activity, the other activities getting full views of their own.
+- 2026-11-11 (user) Pulses are the first activity, what a workspace lands on (and where an
+  unknown or unavailable saved activity goes), with a heartbeat icon; ctrl+1…6 follow the
+  bar (Pulses, Apps, Cluster, Ports, Terminals, Notes). A saved sidebar reopens where it
+  was. The title bar's pulse menu stays until the Apps full view settles what the main
+  area shows. Clicking the active icon still hides the sidebar.
 
 ## Open questions
 

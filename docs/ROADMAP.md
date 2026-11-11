@@ -109,6 +109,19 @@ metrics, protected envs. Plan:
 Later, when wanted: shell in a pod, port-forward, replicas, restart, delete a pod, jobs,
 config maps and secrets, services and ingresses, YAML, cluster methods in the control API.
 
+## Pulses and full views (started 2026-11-11)
+
+Pulses (the user's arranged panes, once "layouts") are the first activity, where a
+workspace lands; every other activity gets a full view of its own instead of a sidebar
+list, which can also open as a tab in a pulse. One activity at a time.
+
+1. Rename layouts to pulses wherever the user or an agent sees them — done 2026-11-11
+   ([plans/pulse-rename.md](plans/pulse-rename.md)).
+2. Pulses first in the activity bar — done 2026-11-11
+   ([plans/pulse-first.md](plans/pulse-first.md)).
+3. Apps: a full view; the title bar's pulse menu settled. Manual test after this step.
+4. The others, one by one: Cluster, Ports, Terminals, Notes; then Agents.
+
 ## M4 · Shareable
 `SETUP.md` interactive setup for Claude, config reference, view and theme guides,
 packaging of the executable. Started: a per-user install for this laptop,

@@ -247,7 +247,7 @@ fn what_an_action_opens_takes_the_keys(cx: &mut TestAppContext) {
     let main = main_window(&shell, cx);
     let problems = ViewAddr::Problems.to_ref();
     push(cx, note(ToastKind::Warn, "problems", None).note(notifications::problems_action("View")));
-    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.simulate_keystrokes(main, "ctrl-2");
     cx.simulate_keystrokes(main, "ctrl-shift-n");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();

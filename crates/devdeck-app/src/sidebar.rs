@@ -66,7 +66,8 @@ pub enum Activity {
 }
 
 impl Activity {
-    pub const ALL: [Activity; 6] = [Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Layouts, Activity::Terminals, Activity::Notes];
+    /// In the activity bar's order; the first is where a workspace lands.
+    pub const ALL: [Activity; 6] = [Activity::Layouts, Activity::Apps, Activity::Cluster, Activity::Ports, Activity::Terminals, Activity::Notes];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -205,13 +206,12 @@ impl Sidebar {
         mut state: SidebarState,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Repair what the workspace can't honour (no cluster, unknown activity); the
+        // Repair what the workspace can't honour (no cluster, unknown activity, such as
+        // "layouts" saved before they were named pulses): the first activity, pulses. The
         // services already settled the env.
         let has_cluster = services.read(cx).cluster.is_some();
-        // "layouts": saved before layouts were named pulses.
-        let activity = if state.activity == "layouts" { Some(Activity::Layouts) } else { Activity::from_id(&state.activity) };
-        let activity = activity.unwrap_or(Activity::Apps);
-        let activity = if activity == Activity::Cluster && !has_cluster { Activity::Apps } else { activity };
+        let activity = Activity::from_id(&state.activity).unwrap_or(Activity::ALL[0]);
+        let activity = if activity == Activity::Cluster && !has_cluster { Activity::ALL[0] } else { activity };
         state.activity = activity.id().into();
         state.env = services.read(cx).env.clone();
         // An env the catalog no longer has: back to following the workspace's.
@@ -301,7 +301,7 @@ impl Sidebar {
     }
 
     pub fn activity(&self) -> Activity {
-        Activity::from_id(&self.state.activity).unwrap_or(Activity::Apps)
+        Activity::from_id(&self.state.activity).unwrap_or(Activity::ALL[0])
     }
 
     /// Activities this workspace offers (Cluster only with a cluster, R2.3).

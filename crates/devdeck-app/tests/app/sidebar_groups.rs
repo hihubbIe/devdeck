@@ -34,6 +34,13 @@ fn sidebar(shell: &Entity<Shell>, cx: &TestAppContext) -> Entity<Sidebar> {
     cx.read(|cx| shell.read(cx).active_sidebar())
 }
 
+/// The sidebar on the Apps list: a workspace lands on pulses.
+fn apps(shell: &Entity<Shell>, cx: &mut TestAppContext) -> Entity<Sidebar> {
+    let s = sidebar(shell, cx);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
+    s
+}
+
 /// The rows as text: `[All 12]`, `[All 12 folded]`, `#group ▸2`, items by key, indented.
 fn rows(s: &Entity<Sidebar>, cx: &TestAppContext) -> Vec<String> {
     cx.read(|cx| {
@@ -73,7 +80,7 @@ fn sections_fold_from_their_header_and_a_filter_shows_their_matches(cx: &mut Tes
     let dir = temp(cx, "fold");
     let shell = start(cx, Some(StateStore::new(dir.clone())), "fold");
     let main = main_window(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     let before = rows(&s, cx);
     let all = before.iter().find(|r| r.starts_with("[All")).unwrap().clone();
     let mut vcx = VisualTestContext::from_window(main, cx);
@@ -172,7 +179,7 @@ fn groups_are_made_through_the_prompt_renamed_and_deleted_without_losing_anythin
 fn rows_dropped_on_a_group_go_in_it_and_back_to_the_top_on_the_all_header(cx: &mut TestAppContext) {
     let shell = start(cx, None, "drop");
     let main = main_window(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     cx.update(|cx| s.update(cx, |s, cx| s.create_group(s.activity(), None, "back", cx).map(drop))).unwrap();
     cx.run_until_parked();
     let mut vcx = VisualTestContext::from_window(main, cx);
@@ -293,7 +300,7 @@ fn with_mono(shell: &Entity<Shell>, cx: &mut TestAppContext) {
 fn what_sits_in_a_moved_folder_stays_put_on_its_rows_and_goes_to_the_top_on_the_header(cx: &mut TestAppContext) {
     let shell = start(cx, None, "nested");
     with_mono(&shell, cx);
-    let s = sidebar(&shell, cx);
+    let s = apps(&shell, cx);
     cx.update(|cx| {
         s.update(cx, |s, cx| {
             s.create_group(s.activity(), None, "design", cx).unwrap();
@@ -349,7 +356,7 @@ fn the_selection_follows_a_group_when_what_holds_it_changes(cx: &mut TestAppCont
 fn pins_and_groups_change_the_list_named_not_the_one_shown(cx: &mut TestAppContext) {
     let shell = start(cx, None, "list-by-name");
     let s = sidebar(&shell, cx);
-    assert_eq!(cx.read(|cx| s.read(cx).activity()), Activity::Apps);
+    cx.update(|cx| s.update(cx, |s, cx| s.show(Activity::Apps, cx)));
     let pins = |cx: &TestAppContext, list: &str| cx.read(|cx| s.read(cx).state.pins.get(list).cloned().unwrap_or_default());
     cx.update(|cx| {
         s.update(cx, |s, cx| {

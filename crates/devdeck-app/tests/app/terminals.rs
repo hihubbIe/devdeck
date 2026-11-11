@@ -433,7 +433,7 @@ fn an_app_rows_menu_opens_a_terminal_in_its_folder(cx: &mut TestAppContext) {
     let shell = start(cx, "term-app-row");
     let main = main_window(&shell, cx);
     let deck = deck(&shell, cx);
-    cx.simulate_keystrokes(main, "ctrl-1");
+    cx.simulate_keystrokes(main, "ctrl-2");
     cx.run_until_parked();
     let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
     cx.update(|cx| sidebar.update(cx, |s, _| s.selected = Some("eventservice".into())));

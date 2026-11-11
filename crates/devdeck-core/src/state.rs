@@ -56,7 +56,7 @@ pub struct SidebarState {
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { activity: "apps".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new(), cluster_env: None }
+        Self { activity: "pulses".into(), visible: true, env: None, pins: Pins::new(), open: BTreeMap::new(), watch_pods: false, collapsed: BTreeMap::new(), groups: BTreeMap::new(), cluster_env: None }
     }
 }
 

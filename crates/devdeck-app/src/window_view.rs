@@ -574,7 +574,7 @@ impl WindowView {
         sidebar_width(saved, window.viewport_size().width, t)
     }
 
-    /// Shows an activity and focuses its list (ctrl+1/2/3, activity bar).
+    /// Shows an activity and focuses its list (ctrl+1…6, activity bar).
     fn show_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
         if app_settings::is_covered(cx) {
