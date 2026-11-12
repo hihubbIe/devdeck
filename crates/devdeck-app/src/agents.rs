@@ -328,7 +328,8 @@ impl Agents {
         }
         rec.active = unix_now();
         // Its agent moved to another conversation: that one resumes from now on.
-        let moved = said.session.filter(|id| event == Event::Started && id != rec.conversation());
+        // Only a plain id: anything else would be an option on its next command line.
+        let moved = said.session.filter(|id| event == Event::Started && id != rec.conversation() && devdeck_core::agents::is_conversation_id(id));
         if let Some(id) = moved {
             rec.conversation = (id != rec.id).then_some(id);
             if let Some(kind) = crate::environment::agent_kinds(cx).into_iter().find(|k| k.id == rec.agent) {

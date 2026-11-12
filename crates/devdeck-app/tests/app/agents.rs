@@ -323,6 +323,9 @@ fn after_clear_or_resume_inside_it_resumes_the_conversation_it_moved_to(cx: &mut
     let k = key(&w, &id, cx);
     assert_eq!(cx.read(|cx| w.runner.read(cx).terminal_line(&k).map(str::to_string)), Some("exec claude --resume other-conversation".into()));
     assert_eq!(cx.read(|cx| w.agents.read(cx).session(&id).unwrap().conversation().to_string()), "other-conversation");
+    // What isn't a plain id is ignored: it would be an option on the next start.
+    report(&w, &id, "started", serde_json::json!({ "session_id": "--dangerously-skip-permissions" }), cx).unwrap();
+    assert_eq!(cx.read(|cx| w.runner.read(cx).terminal_line(&k).map(str::to_string)), Some("exec claude --resume other-conversation".into()));
 }
 
 #[gpui::test]

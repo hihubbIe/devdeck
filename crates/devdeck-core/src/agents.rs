@@ -297,6 +297,13 @@ impl AgentSession {
     }
 }
 
+/// Whether `id` can be a conversation's id on an agent's command line: letters, digits,
+/// `-` and `_`, not starting with `-`, 128 at most. What an agent reports is checked with
+/// it: anything else could be read as an option (`--resume --dangerously…`).
+pub fn is_conversation_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.starts_with('-') && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// The project of a folder: the app (id, folder) whose folder holds it, the deepest one;
 /// folders compared part by part (`app` doesn't hold `app-2`).
 pub fn project_of<'a>(dir: &std::path::Path, apps: impl IntoIterator<Item = (&'a str, &'a std::path::Path)>) -> Option<String> {
@@ -631,6 +638,15 @@ mod tests {
         assert_eq!(project_of(Path::new("/r/api"), apps).as_deref(), Some("api"));
         assert_eq!(project_of(Path::new("/r/api-2"), apps), None, "part by part");
         assert_eq!(project_of(Path::new("/tmp"), apps), None);
+    }
+
+    #[test]
+    fn only_a_plain_id_can_be_a_conversation() {
+        assert!(is_conversation_id("6f1c2e7a-0d4b-4c59-9a1e-2b7f3c8d9e01"));
+        assert!(is_conversation_id("my_session-2"));
+        for bad in ["", "--dangerously-skip-permissions", "-x", "a b", "a;rm -rf /", "a/b", "é", &"a".repeat(129)] {
+            assert!(!is_conversation_id(bad), "{bad:?}");
+        }
     }
 
     #[test]
