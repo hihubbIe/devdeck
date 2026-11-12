@@ -349,13 +349,13 @@ fn a_deploy_that_finished_while_devdeck_was_closed_says_so_once(cx: &mut TestApp
 #[gpui::test]
 fn a_colleagues_deploy_follows_the_ticks(cx: &mut TestAppContext) {
     let c = setup(cx);
-    let jdoe = "j.doe via Kugelblitz";
-    watch(&c, cx, by(dep("feature", 4, 6, 5, Progress::Rolling), jdoe));
-    watch(&c, cx, by(dep("feature", 4, 6, 6, Progress::Settled), jdoe));
+    let colleague = "f.lastname via Kugelblitz";
+    watch(&c, cx, by(dep("feature", 4, 6, 5, Progress::Rolling), colleague));
+    watch(&c, cx, by(dep("feature", 4, 6, 6, Progress::Settled), colleague));
     assert_eq!(told(cx), [], "unticked: silent, its outcome too");
     tick(&c, cx, &[Notify::BranchDeployed]);
-    watch(&c, cx, by(dep("other", 5, 7, 6, Progress::Rolling), jdoe));
-    assert_eq!(texts(cx), ["other deployed by j.doe via Kugelblitz (was feature)"]);
+    watch(&c, cx, by(dep("other", 5, 7, 6, Progress::Rolling), colleague));
+    assert_eq!(texts(cx), ["other deployed by f.lastname via Kugelblitz (was feature)"]);
 }
 
 /// The user's own deploy made elsewhere (their name from another machine, or devdeck's

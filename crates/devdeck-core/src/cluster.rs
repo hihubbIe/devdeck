@@ -695,7 +695,7 @@ mod tests {
         assert!(by_me("j.doe via Kugelblitz", Some("j.doe")));
         assert!(by_me("devdeck", Some("j.doe")), "history kept from before");
         assert!(by_me("devdeck", None));
-        assert!(!by_me("j.doe via Kugelblitz", Some("j.doe")), "a colleague's");
+        assert!(!by_me("f.lastname via Kugelblitz", Some("j.doe")), "a colleague's");
         assert!(!by_me("j.doe via Kugelblitz", None), "nobody named here");
         assert!(!by_me("kubectl-set", Some("j.doe")));
     }
