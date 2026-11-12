@@ -16,12 +16,12 @@
 //! notes without a project; projects without notes don't show.
 
 use crate::deck::Deck;
-use crate::places::{self, Place};
+use crate::open_in::{self, OpenedFrom};
 use crate::runner::RunKey;
 use crate::services::Services;
 use devdeck_core::cluster::{Env, Remote};
 use devdeck_core::view_addr::ViewAddr;
-use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, Result as LayoutResult, ViewRef};
+use devdeck_core::layout::{Drop, Layout, Result as LayoutResult, ViewRef};
 use devdeck_core::list::{self, Groups, Kids, ListItem, Row, Section, Shape, group_of_row, group_row_path};
 use devdeck_core::state::{SidebarState, StateStore};
 use devdeck_ui::scroll_list;
@@ -697,45 +697,32 @@ impl Sidebar {
         crate::views::note_view::ask_note(notes, app, open, window, cx);
     }
 
-    /// "Start here" for a view's folder (R6.13, R6.14): a shell there, a session of each
-    /// agent; from a full view, opening in a pulse shows Pulses first.
-    fn start_here(this: &Entity<Self>, deck: &Entity<Deck>, view: &ViewRef, cx: &App) -> Vec<MenuItem> {
-        let dir = deck.read(cx).folder_of(Some(view), cx);
-        Sidebar::start_here_in(this, deck, &dir, cx)
-    }
-
-    fn start_here_in(this: &Entity<Self>, deck: &Entity<Deck>, dir: &std::path::Path, cx: &App) -> Vec<MenuItem> {
-        let focused = deck.read(cx).layout().main().focused;
-        let pulses = this.read(cx).activity().full_view().then(|| this.downgrade());
-        let (folder, then) = (dir.to_path_buf(), pulses.clone());
-        let mut items = vec![
-            MenuItem::separator(),
-            places::item("Open terminal here", Place::Pane(focused), MAIN_WINDOW, deck, None, cx, move |d, place, cx| {
-                if let Some(s) = then.clone() {
-                    cx.defer(move |cx| {
-                        let _ = s.update(cx, |s, cx| s.show_pulses(cx));
-                    });
-                }
-                d.open_terminal(&folder, place, cx)
-            }),
-        ];
-        items.extend(places::agent_items(MAIN_WINDOW, deck, dir, pulses, cx));
-        items
-    }
-
-    /// A project row's menu in the Agents list: a new session of each agent in its folder.
+    /// A project row's menu in the Agents list: a shell or a session in its folder.
     fn agents_project_menu(this: &Entity<Self>, node: &str, cx: &App) -> Vec<MenuItem> {
         let s = this.read(cx);
         let app = devdeck_core::notes::project_of_node(node);
         let Some(dir) = s.services.read(cx).catalog.app(&app).map(|a| a.dir.clone()) else { return Vec::new() };
-        // Without their leading separator: the menu is theirs alone.
-        places::agent_items(MAIN_WINDOW, &s.deck, &dir, Some(this.downgrade()), cx).into_iter().skip(1).collect()
+        open_in::item(&s.deck, open_in::Subject::folder(dir), OpenedFrom::Outside, cx).into_iter().collect()
+    }
+
+    /// "Open in" for a row's view (`None`: nothing to open), after a separator when the
+    /// menu has items before it.
+    fn open_in(this: &Entity<Self>, view: Option<ViewRef>, items: &mut Vec<MenuItem>, cx: &App) {
+        let Some(view) = view else { return };
+        let deck = this.read(cx).deck.clone();
+        let dir = deck.read(cx).own_folder(&view, cx);
+        if let Some(item) = open_in::item(&deck, open_in::Subject::view(view, dir), OpenedFrom::Outside, cx) {
+            if !items.is_empty() {
+                items.push(MenuItem::separator());
+            }
+            items.push(item);
+        }
     }
 
     /// A project row's menu in the Notes list.
     fn project_menu(this: &Entity<Self>, node: &str) -> Vec<MenuItem> {
         let (me, app) = (this.clone(), devdeck_core::notes::project_of_node(node));
-        vec![MenuItem::new("New note…", move |window, cx| Sidebar::new_note(&me, &app, window, cx))]
+        vec![MenuItem::new("New note", move |window, cx| Sidebar::new_note(&me, &app, window, cx))]
     }
 
     fn pins(&self) -> std::collections::BTreeSet<String> {
@@ -1009,8 +996,8 @@ impl Sidebar {
         let (m1, m2, m3) = (this.clone(), this.clone(), this.clone());
         let (p1, p2, p3) = (path.to_string(), path.to_string(), path.to_string());
         vec![
-            MenuItem::new("New group inside…", move |window, cx| Sidebar::prompt_new_group(&m1, Some(p1.clone()), None, window, cx)),
-            MenuItem::new("Rename…", move |window, cx| Sidebar::prompt_rename_group(&m2, p2.clone(), window, cx)),
+            MenuItem::new("New group inside", move |window, cx| Sidebar::prompt_new_group(&m1, Some(p1.clone()), None, window, cx)),
+            MenuItem::new("Rename", move |window, cx| Sidebar::prompt_rename_group(&m2, p2.clone(), window, cx)),
             MenuItem::new("Delete", move |_, cx| m3.update(cx, |s, cx| s.delete_group(s.activity(), &p3, cx))),
             MenuItem::separator(),
             Sidebar::move_menu(this, Moving::Group(path.to_string()), cx),
@@ -1343,7 +1330,6 @@ impl Sidebar {
     }
 
     pub fn item_menu(this: &Entity<Self>, key: &str, pinned: bool, cx: &App) -> Vec<MenuItem> {
-        let deck = this.read(cx).deck.clone();
         if this.read(cx).activity() == Activity::Terminals {
             let stop = this.clone();
             let n = key.parse::<u32>().unwrap_or_default();
@@ -1354,10 +1340,8 @@ impl Sidebar {
             let runs = this.read(cx).services.read(cx).runner.read(cx).state(&RunKey::terminal(n)).is_some_and(|s| s == devdeck_core::runs::RunState::Running);
             if runs {
                 items.push(MenuItem::new("Stop", move |_, cx| stop.update(cx, |s, cx| s.stop_terminal(n, cx))));
-                items.push(MenuItem::separator());
             }
-            items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
-            items.extend(Sidebar::start_here(this, &deck, &view, cx));
+            Sidebar::open_in(this, Some(view), &mut items, cx);
             return items;
         }
         if this.read(cx).activity() == Activity::Layouts {
@@ -1379,7 +1363,7 @@ impl Sidebar {
                         let _ = d.switch_layout(&k1, cx);
                     })
                 }),
-                MenuItem::new("Rename…", move |window, cx| crate::layouts::open_rename(d2.clone(), k2.clone(), window, cx)),
+                MenuItem::new("Rename", move |window, cx| crate::layouts::open_rename(d2.clone(), k2.clone(), window, cx)),
                 delete,
                 MenuItem::separator(),
                 Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
@@ -1398,21 +1382,14 @@ impl Sidebar {
             let (k3, k4, k5) = (key.to_string(), key.to_string(), key.to_string());
             let mut items = vec![
                 MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
-                MenuItem::new("Rename…", move |window, cx| rename_session(a1.clone(), k3.clone(), window, cx)),
+                MenuItem::new("Rename", move |window, cx| rename_session(a1.clone(), k3.clone(), window, cx)),
             ];
             if running {
                 items.push(MenuItem::new("Stop", move |_, cx| a2.update(cx, |a, cx| a.stop(&k4, cx))));
             }
             // The agent keeps the conversation: only devdeck's record goes.
             items.push(MenuItem::new("Remove", move |_, cx| a3.update(cx, |a, cx| a.remove(&k5, cx))));
-            if let Some(view) = this.read(cx).view_ref(key, cx) {
-                items.push(MenuItem::separator());
-                items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
-            }
-            // Its folder: a shell there, or another session.
-            if let Some(dir) = this.read(cx).services.read(cx).agents.read(cx).session(key).map(|s| s.dir.clone()) {
-                items.extend(Sidebar::start_here_in(this, &deck, &dir, cx));
-            }
+            Sidebar::open_in(this, this.read(cx).view_ref(key, cx), &mut items, cx);
             return items;
         }
         if this.read(cx).activity() == Activity::Notes {
@@ -1424,25 +1401,20 @@ impl Sidebar {
             let (n1, n2, k3, k4) = (notes.clone(), notes, key.to_string(), key.to_string());
             let mut items = vec![
                 MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx))),
-                MenuItem::new("Rename…", move |window, cx| crate::views::note_view::rename_note(&n1, &k3, window, cx)),
-                MenuItem::new("Delete…", move |window, cx| crate::views::note_view::delete_note(&n2, &k4, window, cx)),
+                MenuItem::new("Rename", move |window, cx| crate::views::note_view::rename_note(&n1, &k3, window, cx)),
+                MenuItem::new("Delete", move |window, cx| crate::views::note_view::delete_note(&n2, &k4, window, cx)),
             ];
             // Its full view shows it: elsewhere, into a pulse.
-            if let Some(view) = this.read(cx).view_ref(key, cx) {
-                items.push(MenuItem::separator());
-                items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
-            }
+            Sidebar::open_in(this, this.read(cx).view_ref(key, cx), &mut items, cx);
             return items;
         }
         let pin_item = MenuItem::new(if pinned { "Unpin" } else { "Pin" }, move |_, cx| pin.update(cx, |s, cx| s.toggle_pin(&k2, cx)));
         // A full view shows a row's details: nothing to open.
         let full = this.read(cx).activity().full_view();
-        let mut items = if full {
+        // An app's shell and sessions come with it (its own folder; not a folder row's).
+        if full {
             let mut items = vec![pin_item, Sidebar::move_menu(this, Moving::Node(key.to_string()), cx)];
-            if let Some(view) = this.read(cx).view_ref(key, cx) {
-                items.push(MenuItem::separator());
-                items.push(MenuItem::new("Open in pulse", |_, _| {}).submenu(crate::layouts::open_in_pulse(&deck, &view, cx)));
-            }
+            Sidebar::open_in(this, this.read(cx).view_ref(key, cx), &mut items, cx);
             items
         } else {
             vec![
@@ -1450,15 +1422,7 @@ impl Sidebar {
                 pin_item,
                 Sidebar::move_menu(this, Moving::Node(key.to_string()), cx),
             ]
-        };
-        // An app's shell and sessions, in its folder (not a folder row's).
-        if this.read(cx).activity() == Activity::Apps
-            && this.read(cx).services.read(cx).catalog.app(key).is_some()
-            && let Some(view) = this.read(cx).view_ref(key, cx)
-        {
-            items.extend(Sidebar::start_here(this, &deck, &view, cx));
         }
-        items
     }
 
     pub fn env_menu(this: &Entity<Self>, cx: &App) -> Vec<MenuItem> {
@@ -1792,9 +1756,9 @@ fn render_row(
                     d.on_mouse_down(MouseButton::Right, move |e, window, cx| {
                         let m = m_menu.clone();
                         let items = if notes {
-                            vec![MenuItem::new("New note…", move |window, cx| Sidebar::new_note(&m, "", window, cx))]
+                            vec![MenuItem::new("New note", move |window, cx| Sidebar::new_note(&m, "", window, cx))]
                         } else {
-                            vec![MenuItem::new("New group…", move |window, cx| Sidebar::prompt_new_group(&m, None, None, window, cx))]
+                            vec![MenuItem::new("New group", move |window, cx| Sidebar::prompt_new_group(&m, None, None, window, cx))]
                         };
                         open_menu(e.position, items, window, cx);
                     })

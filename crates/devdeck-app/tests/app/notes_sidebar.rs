@@ -133,7 +133,7 @@ fn the_new_note_button_and_a_projects_menu(cx: &mut TestAppContext) {
         let items = menu.read(cx).items();
         (items.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), items[0].run.clone().unwrap())
     });
-    assert_eq!(labels, ["New note…"]);
+    assert_eq!(labels, ["New note"]);
     let by_key = vcx.update(|_, cx| Sidebar::item_menu(&s.sidebar, &format!("{}/", project_node("graphservice")), false, cx).len());
     assert_eq!(by_key, 1, "the menu key on the project's row: the same menu");
     vcx.simulate_keystrokes("escape");
@@ -150,7 +150,7 @@ fn open_pin_rename_delete_from_the_list(cx: &mut TestAppContext) {
     let s = setup(cx);
     let id = make(&s, "", "todo", cx);
     let menu = cx.update(|cx| Sidebar::item_menu(&s.sidebar, &id, false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu, ["Pin", "Rename…", "Delete…", "", "Open in pulse"], "no groups in Notes; its full view shows it");
+    assert_eq!(menu, ["Pin", "Rename", "Delete", "", "Open in"], "no groups in Notes; its full view shows it");
 
     // The selected note is the full view's.
     let mut vcx = window(cx);

@@ -180,11 +180,11 @@ fn the_terminals_list_has_every_shell_shown_or_not(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| r.read(cx).run(&RunKey::terminal(n)).map(|run| run.runs)), Some(1));
     // Stop: its shell ends, it stays listed ("other" shows it).
     let menu = |cx: &mut TestAppContext| cx.update(|cx| Sidebar::item_menu(&sidebar, &n.to_string(), false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu(cx), ["Stop", "", "Open in pulse", "", "Open terminal here"], "then start here, in its folder");
+    assert_eq!(menu(cx), ["Stop", "", "Open in"], "then where to open it, or what else in its folder");
     cx.update(|cx| sidebar.update(cx, |s, cx| s.stop_terminal(n, cx)));
     settle(cx);
     assert_eq!(listed(cx), [(n.to_string(), "ended · in other".to_string())]);
-    assert_eq!(menu(cx), ["Open in pulse", "", "Open terminal here"], "nothing to stop");
+    assert_eq!(menu(cx), ["Open in"], "nothing to stop");
 }
 
 #[gpui::test]
@@ -264,7 +264,7 @@ fn after_a_restart_a_hidden_layouts_terminal_is_listed_and_opens(cx: &mut TestAp
     let listed = cx.read(|cx| sidebar.read(cx).items(cx).into_iter().map(|i| (i.key, i.detail)).collect::<Vec<_>>());
     assert_eq!(listed, [("7".to_string(), "not started · in other".to_string())]);
     let menu = cx.update(|cx| Sidebar::item_menu(&sidebar, "7", false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu, ["Open in pulse", "", "Open terminal here"], "nothing to stop");
+    assert_eq!(menu, ["Open in"], "nothing to stop");
     cx.update(|cx| sidebar.update(cx, |s, cx| s.open("7", cx)));
     settle(cx);
     let deck = deck(&shell, cx);
@@ -374,10 +374,13 @@ fn open_terminal_here_from_a_tab_and_in_a_new_window(cx: &mut TestAppContext) {
         vcx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
         vcx.run_until_parked();
     };
-    // The tab's menu; "Open terminal here" is its last item (↑ selects the first, ↑ again
-    // wraps to the last): a click (⏎) opens it in this pane.
+    // The tab's menu; "Open in" is its last item (↑ selects the first, ↑ again wraps to
+    // the last): Terminal comes first, in this pane, so ⏎ opens it there.
     tab_menu(cx, &app);
     cx.simulate_keystrokes(main, "up up enter");
+    cx.run_until_parked();
+    assert!(cx.update(|cx| devdeck_ui::overlay::any_modal(cx)), "the chooser, no submenu");
+    cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     let tabs = terminal_tabs(&deck, cx);
     assert_eq!(tabs.len(), 1);
@@ -385,9 +388,13 @@ fn open_terminal_here_from_a_tab_and_in_a_new_window(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tabs[0]).map(|(p, _)| p)), Some(pane), "in this pane");
     let view = cx.read(|cx| deck.read(cx).view(&tabs[0]).unwrap().downcast::<RunView>().unwrap());
     assert!(cx.update_window(main, |_, window, cx| view.read(cx).terminal_focused(window)).unwrap(), "the keys go to it");
-    // From the terminal's tab, its submenu's last place (→, then ↑ from the first): a new window.
+    // From the terminal's tab ("Open in", ↑ from the first as before), the last place (→
+    // to WHERE, ↓ to its end): a new window.
     tab_menu(cx, &tabs[0]);
-    cx.simulate_keystrokes(main, "up right up enter");
+    cx.simulate_keystrokes(main, "up enter");
+    cx.run_until_parked();
+    assert!(cx.update(|cx| devdeck_ui::overlay::any_modal(cx)), "the chooser");
+    cx.simulate_keystrokes(main, "right down down down down down down down down enter");
     cx.run_until_parked();
     let tabs = terminal_tabs(&deck, cx);
     assert_eq!(tabs.len(), 2, "a second shell");
@@ -429,13 +436,17 @@ fn an_app_rows_menu_opens_a_terminal_in_its_folder(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let sidebar = cx.read(|cx| shell.read(cx).active_sidebar());
     cx.update(|cx| sidebar.update(cx, |s, _| s.selected = Some("eventservice".into())));
+    // "Open in" (the menu's last), then Terminal (↓): the current pulse stays selected.
     cx.simulate_keystrokes(main, "shift-f10 up enter");
+    cx.run_until_parked();
+    cx.simulate_keystrokes(main, "down enter");
     cx.run_until_parked();
     let tabs = terminal_tabs(&deck, cx);
     assert_eq!(tabs.len(), 1);
     assert_eq!(terminal_dir(&tabs[0]), app_dir(&shell, "eventservice", cx));
-    let focused = cx.read(|cx| deck.read(cx).layout().main().focused);
-    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tabs[0]).map(|(p, _)| p)), Some(focused), "in the main window's focused pane");
+    let first = cx.read(|cx| deck.read(cx).layout().panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap()[0]);
+    assert_eq!(cx.read(|cx| deck.read(cx).layout().find_view(&tabs[0]).map(|(p, _)| p)), Some(first), "in the pulse's first pane");
+    assert_eq!(cx.read(|cx| sidebar.read(cx).activity()), devdeck_app::sidebar::Activity::Apps, "the Apps view stays");
 }
 
 // ------------------------------------------------------------------ shells without a view (R13.1)

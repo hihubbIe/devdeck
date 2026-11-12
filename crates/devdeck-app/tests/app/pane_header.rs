@@ -216,7 +216,7 @@ fn an_empty_panes_menus_are_the_panes(cx: &mut TestAppContext) {
     assert!(menu(&mut vcx, w).iter().any(|l| l == "Split right"), "the menu key: the pane menu");
     let open = vcx.update(|_, cx| devdeck_ui::overlay::layer(w, cx).read(cx).menu.clone()).unwrap();
     let idle: Vec<String> = vcx.read(|cx| open.read(cx).items().iter().filter(|i| i.disabled.as_deref() == Some("no tabs")).map(|i| i.label.to_string()).collect());
-    assert_eq!(idle, ["Send pane to…", "Close pane"], "nothing to send or close");
+    assert_eq!(idle, ["Send pane to", "Close pane"], "nothing to send or close");
 }
 
 #[gpui::test]

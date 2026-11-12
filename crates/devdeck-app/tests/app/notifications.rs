@@ -1,11 +1,11 @@
 //! The notification center (plan "notifications", step A): the bell's badge in every
-//! window, the center as a cover of the main window (excluding Settings), its filters,
+//! window, the center as a modal over the main window (in place of Settings), its filters,
 //! read state, clear and keys; toasts leading to it; the control API's toasts untouched.
 
 use devdeck_api::types::Toasts;
 use devdeck_app::api::Who;
 use devdeck_app::api::dispatch::{self, Answer, CallCx};
-use devdeck_app::app_settings::{self, Cover};
+use devdeck_app::app_settings::{self, Dialog};
 use devdeck_app::notifications::{self, Badge, NotificationsView, Source};
 use devdeck_app::shell::Shell;
 use devdeck_app::window_view::WindowView;
@@ -52,8 +52,8 @@ fn note(kind: ToastKind, text: &str, source: Option<&str>) -> NewToast {
     NewToast::new(kind, text.to_string()).source(source.map(|s| s.to_string().into()))
 }
 
-fn cover(cx: &TestAppContext) -> Cover {
-    cx.read(app_settings::cover)
+fn dialog(cx: &TestAppContext) -> Dialog {
+    cx.read(app_settings::dialog)
 }
 
 fn center(shell: &Entity<Shell>, cx: &TestAppContext) -> Entity<NotificationsView> {
@@ -119,24 +119,30 @@ fn the_center_opens_closes_and_excludes_settings(cx: &mut TestAppContext) {
     let panes = |cx: &TestAppContext| cx.read(|cx| deck.read(cx).layout().panes_in(devdeck_core::layout::MAIN_WINDOW).unwrap().len());
     let before = panes(cx);
     cx.simulate_keystrokes(main, "ctrl-shift-n");
-    assert_eq!(cover(cx), Cover::Notifications);
+    assert_eq!(dialog(cx), Dialog::Notifications);
     assert!(drawn(main, "notifications", cx));
     cx.simulate_keystrokes(main, "ctrl-\\");
     assert_eq!(panes(cx), before, "pane keys do nothing behind the center");
     cx.simulate_keystrokes(main, "ctrl-,");
-    assert_eq!(cover(cx), Cover::Settings, "settings replace the center");
-    assert!(!drawn(main, "notifications", cx));
+    assert_eq!(dialog(cx), Dialog::Notifications, "app keys do nothing under it");
     cx.simulate_keystrokes(main, "ctrl-shift-n");
-    assert_eq!(cover(cx), Cover::Notifications, "and the center replaces settings");
+    assert_eq!(dialog(cx), Dialog::None, "its key closes it");
+    cx.update(|cx| devdeck_app::app_settings::set_open(true, cx));
+    cx.run_until_parked();
+    assert!(drawn(main, "settings-button", cx) && !drawn(main, "notifications", cx));
+    cx.update(|cx| devdeck_app::app_settings::set_dialog(Dialog::Notifications, cx));
+    cx.run_until_parked();
+    assert!(drawn(main, "notifications", cx), "the center takes the place of settings");
+    assert_eq!(cx.update(|cx| devdeck_ui::overlay::layer_state(main, cx).1), 1, "one dialog at a time");
     cx.simulate_keystrokes(main, "escape");
-    assert_eq!(cover(cx), Cover::None);
+    assert_eq!(dialog(cx), Dialog::None);
     cx.simulate_keystrokes(main, "ctrl-\\");
     assert_eq!(panes(cx), before + 1, "focus is back in the panes");
     // The bell opens and closes it too.
     click(main, "bell".into(), cx);
-    assert_eq!(cover(cx), Cover::Notifications);
+    assert_eq!(dialog(cx), Dialog::Notifications);
     click(main, "bell".into(), cx);
-    assert_eq!(cover(cx), Cover::None);
+    assert_eq!(dialog(cx), Dialog::None);
 }
 
 #[gpui::test]
@@ -251,7 +257,7 @@ fn what_an_action_opens_takes_the_keys(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "ctrl-shift-n");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(cover(cx), Cover::None);
+    assert_eq!(dialog(cx), Dialog::None);
     assert_eq!(keys_on(&shell, cx), [Some(problems.clone())], "the keys are in the opened view, not back in the sidebar");
     // In a workspace not shown.
     push(cx, note(ToastKind::Err, "personal's", Some("personal")).note(notifications::open_action("View", "personal", &problems)));
@@ -259,7 +265,7 @@ fn what_an_action_opens_takes_the_keys(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     assert_eq!(cx.read(|cx| shell.read(cx).workspaces[shell.read(cx).active].id.clone()), "personal");
-    assert_eq!(cover(cx), Cover::None);
+    assert_eq!(dialog(cx), Dialog::None);
     assert_eq!(keys_on(&shell, cx), [Some(problems)], "there too");
 }
 
@@ -271,7 +277,7 @@ fn an_action_whose_workspace_is_gone_says_so_and_leaves_the_center(cx: &mut Test
     cx.simulate_keystrokes(main, "ctrl-shift-n");
     cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
-    assert_eq!(cover(cx), Cover::Notifications, "nothing to make way for");
+    assert_eq!(dialog(cx), Dialog::Notifications, "nothing to make way for");
     let said = cx.update(|cx| toasts(cx).read(cx).queue.items.iter().any(|t| t.text.as_ref() == "View: the workspace gone is gone"));
     assert!(said);
     assert_eq!(cx.update(|cx| toasts(cx).read(cx).notes.get(id).map(|n| n.read)), Some(true));
@@ -293,7 +299,7 @@ fn every_action_of_a_row_is_reachable_by_keys(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     assert!(cx.read(|cx| deck.read(cx).layout().find_view(&ViewAddr::Problems.to_ref()).is_some()), "the second action ran");
-    assert_eq!(cover(cx), Cover::None);
+    assert_eq!(dialog(cx), Dialog::None);
 }
 
 #[gpui::test]
@@ -320,7 +326,7 @@ fn keys_move_run_and_remove(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let problems = ViewAddr::Problems.to_ref();
     assert!(cx.read(|cx| deck.read(cx).layout().find_view(&problems).is_some()), "Enter ran its first action");
-    assert_eq!(cover(cx), Cover::None, "and the center made way for what it opened");
+    assert_eq!(dialog(cx), Dialog::None, "and the center made way for what it opened");
     // Clear: what the filters show, the store only.
     cx.simulate_keystrokes(main, "ctrl-shift-n");
     cx.simulate_keystrokes(main, "shift-delete");
@@ -351,14 +357,14 @@ fn a_toasts_text_opens_the_center_on_it(cx: &mut TestAppContext) {
     let older = push(cx, note(ToastKind::Info, "older", None));
     let id = push(cx, note(ToastKind::Err, &"a long failure ".repeat(30), None));
     click(main, format!("toast-text-{id}"), cx);
-    assert_eq!(cover(cx), Cover::Notifications);
+    assert_eq!(dialog(cx), Dialog::Notifications);
     let c = center(&shell, cx);
     assert_eq!(cx.read(|cx| c.read(cx).selected), Some(id), "on it, not on the newest");
     assert!(rows(&shell, cx).contains(&older));
 }
 
 #[gpui::test]
-fn a_detached_windows_bell_opens_the_center_in_the_main_window(cx: &mut TestAppContext) {
+fn a_detached_window_has_no_bell_and_its_key_opens_the_center_in_the_main_window(cx: &mut TestAppContext) {
     let shell = start(cx, "detached");
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let detached = cx.update(|cx| {
@@ -374,9 +380,11 @@ fn a_detached_windows_bell_opens_the_center_in_the_main_window(cx: &mut TestAppC
     let main = main_window(&shell, cx);
     let other = cx.windows().into_iter().find(|w| *w != main).expect("a detached window");
     push(cx, note(ToastKind::Err, "failed", None));
-    assert!(drawn(other, "bell-count", cx), "the bell is in every window");
-    click(other, "bell".into(), cx);
-    assert_eq!(cover(cx), Cover::Notifications, "opened in the main window");
+    assert!(drawn(main, "bell-count", cx), "the main window's bell");
+    assert!(!drawn(other, "bell", cx), "none in a detached window");
+    cx.simulate_keystrokes(other, "ctrl-shift-n");
+    cx.run_until_parked();
+    assert_eq!(dialog(cx), Dialog::Notifications, "opened in the main window");
     assert!(drawn(main, "notifications", cx));
     assert!(!drawn(other, "notifications", cx));
 }

@@ -1,6 +1,6 @@
 //! Service page (`svc/<env>/<name>`, R7.2–R7.6, R7.8): one page of panels, its title the
 //! header's (a tab's, Cluster's details). Deployment: its facts (state, tag, pods, when and
-//! by whom, revision, usage, the protected env), the rollout under way, then Deploy… (the
+//! by whom, revision, usage, the protected env), the rollout under way, then Deploy (the
 //! picker, then the confirmation stating the exact command, waiting for the cluster's
 //! answer), Redeploy, the notify dropdown and the lock, together. Pods: a table whose rows
 //! open in place (node, last end, containers, init ones first). Logs: the service's logs
@@ -170,7 +170,7 @@ impl ServiceView {
         self.link_repo(id, cx);
     }
 
-    /// Reads `id`'s repository while the page shows (its branches for Deploy…).
+    /// Reads `id`'s repository while the page shows (its branches for Deploy).
     fn link_repo(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(dir) = self.ctx.services.read(cx).catalog.app(&id).map(|a| a.dir.clone()) else { return };
         let Some(repo) = self.ctx.services.update(cx, |s, cx| s.repo(&dir, cx)) else {
@@ -406,14 +406,14 @@ impl ServiceView {
         self.ctx.open(ViewAddr::Logs { env: self.env.clone(), name: self.name.clone() }, cx);
     }
 
-    /// Deploy…: the picker of what can go here (the tags on the other envs, its app's
+    /// Deploy: the picker of what can go here (the tags on the other envs, its app's
     /// branches on the remote, the tags it ran before, or what's typed); a pick goes on to
     /// the checks and the confirmation, as the rocket did ([`ServiceView::save`]).
     pub fn open_deploy(this: &Entity<Self>, window: &mut Window, cx: &mut App) {
         Self::open_deploy_part(this, None, window, cx);
     }
 
-    /// Deploy… for `part` (an app inside it, [`Deployment::part`]; `None`: itself): its
+    /// Deploy for `part` (an app inside it, [`Deployment::part`]; `None`: itself): its
     /// tags on the other envs, its repository's remote branches, the tags it ran here
     /// before (itself only), or what's typed.
     pub fn open_deploy_part(this: &Entity<Self>, part: Option<String>, window: &mut Window, cx: &mut App) {
@@ -540,7 +540,7 @@ const POD_COLS: [Column; 6] =
     [Column::rest("POD"), Column::fixed("STATE", 110.), Column::fixed("AGE", 50.), Column::fixed("RESTARTS", 64.).right(), Column::fixed("CPU", 64.), Column::fixed("MEMORY", 70.)];
 /// A pod's containers, under its row.
 const CONTAINER_COLS: [Column; 3] = [Column::rest("CONTAINER"), Column::fixed("STATE", 220.), Column::fixed("RESTARTS", 64.).right()];
-/// Its parts: the app, its tag, its Deploy…, a way to the app.
+/// Its parts: the app, its tag, its Deploy, a way to the app.
 const PART_COLS: [Column; 4] = [Column::rest("APP"), Column::fixed("TAG", 170.), Column::fixed("", 100.).right(), Column::fixed("", 24.)];
 const ENV_COLS: [Column; 3] = [Column::rest("ENV"), Column::fixed("TAG", 130.), Column::fixed("PODS", 90.)];
 const HISTORY_COLS: [Column; 3] = [Column::fixed("WHEN", 56.), Column::fixed("WHO", 110.), Column::rest("CHANGE")];
@@ -665,7 +665,7 @@ impl Render for ServiceView {
             div().px_2().py_1().flex().items_center().min_w_0().debug_selector(|| "svc-rollout".into()).child(icon_text(mark, color, text, &t).flex_1())
         });
 
-        // Deploying's actions together: Deploy…, Redeploy, notify; the lock at the end.
+        // Deploying's actions together: Deploy, Redeploy, notify; the lock at the end.
         let enabled = redeploy_blocked.is_none();
         let actions = div()
             .px_2()
@@ -675,7 +675,7 @@ impl Render for ServiceView {
             .gap_1()
             .child({
                 let me = me.clone();
-                devdeck_ui::labeled_button("svc-deploy", Icon::Deploy, "Deploy…", &t)
+                devdeck_ui::labeled_button("svc-deploy", Icon::Deploy, "Deploy", &t)
                     .debug_selector(|| "svc-deploy".into())
                     .on_click(move |_, window, cx| ServiceView::open_deploy(&me, window, cx))
             })
@@ -694,7 +694,7 @@ impl Render for ServiceView {
             })
             .when(protected, |a| {
                 a.child(div().flex_1()).child(
-                    devdeck_ui::labeled_button("lock", Icon::Protected, if self.unlocked { "Lock" } else { "Unlock…" }, &t).on_click(cx.listener(|this, _, _, cx| {
+                    devdeck_ui::labeled_button("lock", Icon::Protected, if self.unlocked { "Lock" } else { "Unlock" }, &t).on_click(cx.listener(|this, _, _, cx| {
                         if this.unlocked {
                             this.unlocked = false;
                             cx.notify();
@@ -723,7 +723,7 @@ impl Render for ServiceView {
                 let app = devdeck_core::links::part_app(&k.name, &k.image.raw, &apps);
                 let deploy = {
                     let (me, part) = (me.clone(), short.clone());
-                    devdeck_ui::labeled_button(("part-deploy", i), Icon::Deploy, "Deploy…", &t)
+                    devdeck_ui::labeled_button(("part-deploy", i), Icon::Deploy, "Deploy", &t)
                         .debug_selector(move || format!("part-deploy-{i}"))
                         .on_click(move |_, window, cx| ServiceView::open_deploy_part(&me, Some(part.clone()), window, cx))
                 };
@@ -843,7 +843,7 @@ impl Render for ServiceView {
             );
         }
         // A deployment serving apps of its own: its tag is the server's, the same everywhere;
-        // each app's tags on the other envs are in its Deploy….
+        // each app's tags on the other envs are in its Deploy.
         let envs = d.init_containers.is_empty().then(|| devdeck_ui::panel("svc-envs", "Envs", Vec::new(), env_block, &t));
 
         // ---- History: what devdeck saw deployed here, newest first.

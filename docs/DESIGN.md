@@ -52,11 +52,14 @@ The interactive HTML prototype that was approved is the visual reference
 - Envs use a distinct violet chip so the target env is always visible in labels:
   `start:dev @dev35`.
 - Text truncates, never wraps (R4.4). Middle truncation for paths and image names.
+- An action's label never ends with "…" ("Rename", "Send to", "Deploy"; user,
+  2026-11-12): the dialog it opens says the rest. Text saying something is under way keeps
+  it ("reading…", "stopping…").
 - Nothing changes size or moves with a state (R9.10): hover, selection, focus, a press, a
   drag over, a toggle. Their marks are colors, or lines drawn over the element (an
   absolute child, like the pane header's focus line; a `drag_over` style, which GPUI
   draws without laying it out), never a border, a child or empty room added for them;
-  but a toggle's check keeps its room on or off (a menu row's, the settings button's).
+  but a toggle's check keeps its room on or off (a menu row's).
   A menu's disabled item is only dimmed (R5.5).
 - A menu's toggle (`MenuItem::toggle`: on or off) keeps the menu open when used, by
   click or Enter, its check flipped, so several can be changed in a row (R5.8); a pick
@@ -131,7 +134,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - A detached window's root is always a single pane. Its title bar has ⇲ (send the
   tabs back to the main window's focused pane) next to × (close the window and its
   tabs).
-- "Send to…" moves a tab or a whole pane to any pane of any window, or to a new
+- "Send to" moves a tab or a whole pane to any pane of any window, or to a new
   window: number badges appear on every pane, pick by key or click.
 - Each window has a focused pane; focus moves by pure rules after close, move and
   detach, and directionally using pane rectangles computed from the model.
@@ -392,7 +395,7 @@ ViewRef = a serializable address, e.g. app/<id>, run/<id>, svc/<env>/<name>,
 - Views can say more than their address (`views::Live`): a tab's title (a note's name)
   and the actions they offer now (`ViewAction`: a registry id, an icon, on or off). The
   deck keeps them per view and redraws when such a view changes; every title goes through
-  `Deck::title` (tabs, headers, "Send to…", places). The actions are drawn in the header
+  `Deck::title` (tabs, headers, "Send to", places). The actions are drawn in the header
   (or strip, for the active tab) before the pane's buttons and listed first in the tab's
   menu; a click brings that pane and tab forward and focused, then dispatches the action.
 - A file view (`file/<path>`) shares an `OpenFile` per path with its workspace
@@ -505,10 +508,10 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 ## Menus and tabs (user 2026-11-11, `docs/plans/menus-and-tabs.md`)
 
 - Every menu keeps the same groups in the same order, each item only when it applies:
-  its own verbs (the view's actions, Rename…, Delete… with "…" only before a
-  confirmation), where to see it (Open in pulse), start here (Open terminal here,
-  "<agent> here", on what has a real folder: tabs, panes, app, terminal, agent session
-  and project rows), the list's own (Pin, Move to group). Tabs and panes keep their
+  its own verbs (the view's actions, Rename, Delete), the list's own (Pin, Move to
+  group), then "Open in" (where to see it, and a shell or a session in its folder on what
+  has a real folder: tabs, panes, app, terminal, agent session and project rows; one
+  modal, no submenu). Tabs and panes keep their
   layout items. No Copy group; "go there" stays in views and headers, not in menus. A
   full view's details header has its item's menu.
 - Tabs: at least `tab_min_w` (120 px scaled), the strip scrolls sideways past that
@@ -554,7 +557,8 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 ## Notifications (user, 2026-11-10)
 
 - Every toast is a notification: it lands in the notification center (the one bell, in
-  the title bar next to settings); the center keeps them, so toasts stay short-lived.
+  the main window's title bar next to settings, none in a detached window; the center is
+  a modal over the main window); the center keeps them, so toasts stay short-lived.
 - The bell's badge: nothing unread, the bell alone; something unread, a small blue dot;
   unread errors or failures, a larger red dot with their count (red wins over blue).
 - What a view can notify about is chosen in one shared **notify** dropdown (a crossed bell
@@ -569,7 +573,11 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
 
 ## Settings and scaling
 
-- Settings open as a full-window view from a title-bar button, not as a tab.
+- Settings open as a modal from a title-bar button, not as a tab nor a full-window page
+  (2026-11-12): a search on top, the categories on the left (`devdeck_ui::nav_list`),
+  the selected one's page on the right, one fixed size whatever shows. Each setting is
+  an entry of `settings_view::ENTRIES` (its category, label, search words and drawing):
+  the list, the search (word starts) and the pages all read them.
 - UI scale multiplies every theme size (text, rows, tab strips, rails, icons). It is
   applied on top of the desktop's scale factor, which GPUI already honours.
 - Global, per-machine settings live in `~/.config/devdeck/settings.toml`; per-workspace
@@ -868,6 +876,21 @@ Phase 3 built (`plans/control-api-p3.md`): acting without a window, waits, event
   seen on it, "port held" when a start would be refused; Run, its app), Forward (a
   `kubectl port-forward` read from its command line; its service in Cluster), Not
   devdeck's. Every activity but Pulses is now a full view.
+- 2026-11-12 (user, `docs/plans/open-in.md`) "Open in" replaces "Open in pulse", "Open
+  terminal here" and "<agent> here": one item, one modal of two columns
+  (`devdeck_ui::chooser`, in `modal_frame` like the picker), WHAT then WHERE, so no menu
+  nests for opening. A shell's WHERE starts with Terminals, a session's with Agents (the
+  user: "bring to the app"); then pulses from a full view, the pulse's panes inside it.
+  Settings and the notification center are modals (`app_settings::Dialog`, one at a time;
+  a reveal closes them), never a page over the panes, which stay drawn under the backdrop.
+  The bell is the main window's only. An app's Secondary commands fold like Hidden,
+  closed. Send to keeps its pick without a backdrop (its panes are click targets).
+- 2026-11-12 (user, `docs/plans/settings-nav.md`) Settings get a navigation: categories
+  (alphabetical), a search over every setting, the last category kept while the app runs.
+  `machine.toml` shows read only (Agents, Machine); the service subscriptions move from
+  the palette's menu to Settings › Notifications. Every control is reached by Tab and
+  used by Enter or space (GPUI's click on a focused element). `modal_frame`'s minimum
+  width is capped by the window's.
 
 ## Open questions
 

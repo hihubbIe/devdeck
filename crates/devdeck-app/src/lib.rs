@@ -27,6 +27,7 @@ pub mod notes;
 pub mod notifications;
 pub mod open_file;
 pub mod palette;
+pub mod open_in;
 pub mod places;
 pub mod port_scan;
 pub mod pty_driver;

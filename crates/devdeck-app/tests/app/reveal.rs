@@ -3,7 +3,7 @@
 //! flashes it, or opens it here when it's open nowhere (R2.2, R3.8, R5.1, R1.3); nothing
 //! when its workspace or its target is gone, or while a dialog is open.
 
-use devdeck_app::app_settings::{self, Cover};
+use devdeck_app::app_settings::{self, Dialog};
 use devdeck_app::deck::{Deck, FLASH, NotRevealed, Revealed};
 use devdeck_app::notifications;
 use devdeck_app::shell::Shell;
@@ -282,14 +282,14 @@ fn the_center_or_settings_make_way(cx: &mut TestAppContext) {
     let h = main_handle(&shell, cx);
     cx.update(|cx| h.update(cx, |w, window, cx| w.open_notifications(None, window, cx))).unwrap();
     cx.run_until_parked();
-    assert_eq!(cx.read(app_settings::cover), Cover::Notifications);
+    assert_eq!(cx.read(app_settings::dialog), Dialog::Notifications);
     reveal(&shell, cx, "work", "demo/gallery").unwrap();
-    assert_eq!(cx.read(app_settings::cover), Cover::None);
+    assert_eq!(cx.read(app_settings::dialog), Dialog::None);
     assert!(shown(&work, cx, "demo/gallery"));
     cx.simulate_keystrokes(main, "ctrl-,");
-    assert_eq!(cx.read(app_settings::cover), Cover::Settings);
+    assert_eq!(cx.read(app_settings::dialog), Dialog::Settings);
     reveal(&shell, cx, "work", "demo/long").unwrap();
-    assert_eq!(cx.read(app_settings::cover), Cover::None);
+    assert_eq!(cx.read(app_settings::dialog), Dialog::None);
     assert!(shown(&work, cx, "demo/long"));
     assert_eq!(keys_on(&work, cx), [Some(ViewRef::new("demo/long"))]);
 }

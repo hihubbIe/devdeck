@@ -17,7 +17,7 @@ use std::time::Duration;
 
 const IDLE: Duration = Duration::from_secs(20);
 
-fn kind() -> AgentKind {
+pub fn kind() -> AgentKind {
     AgentKind {
         id: "claude".into(),
         name: "Claude Code".into(),
@@ -438,14 +438,14 @@ fn sessions_are_listed_by_project_and_a_project_starts_one(cx: &mut TestAppConte
     assert_eq!(tree.items.iter().filter(|i| i.path.as_deref().is_some_and(|p| p.starts_with(&format!("{node}/")))).count(), 2, "under its project");
     assert!(tree.items.iter().any(|i| i.path.is_none()), "a session in no app's folder at the top");
     assert_eq!(tree.names.get(&node).map(String::as_str), cx.read(|cx| w.deck.read(cx).services().unwrap().read(cx).catalog.app("eventservice").map(|a| a.name.clone())).as_deref());
-    // A project row's menu: a session of each agent there.
+    // A project row's menu: what to open in its folder.
     cx.update(|cx| w.sidebar.update(cx, |s, cx| s.show(Activity::Agents, cx)));
     let menu = cx.update(|cx| devdeck_app::sidebar::Sidebar::item_menu(&w.sidebar, &format!("{node}/"), false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert_eq!(menu, ["Claude Code here"]);
-    // A session's row: start here in its folder, after its own items.
+    assert_eq!(menu, ["Open in"]);
+    // A session's row: where to open it, or what else in its folder, after its own items.
     let id = cx.read(|cx| w.agents.read(cx).sessions()[0].id.clone());
     let menu = cx.update(|cx| devdeck_app::sidebar::Sidebar::item_menu(&w.sidebar, &id, false, cx).iter().map(|i| i.label.to_string()).collect::<Vec<_>>());
-    assert!(menu.ends_with(&["".into(), "Open terminal here".into(), "".into(), "Claude Code here".into()]), "{menu:?}");
+    assert!(menu.ends_with(&["".into(), "Open in".into()]), "{menu:?}");
 }
 
 #[gpui::test]

@@ -111,14 +111,12 @@ pub struct Deck {
     save_failed: bool,
     /// Layout writes done (tests check the debounce).
     pub saves: usize,
-    /// A "Send to…" pick in progress (R3.11).
+    /// A "Send to" pick in progress (R3.11).
     pub send: Option<SendSource>,
     /// Named layouts of the workspace (R3.10).
     pub book: LayoutBook,
     /// Views on screen now; changes are announced with [`DeckEvent::Visibility`].
     visible: HashSet<ViewRef>,
-    /// The main window shows something else over its panes (Settings).
-    covered: bool,
     /// A full view's details (Apps): what the main window shows instead of the pulse's
     /// panes, the selection then what it was drilled into, the last on screen. `None`:
     /// the panes show.
@@ -172,7 +170,7 @@ pub enum DeckEvent {
 
 impl EventEmitter<DeckEvent> for Deck {}
 
-/// What a "Send to…" pick moves.
+/// What a "Send to" pick moves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SendSource {
     Tab(ViewRef),
@@ -208,7 +206,6 @@ impl Deck {
             send: None,
             book: LayoutBook::default(),
             visible: HashSet::new(),
-            covered: false,
             outside: None,
             opening_quietly: false,
             open_unfocused: HashSet::new(),
@@ -335,6 +332,19 @@ impl Deck {
         app.or_else(|| s.config.as_ref()?.folders.first().cloned()).unwrap_or_else(home)
     }
 
+    /// The folder that is `view`'s own, where a shell or a session of it starts: an app's,
+    /// a terminal's, an agent session's; `None` for the others (a note, a service, a port, a
+    /// folder of apps).
+    pub fn own_folder(&self, view: &ViewRef, cx: &App) -> Option<std::path::PathBuf> {
+        let s = self.services.as_ref()?.read(cx);
+        match ViewAddr::parse(view) {
+            ViewAddr::App { app } => s.catalog.app(&app).map(|a| a.dir.clone()),
+            ViewAddr::Terminal { dir, .. } => Some(dir.into()),
+            ViewAddr::Agent { id } => s.agents.read(cx).session(&id).map(|a| a.dir.clone()),
+            _ => None,
+        }
+    }
+
     /// Whether it belongs to a workspace (views other than the demo's need one).
     pub fn has_services(&self) -> bool {
         self.services.is_some()
@@ -391,8 +401,7 @@ impl Deck {
         self.focus.get(r).cloned()
     }
 
-    /// Whether a view is on screen: the shown workspace, its window drawn and not
-    /// covered, the active tab of an expanded pane, not hidden by a maximized one.
+    /// Whether a view is on screen: the shown workspace, its window drawn, the active tab of an expanded pane, not hidden by a maximized one.
     pub fn is_visible(&self, r: &ViewRef) -> bool {
         self.visible.contains(r)
     }
@@ -402,11 +411,9 @@ impl Deck {
             return HashSet::new();
         }
         let l = &self.layout;
-        let panes_drawn = |w: WindowId| if w == MAIN_WINDOW { !self.covered && self.outside.is_none() } else { matches!(self.os_windows.get(&w), Some(Some(_))) };
+        let panes_drawn = |w: WindowId| if w == MAIN_WINDOW { self.outside.is_none() } else { matches!(self.os_windows.get(&w), Some(Some(_))) };
         let mut shown: HashSet<ViewRef> = l.windows.iter().filter(|w| panes_drawn(w.id)).flat_map(|w| l.shown_in(w.id)).collect();
-        if !self.covered {
-            shown.extend(self.outside.as_ref().and_then(|s| s.last()).cloned());
-        }
+        shown.extend(self.outside.as_ref().and_then(|s| s.last()).cloned());
         shown
     }
 
@@ -437,14 +444,6 @@ impl Deck {
             .collect();
         let agents = services.read(cx).agents.clone();
         cx.defer(move |cx| agents.update(cx, |a, cx| a.set_shown(ids, cx)));
-    }
-
-    /// The main window covers its panes (Settings) or shows them again.
-    pub fn set_covered(&mut self, covered: bool, cx: &mut Context<Self>) {
-        if self.covered != covered {
-            self.covered = covered;
-            self.refresh_visibility(cx);
-        }
     }
 
     pub fn layout(&self) -> &Layout {

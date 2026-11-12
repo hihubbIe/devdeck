@@ -30,6 +30,7 @@ mod logs;
 mod notes;
 mod notes_sidebar;
 mod notifications;
+mod open_in;
 mod pane_header;
 mod ports;
 mod ports_list;

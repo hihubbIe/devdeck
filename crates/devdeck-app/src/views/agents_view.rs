@@ -84,7 +84,7 @@ impl Render for AgentsView {
         let root = div().id("agents-view").debug_selector(|| "agents-view".into()).track_focus(&self.focus).size_full().flex().flex_col();
         let sessions = agents.sessions();
         if sessions.is_empty() {
-            let hint = if kinds.is_empty() { "No agent is configured: add one to machine.toml ([agents.<id>])." } else { "No session yet: \"<agent> here\" on a tab, a pane or an app, or new session." };
+            let hint = if kinds.is_empty() { "No agent is configured: add one to machine.toml ([agents.<id>])." } else { "No session yet: \"Open in\" on a tab, a pane or an app, or new session." };
             return root.child(div().flex_1().flex().items_center().justify_center().text_color(t.dim).child(label(hint)));
         }
         let now_s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());

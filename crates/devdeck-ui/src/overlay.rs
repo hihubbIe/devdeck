@@ -509,7 +509,8 @@ pub fn modal_frame(content: AnyElement, window: &Window, t: &Theme) -> AnyElemen
                     div()
                         .debug_selector(|| "modal-panel".into())
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .min_w(t.size(420.))
+                        // Never wider than the window, its minimum included.
+                        .min_w(t.size(420.).min(viewport.width - t.size(48.)))
                         .max_w(viewport.width - t.size(48.))
                         .bg(t.raised)
                         .border_1()
@@ -609,6 +610,21 @@ pub fn push_modal(view: AnyView, window: &mut Window, cx: &mut App) {
         l.modals.push(view);
         cx.notify();
     });
+}
+
+/// Removes the modal drawn by entity `view`, in whichever window shows it; the others stay.
+pub fn remove_modal(view: gpui::EntityId, cx: &mut App) {
+    let Some(layers) = cx.try_global::<Layers>() else { return };
+    let layers: Vec<_> = layers.0.values().cloned().collect();
+    for l in layers {
+        l.update(cx, |l, cx| {
+            let n = l.modals.len();
+            l.modals.retain(|m| m.entity_id() != view);
+            if l.modals.len() != n {
+                cx.notify();
+            }
+        });
+    }
 }
 
 /// Whether any window shows a modal (a dialog waiting for an answer).

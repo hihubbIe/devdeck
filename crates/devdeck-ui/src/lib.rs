@@ -3,9 +3,11 @@
 #![allow(clippy::disallowed_methods)]
 
 pub mod bars;
+pub mod chooser;
 pub mod code;
 pub mod components;
 pub mod icons;
+pub mod nav;
 pub mod overlay;
 pub mod picker;
 pub mod scroll;
@@ -18,8 +20,10 @@ pub mod theme;
 pub mod toolbar;
 
 pub use bars::{PodMark, activity_bars, pod_square, pods_bar, usage_bar};
+pub use chooser::{Choice, ChoiceRow, Chooser, ChooserSpec, OnChoose, open_chooser};
 pub use code::{Code, CodeEvent, MenuOpener, Rendered};
 pub use components::*;
+pub use nav::{NavItem, nav_list};
 pub use icons::{APP_ICON, APP_NAME, Assets, Icon, icon, spinner};
 pub use picker::{OnPick, PickGroup, PickOption, Picker, PickerSpec, open_picker};
 pub use scroll::{Scrolls, scroll_list};

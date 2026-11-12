@@ -4,7 +4,7 @@
 use crate::icons::{Icon, icon};
 use crate::theme::{Theme, theme};
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Point, Render, SharedString,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, ElementId, FocusHandle, Hsla, IntoElement, MouseButton, ParentElement, Pixels, Point, Render, SharedString,
     Stateful, StatefulInteractiveElement, Styled, Svg, Window, div, prelude::*,
 };
 use std::cell::Cell;
@@ -116,6 +116,38 @@ pub fn toggle_button(id: impl Into<ElementId>, text: impl Into<SharedString>, on
     } else {
         b.border_color(t.line)
     }
+}
+
+/// A control the keys reach (a button, a toggle): `h` tracked, a border always, which
+/// the focus only colors (R9.10); `bordered` when the control draws one already.
+pub fn focus_ring(el: Stateful<gpui::Div>, h: &FocusHandle, bordered: bool, t: &Theme) -> Stateful<gpui::Div> {
+    let ring = t.focus;
+    let el = if bordered { el } else { el.border_1().border_color(gpui::transparent_black()) };
+    el.track_focus(h).focus(move |s| s.border_color(ring))
+}
+
+/// A [`toggle_button`] whose label keeps `color`, on, off and hovered: the color says
+/// something (a notification option's severity).
+pub fn toggle_button_colored(id: impl Into<ElementId>, text: impl Into<SharedString>, on: bool, color: Hsla, t: &Theme) -> Stateful<gpui::Div> {
+    let hover = t.hover;
+    div()
+        .id(id)
+        .group(BUTTON)
+        .px_2()
+        .h(t.button_h)
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(t.radius_m)
+        .border_1()
+        .border_color(if on { t.accent } else { t.line })
+        .when(on, |d| d.bg(t.accent_bg))
+        .text_color(color)
+        .cursor_pointer()
+        .whitespace_nowrap()
+        .hover(move |s| s.bg(hover))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(text.into())
 }
 
 /// An icon in a [`button`] (before or after its text, or alone): muted, bright with

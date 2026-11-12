@@ -1,13 +1,10 @@
-//! Where something opens (R6.13): a pane of the workspace, named as "Send to…" lists
-//! them ("n · window · active tab"), or a new window. A menu item that opens something
-//! ("Open terminal here", a Terminals row's "Open") does it at its default place on a
-//! click, and offers every place in its submenu.
+//! Where something opens (R6.13): a pane of the workspace, named as "Send to" lists
+//! them ("n · window · active tab"), or a new window. "Open in" (`crate::open_in`) offers
+//! them inside a pulse.
 
 use crate::deck::Deck;
 use devdeck_core::layout::{Drop, Layout, MAIN_WINDOW, PaneId, Result, ViewRef, WindowId};
-use devdeck_ui::MenuItem;
 use gpui::{App, Entity};
-use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
@@ -105,108 +102,6 @@ pub fn show(deck: &Entity<Deck>, view: &ViewRef, here: WindowId, window: &mut gp
     });
 }
 
-/// Why `view` (open somewhere) can't go to `place`.
-fn refusal(l: &Layout, view: &ViewRef, place: Place) -> Option<&'static str> {
-    let (p, _) = l.find_view(view)?;
-    match place {
-        Place::Pane(q) if q == p => Some("already here"),
-        Place::NewWindow => {
-            let w = l.window_of(p).ok()?;
-            (l.is_detached(w) && l.pane(p).is_ok_and(|p| p.tabs.len() == 1)).then_some("already alone in its window")
-        }
-        Place::Pane(_) => None,
-    }
-}
-
-/// A menu item doing `open` at `default` when clicked, every place in its submenu.
-/// `view` is what it opens when that's known and open already (a shell shown
-/// somewhere): the submenu's places it can't go to are disabled. After opening in a pane of
-/// `here` (the menu's window), keys go to it.
-pub fn item(
-    label: &str,
-    default: Place,
-    here: WindowId,
-    deck: &Entity<Deck>,
-    view: Option<&ViewRef>,
-    cx: &App,
-    open: impl Fn(&mut Deck, Place, &mut gpui::Context<Deck>) -> Option<PaneId> + 'static,
-) -> MenuItem {
-    item_or(label, Err(default), here, deck, view, cx, open)
-}
-
-/// "<agent> here" for each agent of the machine (R6.14), after a separator; none
-/// without agents. A click makes a session of it in `dir` and shows it in the Agents
-/// view; its submenu opens one in a pulse's pane instead (from a full view, `pulses`
-/// shows Pulses first).
-pub fn agent_items(here: WindowId, deck: &Entity<Deck>, dir: &std::path::Path, pulses: Option<gpui::WeakEntity<crate::sidebar::Sidebar>>, cx: &App) -> Vec<MenuItem> {
-    let kinds = crate::environment::agent_kinds(cx);
-    if kinds.is_empty() {
-        return Vec::new();
-    }
-    let mut items = vec![MenuItem::separator()];
-    for kind in kinds {
-        let (d, id, deck2, dir2) = (dir.to_path_buf(), kind.id.clone(), deck.clone(), dir.to_path_buf());
-        let agent = kind.id.clone();
-        let click: Click = Rc::new(move |_, cx| crate::sidebar::new_agent_session(&deck2, &agent, &dir2, cx));
-        let pulses = pulses.clone();
-        items.push(item_or(&format!("{} here", kind.name), Ok(click), here, deck, None, cx, move |deck, place, cx| {
-            if let Some(s) = pulses.clone() {
-                cx.defer(move |cx| {
-                    let _ = s.update(cx, |s, cx| s.show_pulses(cx));
-                });
-            }
-            deck.open_agent(&id, &d, place, cx)
-        }));
-    }
-    items
-}
-
-/// What an item does on a click when it isn't opening at a place.
-type Click = Rc<dyn Fn(&mut gpui::Window, &mut App)>;
-
-/// [`item`], its click either opening at a place (`Err`) or its own (`Ok`).
-fn item_or(
-    label: &str,
-    click: std::result::Result<Click, Place>,
-    here: WindowId,
-    deck: &Entity<Deck>,
-    view: Option<&ViewRef>,
-    cx: &App,
-    open: impl Fn(&mut Deck, Place, &mut gpui::Context<Deck>) -> Option<PaneId> + 'static,
-) -> MenuItem {
-    let open = Rc::new(open);
-    let at = |place: Place| {
-        let (deck, open) = (deck.clone(), open.clone());
-        move |window: &mut gpui::Window, cx: &mut App| {
-            let Some(pane) = deck.update(cx, |d, cx| open(d, place, cx)) else { return };
-            let d = deck.read(cx);
-            if d.layout().window_of(pane).is_ok_and(|w| w == here)
-                && let Some(f) = d.view_focus(pane)
-            {
-                f.focus(window, cx);
-            }
-        }
-    };
-    let d = deck.read(cx);
-    let l = d.layout();
-    let disabled = |item: MenuItem, place: Place| match view.and_then(|v| refusal(l, v, place)) {
-        Some(why) => item.disabled(why),
-        None => item,
-    };
-    let mut places: Vec<MenuItem> = panes(l, |r| d.title(r, cx))
-        .into_iter()
-        .enumerate()
-        .map(|(i, (pane, name))| disabled(MenuItem::new(format!("{} · {name}", i + 1), at(Place::Pane(pane))), Place::Pane(pane)))
-        .collect();
-    places.push(MenuItem::separator());
-    places.push(disabled(MenuItem::new("new window", at(Place::NewWindow)), Place::NewWindow));
-    // The item itself is never refused: at its default place, an open one shows.
-    match click {
-        Err(default) => MenuItem::new(label.to_string(), at(default)).submenu(places),
-        Ok(click) => MenuItem::new(label.to_string(), move |window, cx| click(window, cx)).submenu(places),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,10 +126,6 @@ mod tests {
         let p = open(&mut l, view("term:2"), Place::NewWindow).unwrap();
         assert!(l.window_of(p).is_ok_and(|w| l.is_detached(w)));
         assert_eq!(l.pane(p).unwrap().tabs, [view("term:2")]);
-        assert_eq!(refusal(&l, &view("term:2"), Place::NewWindow), Some("already alone in its window"));
-        assert_eq!(refusal(&l, &view("term:2"), Place::Pane(p)), Some("already here"));
-        assert_eq!(refusal(&l, &view("term:2"), Place::Pane(a)), None);
-        assert_eq!(refusal(&l, &view("term:9"), Place::NewWindow), None, "nothing refused for what isn't open");
         // An open one goes to a window of its own too.
         let q = open(&mut l, view("term:1"), Place::NewWindow).unwrap();
         assert!(l.window_of(q).is_ok_and(|w| l.is_detached(w)) && q != p);

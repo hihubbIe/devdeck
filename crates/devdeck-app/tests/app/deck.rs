@@ -211,13 +211,6 @@ fn the_deck_announces_each_visibility_change_once(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.read(|cx| deck.read(cx).is_visible(&notes)), "and back in the main window");
     log.borrow_mut().clear();
-    // Covered by Settings, then shown again: one event each way per view.
-    cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(true, cx)));
-    assert_eq!(take(&log, "matrix"), [false]);
-    cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(true, cx)));
-    assert!(take(&log, "matrix").is_empty(), "no event without a change");
-    cx.update(|cx| deck.update(cx, |d, cx| d.set_covered(false, cx)));
-    assert_eq!(take(&log, "matrix"), [true]);
     // The workspace hidden.
     cx.update(|cx| deck.update(cx, |d, cx| d.set_active(false, cx)));
     assert_eq!(take(&log, "matrix"), [false]);
@@ -233,16 +226,19 @@ fn settings_and_layout_switches_drive_visibility_through_the_window(cx: &mut Tes
     let deck = setup(cx);
     let main = cx.windows()[0];
     let deployments = ViewRef::new("matrix");
+    let log = watch(&deck, cx);
     cx.simulate_keystrokes(main, "ctrl-,");
     cx.run_until_parked();
-    assert!(!cx.read(|cx| deck.read(cx).is_visible(&deployments)), "Settings cover the panes");
+    assert!(cx.read(devdeck_app::app_settings::is_open));
+    assert!(cx.read(|cx| deck.read(cx).is_visible(&deployments)), "Settings is a modal: the panes stay drawn under it");
     cx.simulate_keystrokes(main, "escape");
     cx.run_until_parked();
-    assert!(cx.read(|cx| deck.read(cx).is_visible(&deployments)));
+    assert!(!cx.read(devdeck_app::app_settings::is_open));
+    assert!(take(&log, "matrix").is_empty(), "it never left the screen");
     // Layout b drops notes; both have deployments.
     cx.update(|cx| deck.update(cx, |d, cx| d.save_layout_as("b", cx))).unwrap();
     apply(&deck, cx, |l| l.close_view(&ViewRef::new("demo/notes")));
-    let log = watch(&deck, cx);
+    take(&log, "demo/notes");
     cx.update(|cx| deck.update(cx, |d, cx| d.switch_layout(devdeck_core::layout_book::DEFAULT_ID, cx))).unwrap();
     cx.run_until_parked();
     assert_eq!(take(&log, "demo/notes"), [true], "the other layout's tab comes on screen");

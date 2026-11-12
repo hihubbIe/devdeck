@@ -136,7 +136,7 @@ fn groups_are_made_through_the_prompt_renamed_and_deleted_without_losing_anythin
     let main = main_window(&shell, cx);
     let s = sidebar(&shell, cx);
     let mut vcx = VisualTestContext::from_window(main, cx);
-    // The All header's menu: New group…
+    // The All header's menu: New group
     let header = vcx.debug_bounds("header-all").expect("header drawn");
     vcx.simulate_mouse_down(header.center(), MouseButton::Right, Modifiers::none());
     vcx.run_until_parked();

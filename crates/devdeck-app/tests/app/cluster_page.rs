@@ -169,7 +169,7 @@ fn a_part_deploys_on_its_own_through_the_picker_and_its_confirmation(cx: &mut Te
     for i in 0..before.init_containers.len() {
         assert!(vcx.debug_bounds(Box::leak(format!("part-{i}").into_boxed_str())).is_some(), "a row per app in it");
     }
-    let deploy = vcx.debug_bounds("part-deploy-0").expect("its Deploy…");
+    let deploy = vcx.debug_bounds("part-deploy-0").expect("its Deploy");
     vcx.simulate_click(deploy.center(), Modifiers::none());
     vcx.run_until_parked();
     assert_eq!(vcx.update(|_, cx| devdeck_ui::overlay::layer_state(main, cx).1), 1, "the picker");

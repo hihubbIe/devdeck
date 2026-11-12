@@ -17,7 +17,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Window, actions, div, prelude::*,
 };
 
-actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, OpenGit, NewNote]);
+actions!(app_view, [SelectNext, SelectPrev, RunSelected, StopSelected, RestartSelected, OpenOutput, ToggleHidden, ToggleSecondary, OpenGit, NewNote]);
 
 /// A selected note is `note:<id>` in [`AppView::selected`] (commands are `source:name`).
 const NOTE_KEY: &str = "note:";
@@ -31,6 +31,8 @@ pub struct AppView {
     ctx: ViewCx,
     focus: FocusHandle,
     pub selected: Option<String>,
+    /// Folded tiers open: Secondary and Hidden start closed (Primary never folds).
+    pub show_secondary: bool,
     pub show_hidden: bool,
     /// Top-left on screen (keyboard-opened menus are placed from it).
     origin: std::rc::Rc<std::cell::Cell<gpui::Point<gpui::Pixels>>>,
@@ -86,7 +88,7 @@ impl AppView {
             let (root, r, ctx) = (r.read(cx).root.clone(), r.clone(), ctx.clone());
             cx.new(|cx| super::git_view::GitView::new(root, r, ctx, cx))
         });
-        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_hidden: false, origin: Default::default(), repo, looking: None, git, tick: None, scroll: gpui::ScrollHandle::new(), _subs: subs }
+        Self { app, ctx, focus: cx.focus_handle(), selected: None, show_secondary: false, show_hidden: false, origin: Default::default(), repo, looking: None, git, tick: None, scroll: gpui::ScrollHandle::new(), _subs: subs }
     }
 
     /// Where the workspace's cluster runs it, one row per env: the tag, its pods. An app
@@ -316,13 +318,40 @@ impl AppView {
         self.ctx.open(ViewAddr::Git { root }, cx);
     }
 
-    /// Commands in display order (hidden ones only when shown).
+    /// Whether `tier`'s commands show (a folded one's only when opened).
+    fn shows(&self, tier: Tier) -> bool {
+        match tier {
+            Tier::Primary => true,
+            Tier::Secondary => self.show_secondary,
+            Tier::Hidden => self.show_hidden,
+        }
+    }
+
+    /// Opens or folds `tier`; a selected command it hides is no longer selected.
+    pub fn toggle_tier(&mut self, tier: Tier, cx: &mut Context<Self>) {
+        match tier {
+            Tier::Primary => return,
+            Tier::Secondary => self.show_secondary = !self.show_secondary,
+            Tier::Hidden => self.show_hidden = !self.show_hidden,
+        }
+        if !self.shows(tier) && self.selected.as_deref().is_some_and(|sel| self.tier_of(sel, cx) == Some(tier)) {
+            self.selected = None;
+        }
+        cx.notify();
+    }
+
+    /// The tier of command `id` of this app.
+    fn tier_of(&self, id: &str, cx: &App) -> Option<Tier> {
+        self.ctx.services.read(cx).catalog.app(&self.app)?.commands.iter().find(|c| c.id == id).map(|c| c.tier)
+    }
+
+    /// Commands in display order (a folded tier's only when opened).
     fn visible_commands(&self, cx: &App) -> Vec<Command> {
         let s = self.ctx.services.read(cx);
         let Some(app) = s.catalog.app(&self.app) else { return Vec::new() };
         Tier::ALL
             .into_iter()
-            .filter(|t| *t != Tier::Hidden || self.show_hidden)
+            .filter(|t| self.shows(*t))
             .flat_map(|t| app.tier(t).into_iter().cloned())
             .collect()
     }
@@ -412,8 +441,8 @@ impl AppView {
         let (me, id1, id2, id3, n2, n3) = (this.clone(), id.to_string(), id.to_string(), id.to_string(), notes.clone(), notes);
         vec![
             devdeck_ui::MenuItem::new("Open", move |_, cx| me.update(cx, |v, cx| v.open_note(&id1, cx))),
-            devdeck_ui::MenuItem::new("Rename…", move |window, cx| super::note_view::rename_note(&n2, &id2, window, cx)),
-            devdeck_ui::MenuItem::new("Delete…", move |window, cx| super::note_view::delete_note(&n3, &id3, window, cx)),
+            devdeck_ui::MenuItem::new("Rename", move |window, cx| super::note_view::rename_note(&n2, &id2, window, cx)),
+            devdeck_ui::MenuItem::new("Delete", move |window, cx| super::note_view::delete_note(&n3, &id3, window, cx)),
         ]
     }
 
@@ -433,15 +462,22 @@ impl AppView {
     }
 }
 
-/// The selected command and whether hidden commands are shown.
+/// The selected command and which folded tiers are open.
 impl super::KeepsState for AppView {
     fn save(&self, _: &App) -> serde_json::Value {
-        serde_json::json!({ "selected": self.selected, "show_hidden": self.show_hidden })
+        serde_json::json!({ "selected": self.selected, "show_secondary": self.show_secondary, "show_hidden": self.show_hidden })
     }
 
     fn restore(&mut self, state: &serde_json::Value, cx: &mut Context<Self>) {
         self.selected = state["selected"].as_str().map(String::from);
+        self.show_secondary = state["show_secondary"].as_bool().unwrap_or(false);
         self.show_hidden = state["show_hidden"].as_bool().unwrap_or(false);
+        // The selection shows: its tier opens.
+        match self.selected.as_deref().and_then(|sel| self.tier_of(sel, cx)) {
+            Some(Tier::Secondary) => self.show_secondary = true,
+            Some(Tier::Hidden) => self.show_hidden = true,
+            _ => {}
+        }
         cx.notify();
     }
 }
@@ -566,9 +602,10 @@ impl Render for AppView {
             if cmds.is_empty() {
                 continue;
             }
-            let collapsed = tier == Tier::Hidden && !self.show_hidden;
+            let folds = tier != Tier::Primary;
+            let collapsed = !self.shows(tier);
             let heading = format!("{} · {}", tier.title(), cmds.len());
-            // Hidden ones fold: open or not, after the heading.
+            // Secondary and hidden ones fold: open or not, after the heading.
             let heading = div()
                 .px_2()
                 .pt_1()
@@ -578,13 +615,10 @@ impl Render for AppView {
                 .text_size(t.text_small)
                 .text_color(t.dim)
                 .child(heading)
-                .when(tier == Tier::Hidden, |d| d.child(icon(if collapsed { Icon::Expand } else { Icon::Open }, t.dim, &t)));
-            let mut head = div().id(("tier", tier as usize)).child(heading);
-            if tier == Tier::Hidden {
-                head = head.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
-                    this.show_hidden = !this.show_hidden;
-                    cx.notify();
-                }));
+                .when(folds, |d| d.child(icon(if collapsed { Icon::Expand } else { Icon::Open }, t.dim, &t)));
+            let mut head = div().id(("tier", tier as usize)).debug_selector(move || format!("tier-{}", tier.title().to_lowercase())).child(heading);
+            if folds {
+                head = head.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.toggle_tier(tier, cx)));
             }
             commands = commands.child(head);
             if collapsed {
@@ -784,10 +818,8 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &OpenGit, _, cx| this.open_git(cx)))
-            .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
-                this.show_hidden = !this.show_hidden;
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| this.toggle_tier(Tier::Hidden, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSecondary, _, cx| this.toggle_tier(Tier::Secondary, cx)))
             .child({
                 let origin = self.origin.clone();
                 gpui::canvas(move |b, _, _| origin.set(b.origin), |_, _, _, _| {}).absolute().size_full()

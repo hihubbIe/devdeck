@@ -162,7 +162,7 @@ impl RunView {
         }
         items.push(MenuItem::new("no arguments", pick(String::new())).checked(current.is_empty()));
         let typing = me.clone();
-        items.push(MenuItem::new("new arguments…", move |window, cx| {
+        items.push(MenuItem::new("new arguments", move |window, cx| {
             let _ = typing.update(cx, |v, cx| v.type_args(window, cx));
         }));
         let at = self.args_bounds.get().map_or_else(|| window.mouse_position(), |b| b.bottom_left());

@@ -18,7 +18,7 @@
 //! see what grows per cycle). Run it with temporary `DEVDECK_STATE_DIR` and
 //! `DEVDECK_CONFIG_DIR` (`scripts/measure.py` does).
 
-use crate::app_settings::{self, Cover};
+use crate::app_settings::{self, Dialog};
 use crate::deck::Deck;
 use crate::notifications::{self, ToggleNotifications};
 use crate::runner::RunKey;
@@ -245,17 +245,17 @@ impl Stress {
         };
         toggle(cx);
         self.frame(cx).await;
-        if cx.update(|cx| app_settings::cover(cx)) != Cover::Notifications {
+        if cx.update(|cx| app_settings::dialog(cx)) != Dialog::Notifications {
             eprintln!("devdeck-stress cycle={n} step failed: the notification center didn't open");
         }
         let _ = self.main.update(cx, |_, window, cx| notifications::resolve(&action, window, cx));
         self.frame(cx).await;
-        if cx.update(|cx| app_settings::cover(cx)) == Cover::Notifications {
+        if cx.update(|cx| app_settings::dialog(cx)) == Dialog::Notifications {
             toggle(cx);
             self.frame(cx).await;
         }
         cx.update(|cx| toasts(cx).update(cx, |t, cx| t.close(id, cx)));
-        if cx.update(|cx| app_settings::cover(cx)) != Cover::None {
+        if cx.update(|cx| app_settings::dialog(cx)) != Dialog::None {
             eprintln!("devdeck-stress cycle={n} step failed: the notification center didn't close");
         }
     }

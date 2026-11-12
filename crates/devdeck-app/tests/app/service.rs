@@ -52,7 +52,7 @@ fn modals(main: AnyWindowHandle, cx: &mut TestAppContext) -> usize {
     cx.update(|cx| layer_state(main, cx).1)
 }
 
-/// Deploy… (ctrl+s) and `tag` picked as typed: on to the checks and the confirmation.
+/// Deploy (ctrl+s) and `tag` picked as typed: on to the checks and the confirmation.
 fn deploy_tag(main: AnyWindowHandle, cx: &mut TestAppContext, tag: &str) {
     cx.simulate_keystrokes(main, "ctrl-s");
     cx.simulate_input(main, tag);
@@ -227,7 +227,7 @@ fn esc_in_an_input_returns_to_its_view_in_any_window(cx: &mut TestAppContext) {
     let focus = cx.read(|cx| view.read(cx).focus_handle(cx));
     cx.update_window(detached, |_, window, cx| focus.focus(window, cx)).unwrap();
     cx.simulate_keystrokes(detached, "ctrl-s");
-    assert!(cx.update(|cx| devdeck_ui::overlay::layer_state(detached, cx).1 == 1), "Deploy… opens its picker there");
+    assert!(cx.update(|cx| devdeck_ui::overlay::layer_state(detached, cx).1 == 1), "Deploy opens its picker there");
     cx.simulate_keystrokes(detached, "escape");
     assert!(cx.update_window(detached, |_, window, _| focus.is_focused(window)).unwrap(), "Esc gives the keys back to the view");
 }

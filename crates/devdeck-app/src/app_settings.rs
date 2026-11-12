@@ -1,6 +1,6 @@
 //! App-wide settings state: the stored settings (R9.4, R10.1), the available themes,
-//! and which full-window view covers the main window's panes (Settings or the
-//! notification center, one at a time). The theme and the UI scale are
+//! and which dialog the main window shows (Settings or the notification center, one at a
+//! time, as modals). The theme and the UI scale are
 //! global. Changing either rebuilds the theme and re-renders every window at once.
 
 use devdeck_core::settings::{DEFAULT_THEME, SettingsStore, scale_down, scale_up};
@@ -9,9 +9,9 @@ use devdeck_ui::Theme;
 use gpui::{App, AppContext, Entity, Global};
 use std::path::{Path, PathBuf};
 
-/// What covers the main window's panes: one full-window view at most.
+/// The dialog the main window shows over its panes: one at most.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Cover {
+pub enum Dialog {
     #[default]
     None,
     Settings,
@@ -20,7 +20,9 @@ pub enum Cover {
 
 pub struct AppSettings {
     pub store: SettingsStore,
-    pub cover: Cover,
+    pub dialog: Dialog,
+    /// The view showing it, in the main window's modals (to close it from anywhere).
+    pub dialog_view: Option<gpui::EntityId>,
     /// Built-in theme first, then the user's, alphabetical.
     pub themes: Vec<ThemeColors>,
     /// Problems found reading theme files, or with the chosen theme.
@@ -46,7 +48,7 @@ pub fn init(dir: &Path, cx: &mut App) {
     if !themes.iter().any(|t| t.name == store.settings.theme) {
         theme_problems.push(format!("Theme `{}` not found, using {DEFAULT_THEME}.", store.settings.theme));
     }
-    let settings = AppSettings { store, cover: Cover::None, themes, theme_problems, themes_dir };
+    let settings = AppSettings { store, dialog: Dialog::None, dialog_view: None, themes, theme_problems, themes_dir };
     cx.set_global(Theme::from_colors(settings.current_colors(), settings.store.settings.scale()));
     devdeck_ui::code::sync_theme(cx);
     let entity = cx.new(|_| settings);
@@ -118,35 +120,46 @@ pub fn reset(cx: &mut App) {
     set_scale(devdeck_core::settings::DEFAULT_SCALE, cx);
 }
 
-/// Whether Settings covers the panes.
+/// Whether Settings shows.
 pub fn is_open(cx: &App) -> bool {
-    cover(cx) == Cover::Settings
+    dialog(cx) == Dialog::Settings
 }
 
-/// Opens Settings (in place of whatever covers the panes) or closes it.
+/// Opens Settings (in place of the other dialog) or closes it.
 pub fn set_open(open: bool, cx: &mut App) {
-    match (open, cover(cx)) {
-        (true, _) => set_cover(Cover::Settings, cx),
-        (false, Cover::Settings) => set_cover(Cover::None, cx),
+    match (open, dialog(cx)) {
+        (true, _) => set_dialog(Dialog::Settings, cx),
+        (false, Dialog::Settings) => set_dialog(Dialog::None, cx),
         (false, _) => {}
     }
 }
 
-/// What covers the panes.
-pub fn cover(cx: &App) -> Cover {
-    settings(cx).read(cx).cover
+/// The dialog the main window shows.
+pub fn dialog(cx: &App) -> Dialog {
+    settings(cx).read(cx).dialog
 }
 
-/// Whether anything covers the panes.
-pub fn is_covered(cx: &App) -> bool {
-    cover(cx) != Cover::None
+/// Whether a dialog shows.
+pub fn has_dialog(cx: &App) -> bool {
+    dialog(cx) != Dialog::None
 }
 
-pub fn set_cover(cover: Cover, cx: &mut App) {
+/// Which dialog shows; the main window follows (`WindowView::sync_dialog`).
+pub fn set_dialog(dialog: Dialog, cx: &mut App) {
     settings(cx).update(cx, |s, cx| {
-        if s.cover != cover {
-            s.cover = cover;
+        if s.dialog != dialog {
+            s.dialog = dialog;
             cx.notify();
         }
     });
+}
+
+/// Closes the dialog at once, its modal included, from outside any window (a reveal
+/// makes way); the main window then gives the keys where the reveal puts them.
+pub fn close_dialog_now(cx: &mut App) {
+    let view = settings(cx).update(cx, |s, _| s.dialog_view.take());
+    if let Some(id) = view {
+        devdeck_ui::overlay::remove_modal(id, cx);
+    }
+    set_dialog(Dialog::None, cx);
 }

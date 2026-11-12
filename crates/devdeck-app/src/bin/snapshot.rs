@@ -351,6 +351,7 @@ fn app_view(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Entity<She
     let v = cx.update(|cx| deck.read(cx).view(&ViewAddr::App { app: "pagerendererservice".into() }.to_ref()).unwrap().downcast::<AppView>().unwrap());
     cx.update(|cx| {
         v.update(cx, |v, cx| {
+            v.show_secondary = true;
             v.show_hidden = true;
             v.selected = Some("go:build".into());
             cx.notify();
@@ -693,7 +694,7 @@ fn svc_redeploying(cx: &mut HeadlessAppContext, _w: AnyWindowHandle, shell: &Ent
     cx.run_until_parked();
 }
 
-/// Deploy…: the picker of tags and branches.
+/// Deploy: the picker of tags and branches.
 fn svc_deploy_picker(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
     deploy(cx, shell, "dev35", "entityservice", "lan-160", 3500);
     let v = service(cx, shell, "dev35", "entityservice", true);
@@ -1182,13 +1183,35 @@ fn tab_menu(cx: &mut HeadlessAppContext, w: AnyWindowHandle, _s: &Entity<Shell>)
     let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_app::actions::ContextMenu), cx));
 }
 
-/// The tab menu's last item, "Open terminal here", with its places open beside it.
-fn tab_menu_places(cx: &mut HeadlessAppContext, w: AnyWindowHandle, s: &Entity<Shell>) {
-    tab_menu(cx, w, s);
+/// "Open in" from an app's row in Apps: what (the app, a shell, an agent) and where (the
+/// pulses; Terminals first for the shell, selected), over the dimmed Apps view.
+fn open_in(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
+    cx.update(|cx| {
+        let claude = devdeck_core::agents::AgentKind {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            command: "claude".into(),
+            args: vec![],
+            start: vec![],
+            resume: vec![],
+            idle_stop: devdeck_core::agents::IDLE_STOP,
+            fields: Default::default(),
+            limits: vec![],
+        };
+        devdeck_app::environment::environment(cx).update(cx, |e, _| e.agents = vec![claude]);
+    });
+    let deck = with_layouts(cx, shell);
+    apps_view(cx, w, shell);
+    let app = ViewAddr::App { app: "graphservice".into() }.to_ref();
+    let dir = cx.update(|cx| deck.read(cx).own_folder(&app, cx));
+    let subject = devdeck_app::open_in::Subject::view(app, dir);
+    let _ = cx.update_window(w, |_, window, cx| devdeck_app::open_in::open(&deck, subject, devdeck_app::open_in::OpenedFrom::Outside, window, cx));
     cx.run_until_parked();
-    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_ui::overlay::MenuUp), cx));
-    cx.run_until_parked();
-    let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(Box::new(devdeck_ui::overlay::MenuOpenSub), cx));
+    // Terminal, then where: its own place first.
+    for action in [Box::new(devdeck_ui::chooser::ChooserDown) as Box<dyn gpui::Action>, Box::new(devdeck_ui::chooser::ChooserRight), Box::new(devdeck_ui::chooser::ChooserUp), Box::new(devdeck_ui::chooser::ChooserUp)] {
+        let _ = cx.update_window(w, |_, window, cx| window.dispatch_action(action, cx));
+        cx.run_until_parked();
+    }
 }
 
 fn send_to(cx: &mut HeadlessAppContext, w: AnyWindowHandle, shell: &Entity<Shell>) {
@@ -1522,7 +1545,7 @@ fn states() -> Vec<State> {
         w("A4-palette-drill", "work", 1.0, Some(palette_drill)),
         w("A5-palette-env", "work", 1.0, Some(palette_env)),
         w("A6-tab-menu", "work", 1.0, Some(tab_menu)),
-        w("A6b-tab-menu-places", "work", 1.0, Some(tab_menu_places)),
+        w("A6b-open-in", "work", 1.0, Some(open_in)),
         w("A7-send-to", "work", 1.0, Some(send_to)),
         w("A8-palette-150", "work", 1.5, Some(palette_matches)),
         w("B0-layout-menu", "work", 1.0, Some(layout_menu)),
@@ -1566,9 +1589,11 @@ fn main() -> Result<(), String> {
     for state in states().into_iter().filter(|s| filter.as_ref().is_none_or(|f| f.split(',').any(|part| s.name.contains(part)))) {
         // One app for every state: what a state turned on (reduced motion) goes off.
         cx.update(|cx| cx.set_reduce_motion(false));
+        // Agents only where a state sets them.
+        cx.update(|cx| devdeck_app::environment::environment(cx).update(cx, |e, _| e.agents.clear()));
         cx.update(|cx| {
             app_settings::set_scale(state.scale, cx);
-            app_settings::set_cover(app_settings::Cover::None, cx);
+            app_settings::set_dialog(app_settings::Dialog::None, cx);
             app_settings::set_open(state.settings_open, cx);
             toasts(cx).update(cx, |t, cx| {
                 t.queue.items.clear();

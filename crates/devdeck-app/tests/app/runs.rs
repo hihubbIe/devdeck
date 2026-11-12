@@ -69,8 +69,9 @@ fn app_view_keys_run_a_command_to_its_exit_code(cx: &mut TestAppContext) {
     let shell = start(cx, "keys");
     let main = main_window(&shell, cx);
     open(&shell, cx, ViewAddr::App { app: "pagerendererservice".into() });
-    // The new tab's view has the keys; ↓ ↓ ↓ = run, build, test (tier order, then A–Z).
-    cx.simulate_keystrokes(main, "down down down enter");
+    // The new tab's view has the keys; e opens Secondary, then ↓ ↓ ↓ = run, build, test
+    // (tier order, then A–Z).
+    cx.simulate_keystrokes(main, "e down down down enter");
     cx.run_until_parked();
     assert_eq!(state(&shell, cx, "work", "pagerendererservice", "go:test"), Some(RunState::Running));
     advance(cx, LINE_GAP * 5);

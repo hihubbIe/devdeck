@@ -4,10 +4,12 @@
 mod common;
 
 mod bars;
+mod chooser;
 mod code;
 mod components;
 mod host;
 mod input;
+mod nav;
 mod overlay;
 mod picker;
 mod scroll;

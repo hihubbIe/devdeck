@@ -288,14 +288,16 @@ impl Shell {
     /// the workspace shown, then the view found in its live layout or a saved one
     /// ([`Deck::reveal`]), its window brought forward (where the window system refuses,
     /// it asks for attention) with the keys in the view, its tab flashing. Open nowhere,
-    /// it opens in the focused pane ("Open here"). Nothing changes when the workspace is
-    /// gone, the view's target is gone (logged), or a dialog is open (it keeps the keys);
-    /// the caller says it.
+    /// it opens in the focused pane ("Open here"). Settings or the notification center
+    /// close for it. Nothing changes when the workspace is gone, the view's target is gone
+    /// (logged), or another dialog is open (it keeps the keys); the caller says it.
     pub fn reveal(&mut self, workspace: &str, view: &ViewRef, cx: &mut Context<Self>) -> Result<Revealed, NotRevealed> {
         let Some(i) = self.workspaces.iter().position(|w| w.id == workspace) else {
             log::warn!("reveal {}: no workspace {workspace}", view.0);
             return Err(NotRevealed::WorkspaceGone);
         };
+        // Settings or the notification center make way; another dialog keeps the keys.
+        crate::app_settings::close_dialog_now(cx);
         if devdeck_ui::overlay::any_modal(cx) {
             return Err(NotRevealed::Modal);
         }

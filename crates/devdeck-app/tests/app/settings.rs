@@ -65,22 +65,6 @@ fn settings_view_blocks_pane_keys_and_restores_focus(cx: &mut TestAppContext) {
     assert_eq!(panes(cx), 4, "focus is back in the panes after closing settings");
 }
 
-/// Its check's room is kept while closed: opening settings never widens the button
-/// (R9.10).
-#[gpui::test]
-fn the_settings_button_keeps_its_size(cx: &mut TestAppContext) {
-    let (_deck, _dir) = setup(cx, "button");
-    let main = cx.windows()[0];
-    let mut vcx = VisualTestContext::from_window(main, cx);
-    vcx.run_until_parked();
-    let closed = vcx.debug_bounds("settings-button").expect("drawn");
-    cx.simulate_keystrokes(main, "ctrl-,");
-    assert!(cx.read(app_settings::is_open));
-    let mut vcx = VisualTestContext::from_window(main, cx);
-    vcx.run_until_parked();
-    assert_eq!(vcx.debug_bounds("settings-button"), Some(closed));
-}
-
 #[gpui::test]
 fn settings_buttons_work_with_the_mouse(cx: &mut TestAppContext) {
     let (_deck, _dir) = setup(cx, "mouse");
@@ -153,9 +137,13 @@ fn settings_show_the_control_api(cx: &mut TestAppContext) {
     cx.update(|cx| devdeck_app::api::start(config, cx));
     let main = cx.windows()[0];
     cx.simulate_keystrokes(main, "ctrl-,");
+    cx.run_until_parked();
+    // Found by the search, shown by Enter.
+    cx.simulate_input(main, "socket");
+    cx.simulate_keystrokes(main, "enter");
     let mut vcx = VisualTestContext::from_window(main, cx);
     vcx.run_until_parked();
-    assert!(vcx.debug_bounds("settings-api").is_some(), "the API section is drawn");
+    assert!(vcx.debug_bounds("settings-api").is_some(), "the API page is drawn");
 }
 
 /// The short name: typed in Settings, refused with its reason (whitespace, control
@@ -166,6 +154,9 @@ fn the_short_name_is_checked_before_it_is_saved(cx: &mut TestAppContext) {
     let main = cx.windows()[0];
     assert_eq!(cx.read(app_settings::short_name), None, "no default");
     cx.simulate_keystrokes(main, "ctrl-,");
+    cx.run_until_parked();
+    cx.simulate_input(main, "short name");
+    cx.simulate_keystrokes(main, "enter");
     cx.run_until_parked();
     let mut vcx = VisualTestContext::from_window(main, cx);
     let field = vcx.debug_bounds("short-name").expect("shown in Settings");
@@ -188,4 +179,175 @@ fn the_short_name_is_checked_before_it_is_saved(cx: &mut TestAppContext) {
     assert!(!try_name(&mut vcx, "j.doe"));
     assert_eq!(vcx.read(app_settings::short_name).as_deref(), Some("j.doe"));
     assert!(saved(&dir).contains("short_name = \"j.doe\""), "saved: {}", saved(&dir));
+}
+
+// ------------------------------------------------------------------ categories and search
+
+use devdeck_app::settings_view::{Category, SettingsView};
+
+/// Settings, opened with ctrl+,.
+fn open(main: gpui::AnyWindowHandle, cx: &mut TestAppContext) -> Entity<SettingsView> {
+    cx.simulate_keystrokes(main, "ctrl-,");
+    cx.run_until_parked();
+    let w = main.downcast::<devdeck_app::window_view::WindowView>().unwrap();
+    cx.update(|cx| w.read(cx).unwrap().settings_view()).expect("opened")
+}
+
+fn listed(view: &Entity<SettingsView>, cx: &TestAppContext) -> Vec<(&'static str, Option<usize>)> {
+    cx.read(|cx| view.read(cx).listed(cx).into_iter().map(|(c, n)| (c.label(), n)).collect())
+}
+
+fn panel(main: gpui::AnyWindowHandle, cx: &mut TestAppContext) -> gpui::Bounds<gpui::Pixels> {
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    vcx.debug_bounds("modal-panel").expect("the modal")
+}
+
+#[gpui::test]
+fn the_categories_are_alphabetical_and_it_opens_on_the_last(cx: &mut TestAppContext) {
+    let (_deck, _dir) = setup(cx, "categories");
+    let main = cx.windows()[0];
+    let view = open(main, cx);
+    assert_eq!(listed(&view, cx).into_iter().map(|(c, _)| c).collect::<Vec<_>>(), ["Agents", "API", "Appearance", "Deploys", "Files", "Machine", "Notifications"]);
+    assert_eq!(cx.read(|cx| view.read(cx).category), Category::Appearance, "Appearance first time");
+    let size = panel(main, cx);
+    // ↓ from the search: the next category; every page the same size (R9.10).
+    for _ in 0..4 {
+        cx.simulate_keystrokes(main, "down");
+        assert_eq!(panel(main, cx), size);
+    }
+    assert_eq!(cx.read(|cx| view.read(cx).category), Category::Notifications, "↓ stops at the last");
+    cx.simulate_keystrokes(main, "up");
+    assert_eq!(cx.read(|cx| view.read(cx).category), Category::Machine);
+    cx.simulate_keystrokes(main, "escape");
+    assert!(!cx.read(app_settings::is_open));
+    open(main, cx);
+    assert_eq!(cx.read(|cx| view.read(cx).category), Category::Machine, "opens where it was");
+}
+
+#[gpui::test]
+fn the_search_narrows_the_list_and_enter_shows_a_match(cx: &mut TestAppContext) {
+    let (_deck, _dir) = setup(cx, "search");
+    let main = cx.windows()[0];
+    let view = open(main, cx);
+    let size = panel(main, cx);
+    cx.simulate_input(main, "theme");
+    assert_eq!(listed(&view, cx), [("Appearance", Some(1))], "the categories with matches, counted");
+    assert_eq!(panel(main, cx), size, "a search doesn't resize it");
+    // Word starts, not scattered letters: "on" finds nothing in "Connected".
+    cx.simulate_keystrokes(main, "ctrl-a backspace");
+    cx.simulate_input(main, "zzz");
+    assert!(listed(&view, cx).is_empty());
+    cx.simulate_keystrokes(main, "down enter");
+    assert!(cx.read(app_settings::is_open), "nothing to show: nothing happens");
+    cx.simulate_keystrokes(main, "ctrl-a backspace");
+    cx.simulate_input(main, "audit");
+    cx.simulate_keystrokes(main, "enter");
+    assert_eq!(cx.read(|cx| view.read(cx).category), Category::Api);
+    assert_eq!(cx.read(|cx| view.read(cx).highlight), Some("api.audit"), "the match tinted");
+    assert!(cx.read(|cx| view.read(cx).search.read(cx).text().is_empty()), "the search ended");
+    // Esc clears a search, then closes.
+    cx.simulate_input(main, "path");
+    cx.simulate_keystrokes(main, "escape");
+    assert!(cx.read(app_settings::is_open), "the first Esc clears");
+    assert!(cx.read(|cx| view.read(cx).search.read(cx).text().is_empty()));
+    cx.simulate_keystrokes(main, "escape");
+    assert!(!cx.read(app_settings::is_open));
+    // ↓ among the matches, then Enter: the second one's category.
+    open(main, cx);
+    cx.simulate_input(main, "config");
+    assert_eq!(listed(&view, cx), [("Files", Some(1)), ("Machine", Some(1))]);
+    // The API page has no match: the first is selected; ↓ the second.
+    cx.simulate_keystrokes(main, "down enter");
+    assert_eq!(cx.read(|cx| view.read(cx).category), Category::Machine);
+    assert_eq!(cx.read(|cx| view.read(cx).highlight), Some("machine.shell"));
+    // Another category: the tint ends.
+    cx.simulate_keystrokes(main, "up");
+    assert_eq!(cx.read(|cx| view.read(cx).highlight), None);
+}
+
+#[gpui::test]
+fn a_press_outside_closes_it_even_while_searching(cx: &mut TestAppContext) {
+    let (_deck, _dir) = setup(cx, "outside");
+    let main = cx.windows()[0];
+    open(main, cx);
+    cx.simulate_input(main, "scale");
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    let backdrop = vcx.debug_bounds("modal-panel").unwrap();
+    vcx.simulate_click(gpui::point(backdrop.origin.x / 2., backdrop.origin.y / 2.), Modifiers::none());
+    vcx.run_until_parked();
+    assert!(!cx.read(app_settings::is_open));
+}
+
+#[gpui::test]
+fn tab_reaches_a_control_and_enter_uses_it(cx: &mut TestAppContext) {
+    let (_deck, _dir) = setup(cx, "tab");
+    let main = cx.windows()[0];
+    open(main, cx);
+    // From the search: the list, then Appearance's controls: −, +, the steps.
+    cx.simulate_keystrokes(main, "tab tab tab");
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    let enter = gpui::Keystroke::parse("enter").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent { keystroke: enter.clone(), is_held: false, prefer_character_input: false });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+    vcx.run_until_parked();
+    assert_eq!(scale(cx), 1.1, "+ used by the keys");
+    // Typing a space in the search types it.
+    cx.simulate_keystrokes(main, "shift-tab shift-tab shift-tab");
+    cx.simulate_input(main, "ui scale");
+    let w = main.downcast::<devdeck_app::window_view::WindowView>().unwrap();
+    let view = cx.update(|cx| w.read(cx).unwrap().settings_view()).unwrap();
+    assert_eq!(cx.read(|cx| view.read(cx).search.read(cx).text().to_string()), "ui scale");
+}
+
+#[gpui::test]
+fn a_narrow_window_at_a_large_scale_keeps_it_inside(cx: &mut TestAppContext) {
+    let (_deck, _dir) = setup(cx, "narrow");
+    let main = cx.windows()[0];
+    cx.update(|cx| app_settings::set_scale(1.5, cx));
+    cx.simulate_window_resize(main, size(logical(480.), logical(320.)));
+    open(main, cx);
+    let mut vcx = VisualTestContext::from_window(main, cx);
+    vcx.run_until_parked();
+    let panel = vcx.debug_bounds("modal-panel").unwrap();
+    let list = vcx.debug_bounds("settings-nav-0").unwrap();
+    assert!(panel.right() <= logical(480.), "{panel:?}");
+    assert!(list.size.width <= panel.size.width * 0.3, "the list a third at most: {list:?}");
+}
+
+#[gpui::test]
+fn agents_machine_and_files_say_what_the_machine_has(cx: &mut TestAppContext) {
+    let (_deck, dir) = setup(cx, "machine");
+    let main = cx.windows()[0];
+    let view = open(main, cx);
+    // No agent: its name finds nothing.
+    cx.update(|cx| view.update(cx, |v, cx| v.search.update(cx, |i, cx| i.set_text("claude", cx))));
+    cx.run_until_parked();
+    assert!(listed(&view, cx).is_empty(), "no agent named so on this machine");
+    let machine = devdeck_core::config::MachineConfig { node_dirs: vec![PathBuf::from("/opt/node")], path: vec![PathBuf::from("/opt/bin")], agents: vec![super::agents::kind()] };
+    cx.update(|cx| devdeck_app::environment::environment(cx).update(cx, |e, cx| {
+        e.agents = machine.agents.clone();
+        e.machine = machine;
+        cx.notify();
+    }));
+    cx.run_until_parked();
+    assert_eq!(listed(&view, cx), [("Agents", Some(1))], "the machine's agent, found by its name");
+    let shown = |view: &Entity<SettingsView>, c: Category, cx: &mut TestAppContext| {
+        cx.update(|cx| view.update(cx, |v, cx| v.show(c, cx)));
+        let vcx = VisualTestContext::from_window(main, cx);
+        vcx.run_until_parked();
+        vcx
+    };
+    let mut vcx = shown(&view, Category::Agents, cx);
+    assert!(vcx.debug_bounds("setting-agents").is_some(), "no agent: says how to add one");
+    let mut vcx2 = shown(&view, Category::Machine, cx);
+    assert!(vcx2.debug_bounds("setting-machine.node").is_some() && vcx2.debug_bounds("setting-machine.path").is_some());
+    let mut vcx3 = shown(&view, Category::Files, cx);
+    assert!(vcx3.debug_bounds("setting-files.folders").is_some());
+    // The search finds what the machine file names: node finds Machine.
+    cx.update(|cx| view.update(cx, |v, cx| v.search.update(cx, |i, cx| i.set_text("node", cx))));
+    cx.run_until_parked();
+    assert_eq!(listed(&view, cx), [("Machine", Some(1))]);
+    let _ = dir;
 }

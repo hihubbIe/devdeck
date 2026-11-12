@@ -1,4 +1,4 @@
-//! "Send to…" (R3.11): while a pick runs, every pane of the workspace shows its number
+//! "Send to" (R3.11): while a pick runs, every pane of the workspace shows its number
 //! (in every window) and this list shows them as "n · window · active tab", plus "new
 //! window". Pick by number key, by clicking the list, or by clicking a pane's badge
 //! (any window); Esc cancels. The pick lives in the [`Deck`], so it ends wherever it
@@ -79,8 +79,8 @@ impl Render for SendTo {
         let t = theme(cx).clone();
         let d = self.deck.read(cx);
         let what = match &d.send {
-            Some(SendSource::Tab(v)) => format!("Send {} to…", d.title(v, cx)),
-            Some(SendSource::Pane(_)) => "Send this pane (all its tabs) to…".into(),
+            Some(SendSource::Tab(v)) => format!("Send {} to", d.title(v, cx)),
+            Some(SendSource::Pane(_)) => "Send this pane (all its tabs) to".into(),
             None => String::new(),
         };
         let mut list = div().flex().flex_col();

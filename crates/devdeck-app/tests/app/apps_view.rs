@@ -295,3 +295,35 @@ fn the_details_header_holds_the_views_icons(cx: &mut TestAppContext) {
         assert!(vcx.debug_bounds(name).is_some(), "{name}");
     }
 }
+
+#[gpui::test]
+fn secondary_commands_fold_closed_and_their_key_opens_them(cx: &mut TestAppContext) {
+    use devdeck_app::views::KeepsState;
+    let shell = start(cx, "apps-secondary");
+    let main = main_window(&shell, cx);
+    let deck = cx.read(|cx| shell.read(cx).active_deck());
+    let tab = app("pagerendererservice");
+    cx.update(|cx| deck.update(cx, |d, cx| d.apply(cx, |l| l.open(tab.clone(), l.main().focused).map(|_| ()))));
+    cx.run_until_parked();
+    let view = cx.read(|cx| deck.read(cx).view(&tab).unwrap().downcast::<AppView>().unwrap());
+    let folds = |cx: &TestAppContext| cx.read(|cx| (view.read(cx).show_secondary, view.read(cx).show_hidden));
+    assert_eq!(folds(cx), (false, false), "Secondary and Hidden start closed");
+    // ↓ goes through Primary only (run), then stays there.
+    cx.simulate_keystrokes(main, "down down");
+    assert_eq!(cx.read(|cx| view.read(cx).selected.clone()).as_deref(), Some("go:run"));
+    // e opens Secondary: build follows.
+    cx.simulate_keystrokes(main, "e down");
+    assert_eq!(folds(cx), (true, false));
+    assert_eq!(cx.read(|cx| view.read(cx).selected.clone()).as_deref(), Some("go:build"));
+    // Folded again: what it hides is no longer selected.
+    cx.simulate_keystrokes(main, "e");
+    assert_eq!(folds(cx), (false, false));
+    assert_eq!(cx.read(|cx| view.read(cx).selected.clone()), None);
+    // Saved and restored: a selection in a folded tier opens it.
+    let saved = cx.update(|cx| view.read(cx).save(cx));
+    assert_eq!(saved["show_secondary"], false);
+    cx.update(|cx| view.update(cx, |v, cx| v.restore(&serde_json::json!({ "selected": "go:build" }), cx)));
+    assert_eq!(folds(cx), (true, false), "its tier opens");
+    cx.update(|cx| view.update(cx, |v, cx| v.restore(&serde_json::json!({ "selected": "go:run", "show_hidden": true }), cx)));
+    assert_eq!(folds(cx), (false, true));
+}

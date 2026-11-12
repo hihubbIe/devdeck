@@ -151,7 +151,7 @@ fn rename_and_delete_from_the_row(cx: &mut TestAppContext) {
     };
     let menu = open_row_menu(&mut vcx);
     let labels: Vec<String> = vcx.read(|cx| menu.read(cx).items().iter().map(|i| i.label.to_string()).collect());
-    assert_eq!(labels, ["Open", "Rename…", "Delete…"]);
+    assert_eq!(labels, ["Open", "Rename", "Delete"]);
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
     assert!(vcx.update(|_, cx| devdeck_ui::overlay::layer(w, cx).read(cx).menu.is_none()), "the menu closed");

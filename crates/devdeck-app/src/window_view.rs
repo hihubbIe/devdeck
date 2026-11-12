@@ -7,11 +7,11 @@
 
 use crate::actions::*;
 use crate::deck::{Deck, FLASH, Flash, Held, Keys, SendSource};
-use crate::places::{self, Place};
+use crate::places::Place;
 use crate::stats;
-use crate::app_settings::{self, Cover};
+use crate::app_settings::{self, Dialog};
 use crate::notifications::{self, Badge, CloseNotifications, NotificationsView, ServiceNotifications, ToggleNotifications};
-use crate::settings_view::SettingsView;
+use crate::settings_view::{Category, SettingsView};
 use crate::shell::{self, Shell};
 use crate::sidebar::{self, Activity, DraggedListItem, Sidebar, SidebarEscape};
 use crate::views;
@@ -101,9 +101,11 @@ pub struct WindowView {
     /// While a tab, a pane or a list item is dragged over the panes: the drop under the
     /// pointer and the rectangle it lands in (R3.13).
     drop_hint: Rc<Cell<Option<(Drop, Rect)>>>,
-    /// Where focus was when a cover (Settings, the notification center) opened, and the
+    /// Where focus was when a dialog (Settings, the notification center) opened, and the
     /// pane that had the keys.
     before_cover: Option<(WeakFocusHandle, Option<Held>)>,
+    /// The dialog shown as a modal now (main window), following `app_settings::dialog`.
+    shown_dialog: Dialog,
     /// The deck, and its runner (for the run tabs' icon colours).
     deck_sub: Vec<Subscription>,
     /// The run tabs' icon colours last drawn.
@@ -226,11 +228,9 @@ impl WindowView {
     pub fn main(shell: Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let deck = shell.read(cx).active_deck();
         let mut observe = vec![
-            // Settings or the notification center cover the panes: their views are off
-            // screen meanwhile.
-            cx.observe(&app_settings::settings(cx), |this, _, cx| {
-                let open = app_settings::is_covered(cx);
-                this.deck.update(cx, |d, cx| d.set_covered(open, cx));
+            // Settings or the notification center show as a modal over the panes.
+            cx.observe_in(&app_settings::settings(cx), window, |this, _, window, cx| {
+                this.sync_dialog(window, cx);
                 cx.notify();
             }),
             cx.observe_in(&shell, window, |this, shell, window, cx| this.follow_shell(&shell, window, cx)),
@@ -252,6 +252,8 @@ impl WindowView {
         let sidebar = shell.read(cx).active_sidebar();
         let mut this = Self::build(MAIN_WINDOW, Some(shell.downgrade()), deck, observe, window, cx);
         this.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
+        // A dialog asked for before the window existed shows once it's drawn.
+        cx.defer_in(window, |this, window, cx| this.sync_dialog(window, cx));
         this
     }
 
@@ -312,6 +314,7 @@ impl WindowView {
             tab_clicked: Rc::default(),
             drop_hint: Rc::default(),
             before_cover: None,
+            shown_dialog: Dialog::None,
             deck_sub,
             run_tints: Vec::new(),
             sidebar: None,
@@ -422,21 +425,19 @@ impl WindowView {
     fn follow_shell(&mut self, shell: &Entity<Shell>, window: &mut Window, cx: &mut Context<Self>) {
         let deck = shell.read(cx).active_deck();
         if deck != self.deck {
-            if !app_settings::is_covered(cx)
+            if !app_settings::has_dialog(cx)
                 && let Some(f) = window.focused(cx)
             {
                 let held = self.keys_view(window, cx);
                 self.remembered.insert(self.deck.entity_id(), (f.downgrade(), held));
             }
             self.deck_sub = Self::observe_deck(&deck, window, cx);
-            let open = app_settings::is_covered(cx);
-            deck.update(cx, |d, cx| d.set_covered(open, cx));
             self.deck = deck;
             self.view_target = None;
             let sidebar = shell.read(cx).active_sidebar();
             self.sidebar = Some((sidebar.clone(), cx.observe(&sidebar, |_, _, cx| cx.notify())));
             window.set_window_title(&format!("{APP_NAME} · {}", shell.read(cx).active_name()));
-            if !app_settings::is_covered(cx) {
+            if !app_settings::has_dialog(cx) {
                 match self.remembered.get(&self.deck.entity_id()).and_then(|(h, _)| h.upgrade()) {
                     Some(h) => h.focus(window, cx),
                     None => self.focus_panes(window, cx),
@@ -446,42 +447,85 @@ impl WindowView {
         cx.notify();
     }
 
-    /// Opens or closes the full-window Settings view (main window only).
+    /// Opens or closes Settings (main window only).
     fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        match (open, app_settings::cover(cx)) {
-            (true, _) => self.set_cover(Cover::Settings, window, cx),
-            (false, Cover::Settings) => self.set_cover(Cover::None, window, cx),
-            (false, _) => {}
+        if self.is_main() {
+            app_settings::set_open(open, cx);
+            self.sync_dialog(window, cx);
         }
     }
 
-    /// Shows `cover` over the panes (main window only), one at a time: focus moves into
-    /// it, and back to where it was when nothing covers them any more.
-    fn set_cover(&mut self, cover: Cover, window: &mut Window, cx: &mut Context<Self>) {
-        let was = app_settings::cover(cx);
-        if !self.is_main() || cover == was {
+    /// Shows `dialog` as a modal (main window only), one at a time: the keys go into it,
+    /// and back to where they were when no dialog shows any more.
+    fn set_dialog(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_main() {
+            app_settings::set_dialog(dialog, cx);
+            self.sync_dialog(window, cx);
+        }
+    }
+
+    /// Makes the modals follow `app_settings::dialog`: the one shown before goes, the one
+    /// wanted is pushed with the keys; with none, the keys go back.
+    fn sync_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let want = if self.is_main() { app_settings::dialog(cx) } else { Dialog::None };
+        if want == self.shown_dialog {
             return;
         }
-        if was == Cover::None {
+        if let Some(id) = app_settings::settings(cx).update(cx, |s, _| s.dialog_view.take()) {
+            devdeck_ui::overlay::remove_modal(id, cx);
+        }
+        if self.shown_dialog == Dialog::None {
             self.before_cover = window.focused(cx).map(|f| (f.downgrade(), self.keys_view(window, cx)));
         }
-        app_settings::set_cover(cover, cx);
-        match cover {
-            Cover::None => match self.before_cover.take().and_then(|(h, _)| h.upgrade()) {
-                Some(h) => h.focus(window, cx),
-                None => self.focus_panes(window, cx),
-            },
-            Cover::Settings => {
-                let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
-                view.read(cx).focus_handle(cx).focus(window, cx);
+        self.shown_dialog = want;
+        let view: AnyView = match want {
+            Dialog::None => {
+                match self.before_cover.take().and_then(|(h, _)| h.upgrade()) {
+                    Some(h) => h.focus(window, cx),
+                    None => self.focus_panes(window, cx),
+                }
+                cx.notify();
+                return;
             }
-            Cover::Notifications => {
+            Dialog::Settings => {
+                let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
+                view.update(cx, |v, cx| v.opened(cx));
+                view.read(cx).focus_handle(cx).focus(window, cx);
+                view.into()
+            }
+            Dialog::Notifications => {
                 let view = self.notifications.get_or_insert_with(|| cx.new(NotificationsView::new)).clone();
                 view.update(cx, |v, cx| v.show(None, cx));
                 view.read(cx).focus_handle(cx).focus(window, cx);
+                view.into()
             }
-        }
+        };
+        let id = view.entity_id();
+        devdeck_ui::push_modal(view, window, cx);
+        app_settings::settings(cx).update(cx, |s, _| s.dialog_view = Some(id));
         cx.notify();
+    }
+
+    /// Opens Settings on `category`: here in the main window, else in the main window
+    /// brought forward. Already open, it shows that category.
+    fn open_settings_on(&mut self, category: Category, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_main() {
+            let Some(main) = shell::try_shell(cx).and_then(|s| s.read(cx).main_window()) else { return };
+            cx.defer(move |cx| {
+                let _ = main.update(cx, |w, window, cx| {
+                    window.activate_window();
+                    w.open_settings_on(category, window, cx);
+                });
+            });
+            return;
+        }
+        let view = self.settings.get_or_insert_with(|| cx.new(SettingsView::new)).clone();
+        let open = app_settings::is_open(cx);
+        self.set_settings_open(true, window, cx);
+        view.update(cx, |v, cx| v.show(category, cx));
+        if open {
+            view.read(cx).focus_handle(cx).focus(window, cx);
+        }
     }
 
     /// Opens the notification center (on notification `on`): here in the main window,
@@ -491,7 +535,7 @@ impl WindowView {
             notifications::open_center(on, cx);
             return;
         }
-        self.set_cover(Cover::Notifications, window, cx);
+        self.set_dialog(Dialog::Notifications, window, cx);
         if let Some(view) = &self.notifications {
             view.update(cx, |v, cx| v.show(on, cx));
         }
@@ -499,24 +543,24 @@ impl WindowView {
 
     /// The bell, or its key: the center opens, or closes when it's open here.
     fn toggle_notifications(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_main() && app_settings::cover(cx) == Cover::Notifications {
-            self.set_cover(Cover::None, window, cx);
+        if self.is_main() && app_settings::dialog(cx) == Dialog::Notifications {
+            self.set_dialog(Dialog::None, window, cx);
         } else {
             self.open_notifications(None, window, cx);
         }
     }
 
-    /// Nothing covers the panes any more (Settings or the center closes).
+    /// No dialog shows any more (Settings or the center closes).
     pub fn uncover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_cover(Cover::None, window, cx);
+        self.set_dialog(Dialog::None, window, cx);
     }
 
-    /// What covers the panes closes for something just opened there: the keys go to the
-    /// focused pane (showing it), not back to where they were before the cover.
+    /// The dialog closes for something just opened behind it: the keys go to the focused
+    /// pane (showing it), not back to where they were before the dialog.
     pub fn uncover_to_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if app_settings::is_covered(cx) {
+        if app_settings::has_dialog(cx) || self.shown_dialog != Dialog::None {
             self.before_cover = None;
-            self.set_cover(Cover::None, window, cx);
+            self.set_dialog(Dialog::None, window, cx);
         }
     }
 
@@ -532,12 +576,17 @@ impl WindowView {
         self.focus_panes(window, cx);
     }
 
+    /// Settings (main window, once opened).
+    pub fn settings_view(&self) -> Option<Entity<SettingsView>> {
+        self.settings.clone()
+    }
+
     /// The notification center (main window, once opened).
     pub fn notifications_view(&self) -> Option<Entity<NotificationsView>> {
         self.notifications.clone()
     }
 
-    /// Starts "Send to…" for the focused pane's active tab, or the whole pane.
+    /// Starts "Send to" for the focused pane's active tab, or the whole pane.
     fn start_send(&mut self, pane: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.focused_pane(cx) else { return };
         let source = if pane {
@@ -587,7 +636,7 @@ impl WindowView {
     /// ctrl+k: the palette opens in the main window (brought forward from a detached one).
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_main() {
-            if !app_settings::is_covered(cx) {
+            if !app_settings::has_dialog(cx) {
                 crate::palette::open(window, cx);
             }
             return;
@@ -615,7 +664,7 @@ impl WindowView {
     /// Shows an activity and focuses its list (ctrl+1…6, activity bar).
     fn show_activity(&mut self, activity: Activity, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if app_settings::is_covered(cx) {
+        if app_settings::has_dialog(cx) {
             return;
         }
         if sidebar.update(cx, |s, cx| s.show(activity, cx)) {
@@ -627,7 +676,7 @@ impl WindowView {
     /// A full view's list always shows.
     fn set_sidebar_visible(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if app_settings::is_covered(cx) || sidebar.read(cx).activity().full_view() {
+        if app_settings::has_dialog(cx) || sidebar.read(cx).activity().full_view() {
             return;
         }
         let had_focus = Self::sidebar_has_focus(&sidebar, window, cx);
@@ -646,7 +695,7 @@ impl WindowView {
 
     fn open_env_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sidebar) = self.active_sidebar() else { return };
-        if sidebar.read(cx).envs(cx).is_empty() || app_settings::is_covered(cx) {
+        if sidebar.read(cx).envs(cx).is_empty() || app_settings::has_dialog(cx) {
             return;
         }
         let t = theme(cx);
@@ -781,15 +830,7 @@ impl Render for WindowView {
         // painted one (a run started in the background).
         devdeck_ui::terminal::sync_look(&t, devdeck_ui::terminal::cell_size(window, &t));
         let is_main = self.is_main();
-        let cover = if is_main { app_settings::cover(cx) } else { Cover::None };
-        let settings_open = cover == Cover::Settings;
-        let covered = cover != Cover::None;
-        if settings_open && self.settings.is_none() {
-            self.settings = Some(cx.new(SettingsView::new));
-        }
-        if cover == Cover::Notifications && self.notifications.is_none() {
-            self.notifications = Some(cx.new(NotificationsView::new));
-        }
+        let dialog = is_main && app_settings::has_dialog(cx);
         let (layout, views) = {
             let d = self.deck.read(cx);
             let views: HashMap<PaneId, AnyView> = d
@@ -963,24 +1004,17 @@ impl Render for WindowView {
                         .on_click(|_, window, cx| crate::cheat_sheet::open(window, cx)),
                 )
             })
-            .child(
-                bar_control(notifications::bell(self.badge, &t))
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_notifications(window, cx))),
-            )
+            // The bell and Settings: the main window's only.
             .when(is_main, |d| {
                 d.child(
+                    bar_control(notifications::bell(self.badge, &t))
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_notifications(window, cx))),
+                )
+                .child(
                     bar_control(labeled_button("settings", Icon::Settings, "settings", &t))
                         .debug_selector(|| "settings-button".into())
-                        // The check's room is kept closed too, so opening never widens it (R9.10).
-                        .child(
-                            div()
-                                .debug_selector(|| "settings-check".into())
-                                .size(t.icon)
-                                .flex_none()
-                                .when(settings_open, |d| d.child(icon(Icon::Check, t.accent, &t))),
-                        )
                         .tooltip(tip("settings"))
-                        .on_click(cx.listener(move |this, _, window, cx| this.set_settings_open(!settings_open, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.set_settings_open(true, window, cx))),
                 )
             })
             .when(!is_main, |d| {
@@ -1091,45 +1125,41 @@ impl Render for WindowView {
                 let origin = self.panes_origin.clone();
                 canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {}).absolute().size_full()
             });
-        let body = match (cover, &self.settings, &self.notifications) {
-            (Cover::Settings, Some(view), _) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
-            (Cover::Notifications, _, Some(view)) => div().flex_1().min_h_0().min_w_0().flex().child(view.clone()).into_any_element(),
-            _ => match self.active_sidebar() {
-                Some(sidebar) => {
-                    // A full view: its list always, then its selection's details instead of the panes.
-                    let full = sidebar.read(cx).activity().full_view();
-                    // The branch matrix takes the whole width: no list beside it.
-                    let matrix = full && sidebar.read(cx).activity() == Activity::Cluster && sidebar.read(cx).matrix;
-                    let visible = (full || sidebar.read(cx).state.visible) && !matrix;
-                    let width = self.sidebar_w(window, &t, cx);
-                    let (shell, drag_shell) = (self.shell.clone(), self.shell.clone());
-                    let (activity_w, grab, scale) = (t.activity_w, t.divider_grab, t.scale);
-                    div()
-                        .id("body")
-                        .flex_1()
-                        .min_h_0()
-                        .min_w_0()
-                        .flex()
-                        .child(activity_bar(&sidebar, &t, cx))
-                        .when(visible, |d| {
-                            // Redrawn only when the sidebar itself changes (or its width),
-                            // not on every frame of a streaming view next to it.
-                            d.child(sidebar.clone().cached(StyleRefinement::default().flex_none().w(width).h_full()))
-                                .child(sidebar_edge(shell, &t))
-                        })
-                        .on_drag_move::<DraggedSidebarEdge>(move |e: &DragMoveEvent<DraggedSidebarEdge>, window, cx| {
-                            let Some(shell) = drag_shell.as_ref().and_then(WeakEntity::upgrade) else { return };
-                            let wanted = e.event.position.x - e.bounds.origin.x - activity_w - grab / 2.;
-                            let t = theme(cx).clone();
-                            let w = sidebar_width(Some(f32::from(wanted) / scale), window.viewport_size().width, &t);
-                            shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
-                            window.refresh();
-                        })
-                        .child(if full { details(&self.deck, &sidebar, matrix, sidebar.read(cx).activity().pick(), &t, cx) } else { panes.into_any_element() })
-                        .into_any_element()
-                }
-                None => panes.into_any_element(),
-            },
+        let body = match self.active_sidebar() {
+            Some(sidebar) => {
+                // A full view: its list always, then its selection's details instead of the panes.
+                let full = sidebar.read(cx).activity().full_view();
+                // The branch matrix takes the whole width: no list beside it.
+                let matrix = full && sidebar.read(cx).activity() == Activity::Cluster && sidebar.read(cx).matrix;
+                let visible = (full || sidebar.read(cx).state.visible) && !matrix;
+                let width = self.sidebar_w(window, &t, cx);
+                let (shell, drag_shell) = (self.shell.clone(), self.shell.clone());
+                let (activity_w, grab, scale) = (t.activity_w, t.divider_grab, t.scale);
+                div()
+                    .id("body")
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .child(activity_bar(&sidebar, &t, cx))
+                    .when(visible, |d| {
+                        // Redrawn only when the sidebar itself changes (or its width),
+                        // not on every frame of a streaming view next to it.
+                        d.child(sidebar.clone().cached(StyleRefinement::default().flex_none().w(width).h_full()))
+                            .child(sidebar_edge(shell, &t))
+                    })
+                    .on_drag_move::<DraggedSidebarEdge>(move |e: &DragMoveEvent<DraggedSidebarEdge>, window, cx| {
+                        let Some(shell) = drag_shell.as_ref().and_then(WeakEntity::upgrade) else { return };
+                        let wanted = e.event.position.x - e.bounds.origin.x - activity_w - grab / 2.;
+                        let t = theme(cx).clone();
+                        let w = sidebar_width(Some(f32::from(wanted) / scale), window.viewport_size().width, &t);
+                        shell.update(cx, |s, _| s.sidebar_w = Some(f32::from(w) / scale));
+                        window.refresh();
+                    })
+                    .child(if full { details(&self.deck, &sidebar, matrix, sidebar.read(cx).activity().pick(), &t, cx) } else { panes.into_any_element() })
+                    .into_any_element()
+            }
+            None => panes.into_any_element(),
         };
 
         let root = div()
@@ -1157,15 +1187,15 @@ impl Render for WindowView {
                 }))
                 .on_action(cx.listener(|this, _: &CloseSettings, w, cx| this.set_settings_open(false, w, cx)))
                 .on_action(cx.listener(|this, _: &CloseNotifications, w, cx| {
-                    if app_settings::cover(cx) == Cover::Notifications {
-                        this.set_cover(Cover::None, w, cx);
+                    if app_settings::dialog(cx) == Dialog::Notifications {
+                        this.set_dialog(Dialog::None, w, cx);
                     }
                 }))
             })
             .on_action(cx.listener(|this, _: &ToggleNotifications, w, cx| this.toggle_notifications(w, cx)))
-            .on_action(|_: &ServiceNotifications, w, cx| notifications::open_subscriptions(w, cx))
+            .on_action(cx.listener(|this, _: &ServiceNotifications, w, cx| this.open_settings_on(Category::Notifications, w, cx)))
             .when(!is_main, |d| d.on_action(cx.listener(|this, _: &Reattach, _, cx| this.reattach(cx))))
-            .when(is_main && !covered, |d| {
+            .when(is_main && !dialog, |d| {
                 d.on_action(cx.listener(|this, _: &ShowApps, w, cx| this.show_activity(Activity::Apps, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowCluster, w, cx| this.show_activity(Activity::Cluster, w, cx)))
                     .on_action(cx.listener(|this, _: &ShowPorts, w, cx| this.show_activity(Activity::Ports, w, cx)))
@@ -1183,7 +1213,7 @@ impl Render for WindowView {
                     // Esc with an empty filter: back to the panes.
                     .on_action(cx.listener(|this, _: &SidebarEscape, w, cx| this.focus_panes(w, cx)))
             })
-            .when(!covered, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
+            .when(!dialog, |d| d.on_action(cx.listener(|this, _: &ContextMenu, w, cx| this.open_context_menu(w, cx))))
             .child(title_bar)
             .child(body)
             .children(devdeck_ui::render_layer(window, cx))
@@ -1315,9 +1345,10 @@ fn details(deck: &Entity<Deck>, sidebar: &Entity<Sidebar>, matrix: bool, pick: &
     head = head.child(div().flex_1().min_w_0().h_full().children(tools));
     let (pick, view) = (deck.clone(), top.clone());
     head = head.child(
-        devdeck_ui::go_action("details-pulse", Icon::Layouts, "open in pulse…", t)
-            .debug_selector(|| "details-pulse".into())
-            .on_click(move |e, window, cx| open_menu(e.position(), crate::layouts::open_in_pulse(&pick, &view, cx), window, cx)),
+        devdeck_ui::go_action("details-pulse", Icon::Layouts, "open in", t).debug_selector(|| "details-pulse".into()).on_click(move |_, window, cx| {
+            let dir = pick.read(cx).own_folder(&view, cx);
+            crate::open_in::open(&pick, crate::open_in::Subject::view(view.clone(), dir), crate::open_in::OpenedFrom::Outside, window, cx);
+        }),
     );
     div()
         .id("details")
@@ -1640,7 +1671,8 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
     let d = |deck: &Entity<Deck>| deck.clone();
     let (d1, d2, d3, d4, d5, d6) = (d(deck), d(deck), d(deck), d(deck), d(deck), d(deck));
     let (v1, v2) = (view.clone(), view.clone());
-    let terminal = open_terminal_items(deck, pane, window, Some(&view), cx);
+    let dir = deck.read(cx).folder_of(Some(&view), cx);
+    let open_in = crate::open_in::item(deck, crate::open_in::Subject::folder(dir), crate::open_in::OpenedFrom::Pane(pane, window), cx);
     // What the view offers now (R12.4), first.
     let mut items: Vec<MenuItem> = deck
         .read(cx)
@@ -1671,29 +1703,15 @@ fn tab_menu(deck: &Entity<Deck>, pane: PaneId, idx: usize, window: WindowId, lay
             })
         }),
         MenuItem::separator(),
-        MenuItem::new("Send to…", move |window, cx| crate::send_to::open(d4.clone(), SendSource::Tab(view.clone()), window, cx)),
+        MenuItem::new("Send to", move |window, cx| crate::send_to::open(d4.clone(), SendSource::Tab(view.clone()), window, cx)),
         detach,
         MenuItem::separator(),
         MenuItem::new("Maximize", move |_, cx| apply_on(&d5, cx, |l| l.toggle_maximize(pane))).checked(maximized),
         MenuItem::new("Collapse", move |_, cx| apply_on(&d6, cx, |l| l.toggle_collapse(pane))),
-        MenuItem::separator(),
     ]);
-    items.extend(terminal);
-    items
-}
-
-/// "Open terminal here": a shell in the folder of `view` (the pane's active tab when
-/// `None`), in `pane` on a click, elsewhere from its submenu; then "<agent> here" for
-/// each agent (R6.14).
-fn open_terminal_items(deck: &Entity<Deck>, pane: PaneId, window: WindowId, view: Option<&ViewRef>, cx: &App) -> Vec<MenuItem> {
-    let d = deck.read(cx);
-    let folder = match view {
-        Some(v) => d.folder_of(Some(v), cx),
-        None => d.terminal_folder(Some(pane), cx),
-    };
-    let agents = places::agent_items(window, deck, &folder, None, cx);
-    let mut items = vec![places::item("Open terminal here", Place::Pane(pane), window, deck, None, cx, move |d, place, cx| d.open_terminal(&folder, place, cx))];
-    items.extend(agents);
+    if let Some(item) = open_in {
+        items.extend([MenuItem::separator(), item]);
+    }
     items
 }
 
@@ -1768,10 +1786,11 @@ fn pane_menu(deck: &Entity<Deck>, pane: PaneId, layout: &Layout, cx: &App) -> Ve
         MenuItem::separator(),
         MenuItem::new("Collapse", move |_, cx| apply_on(&d3, cx, |l| l.toggle_collapse(pane))),
         MenuItem::new("Maximize", move |_, cx| apply_on(&d4, cx, |l| l.toggle_maximize(pane))),
-        some(MenuItem::new("Send pane to…", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx))),
+        some(MenuItem::new("Send pane to", move |window, cx| crate::send_to::open(d5.clone(), SendSource::Pane(pane), window, cx))),
         MenuItem::separator(),
     ];
-    items.extend(open_terminal_items(deck, pane, layout.window_of(pane).unwrap_or(MAIN_WINDOW), None, cx));
+    let window = layout.window_of(pane).unwrap_or(MAIN_WINDOW);
+    items.extend(crate::open_in::item(deck, crate::open_in::Subject::default(), crate::open_in::OpenedFrom::Pane(pane, window), cx));
     items.extend([
         MenuItem::separator(),
         some(MenuItem::new("Close pane", move |_, cx| {

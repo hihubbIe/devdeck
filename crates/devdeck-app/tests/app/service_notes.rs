@@ -449,7 +449,7 @@ fn b_opens_the_dropdown_whose_toggles_keep_it_open(cx: &mut TestAppContext) {
     assert!(!cx.update(|cx| layer_state(main, cx).0), "Esc closes it");
 }
 
-/// Deploy…, Redeploy and notify sit together; Deploy… opens the picker, and a pick goes on
+/// Deploy, Redeploy and notify sit together; Deploy opens the picker, and a pick goes on
 /// to the checks (the running tag: refused, saying why) and the confirmation.
 #[gpui::test]
 fn deploy_opens_the_picker_then_the_checks_and_the_confirmation(cx: &mut TestAppContext) {
@@ -457,7 +457,7 @@ fn deploy_opens_the_picker_then_the_checks_and_the_confirmation(cx: &mut TestApp
     let main = main_window(&shell, cx);
     let view = open_service(&shell, cx);
     let mut vcx = gpui::VisualTestContext::from_window(main, cx);
-    let deploy = vcx.debug_bounds("svc-deploy").expect("Deploy…");
+    let deploy = vcx.debug_bounds("svc-deploy").expect("Deploy");
     let redeploy = vcx.debug_bounds("svc-redeploy").expect("Redeploy");
     let bell = vcx.debug_bounds("tag-notify").expect("the notify dropdown");
     assert!(deploy.right() <= redeploy.left() && redeploy.right() <= bell.left(), "deploy, redeploy, notify, together");
@@ -513,8 +513,21 @@ fn subscriptions_outlive_the_view_and_open_reveals_it(cx: &mut TestAppContext) {
     assert_eq!(items.iter().map(|i| i.checked).collect::<Vec<_>>(), [false, false, true, false, false], "shown ticked again");
 }
 
+/// Settings, opened in the main window (after the palette's action, say).
+fn settings(main: AnyWindowHandle, cx: &mut TestAppContext) -> Entity<devdeck_app::settings_view::SettingsView> {
+    let main = main.downcast::<devdeck_app::window_view::WindowView>().unwrap();
+    cx.update(|cx| main.read(cx).unwrap().settings_view()).expect("Settings opened")
+}
+
+fn click(main: AnyWindowHandle, name: &'static str, cx: &mut TestAppContext) {
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    let at = vcx.debug_bounds(name).unwrap_or_else(|| panic!("{name} drawn")).center();
+    vcx.simulate_click(at, gpui::Modifiers::none());
+    vcx.run_until_parked();
+}
+
 #[gpui::test]
-fn the_palettes_list_turns_every_subscription_off(cx: &mut TestAppContext) {
+fn the_palettes_action_opens_settings_on_notifications_where_all_turn_off(cx: &mut TestAppContext) {
     let shell = start(cx, "notify-all-off");
     let main = main_window(&shell, cx);
     let c = cluster_of(&shell, cx);
@@ -528,45 +541,55 @@ fn the_palettes_list_turns_every_subscription_off(cx: &mut TestAppContext) {
     assert_eq!(cx.read(|cx| c.read(cx).crash_watches()), 1);
     cx.update_window(main, |_, window, cx| window.dispatch_action(Box::new(ServiceNotifications), cx)).unwrap();
     cx.run_until_parked();
-    let items = menu_items(main, cx).expect("the palette's action opened the list");
-    let labels: Vec<String> = items.iter().map(|i| i.label.to_string()).collect();
-    assert_eq!(labels, ["entityservice on dev33", "graphservice on dev35", "", "turn all off"], "alphabetical, then turn all off");
-    assert_eq!(items[1].submenu.iter().map(|i| i.checked).collect::<Vec<_>>(), [false, false, false, false, true], "each its dropdown");
-    let off = items[3].run.clone().unwrap();
-    cx.update_window(main, |_, window, cx| off(window, cx)).unwrap();
-    cx.run_until_parked();
+    assert!(cx.read(devdeck_app::app_settings::is_open), "the palette's action opened Settings");
+    let view = settings(main, cx);
+    assert_eq!(cx.read(|cx| view.read(cx).category), devdeck_app::settings_view::Category::Notifications);
+    // Alphabetical by service: entityservice first; its ticked option is on.
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    assert!(vcx.debug_bounds("svc-1-pods crashing").is_some(), "graphservice's options, second");
+    // "Turn all off" by the keys (the last control): its row goes, the keys go back to the
+    // search, so Esc still closes.
+    cx.simulate_keystrokes(main, "shift-tab");
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    let enter = gpui::Keystroke::parse("enter").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent { keystroke: enter.clone(), is_held: false, prefer_character_input: false });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+    vcx.run_until_parked();
     assert!(cx.read(|cx| c.read(cx).subscriptions().is_empty()));
     assert_eq!(cx.read(|cx| c.read(cx).crash_watches()), 0);
-    assert_eq!(cx.update(|cx| notifications::subscriptions_menu(cx)).iter().map(|i| i.label.to_string()).collect::<Vec<_>>(), ["no service notifications"]);
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    assert!(vcx.debug_bounds("svc-all-off").is_none(), "nothing left to turn off: the page says so");
+    cx.simulate_keystrokes(main, "escape");
+    assert!(!cx.read(devdeck_app::app_settings::is_open), "the keys weren't lost with the button");
 }
 
-/// The palette's list by keyboard: → opens a row's dropdown, space ticks in it, the menu
-/// open meanwhile; a click on a row opens that service.
+/// The Notifications page by mouse and keyboard: a click ticks, Tab then Enter ticks
+/// (GPUI's click on a focused element), the go icon opens that service, Settings closed.
 #[gpui::test]
-fn the_palettes_list_ticks_by_keyboard_and_opens_a_service(cx: &mut TestAppContext) {
+fn the_notifications_page_ticks_by_click_and_keys_and_opens_a_service(cx: &mut TestAppContext) {
     let shell = start(cx, "notify-list-keys");
     let main = main_window(&shell, cx);
     let c = cluster_of(&shell, cx);
     cx.update(|cx| c.update(cx, |c, cx| c.set_notify("dev33", "entityservice", Notify::Failed, true, cx)));
     cx.update_window(main, |_, window, cx| window.dispatch_action(Box::new(ServiceNotifications), cx)).unwrap();
     cx.run_until_parked();
-    cx.simulate_keystrokes(main, "right space");
-    cx.run_until_parked();
-    assert!(menu_items(main, cx).is_some(), "still open");
-    assert_eq!(cx.read(|cx| c.read(cx).notify_options("dev33", "entityservice")), BTreeSet::from([Notify::BranchDeployed, Notify::Failed]), "ticked in the submenu");
-    cx.simulate_keystrokes(main, "escape escape");
-    cx.run_until_parked();
-    let row = notifications_row(cx);
-    cx.update_window(main, |_, window, cx| row(window, cx)).unwrap();
-    cx.run_until_parked();
+    click(main, "svc-0-redeployed", cx);
+    assert!(cx.read(|cx| c.read(cx).notify_options("dev33", "entityservice")).contains(&Notify::Redeployed), "ticked by a click");
+    click(main, "svc-0-redeployed", cx);
+    assert!(!cx.read(|cx| c.read(cx).notify_options("dev33", "entityservice")).contains(&Notify::Redeployed), "unticked by another");
+    // Tab: the search, the list, the go icon, "branch deployed"; Enter uses it.
+    cx.simulate_keystrokes(main, "tab tab tab");
+    let mut vcx = gpui::VisualTestContext::from_window(main, cx);
+    let enter = gpui::Keystroke::parse("enter").unwrap();
+    vcx.simulate_event(gpui::KeyDownEvent { keystroke: enter.clone(), is_held: false, prefer_character_input: false });
+    vcx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+    vcx.run_until_parked();
+    assert!(cx.read(|cx| c.read(cx).notify_options("dev33", "entityservice")).contains(&Notify::BranchDeployed), "ticked by the keys");
+    click(main, "svc-go-0", cx);
+    assert!(!cx.read(devdeck_app::app_settings::is_open), "Settings made way");
     let deck = cx.read(|cx| shell.read(cx).active_deck());
     let svc = ViewAddr::Svc { env: "dev33".into(), name: "entityservice".into() }.to_ref();
-    assert!(cx.read(|cx| deck.read(cx).is_visible(&svc)), "the row opened its service");
-}
-
-/// The first row's click of the palette's list.
-fn notifications_row(cx: &mut TestAppContext) -> devdeck_ui::overlay::MenuAction {
-    cx.update(|cx| notifications::subscriptions_menu(cx))[0].run.clone().unwrap()
+    assert!(cx.read(|cx| deck.read(cx).is_visible(&svc)), "the go icon opened its service");
 }
 
 fn open_svc(shell: &Entity<Shell>, cx: &mut TestAppContext, env: &str, name: &str) -> Entity<ServiceView> {

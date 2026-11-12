@@ -1,7 +1,7 @@
 //! The notification center (plan "notifications", step A; `docs/DESIGN.md`
-//! "Notifications"): every toast is kept in `devdeck-ui`'s store, shown here in a
-//! full-window view covering the main window's panes, as Settings does (one cover at a
-//! time). The title bar's bell, in every window, says what is unread.
+//! "Notifications"): every toast is kept in `devdeck-ui`'s store, shown here in a modal
+//! over the main window, as Settings is (one dialog at a time). The main window's bell
+//! says what is unread.
 //!
 //! - Notifications are read when the center shows them, when their toast is closed, or
 //!   when one of their actions is used. Rows unread when shown stay lighter while the
@@ -10,7 +10,7 @@
 //!   the click ([`resolve`]). A toast's closures stay on the toast.
 //! - A notification's source is a workspace's id (`None`: the app's), named here.
 //! - A notify dropdown (step C) is a menu of toggles under `devdeck_ui::notify_button`:
-//!   [`notify_items`]; every service subscription is listed by [`subscriptions_menu`].
+//!   [`notify_items`]; every service subscription is listed in Settings › Notifications.
 
 use crate::cluster::Cluster;
 use crate::cluster_notes::Notify;
@@ -226,55 +226,6 @@ pub fn notify_items(cluster: &Entity<Cluster>, env: &str, name: &str, cx: &App) 
             .color(kind_look(what.kind(), t).1)
         })
         .collect()
-}
-
-/// Every service subscription of every workspace, alphabetical: each a row whose submenu
-/// is its dropdown, then "turn all off".
-pub fn subscriptions_menu(cx: &App) -> Vec<MenuItem> {
-    let Some(s) = shell::try_shell(cx) else { return Vec::new() };
-    let mut rows: Vec<(String, String, String, Entity<Cluster>)> = Vec::new();
-    let mut clusters = Vec::new();
-    for w in &s.read(cx).workspaces {
-        let Some(c) = w.services.read(cx).cluster.clone() else { continue };
-        for (env, name, _) in c.read(cx).subscriptions() {
-            rows.push((name, env, w.name.clone(), c.clone()));
-        }
-        clusters.push(c);
-    }
-    if rows.is_empty() {
-        return vec![MenuItem::new("no service notifications", |_, _| {}).disabled("tick an option in a service's notify menu")];
-    }
-    rows.sort_by_key(|r| (r.0.to_lowercase(), r.1.to_lowercase(), r.2.to_lowercase()));
-    let several = s.read(cx).workspaces.len() > 1;
-    let mut items: Vec<MenuItem> = rows
-        .into_iter()
-        .map(|(name, env, workspace, c)| {
-            let sub = notify_items(&c, &env, &name, cx);
-            let (open, ws, view) = (s.clone(), s.read(cx).workspaces.iter().find(|w| w.name == workspace).map(|w| w.id.clone()), ViewAddr::Svc { env: env.clone(), name: name.clone() }.to_ref());
-            let item = MenuItem::new(format!("{name} on {env}"), move |_, cx| {
-                if let Some(ws) = &ws {
-                    let _ = open.update(cx, |s, cx| s.reveal(ws, &view, cx));
-                }
-            })
-            .submenu(sub);
-            if several { item.hint(workspace) } else { item }
-        })
-        .collect();
-    items.push(MenuItem::separator());
-    items.push(MenuItem::new("turn all off", move |_, cx| {
-        for c in &clusters {
-            c.update(cx, |c, cx| c.notify_none(cx));
-        }
-    }));
-    items
-}
-
-/// Opens [`subscriptions_menu`] near the top of the window (the palette's action).
-pub fn open_subscriptions(window: &mut Window, cx: &mut App) {
-    let t = theme(cx).clone();
-    let items = subscriptions_menu(cx);
-    let at = gpui::point((window.viewport_size().width / 2. - t.size(160.)).max(t.size(8.)), t.title_h + t.size(40.));
-    devdeck_ui::open_menu(at, items, window, cx);
 }
 
 // ------------------------------------------------------------------ the center
@@ -669,7 +620,7 @@ fn render_row(row: &Row, selected: Option<usize>, fresh: bool, view: WeakEntity<
 }
 
 impl Render for NotificationsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme(cx).clone();
         self.sync(cx);
         let toolbar = self.toolbar(cx);
@@ -707,16 +658,19 @@ impl Render for NotificationsView {
             .min_h_0()
             .into_any_element()
         };
-        div()
+        // A fixed height: its list fills it.
+        let content = div()
             .id("notifications")
             .debug_selector(|| "notifications".into())
-            .key_context("Notifications")
+            .key_context("Modal Notifications")
             .track_focus(&self.focus)
-            .size_full()
+            .w(t.size(760.))
+            .max_w(window.viewport_size().width - t.size(80.))
+            .h(window.viewport_size().height * 0.7)
             .min_w_0()
             .flex()
             .flex_col()
-            .bg(t.bg)
+            .on_action(|_: &devdeck_ui::overlay::ModalClose, _, cx| crate::app_settings::set_dialog(crate::app_settings::Dialog::None, cx))
             .on_action(cx.listener(|this, _: &NextNote, _, cx| this.step(1, cx)))
             .on_action(cx.listener(|this, _: &PrevNote, _, cx| this.step(-1, cx)))
             .on_action(cx.listener(|this, _: &NextAction, _, cx| this.step_action(1, cx)))
@@ -728,7 +682,8 @@ impl Render for NotificationsView {
             .on_action(cx.listener(|this, _: &ClearNotes, _, cx| this.clear(cx)))
             .on_action(cx.listener(|this, _: &WorkspaceMenu, window, cx| this.toolbar(cx).open_menu_of("notes.workspace", window, cx)))
             .child(div().flex_none().border_b_1().border_color(t.line).child(toolbar))
-            .child(body)
+            .child(body);
+        devdeck_ui::modal_frame(content.into_any_element(), window, &t)
     }
 }
 

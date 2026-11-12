@@ -2,7 +2,7 @@
 //! tab). Listening: who holds it (a run, a program in one of our terminals, another
 //! process), its pid, how long it has been up, where it listens and whether it answers
 //! HTTP, its command line, then its actions together: Open, Copy URL, Restart (a run),
-//! Stop holder… (a run at once; another process after a confirmation naming it). Output:
+//! Stop holder (a run at once; another process after a confirmation naming it). Output:
 //! the run's or terminal's own output. Wants it: the commands declaring the port or seen
 //! on it, their state, Run. Forward: a `kubectl port-forward`'s target, its service in
 //! Cluster. While the page is on screen the workspace's scan looks up who holds its port,
@@ -229,7 +229,7 @@ impl Render for PortView {
                 }
                 let command = (!held.command.is_empty()).then(|| div().px_2().pb_1().min_w_0().debug_selector(|| "port-command".into()).child(label(held.command.clone()).text_color(t.mute)));
 
-                // Open, Copy URL, Restart (a run), Stop holder… side by side.
+                // Open, Copy URL, Restart (a run), Stop holder side by side.
                 let url = self.url();
                 let holder = match (&held.run, held.pid) {
                     (Some(key), _) => Some(PortHolder::Run { key: key.clone(), title: held.holder.clone() }),
@@ -240,7 +240,7 @@ impl Render for PortView {
                     let runner = services.runner.downgrade();
                     let port = row.port;
                     let why = if services.config.is_some() { "another user's process: stop it where it runs" } else { "not started by Kugelblitz: stop it where it runs" };
-                    devdeck_ui::labeled_button("stop-holder", Icon::Stop, "Stop holder…", &t)
+                    devdeck_ui::labeled_button("stop-holder", Icon::Stop, "Stop holder", &t)
                         .debug_selector(|| "stop-holder".into())
                         .when(holder.is_none(), |b| b.text_color(t.dim).tooltip(tip(why)))
                         .when_some(holder, move |b, holder| {

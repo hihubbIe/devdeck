@@ -864,7 +864,7 @@ impl Layout {
 
     // ---------------------------------------------------------------- send to (R3.11)
 
-    /// Every pane, numbered for "Send to…": the main window first, then detached
+    /// Every pane, numbered for "Send to": the main window first, then detached
     /// windows in creation order; inside a window, reading order (top to bottom, then
     /// left to right), ignoring maximize.
     pub fn numbered_panes(&self) -> Vec<(PaneId, WindowId)> {
